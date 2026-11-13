@@ -5,15 +5,13 @@ use crate::scene::Fx;
 use crate::widgets::{Edit, Spec, button, number, toggle};
 use taffy::AlignItems;
 
+#[derive(Default)]
 pub struct Demo {
     pub count: i32,
     pub fx: Fx,
     /// The parameter being typed into and its text so far.
     pub edit: Option<(usize, String)>,
     pub picked: Option<usize>,
-}
-impl Default for Demo {
-    fn default() -> Self { Self { count: 0, fx: Fx::default(), edit: None, picked: None } }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -95,7 +93,7 @@ fn content(s: &Demo) -> El<Msg> {
 }
 
 fn panel(s: &Demo) -> El<Msg> {
-    let mut panel = col().key("panel").grow(0.3).basis(330.0).gap(10.0).pad(18.0, 16.0).radius(6.0).border(1.0, Paint::FAINT)
+    let mut panel = col().key("panel").grow(1.0).basis(330.0).max_width(380.0).gap(10.0).pad(18.0, 16.0).radius(6.0).border(1.0, Paint::FAINT)
         .child(text("参数", 16.0, Paint::INK));
     for (i, prm) in PARAMS.iter().enumerate() {
         let draft = s.edit.as_ref().filter(|(j, _)| *j == i).map(|(_, d)| d.as_str());

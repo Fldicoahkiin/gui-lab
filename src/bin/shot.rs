@@ -41,7 +41,13 @@ fn run(ui: &mut DemoUi, to: f32) {
     while t < to { t = (t + 1.0 / 60.0).min(to); ui.tick(t); }
 }
 
-fn centre(ui: &DemoUi, key: &str) -> (f32, f32) { ui.node(key).unwrap_or_else(|| panic!("no node {key}")).rect.center() }
+/// Scroll the page until `key` sits in the upper part of the window, then return its centre.
+fn centre(ui: &mut DemoUi, key: &str) -> (f32, f32) {
+    let r = ui.node(key).unwrap_or_else(|| panic!("no node {key}")).rect;
+    let (_, lh) = ui.logical_size();
+    if r.y < 0.0 || r.bottom() > lh { ui.wheel(4.0, 4.0, r.y - lh * 0.3); }
+    ui.node(key).expect("node").rect.center()
+}
 
 fn main() {
     let a: Vec<String> = std::env::args().collect();
@@ -82,7 +88,7 @@ fn main() {
     run(&mut ui, 10.5);
     s.shoot(&mut ui, "3-wave-mid");
 
-    let (bx, by) = centre(&ui, "inc");
+    let (bx, by) = centre(&mut ui, "inc");
     ui.pointer_move(bx, by);
     run(&mut ui, 12.0);
     s.shoot(&mut ui, "4-hover-button");
@@ -96,14 +102,14 @@ fn main() {
     run(&mut ui, 14.0);
     s.shoot(&mut ui, "7-after-click");
 
-    let (lx, ly) = centre(&ui, "list");
+    let (lx, ly) = centre(&mut ui, "list");
     ui.pointer_move(lx, ly);
     ui.wheel(lx, ly, 330.0);
     run(&mut ui, 15.0);
     s.shoot(&mut ui, "8-list-scrolled");
 
     // Keyboard: focus the first parameter and type a new value without committing it.
-    let (fx, fy) = centre(&ui, "param/0/value");
+    let (fx, fy) = centre(&mut ui, "param/0/value");
     ui.press(fx, fy);
     ui.release(fx, fy);
     for c in "6.5".chars() { ui.key(Key::Char(c), false); }
@@ -114,12 +120,13 @@ fn main() {
     run(&mut ui, 18.0);
     s.shoot(&mut ui, "10-committed-tab");
 
-    let (tx, ty) = centre(&ui, "light");
+    let (tx, ty) = centre(&mut ui, "light");
     ui.press(tx, ty);
     ui.release(tx, ty);
     run(&mut ui, 18.35);
     s.shoot(&mut ui, "11-light-wave");
-    ui.pointer_move(lw * 0.3, centre(&ui, "picture").1);
+    let (_, picy) = centre(&mut ui, "picture");
+    ui.pointer_move(lw * 0.3, picy);
     run(&mut ui, 21.0);
     s.shoot(&mut ui, "12-light-lens");
 

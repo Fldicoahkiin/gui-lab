@@ -107,6 +107,7 @@ impl<S, M: Clone> Ui<S, M> {
     pub fn text_mut(&mut self) -> &mut Text { &mut self.text }
     pub fn scale(&self) -> f32 { self.scale }
     pub fn now(&self) -> f32 { self.now }
+    pub fn logical_size(&self) -> (f32, f32) { self.size }
     /// Device px.
     pub fn device_size(&self) -> (u32, u32) { ((self.size.0 * self.scale).round() as u32, (self.size.1 * self.scale).round() as u32) }
 

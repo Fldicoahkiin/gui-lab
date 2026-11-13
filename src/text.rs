@@ -148,9 +148,9 @@ fn nearness(cov: &[u8], w: usize, h: usize) -> Vec<u8> {
             }
         }
         k = 0;
-        for q in 0..n {
+        for (q, o) in out.iter_mut().enumerate().take(n) {
             while z[k + 1] < q as f32 { k += 1; }
-            let p = v[k]; out[q] = (q as f32 - p as f32).powi(2) + f[p];
+            let p = v[k]; *o = (q as f32 - p as f32).powi(2) + f[p];
         }
     };
     for x in 0..w {

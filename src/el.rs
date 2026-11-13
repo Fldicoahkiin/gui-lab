@@ -12,6 +12,8 @@ impl Paint {
     pub const TEXT: Self = Self::tone(0.86);
     pub const DIM: Self = Self::tone(0.5);
     pub const FAINT: Self = Self::tone(0.2);
+    /// The page's own ground colour: invisible, but it keeps the ground units out.
+    pub const GROUND: Self = Self::tone(0.0);
     pub const ACCENT: Self = Self { tone: 1.0, accent: 1.0, alpha: 1.0 };
 }
 

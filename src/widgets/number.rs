@@ -27,7 +27,7 @@ pub fn number<M: Clone + 'static>(key: &str, label: &str, value: f32, spec: Spec
     let draft: Option<String> = draft.map(str::to_owned);
     let editing = draft.is_some();
     let step = |dir: f32, glyph: &str, k: &str| row().key(format!("{key}/{k}")).center().width(CONTROL_H).height(CONTROL_H).radius(RADIUS)
-        .border(LINE, Paint::FAINT).on_press(msg(Edit::Set(spec.clamp(value + dir * spec.step))))
+        .fill(Paint::GROUND).border(LINE, Paint::FAINT).on_press(msg(Edit::Set(spec.clamp(value + dir * spec.step))))
         .child(text(glyph, LABEL + 2.0, Paint::TEXT));
     let handler = {
         let (msg, draft) = (msg.clone(), draft.clone());
@@ -56,7 +56,7 @@ pub fn number<M: Clone + 'static>(key: &str, label: &str, value: f32, spec: Spec
     };
     let shown = draft.clone().unwrap_or_else(|| spec.show(value));
     let mut field = row().key(format!("{key}/value")).height(CONTROL_H).width(96.0).pad(10.0, 0.0).gap(4.0).radius(RADIUS)
-        .align(AlignItems::CENTER)
+        .align(AlignItems::CENTER).fill(Paint::GROUND)
         .border(LINE, if editing { Paint::ACCENT } else { Paint::DIM })
         .on_key(handler)
         .child(text(shown, LABEL, if editing { Paint::ACCENT } else { Paint::INK }));

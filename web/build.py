@@ -1,7 +1,8 @@
 # Assemble one self-contained page: the wasm module, a subset of the font, and the glue script, inlined.
 import base64, pathlib, re, subprocess, sys
 root = pathlib.Path(__file__).resolve().parent.parent
-text = (root / 'src/app.rs').read_text()
+# Everything drawn comes from string literals in the demo and the widgets.
+text = ''.join(p.read_text() for p in [root / 'src/demo.rs', *sorted((root / 'src/widgets').glob('*.rs'))])
 chars = set(''.join(re.findall(r'"([^"\\]*)"', text))) | {chr(c) for c in range(32, 127)}
 sub = root / 'dist/font-subset.otf'
 subprocess.run([sys.executable, '-m', 'fontTools.subset', str(root / 'assets/NotoSansSC-Regular.otf'), '--text=' + ''.join(sorted(chars)), '--output-file=' + str(sub)], check=True)

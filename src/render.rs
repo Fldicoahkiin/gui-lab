@@ -167,10 +167,6 @@ impl Renderer {
         self.queue.write_buffer(&self.instances, 0, bytemuck::cast_slice(&scene.instances));
 
         let mut enc = self.device.create_command_encoder(&Default::default());
-        let clear = |enc: &mut wgpu::CommandEncoder, view, color| enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: None, depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None, multiview_mask: None,
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment { view, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(color), store: wgpu::StoreOp::Store } })],
-        });
         for (view, pipe) in [(&self.ink, &self.pipes[0]), (&self.near, &self.pipes[1])] {
             let mut pass = clear(&mut enc, view, wgpu::Color::TRANSPARENT);
             pass.set_pipeline(pipe);
@@ -203,4 +199,11 @@ impl Renderer {
         };
         self.queue.write_buffer(&self.ubuf, 0, bytemuck::bytes_of(&u));
     }
+}
+
+fn clear<'a>(enc: &'a mut wgpu::CommandEncoder, view: &'a wgpu::TextureView, color: wgpu::Color) -> wgpu::RenderPass<'a> {
+    enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: None, depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None, multiview_mask: None,
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment { view, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(color), store: wgpu::StoreOp::Store } })],
+    })
 }
