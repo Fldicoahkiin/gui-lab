@@ -25,7 +25,7 @@ pub struct Demo {
 impl Default for Demo {
     fn default() -> Self {
         let mut pics = [PicFx::default(); 8];
-        pics[1] = PicFx { pitch: 12.0, levels: 16.0, set: set::CHARS as f32, ground: 0.0, gamma: 0.6, ..PicFx::default() };
+        pics[1] = PicFx { pitch: 16.0, levels: 16.0, set: set::CHARS as f32, ground: 0.0, gamma: 0.6, ..PicFx::default() };
         Self { count: 0, fx: Fx::default(), pics, theme: 0, material: Material::Dot, edit: None, picked: None, shown: BUST, wipe: 0.42 }
     }
 }

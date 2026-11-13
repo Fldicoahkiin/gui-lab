@@ -142,7 +142,12 @@ fn theme_picks_faces_for_the_page() {
         _ => panic!("not text"),
     };
     assert_eq!(face(&ui, "count"), lab::el::Font::Face(SANS));
-    let (x, y) = ui.node("theme/2").expect("theme choice").rect.center();
+    let (x, y) = ui.node("theme:2").expect("theme choice").rect.center();
     ui.press(x, y);
     assert_eq!(face(&ui, "count"), lab::el::Font::Face(PIXEL));
+    // Every theme can be chosen, including the first one again.
+    let (x, y) = ui.node("theme:0").expect("theme choice").rect.center();
+    ui.press(x, y);
+    assert_eq!(ui.state.theme, 0);
 }
+

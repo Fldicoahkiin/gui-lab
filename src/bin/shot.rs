@@ -86,7 +86,7 @@ fn main() {
     run(&mut ui, 18.0);
     s.shoot(&mut ui, "10-committed-tab");
 
-    let (tx, ty) = centre(&mut ui, "theme/1");
+    let (tx, ty) = centre(&mut ui, "theme:1");
     ui.press(tx, ty);
     ui.release(tx, ty);
     run(&mut ui, 18.35);
@@ -106,14 +106,14 @@ fn main() {
     ui.pointer_leave();
     run(&mut ui, 23.0);
     s.shoot(&mut ui, "13-marks-wipe");
-    let (tx, ty) = centre(&mut ui, "theme/0");
+    let (tx, ty) = centre(&mut ui, "theme:0");
     ui.press(tx, ty);
     ui.release(tx, ty);
     let _ = centre(&mut ui, "pixel-heading");
     ui.pointer_leave();
     run(&mut ui, 26.0);
     s.shoot(&mut ui, "14-pixel-type");
-    let (tx, ty) = centre(&mut ui, "theme/2");
+    let (tx, ty) = centre(&mut ui, "theme:2");
     ui.press(tx, ty);
     ui.release(tx, ty);
     ui.pointer_leave();
