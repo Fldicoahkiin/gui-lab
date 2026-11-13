@@ -151,3 +151,24 @@ fn theme_picks_faces_for_the_page() {
     assert_eq!(ui.state.theme, 0);
 }
 
+
+#[test]
+fn characters_are_cut_sharp_at_the_pitch_they_are_shown() {
+    let c = marks::char_tiles(&mut text(), MONO);
+    for p in marks::CHAR_MIN..=marks::CHAR_MAX {
+        let chosen = c.chosen(p);
+        // Strictly more ink level by level, and level 0 is empty.
+        for l in 1..LEVELS { assert!(chosen[l].2 > chosen[l - 1].2, "pitch {p} level {l}: {chosen:?}"); }
+        assert!((0..p * p).all(|i| c.at(p, 0, i % p, i / p) == 0), "pitch {p} level 0 is not empty");
+        if p >= 8 {
+            // Whole texels only: nothing resampled, so nothing grey.
+            for l in 0..LEVELS { for i in 0..p * p { let v = c.at(p, l, i % p, i / p); assert!(v == 0 || v == 255, "pitch {p} level {l} has grey"); } }
+        }
+    }
+    // The pitches the owner reads at: every one of the 16 levels is a different character.
+    for p in 8..=10 {
+        let mut seen: Vec<(char, bool)> = c.chosen(p).iter().map(|x| (x.0, x.1)).collect();
+        seen.dedup();
+        assert_eq!(seen.len(), LEVELS, "pitch {p}");
+    }
+}

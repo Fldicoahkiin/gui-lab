@@ -1,8 +1,9 @@
 //! A numeric control for setting a value exactly: step buttons on either side, and once focused the
 //! value can be typed (digits, `.`, `-`, Backspace; Enter commits, Esc cancels) or stepped with
-//! Up / Down (Shift for ×10).
+//! Up / Down (Shift for ×10). Dragging sideways on the value scrubs it, one step per `SCRUB` px; a
+//! press that does not move only focuses it, so typing stays the main way.
 use super::{CONTROL_H, LABEL, LINE, RADIUS};
-use crate::el::{El, Font, Key, Paint, row, space, text};
+use crate::el::{Drag, El, Font, Key, Paint, Phase, row, space, text};
 use std::rc::Rc;
 use taffy::AlignItems;
 
@@ -16,6 +17,9 @@ impl Spec {
     }
     pub fn show(&self, v: f32) -> String { format!("{:.*}", self.decimals, v) }
 }
+
+/// Logical px of sideways drag per step.
+pub const SCRUB: f32 = 6.0;
 
 /// What the control asks the application to do with its value.
 #[derive(Clone, Debug, PartialEq)]
@@ -55,11 +59,23 @@ pub fn number<M: Clone + 'static>(key: &str, label: &str, value: f32, spec: Spec
             Some(msg(e))
         }
     };
+    // The handler is captured at the press, so `value` here is the value the scrub started from.
+    let scrub = {
+        let msg = msg.clone();
+        let moved = std::cell::Cell::new(false);
+        move |d: Drag| -> Option<M> {
+            if d.phase == Phase::Start { return None; }
+            moved.set(moved.get() || d.dx.abs() >= SCRUB * 0.5);
+            if !moved.get() { return None; }
+            Some(msg(Edit::Set(spec.clamp(value + (d.dx / SCRUB).round() * spec.step))))
+        }
+    };
     let shown = draft.clone().unwrap_or_else(|| spec.show(value));
     let mut field = row().key(format!("{key}/value")).height(CONTROL_H).width(96.0).pad(10.0, 0.0).gap(4.0).radius(RADIUS)
         .align(AlignItems::CENTER).fill(Paint::GROUND)
         .border(LINE, if editing { Paint::ACCENT } else { Paint::DIM })
         .on_key(handler)
+        .on_drag_with(scrub)
         .child(text(shown, LABEL, if editing { Paint::ACCENT } else { Paint::INK }));
     if editing {
         field = field.child(space(1.5, 16.0).fill(Paint::ACCENT)).on_blur(msg(Edit::Cancel));

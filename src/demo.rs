@@ -242,7 +242,7 @@ fn panel(s: &Demo) -> El<Msg> {
     }
     panel
         .child(space(1.0, 2.0))
-        .child(crate::widgets::toggle("square", "点的形状", s.fx.square, ("圆点", "方块"), Msg::Square))
+        .child(crate::widgets::switch("square", "点的形状", s.fx.square, Some(("圆点", "方块")), Msg::Square))
         .child(choice("theme", "主题", &theme_names, s.theme, Msg::Theme))
         .child(choice("material", "材质", &material_names, material_now, Msg::Material))
         .child(row().child(button("reset", "恢复默认", Msg::Reset)))

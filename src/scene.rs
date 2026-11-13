@@ -26,19 +26,25 @@ pub struct Instance {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Batch { pub start: u32, pub end: u32, pub picture: u32 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Scene {
     pub instances: Vec<Instance>,
     pub batches: Vec<Batch>,
+    /// Where the modal layer starts, if one is open. Everything from here on is drawn over the page
+    /// and hides it in the near image too (see the renderer).
+    pub layer: Option<u32>,
 }
 
 impl Scene {
-    pub fn clear(&mut self) { self.instances.clear(); self.batches.clear(); }
+    pub fn clear(&mut self) { self.instances.clear(); self.batches.clear(); self.layer = None; }
+    /// Everything pushed from now on is in the modal layer.
+    pub fn begin_layer(&mut self) { self.layer = Some(self.instances.len() as u32); }
     pub fn push(&mut self, i: Instance) {
         let n = self.instances.len() as u32;
         let picture = if i.paint[3] == PICTURE { Some(i.extra[1] as u32) } else { None };
+        // A batch never straddles the start of the layer, so the renderer can draw the two apart.
         match self.batches.last_mut() {
-            Some(b) if picture.is_none_or(|p| p == b.picture) => b.end = n + 1,
+            Some(b) if picture.is_none_or(|p| p == b.picture) && self.layer != Some(n) => b.end = n + 1,
             _ => self.batches.push(Batch { start: n, end: n + 1, picture: picture.unwrap_or(0) }),
         }
         self.instances.push(i);
@@ -46,6 +52,7 @@ impl Scene {
     /// Drop everything from instance `n` on.
     pub fn truncate(&mut self, n: usize) {
         self.instances.truncate(n);
+        if self.layer.is_some_and(|l| l as usize >= n) { self.layer = None; }
         self.batches.retain(|b| (b.start as usize) < n);
         if let Some(b) = self.batches.last_mut() { b.end = b.end.min(n as u32); }
     }

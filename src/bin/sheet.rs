@@ -67,7 +67,7 @@ fn main() {
     // Per set: the same set at two pitches, with values that suit it.
     for s in 0..set::COUNT as u8 {
         let base = match s {
-            set::CHARS => PicFx { pitch: 16.0, levels: 16.0, ground: 0.0, gamma: 0.6, ..PicFx::with_set(s) },
+            set::CHARS => PicFx { pitch: 9.0, levels: 16.0, ground: 0.0, gamma: 1.1, ..PicFx::with_set(s) },
             set::DITHER => PicFx { pitch: 3.0, levels: 16.0, ground: 0.0, colour: colour::THEME_INK as f32, ..PicFx::with_set(s) },
             set::PIXEL => PicFx { pitch: 6.0, ..PicFx::with_set(s) },
             set::MOSAIC | set::BRICK => PicFx { pitch: 10.0, relief: 1.0, ground: 0.2, ..PicFx::with_set(s) },

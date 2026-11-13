@@ -20,6 +20,7 @@ struct U {
   pointer: vec4f,  // x, y, strength, _    (device px)
   wipe: vec4f,     // half-plane source: line x, strength, _, _
   wipe_rect: vec4f,// where it acts: x0, y0, x1, y1
+  split: vec4f,    // a commit: origin x, y (device px), start time, on
   fronts: array<vec4f, 8>, // x, y, start time, strength
   pics: array<vec4f, 56>,  // 8 PicFx slots × 7 (see style.rs PicFx::pack)
 };
@@ -29,6 +30,8 @@ struct U {
 @group(0) @binding(3) var tex1: texture_2d<f32>;
 @group(0) @binding(4) var marks: texture_2d<f32>;   // rg: mark coverage, height; rows = sets, columns = levels
 @group(0) @binding(5) var palettes: texture_2d<f32>; // 16 × rows
+@group(0) @binding(6) var chars: texture_2d<f32>;    // character tiles cut per device pitch (marks.rs char_tiles)
+@group(0) @binding(7) var before: texture_2d<f32>;   // the frame before the last commit
 
 // (strength now, signed distance to the front in device px; negative = already passed)
 fn front_at(p: vec2f, r: vec4f) -> vec2f {
@@ -103,13 +106,22 @@ fn inst(i: VOut) -> vec3f {
   if (i.paint.w > 1.5) { return vec4f(textureSampleLevel(tex1, samp, clamp(i.uv, vec2f(0.0), vec2f(1.0)), 0.0).rgb * a, a); }
   return vec4f(i.paint.x * a, i.paint.y * a, 0.0, a);
 }
-@fragment fn fs_near(i: VOut) -> @location(0) vec4f {
+fn near_of(i: VOut) -> vec4f {
   let s = inst(i);
   let born = clamp((u.res.w - i.extra.w) / max(u.fc.z, 1e-3), 0.0, 1.0);
   let loose = max(i.extra.z, 1.0 - born) * step(0.02, s.y) * step(0.01, i.paint.z);
   let slot = select(0.0, (i.paint.y + 1.0) / 8.0, s.z > 0.5);
   let print = select(0.0, i.extra.y / 64.0, i.paint.w < 0.5 && s.y > 0.02);
   return vec4f(s.y * step(0.01, i.paint.z), slot, loose, print);
+}
+@fragment fn fs_near(i: VOut) -> @location(0) vec4f { return near_of(i); }
+
+// The modal layer, drawn without blending: where it has ink it replaces what is beneath, so beneath's
+// looseness and picture flag stop at its outline.
+@fragment fn fs_near_top(i: VOut) -> @location(0) vec4f {
+  let s = inst(i);
+  if (s.x < 0.5 || i.paint.z < 0.01) { discard; }
+  return near_of(i);
 }
 
 // ── Stage 2: material ─────────────────────────────────────────────────────────────────────────────
@@ -157,6 +169,14 @@ fn unit(d: vec2f, r: f32) -> f32 {
 
 // ── Pictures into marks (DESIGN.md §1.6.1) ────────────────────────────────────────────────────────
 const SETS: f32 = 12.0;
+const CHAR_MIN: f32 = 4.0;
+const CHAR_MAX: f32 = 40.0;
+/// A character tile read texel for texel at the pitch it was cut for (no resampling, so it stays sharp).
+fn char_mark(col: f32, uv: vec2f, P: f32) -> f32 {
+  let row = (P * (P - 1.0) - CHAR_MIN * (CHAR_MIN - 1.0)) * 0.5;
+  let t = min(floor(uv * P), vec2f(P - 1.0));
+  return textureLoad(chars, vec2i(i32(col * P + t.x), i32(row + t.y)), 0).r;
+}
 fn pv(slot: i32, i: i32) -> vec4f { return u.pics[slot * 7 + i]; }
 fn lum(c: vec3f) -> f32 { return dot(c, vec3f(0.299, 0.587, 0.114)); }
 fn straight(c: vec4f) -> vec3f { return c.rgb / max(c.a, 1e-3); }
@@ -263,10 +283,15 @@ fn picture(frag: vec2f, slot: i32) -> vec3f {
   // 6. The mark for this level.
   let col = round(n * 15.0 / (levels - 1.0));
   let lod = max(0.0, log2(32.0 / P));
-  let m = mark(ms, col, uv, lod).x;
+  var m = mark(ms, col, uv, lod).x;
+  let crisp = ms == 0.0 && P >= CHAR_MIN && P <= CHAR_MAX;
+  if (crisp) { m = char_mark(col, uv, P); }
   // 7. Ink and ground colours. The page's ground colour is not among them.
   let mode = round(a0.w);
   var inkc = cu;
+  // Characters carry the tone by which glyph is drawn; ink at the cell's own darkness would count the
+  // darkness twice and dark pictures would vanish. So their original colour is lifted to full value.
+  if (ms == 0.0 && mode == 0.0) { inkc = cu / max(max(cu.r, max(cu.g, cu.b)), 0.04); }
   if (mode == 1.0) { inkc = u.fg.rgb; } else if (mode == 2.0) { inkc = mix(pv(slot, 4).rgb, pv(slot, 5).rgb, L); } else if (mode == 3.0) { inkc = pv(slot, 4).rgb; }
   let g = cu * clamp(a1.x, 0.0, 1.0);
   // Relief: the height channel's slope, lit from the upper left.
@@ -351,7 +376,8 @@ fn picture(frag: vec2f, slot: i32) -> vec3f {
       a = vec4f(c.rgb / max(c.a, 1e-3), c.a);
     }
     // Plain material: what is held or just born is faint rather than loose.
-    if (!dot_material) { a.a *= mix(1.0, 0.3, here.b); }
+    // The square root lets a partial looseness (beneath a dialog) read clearly; fully loose is 0.3.
+    if (!dot_material) { a.a *= mix(1.0, 0.3, sqrt(here.b)); }
   }
 
   var col = u.bg.rgb;
@@ -368,5 +394,13 @@ fn picture(frag: vec2f, slot: i32) -> vec3f {
   let inkc = select(mix(mix(u.bg.rgb, u.fg.rgb, a.r), u.accent.rgb, a.g), a.rgb, is_pic);
   col = mix(col, inkc, a.a);
   if (u.fd.y > 0.5) { col = pow(col, vec3f(2.2)); }
+  // A commit: beyond the front travelling out from where it was pressed, the frame is still the old
+  // one (already encoded for the surface).
+  if (u.split.w > 0.5) {
+    let r = (t - u.split.z) * u.fb.x * s;
+    if (distance(frag.xy, u.split.xy) > r) {
+      col = textureLoad(before, vec2i(clamp(floor(frag.xy), vec2f(0.0), u.res.xy - 1.0)), 0).rgb;
+    }
+  }
   return vec4f(col, 1.0);
 }

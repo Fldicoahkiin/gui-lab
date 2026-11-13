@@ -8,7 +8,7 @@
 use crate::scene::{GLYPH, Instance};
 use parley::fontique::{Blob, Collection, CollectionOptions};
 use parley::layout::PositionedLayoutItem;
-use parley::style::{FontFamily, StyleProperty};
+use parley::style::{FontFamily, FontFamilyName, StyleProperty};
 use parley::{FontContext, Layout, LayoutContext, LineHeight};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -54,7 +54,7 @@ struct Slot { x: u32, y: u32, w: u32, h: u32, left: i32, top: i32 }
 /// Text, face, size bits, line bits, width bits.
 type MeasureKey = (String, u8, u32, u32, u32);
 
-struct Family { name: String, pixel: Option<f32>, data: Arc<Vec<u8>> }
+struct Family { name: String, pixel: Option<f32>, data: Arc<Vec<u8>>, blob: u64 }
 
 /// One glyph rasterised on its own (for the mark atlas): coverage rows, placement, and the face's
 /// advance and line box at that size, px.
@@ -82,9 +82,11 @@ impl Text {
         let mut collection = Collection::new(CollectionOptions { shared: false, system_fonts: false });
         let families = faces.into_iter().map(|f| {
             let data = Arc::new(f.data);
-            let reg = collection.register_fonts(Blob::new(data.clone()), None);
+            let blob = Blob::new(data.clone());
+            let id = blob.id();
+            let reg = collection.register_fonts(blob, None);
             let name = reg.first().and_then(|(id, _)| collection.family_name(*id).map(str::to_owned)).unwrap_or_default();
-            Family { name, pixel: f.pixel, data }
+            Family { name, pixel: f.pixel, data, blob: id }
         }).collect();
         Self {
             fonts: FontContext { collection, source_cache: Default::default() },
@@ -118,7 +120,10 @@ impl Text {
         let size = self.size_for(face, size);
         let fi = (face as usize).min(self.families.len() - 1);
         let mut b = self.layouts.ranged_builder(&mut self.fonts, s, 1.0, true);
-        b.push_default(StyleProperty::FontFamily(FontFamily::named(&self.families[fi].name)));
+        // The first registered face (the proportional one, with CJK) backs up any face that lacks a
+        // character, so a monospaced face can still show Chinese.
+        let stack = [FontFamilyName::named(&self.families[fi].name), FontFamilyName::named(&self.families[0].name)];
+        b.push_default(StyleProperty::FontFamily(FontFamily::List(std::borrow::Cow::Borrowed(&stack))));
         b.push_default(StyleProperty::FontSize(size));
         b.push_default(LineHeight::Absolute(line));
         let mut l: Layout<()> = b.build(s);
@@ -135,6 +140,16 @@ impl Text {
         let v = (l.width().ceil(), l.height().ceil());
         self.measured.insert(k, v);
         v
+    }
+
+    /// Where a caret at byte `index` of a paragraph goes: x, top and height, logical px. `origin` is
+    /// where the paragraph is drawn.
+    pub fn caret(&mut self, p: Para<'_>, origin: (f32, f32), index: usize) -> Option<crate::ui::Rect> {
+        let l = self.layout(p.s, p.face, p.size, p.line, Some(p.width));
+        let at = index.min(p.s.len());
+        let b = parley::Cursor::from_byte_index(&l, at, parley::Affinity::Downstream).geometry(&l, 1.0);
+        let h = (b.y1 - b.y0) as f32;
+        (h > 0.0).then(|| crate::ui::Rect::new(origin.0 + b.x0 as f32, origin.1 + b.y0 as f32, 1.0, h))
     }
 
     /// Rasterise one character of a face at `px` device px, outside any layout (for the mark atlas).
@@ -157,15 +172,18 @@ impl Text {
     /// logical px.
     pub fn emit(&mut self, p: Para<'_>, origin: (f32, f32), proto: Instance, scale: f32, mut out: impl FnMut(Instance, u32)) {
         let l = self.layout(p.s, p.face, p.size, p.line, Some(p.width));
-        let pixel = self.is_pixel(p.face);
+        let para_pixel = self.is_pixel(p.face);
         // A pixel face starts on a whole device pixel so its pixels land on the screen's.
-        let (ox, oy) = if pixel { ((origin.0 * scale).round(), (origin.1 * scale).round()) } else { (origin.0 * scale, origin.1 * scale) };
+        let (ox, oy) = if para_pixel { ((origin.0 * scale).round(), (origin.1 * scale).round()) } else { (origin.0 * scale, origin.1 * scale) };
         for ln in l.lines() {
             for item in ln.items() {
                 let PositionedLayoutItem::GlyphRun(gr) = item else { continue };
                 let run = gr.run();
                 let font = run.font();
                 let Some(fref) = swash::FontRef::from_index(font.data.as_ref(), font.index as usize) else { continue };
+                // Pixel treatment follows the face a run is really set in: a fallback outline face inside
+                // pixel text is drawn as an outline.
+                let pixel = self.families.iter().any(|f| f.pixel.is_some() && f.blob == font.data.id());
                 let fsize = run.font_size() * scale;
                 let coords: Vec<i16> = run.normalized_coords().iter().map(|c| c.to_bits()).collect();
                 let mut scaler = self.scaler.builder(fref).size(fsize).hint(false).normalized_coords(coords.iter().copied()).build();

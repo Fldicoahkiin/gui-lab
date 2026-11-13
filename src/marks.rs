@@ -207,6 +207,125 @@ fn sample(s: u8, t: f32, u: f32, v: f32, x: usize, y: usize) -> (f32, f32) {
     }
 }
 
+// ── Characters at the size they are shown ────────────────────────────────────────────────────────
+//
+// Minifying 32 px character tiles blurs them below a pitch of about 16, and the picture then reads as
+// grey noise. So the character set is also cut once per device pitch from `CHAR_MIN` to `CHAR_MAX`:
+// each tile is exactly P × P texels, drawn from the pixel face at a whole multiple of its size, and the
+// shader reads it texel for texel. Every pitch chooses its own 16 characters by measured ink, among
+// the ones that fit its tile.
+
+pub const CHAR_MIN: usize = 4;
+pub const CHAR_MAX: usize = 40;
+/// Row offset of the tiles of pitch `p` (rows of all smaller pitches above it).
+pub const fn char_row(p: usize) -> usize { (p * (p - 1) - CHAR_MIN * (CHAR_MIN - 1)) / 2 }
+pub const CHAR_W: usize = CHAR_MAX * LEVELS;
+pub const CHAR_H: usize = char_row(CHAR_MAX + 1);
+
+pub struct CharTiles {
+    /// R8, `CHAR_W` × `CHAR_H`.
+    pub pixels: Vec<u8>,
+    /// For each pitch from `CHAR_MIN`: the 16 characters chosen and their ink (texels covered). A
+    /// character drawn bold (doubled one texel to the right) is shown as `(c, true)`.
+    pub chosen: Vec<[(char, bool, f32); LEVELS]>,
+}
+impl CharTiles {
+    pub fn at(&self, p: usize, level: usize, x: usize, y: usize) -> u8 { self.pixels[(char_row(p) + y) * CHAR_W + level * p + x] }
+    pub fn chosen(&self, p: usize) -> &[(char, bool, f32); LEVELS] { &self.chosen[p - CHAR_MIN] }
+}
+
+/// The character tiles for every pitch. `face` should be a pixel face (Departure Mono): its glyphs are
+/// already whole texels, so nothing is resampled at 8 px and up.
+pub fn char_tiles(text: &mut Text, face: u8) -> CharTiles {
+    let mut pixels = vec![0u8; CHAR_W * CHAR_H];
+    let mut chosen = Vec::new();
+    // Below 8 px no glyph fits whole; those tiles are the 8 px ones averaged down.
+    let eight = char_set(text, face, 8);
+    for p in CHAR_MIN..=CHAR_MAX {
+        let set = if p < 8 { shrink(&eight, 8, p) } else { char_set(text, face, p) };
+        for (level, (_, _, _, tile)) in set.iter().enumerate() {
+            for y in 0..p { for x in 0..p { pixels[(char_row(p) + y) * CHAR_W + level * p + x] = tile[y * p + x]; } }
+        }
+        let mut c = [(' ', false, 0.0); LEVELS];
+        for (i, t) in set.iter().enumerate() { c[i] = (t.0, t.1, t.2); }
+        chosen.push(c);
+    }
+    CharTiles { pixels, chosen }
+}
+
+type CharTile = (char, bool, f32, Vec<u8>);
+
+/// Every candidate that fits a P × P tile (plus bold forms denser than any plain one), ordered by
+/// ink, and the 16 picked from it.
+fn char_set(text: &mut Text, face: u8, p: usize) -> Vec<CharTile> {
+    let native = text.native(face).unwrap_or(11.0);
+    let Some(h) = text.raster(face, 'H', native) else { return vec![(' ', false, 0.0, vec![0; p * p]); LEVELS] };
+    let (cap, adv) = (h.top as usize, h.advance.round() as usize);
+    // The largest whole multiple of the face whose capitals fit, keeping a texel of air per 9.
+    let m = (p / (cap + 1)).max(1);
+    let room = p as i32 - (cap * m) as i32;
+    let base = room / 2 + (cap * m) as i32;
+    let ox = (p as i32 - (adv * m) as i32) / 2;
+    let mut plain: Vec<CharTile> = Vec::new();
+    for ch in CANDIDATES.chars() {
+        let Some(g) = text.raster(face, ch, native * m as f32) else { if ch == ' ' { plain.push((' ', false, 0.0, vec![0; p * p])); } continue };
+        let mut tile = vec![0u8; p * p];
+        let mut fits = true;
+        for y in 0..g.h as i32 { for x in 0..g.w as i32 {
+            if g.data[(y as u32 * g.w + x as u32) as usize] < 128 { continue; }
+            let (tx, ty) = (ox + g.left + x, base - g.top + y);
+            if tx < 0 || ty < 0 || tx >= p as i32 || ty >= p as i32 { fits = false; continue; }
+            tile[ty as usize * p + tx as usize] = 255;
+        } }
+        if fits { let ink = tile.iter().filter(|&&v| v > 0).count() as f32; plain.push((ch, false, ink, tile)); }
+    }
+    let most = plain.iter().map(|t| t.2).fold(0.0, f32::max);
+    // Bold: each glyph doubled one face pixel to the right. Only the forms denser than every plain
+    // character are kept, so they extend the range at the top instead of replacing plain ones.
+    let mut cands = plain.clone();
+    for (ch, _, _, tile) in &plain {
+        let mut b = tile.clone();
+        for y in 0..p { for x in m..p { if tile[y * p + x - m] > 0 { b[y * p + x] = 255; } } }
+        let ink = b.iter().filter(|&&v| v > 0).count() as f32;
+        if ink > most { cands.push((*ch, true, ink, b)); }
+    }
+    cands.sort_by(|a, b| a.2.total_cmp(&b.2));
+    let max = cands.last().map(|c| c.2).unwrap_or(1.0);
+    let picks = pick_levels(&cands.iter().map(|c| c.2).collect::<Vec<_>>(), max);
+    picks.into_iter().map(|i| cands[i].clone()).collect()
+}
+
+/// Indices of 16 entries of `inks` (sorted ascending, first is none) nearest to evenly spaced targets
+/// from 0 to `max`, strictly increasing.
+fn pick_levels(inks: &[f32], max: f32) -> Vec<usize> {
+    let mut chosen: Vec<usize> = vec![0];
+    for j in 1..LEVELS {
+        let target = max * j as f32 / (LEVELS - 1) as f32;
+        let last = *chosen.last().expect("first");
+        let room = inks.len().saturating_sub(LEVELS - 1 - j).max(last + 1);
+        let pick = (last + 1..room)
+            .filter(|&i| inks[i] > inks[last])
+            .min_by(|&a, &b| (inks[a] - target).abs().total_cmp(&(inks[b] - target).abs()))
+            .unwrap_or((last + 1).min(inks.len() - 1));
+        chosen.push(pick);
+    }
+    chosen
+}
+
+/// Average tiles of size `from` down to `to` (box filter).
+fn shrink(set: &[CharTile], from: usize, to: usize) -> Vec<CharTile> {
+    set.iter().map(|(c, b, ink, t)| {
+        let mut out = vec![0u8; to * to];
+        for y in 0..to { for x in 0..to {
+            let (x0, x1, y0, y1) = (x * from / to, ((x + 1) * from).div_ceil(to), y * from / to, ((y + 1) * from).div_ceil(to));
+            let mut acc = 0u32; let mut n = 0u32;
+            for yy in y0..y1 { for xx in x0..x1 { acc += t[yy * from + xx] as u32; n += 1; } }
+            out[y * to + x] = (acc / n.max(1)) as u8;
+        } }
+        (*c, *b, *ink, out)
+    }).collect()
+}
+
 /// Palettes: one row of 16 colours each, with how many of them are meant to be used.
 pub const PALETTES: [(&str, usize, [[u8; 3]; 16]); 6] = [
     ("黑白", 2, pad(&[[18, 18, 22], [238, 233, 216]])),
