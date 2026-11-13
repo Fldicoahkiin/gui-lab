@@ -1,16 +1,20 @@
-# Assemble one self-contained page: the wasm module, a subset of the font, and the glue script, inlined.
+# Assemble one self-contained page: the wasm module, subsets of the three fonts, and the glue script, inlined.
 import base64, pathlib, re, subprocess, sys
 root = pathlib.Path(__file__).resolve().parent.parent
-# Everything drawn comes from string literals in the demo and the widgets.
-text = ''.join(p.read_text() for p in [root / 'src/demo.rs', *sorted((root / 'src/widgets').glob('*.rs'))])
-chars = set(''.join(re.findall(r'"([^"\\]*)"', text))) | {chr(c) for c in range(32, 127)}
-sub = root / 'dist/font-subset.otf'
-subprocess.run([sys.executable, '-m', 'fontTools.subset', str(root / 'assets/NotoSansSC-Regular.otf'), '--text=' + ''.join(sorted(chars)), '--output-file=' + str(sub)], check=True)
+# Everything drawn comes from string literals in the demo, the style names and the widgets. Any of them
+# can be set in any face (the pixel theme sets the whole page in the pixel face), so each face gets all.
+text = ''.join(p.read_text() for p in [root / 'src/demo.rs', root / 'src/style.rs', root / 'src/marks.rs', *sorted((root / 'src/widgets').glob('*.rs'))])
+chars = set(''.join(re.findall(r'"((?:[^"\\]|\\.)*)"', text))) | {chr(c) for c in range(32, 127)}
+subs = []
+for name in ['NotoSansSC-Regular.otf', 'FusionPixel-12px-Proportional-zh_hans.otf', 'DepartureMono-Regular.otf']:
+    sub = root / ('dist/subset-' + name)
+    subprocess.run([sys.executable, '-m', 'fontTools.subset', str(root / 'assets' / name), '--text=' + ''.join(sorted(chars)), '--output-file=' + str(sub)], check=True)
+    subs.append(sub)
 wasm = root / 'dist/pkg/lab_opt.wasm'
 if not wasm.exists(): wasm = root / 'dist/pkg/lab_bg.wasm'
 b = lambda p: base64.b64encode(p.read_bytes()).decode()
 glue = (root / 'dist/pkg/lab.js').read_text().replace('</script', '<\\/script')
-page = (root / 'web/page.html').read_text().replace('__GLUE__', glue).replace('__WASM__', b(wasm)).replace('__FONT__', b(sub))
+page = (root / 'web/page.html').read_text().replace('__GLUE__', glue).replace('__WASM__', b(wasm)).replace('__SANS__', b(subs[0])).replace('__PIXEL__', b(subs[1])).replace('__MONO__', b(subs[2]))
 (root / 'dist/artifact.html').write_text(page)
 (root / 'dist/index.html').write_text('<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">' + page.replace('<div id="stage">', '</head><body style="margin:0"><div id="stage">', 1) + '</body></html>')
-print('wasm', wasm.name, wasm.stat().st_size // 1024, 'KB; font', sub.stat().st_size // 1024, 'KB; page', len(page) // 1024, 'KB')
+print('wasm', wasm.name, wasm.stat().st_size // 1024, 'KB; fonts', [f.stat().st_size // 1024 for f in subs], 'KB; page', len(page) // 1024, 'KB')

@@ -1,4 +1,4 @@
-<title>界面骨架</title>
+<title>界面骨架：记号与像素字</title>
 <style>
   /* One canvas fills the view. Everything inside it is drawn by the framework. */
   html, body { height: 100%; }
@@ -22,7 +22,7 @@
     fit();
     await wasm_bindgen({ module_or_path: b64("__WASM__") });
     const w = wasm_bindgen;
-    await w.start(canvas, b64("__FONT__"), dpr);
+    await w.start(canvas, b64("__SANS__"), b64("__PIXEL__"), b64("__MONO__"), dpr);
     msg.remove();
     canvas.focus();
     const now = () => performance.now() / 1000;
