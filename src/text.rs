@@ -1,30 +1,34 @@
-//! Text: shaping and line breaking by cosmic-text, then every glyph is kept as its own instance.
+//! Text: shaping and line breaking by parley; every glyph is then kept as its own instance.
 //! Each glyph is rasterised once into an atlas that stores two things per texel: coverage, and how
-//! close that texel is to the nearest ink (1 at ink, falling to 0 at `SPREAD` pixels away).
-use cosmic_text::{Attrs, Buffer, CacheKey, Family, FontSystem, Metrics, Shaping, SwashCache, SwashContent, fontdb};
+//! close that texel is to the nearest ink (255 at ink, falling to 0 at `SPREAD` pixels away).
+use crate::scene::{GLYPH, Instance};
+use parley::fontique::{Blob, Collection, CollectionOptions};
+use parley::layout::PositionedLayoutItem;
+use parley::style::{FontFamily, StyleProperty};
+use parley::{FontContext, Layout, LayoutContext, LineHeight};
 use std::collections::HashMap;
+use std::sync::Arc;
+use swash::scale::{Render, ScaleContext, Source};
+use swash::zeno::{Format, Vector};
 
 pub const SPREAD: i32 = 12;
 pub const ATLAS: u32 = 2048;
 
-/// One glyph on screen, in device pixels. `rect` already includes the spread padding.
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct GlyphInst {
-    pub rect: [f32; 4],
-    pub uv: [f32; 4],
-    /// rgb: tone (text is drawn as a mix of ground and ink by this amount). a: unused.
-    pub tone: [f32; 4],
-}
+/// A paragraph to draw: text, font size, line height and the width it was laid out at (logical px).
+#[derive(Clone, Copy)]
+pub struct Para<'a> { pub s: &'a str, pub size: f32, pub line: f32, pub width: f32 }
 
 #[derive(Clone, Copy)]
 struct Slot { x: u32, y: u32, w: u32, h: u32, left: i32, top: i32 }
 
 pub struct Text {
-    fonts: FontSystem,
-    cache: SwashCache,
+    fonts: FontContext,
+    layouts: LayoutContext<()>,
+    scaler: ScaleContext,
     family: String,
-    slots: HashMap<CacheKey, Option<Slot>>,
+    slots: HashMap<(u64, u32, u32, u8), Option<Slot>>,
+    /// Layout asks for the same paragraph at the same width many times; keyed by text, size bits, width bits.
+    measured: HashMap<(String, u32, u32, u32), (f32, f32)>,
     /// RG8: coverage, nearness-to-ink.
     pub pixels: Vec<u8>,
     pub dirty: bool,
@@ -33,78 +37,98 @@ pub struct Text {
 
 impl Text {
     pub fn new(font: Vec<u8>) -> Self {
-        let mut db = fontdb::Database::new();
-        db.load_font_data(font);
-        let family = db.faces().next().map(|f| f.families[0].0.clone()).unwrap_or_default();
+        let mut collection = Collection::new(CollectionOptions { shared: false, system_fonts: false });
+        let reg = collection.register_fonts(Blob::new(Arc::new(font)), None);
+        let family = reg.first().and_then(|(id, _)| collection.family_name(*id).map(str::to_owned)).unwrap_or_default();
         Self {
-            fonts: FontSystem::new_with_locale_and_db("zh-CN".into(), db),
-            cache: SwashCache::new(),
-            family,
-            slots: HashMap::new(),
-            pixels: vec![0; (ATLAS * ATLAS * 2) as usize],
-            dirty: true,
-            pen: (1, 1, 0),
+            fonts: FontContext { collection, source_cache: Default::default() },
+            layouts: LayoutContext::new(), scaler: ScaleContext::new(), family,
+            slots: HashMap::new(), measured: HashMap::new(), pixels: vec![0; (ATLAS * ATLAS * 2) as usize], dirty: true, pen: (1, 1, 0),
         }
     }
 
-    /// Lay out a paragraph `width` wide (logical px) with its top-left at `origin`, append its glyphs,
-    /// and return its height in logical px.
-    pub fn paragraph(&mut self, out: &mut Vec<GlyphInst>, s: &str, size: f32, line: f32, width: f32, origin: (f32, f32), tone: f32, scale: f32) -> f32 {
-        let mut buf = Buffer::new(&mut self.fonts, Metrics::new(size, line));
-        buf.set_size(Some(width), None);
-        let family = self.family.clone();
-        buf.set_text(s, &Attrs::new().family(Family::Name(&family)), Shaping::Advanced, None);
-        buf.shape_until_scroll(&mut self.fonts, false);
-        let mut height = 0.0f32;
-        let runs: Vec<(f32, Vec<cosmic_text::LayoutGlyph>)> = buf.layout_runs().map(|r| { height = height.max(r.line_top + r.line_height); (r.line_y, r.glyphs.to_vec()) }).collect();
-        for (line_y, glyphs) in runs {
-            for g in glyphs {
-                let pg = g.physical((0.0, 0.0), scale);
-                let Some(slot) = self.slot(pg.cache_key) else { continue };
-                let x = (origin.0 * scale).round() + pg.x as f32 + slot.left as f32 - SPREAD as f32;
-                let y = ((origin.1 + line_y) * scale).round() + pg.y as f32 - slot.top as f32 - SPREAD as f32;
-                let a = ATLAS as f32;
-                out.push(GlyphInst {
-                    rect: [x, y, slot.w as f32, slot.h as f32],
-                    uv: [slot.x as f32 / a, slot.y as f32 / a, (slot.x + slot.w) as f32 / a, (slot.y + slot.h) as f32 / a],
-                    tone: [tone, tone, tone, 1.0],
-                });
+    /// Shape and break `s` at `size` logical px. Measuring and drawing use this same call, so the
+    /// line breaks on screen are exactly the ones layout planned for.
+    fn layout(&mut self, s: &str, size: f32, line: f32, max_width: Option<f32>) -> Layout<()> {
+        let mut b = self.layouts.ranged_builder(&mut self.fonts, s, 1.0, true);
+        b.push_default(StyleProperty::FontFamily(FontFamily::named(&self.family)));
+        b.push_default(StyleProperty::FontSize(size));
+        b.push_default(LineHeight::Absolute(line));
+        let mut l: Layout<()> = b.build(s);
+        l.break_all_lines(max_width);
+        l
+    }
+
+    /// Width and height of a paragraph in logical px when limited to `max_width`.
+    pub fn measure(&mut self, s: &str, size: f32, line: f32, max_width: Option<f32>) -> (f32, f32) {
+        let k = (s.to_owned(), size.to_bits(), line.to_bits(), max_width.unwrap_or(-1.0).to_bits());
+        if let Some(v) = self.measured.get(&k) { return *v; }
+        if self.measured.len() > 4096 { self.measured.clear(); }
+        let l = self.layout(s, size, line, max_width);
+        let v = (l.width().ceil(), l.height().ceil());
+        self.measured.insert(k, v);
+        v
+    }
+
+    /// Call `out` once per visible glyph with its instance (device px) and glyph id. `origin` is
+    /// logical px.
+    pub fn emit(&mut self, p: Para<'_>, origin: (f32, f32), proto: Instance, scale: f32, mut out: impl FnMut(Instance, u32)) {
+        let l = self.layout(p.s, p.size, p.line, Some(p.width));
+        let (ox, oy) = (origin.0 * scale, origin.1 * scale);
+        for ln in l.lines() {
+            for item in ln.items() {
+                let PositionedLayoutItem::GlyphRun(gr) = item else { continue };
+                let run = gr.run();
+                let font = run.font();
+                let Some(fref) = swash::FontRef::from_index(font.data.as_ref(), font.index as usize) else { continue };
+                let fsize = run.font_size() * scale;
+                let coords: Vec<i16> = run.normalized_coords().iter().map(|c| c.to_bits()).collect();
+                let mut scaler = self.scaler.builder(fref).size(fsize).hint(false).normalized_coords(coords.iter().copied()).build();
+                for g in gr.positioned_glyphs() {
+                    let (gx, gy) = (ox + g.x * scale, (oy + g.y * scale).round());
+                    let sub = ((gx.fract() * 4.0) as u8).min(3);
+                    let key = (font.data.id(), g.id, fsize.to_bits(), sub);
+                    let slot = match self.slots.get(&key) {
+                        Some(s) => *s,
+                        None => {
+                            let img = Render::new(&[Source::Outline]).format(Format::Alpha).offset(Vector::new(sub as f32 / 4.0, 0.0)).render(&mut scaler, g.id as _);
+                            let made = img.and_then(|i| store(&mut self.pixels, &mut self.pen, &i.data, i.placement.width, i.placement.height, i.placement.left, i.placement.top));
+                            self.dirty |= made.is_some();
+                            self.slots.insert(key, made);
+                            made
+                        }
+                    };
+                    let Some(sl) = slot else { continue };
+                    let a = ATLAS as f32;
+                    let mut inst = proto;
+                    inst.rect = [gx.floor() + sl.left as f32 - SPREAD as f32, gy - sl.top as f32 - SPREAD as f32, sl.w as f32, sl.h as f32];
+                    inst.uv = [sl.x as f32 / a, sl.y as f32 / a, (sl.x + sl.w) as f32 / a, (sl.y + sl.h) as f32 / a];
+                    inst.paint[3] = GLYPH;
+                    out(inst, g.id);
+                }
             }
         }
-        height
     }
+}
 
-    fn slot(&mut self, key: CacheKey) -> Option<Slot> {
-        if let Some(s) = self.slots.get(&key) { return *s; }
-        let made = self.rasterise(key);
-        self.slots.insert(key, made);
-        made
-    }
-
-    fn rasterise(&mut self, key: CacheKey) -> Option<Slot> {
-        let img = self.cache.get_image_uncached(&mut self.fonts, key)?;
-        if img.placement.width == 0 || img.placement.height == 0 || !matches!(img.content, SwashContent::Mask) { return None; }
-        let (gw, gh) = (img.placement.width as i32, img.placement.height as i32);
-        let (w, h) = ((gw + SPREAD * 2) as u32, (gh + SPREAD * 2) as u32);
-        if self.pen.0 + w + 1 > ATLAS { self.pen = (1, self.pen.1 + self.pen.2 + 1, 0); }
-        if self.pen.1 + h + 1 > ATLAS { return None; } // atlas full
-        let (ax, ay) = (self.pen.0, self.pen.1);
-        self.pen.0 += w + 1; self.pen.2 = self.pen.2.max(h);
-
-        // Coverage, padded.
-        let n = (w * h) as usize;
-        let mut cov = vec![0u8; n];
-        for y in 0..gh { for x in 0..gw {
-            cov[((y + SPREAD) as u32 * w + (x + SPREAD) as u32) as usize] = img.data[(y * gw + x) as usize];
-        } }
-        let near = nearness(&cov, w as usize, h as usize);
-        for y in 0..h { for x in 0..w {
-            let i = (y * w + x) as usize; let o = (((ay + y) * ATLAS + ax + x) * 2) as usize;
-            self.pixels[o] = cov[i]; self.pixels[o + 1] = near[i];
-        } }
-        self.dirty = true;
-        Some(Slot { x: ax, y: ay, w, h, left: img.placement.left, top: img.placement.top })
-    }
+/// Put one glyph image, padded by the spread, into the atlas. `None` when it is empty or the atlas is
+/// full (the glyph is then left out rather than drawn wrong).
+fn store(pixels: &mut [u8], pen: &mut (u32, u32, u32), data: &[u8], gw: u32, gh: u32, left: i32, top: i32) -> Option<Slot> {
+    if gw == 0 || gh == 0 { return None; }
+    let sp = SPREAD as u32;
+    let (w, h) = (gw + sp * 2, gh + sp * 2);
+    if pen.0 + w + 1 > ATLAS { *pen = (1, pen.1 + pen.2 + 1, 0); }
+    if pen.1 + h + 1 > ATLAS { return None; }
+    let (ax, ay) = (pen.0, pen.1);
+    pen.0 += w + 1; pen.2 = pen.2.max(h);
+    let mut cov = vec![0u8; (w * h) as usize];
+    for y in 0..gh { for x in 0..gw { cov[((y + sp) * w + x + sp) as usize] = data[(y * gw + x) as usize]; } }
+    let near = nearness(&cov, w as usize, h as usize);
+    for y in 0..h { for x in 0..w {
+        let i = (y * w + x) as usize; let o = (((ay + y) * ATLAS + ax + x) * 2) as usize;
+        pixels[o] = cov[i]; pixels[o + 1] = near[i];
+    } }
+    Some(Slot { x: ax, y: ay, w, h, left, top })
 }
 
 /// Exact Euclidean distance to the nearest inked texel (Felzenszwalb & Huttenlocher), mapped to 255 at
