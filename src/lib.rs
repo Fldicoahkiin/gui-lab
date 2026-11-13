@@ -11,21 +11,23 @@ pub mod text;
 pub mod ui;
 pub mod widgets;
 
-/// Web entry: the page is a canvas that forwards pointer, wheel, key and resize events here.
-/// Positions are CSS (logical) px; sizes are device px.
+/// Web entry: the page is a canvas that forwards pointer, wheel, key and resize events here, and the
+/// page's `location.hash` (the gallery page, so it can be linked). Positions are CSS (logical) px;
+/// sizes are device px.
 #[cfg(target_arch = "wasm32")]
 mod web {
-    use crate::demo::{self, DemoUi};
+    use crate::demo;
+    use crate::gallery::{self, GalleryUi};
     use crate::el::Key;
     use crate::render::Renderer;
     use std::cell::RefCell;
     use wasm_bindgen::prelude::*;
 
-    struct State { ui: DemoUi, r: Renderer, surface: wgpu::Surface<'static>, config: wgpu::SurfaceConfiguration, started: bool }
+    struct State { ui: GalleryUi, r: Renderer, surface: wgpu::Surface<'static>, config: wgpu::SurfaceConfiguration, started: bool }
     thread_local! { static STATE: RefCell<Option<State>> = const { RefCell::new(None) }; }
 
     #[wasm_bindgen]
-    pub async fn start(canvas: web_sys::HtmlCanvasElement, sans: Vec<u8>, pixel: Vec<u8>, mono: Vec<u8>, scale: f32) -> Result<(), JsValue> {
+    pub async fn start(canvas: web_sys::HtmlCanvasElement, sans: Vec<u8>, pixel: Vec<u8>, mono: Vec<u8>, scale: f32, hash: String) -> Result<(), JsValue> {
         console_error_panic_hook::set_once();
         let (w, h) = (canvas.width(), canvas.height());
         // WebGPU where an adapter really exists, WebGL2 otherwise.
@@ -41,7 +43,8 @@ mod web {
         surface.configure(&device, &config);
         let mut r = Renderer::new(device, queue, format, w, h);
         for (id, pw, ph, px) in demo::pictures() { r.set_picture(id, pw, ph, &px); }
-        let ui = demo::new_ui(crate::text::bundled(sans, pixel, mono), w, h, scale);
+        let mut ui = gallery::new_ui(crate::text::bundled(sans, pixel, mono), w, h, scale);
+        if ui.state.route(&hash) { ui.relayout(); }
         STATE.with(|s| *s.borrow_mut() = Some(State { ui, r, surface, config, started: false }));
         Ok(())
     }
@@ -54,7 +57,13 @@ mod web {
     #[wasm_bindgen] pub fn pointer_leave() { with(|s| s.ui.pointer_leave()); }
     #[wasm_bindgen] pub fn pointer_down(x: f32, y: f32, t: f32) { with(|s| { s.ui.tick(t); s.ui.press(x, y); }); }
     #[wasm_bindgen] pub fn pointer_up(x: f32, y: f32) { with(|s| s.ui.release(x, y)); }
-    #[wasm_bindgen] pub fn wheel(x: f32, y: f32, dy: f32) { with(|s| s.ui.wheel(x, y, dy)); }
+    #[wasm_bindgen] pub fn wheel(x: f32, y: f32, dx: f32, dy: f32) { with(|s| s.ui.wheel_xy(x, y, dx, dy)); }
+    /// The page's hash changed (a link, Back): show that page. Returns whether it names one.
+    #[wasm_bindgen] pub fn route(hash: &str) -> bool {
+        with(|s| { let ok = s.ui.state.route(hash); if ok { s.ui.relayout(); } ok }).unwrap_or(false)
+    }
+    /// The current page's hash name, for the page to put in `location.hash`.
+    #[wasm_bindgen] pub fn hash() -> String { with(|s| s.ui.state.page.hash()).unwrap_or_default() }
     /// A DOM key name and Shift. Returns whether the page should not act on it itself.
     #[wasm_bindgen] pub fn key(name: &str, shift: bool, t: f32) -> bool {
         let Some(k) = Key::from_name(name) else { return false };

@@ -1,4 +1,4 @@
-<title>界面骨架：记号与像素字</title>
+<title>gui-lab</title>
 <style>
   /* One canvas fills the view. Everything inside it is drawn by the framework. */
   html, body { height: 100%; }
@@ -22,23 +22,28 @@
     fit();
     await wasm_bindgen({ module_or_path: b64("__WASM__") });
     const w = wasm_bindgen;
-    await w.start(canvas, b64("__SANS__"), b64("__PIXEL__"), b64("__MONO__"), dpr);
+    await w.start(canvas, b64("__SANS__"), b64("__PIXEL__"), b64("__MONO__"), dpr, location.hash);
     msg.remove();
     canvas.focus();
     const now = () => performance.now() / 1000;
     const at = e => { const r = canvas.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+    // The page is in the hash (plain names such as #button), so it can be linked; Back goes back.
+    const sync = () => { const h = '#' + w.hash(); if (location.hash !== h) location.hash = h; };
+    window.addEventListener('hashchange', () => { if (!w.route(location.hash)) sync(); });
+    sync();
     canvas.addEventListener('pointermove', e => w.pointer_move(...at(e)));
     canvas.addEventListener('pointerleave', () => w.pointer_leave());
-    canvas.addEventListener('pointerdown', e => { canvas.focus(); canvas.setPointerCapture(e.pointerId); const [x, y] = at(e); w.pointer_move(x, y); w.pointer_down(x, y, now()); });
-    canvas.addEventListener('pointerup', e => w.pointer_up(...at(e)));
+    canvas.addEventListener('pointerdown', e => { canvas.focus(); canvas.setPointerCapture(e.pointerId); const [x, y] = at(e); w.pointer_move(x, y); w.pointer_down(x, y, now()); sync(); });
+    canvas.addEventListener('pointerup', e => { w.pointer_up(...at(e)); sync(); });
     canvas.addEventListener('wheel', e => {
       e.preventDefault();
       const k = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? canvas.clientHeight : 1;
-      w.wheel(...at(e), e.deltaY * k);
+      w.wheel(...at(e), e.deltaX * k, e.deltaY * k);
     }, { passive: false });
     window.addEventListener('keydown', e => {
       if (e.ctrlKey || e.metaKey || e.altKey) return;
       if (w.key(e.key, e.shiftKey, now()) || e.key === 'Tab') e.preventDefault();
+      sync();
     });
     new ResizeObserver(() => { fit(); w.resize(canvas.width, canvas.height, dpr); }).observe(stage);
     const loop = () => { w.frame(now()); requestAnimationFrame(loop); };

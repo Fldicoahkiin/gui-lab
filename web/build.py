@@ -1,9 +1,10 @@
 # Assemble one self-contained page: the wasm module, subsets of the three fonts, and the glue script, inlined.
 import base64, pathlib, re, subprocess, sys
 root = pathlib.Path(__file__).resolve().parent.parent
-# Everything drawn comes from string literals in the demo, the style names and the widgets. Any of them
+# Everything drawn comes from string literals in the gallery, the demo, the style names and the widgets
+# (whose source the gallery also shows). Any of them
 # can be set in any face (the pixel theme sets the whole page in the pixel face), so each face gets all.
-text = ''.join(p.read_text() for p in [root / 'src/demo.rs', root / 'src/style.rs', root / 'src/marks.rs', *sorted((root / 'src/widgets').glob('*.rs'))])
+text = ''.join(p.read_text() for p in [root / 'src/demo.rs', root / 'src/style.rs', root / 'src/marks.rs', *sorted((root / 'src/widgets').glob('*.rs')), *sorted((root / 'src/gallery').glob('*.rs'))])
 chars = set(''.join(re.findall(r'"((?:[^"\\]|\\.)*)"', text))) | {chr(c) for c in range(32, 127)}
 subs = []
 for name in ['NotoSansSC-Regular.otf', 'FusionPixel-12px-Proportional-zh_hans.otf', 'DepartureMono-Regular.otf']:
