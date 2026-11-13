@@ -1,5 +1,6 @@
 pub mod demo;
 pub mod el;
+pub mod gallery;
 pub mod marks;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod offscreen;
