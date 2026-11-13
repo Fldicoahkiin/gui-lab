@@ -1,0 +1,61 @@
+<title>界面实验 01</title>
+<style>
+  /* Layout: one canvas fills the view; a temporary strip of plain controls sits at the bottom. */
+  :root { --bg: #0c0d0e; --fg: #e2e3e0; --line: #2a2d31; --accent: #ff6a2b; color-scheme: dark }
+  html, body { height: 100%; }
+  body { background: var(--bg); color: var(--fg); font: 12px/1.4 ui-monospace, "SF Mono", Menlo, Consolas, monospace; overflow: hidden; }
+  #stage { position: relative; width: 100%; height: 100%; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+  #knobs { position: absolute; left: 0; right: 0; bottom: 0; display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center;
+    padding: 8px max(16px, env(safe-area-inset-right, 0px)) calc(8px + env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px));
+    background: color-mix(in srgb, var(--bg) 82%, transparent); border-top: 1px solid var(--line); }
+  #knobs label { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+  #knobs input[type=range] { width: 84px; accent-color: var(--accent); }
+  #knobs button { font: inherit; color: var(--fg); background: none; border: 1px solid var(--line); padding: 3px 8px; cursor: pointer; }
+  #knobs button:focus-visible, #knobs input:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+  #msg { position: absolute; inset: 0; display: grid; place-items: center; padding: 16px; text-align: center; }
+</style>
+<div id="stage">
+  <canvas id="c"></canvas>
+  <div id="msg">正在载入…</div>
+  <div id="knobs" hidden>
+    <label>字的点距 <input id="k-pitch" type="range" min="2" max="12" step="0.5" value="5"></label>
+    <label>图的点距 <input id="k-pic" type="range" min="3" max="28" step="0.5" value="8"></label>
+    <label>错位 <input id="k-glitch" type="range" min="0" max="1.5" step="0.05" value="0.5"></label>
+    <label>不规则 <input id="k-jitter" type="range" min="0" max="1" step="0.05" value="0"></label>
+    <button id="k-shape" type="button">圆点</button>
+    <button id="k-theme" type="button">暗</button>
+  </div>
+</div>
+<script>__GLUE__</script>
+<script>
+(async () => {
+  const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+  const msg = document.getElementById('msg'), canvas = document.getElementById('c'), stage = document.getElementById('stage');
+  const $ = id => document.getElementById(id);
+  try {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const fit = () => { const r = stage.getBoundingClientRect(); canvas.width = Math.max(1, Math.floor(r.width * dpr)); canvas.height = Math.max(1, Math.floor(r.height * dpr)); };
+    fit();
+    await wasm_bindgen({ module_or_path: b64("__WASM__") });
+    const w = wasm_bindgen;
+    await w.start(canvas, b64("__FONT__"), dpr);
+    msg.remove(); $('knobs').hidden = false;
+    const now = () => performance.now() / 1000;
+    let square = false, light = false;
+    const push = () => w.set_params(+$('k-pitch').value, +$('k-pic').value, +$('k-glitch').value, +$('k-jitter').value, square, light);
+    for (const id of ['k-pitch', 'k-pic', 'k-glitch', 'k-jitter']) $(id).addEventListener('input', push);
+    $('k-shape').onclick = () => { square = !square; $('k-shape').textContent = square ? '方块' : '圆点'; push(); };
+    $('k-theme').onclick = () => { light = !light; $('k-theme').textContent = light ? '明' : '暗';
+      const s = document.documentElement.style; s.setProperty('--bg', light ? '#e9e8e3' : '#0c0d0e'); s.setProperty('--fg', light ? '#17181a' : '#e2e3e0'); s.setProperty('--line', light ? '#cfcdc6' : '#2a2d31'); push(); };
+    push();
+    const at = e => { const r = canvas.getBoundingClientRect(); return [(e.clientX - r.left) * dpr, (e.clientY - r.top) * dpr]; };
+    canvas.addEventListener('pointermove', e => { const [x, y] = at(e); w.pointer(x, y, 1); });
+    canvas.addEventListener('pointerleave', () => w.pointer(-1e5, -1e5, 0));
+    canvas.addEventListener('pointerdown', e => { const [x, y] = at(e); w.pointer(x, y, 1); w.press(x, y, now()); });
+    new ResizeObserver(() => { fit(); w.resize(canvas.width, canvas.height, dpr); }).observe(stage);
+    const loop = () => { w.frame(now()); requestAnimationFrame(loop); };
+    requestAnimationFrame(loop);
+  } catch (e) { msg.textContent = '这个浏览器没能启动图形功能：' + (e && e.message ? e.message : e); console.error(e); }
+})();
+</script>
