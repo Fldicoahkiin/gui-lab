@@ -241,7 +241,7 @@ fn component(s: &Gallery, c: usize) -> (El<Msg>, Vec<(&'static str, El<Msg>)>) {
             // at its narrowest and wrap every option.
             let live = col().width(440.0).gap(18.0)
                 .child(choice(&k("live"), "尺寸", &opts, s.pick, Msg::Pick))
-                .child(segmented(&k("live-seg"), &opts, s.pick, pr(0), Msg::Pick));
+                .child(row().child(segmented(&k("live-seg"), &opts, s.pick, pr(0), Msg::Pick)));
             (live, vec![
                 ("choice", choice(&k("a"), "尺寸", &opts, 0, |_| Msg::Nothing)),
                 ("segmented", segmented(&k("b"), &opts, 1, 30.0, |_| Msg::Nothing)),

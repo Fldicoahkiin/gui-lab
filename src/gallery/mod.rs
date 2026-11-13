@@ -6,7 +6,7 @@ mod pages;
 
 use crate::demo::{self, Demo};
 use crate::el::{El, Font, Paint, col, row, space, text};
-use crate::style::{Look, MATERIALS, Material, PicFx, THEMES, Theme, colour, set};
+use crate::style::{Look, MATERIALS, Material, PicFx, THEMES, Theme, set};
 use crate::text::Face;
 use crate::widgets::{Edit, SELECTED, Spec, TextEdit, Variant, button_as, divider, segmented, vdivider};
 use std::rc::Rc;
@@ -137,7 +137,7 @@ pub fn mark_defaults(s: u8) -> PicFx {
     let base = PicFx::with_set(s);
     match s {
         set::CHARS => PicFx { pitch: 9.0, levels: 16.0, ground: 0.0, gamma: 1.1, ..base },
-        set::DITHER => PicFx { pitch: 3.0, levels: 16.0, ground: 0.0, colour: colour::THEME_INK as f32, ..base },
+        set::DITHER => PicFx { pitch: 3.0, levels: 16.0, ground: 0.0, ..base },
         set::PIXEL => PicFx { pitch: 6.0, ..base },
         set::MOSAIC | set::BRICK => PicFx { pitch: 10.0, relief: 1.0, ground: 0.2, ..base },
         set::GLOW => PicFx { pitch: 8.0, levels: 12.0, ground: 0.0, glow: 1.0, gamma: 0.8, ..base },

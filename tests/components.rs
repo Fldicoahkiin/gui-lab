@@ -337,3 +337,14 @@ fn every_page_lays_out_in_every_theme() {
         }
     }
 }
+
+#[test]
+fn registry_lists_every_component_and_its_files() {
+    let root = env!("CARGO_MANIFEST_DIR");
+    let reg = std::fs::read_to_string(format!("{root}/registry.json")).expect("registry.json");
+    for c in COMPONENTS.iter() {
+        assert!(reg.contains(&format!("\"name\": \"{}\"", c.hash)), "{} is not in the registry", c.hash);
+        assert!(reg.contains(&format!("\"{}\"", c.file)), "{} is not in the registry", c.file);
+        assert!(std::path::Path::new(&format!("{root}/{}", c.file)).exists(), "{} does not exist", c.file);
+    }
+}
