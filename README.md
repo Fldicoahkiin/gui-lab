@@ -52,6 +52,12 @@ cargo run --release --bin check
 cargo run --release --bin sheet -- sheets
 ```
 
+原生窗口（winit；macOS 上用 Metal，其他系统用 Vulkan）。可以带一个页名，直接打开那一页。在这里的 Linux 容器里只编译过、没有显示器可以运行；macOS 上只做了类型检查（`cargo check --target aarch64-apple-darwin`），没有实际运行过：
+
+```bash
+cargo run --release --bin window -- dialog
+```
+
 网页版（需要 `wasm32-unknown-unknown` 目标、同版本的 `wasm-bindgen-cli`、Python 的 fonttools）：
 
 ```bash
