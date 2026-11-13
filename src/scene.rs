@@ -16,7 +16,9 @@ pub struct Instance {
     pub paint: [f32; 4],
     /// Visible region, device px: x0, y0, x1, y1.
     pub clip: [f32; 4],
-    /// border width (device px, 0 = filled), picture id, static looseness, time the instance first appeared
+    /// Shapes: border width (device px, 0 = filled). Pictures: picture id in y. Glyphs: print pitch
+    /// (logical px, 0 = off) in y. All: static looseness, time the instance first appeared.
+    /// Pictures carry their `PicFx` slot in `paint[1]`.
     pub extra: [f32; 4],
 }
 
@@ -56,10 +58,14 @@ pub struct Field {
     pub fronts: [[f32; 4]; 8],
     /// x, y, strength, _
     pub pointer: [f32; 4],
+    /// A half-plane source (the compare wipe): x of the line, strength, _, _. Right of the line the
+    /// disturbance is `strength`, left of it nothing. It acts only inside `wipe_rect` (x0, y0, x1, y1).
+    pub wipe: [f32; 4],
+    pub wipe_rect: [f32; 4],
     pub next: usize,
 }
 impl Default for Field {
-    fn default() -> Self { Self { fronts: [[0.0; 4]; 8], pointer: [-1e5, -1e5, 0.0, 0.0], next: 0 } }
+    fn default() -> Self { Self { fronts: [[0.0; 4]; 8], pointer: [-1e5, -1e5, 0.0, 0.0], wipe: [0.0; 4], wipe_rect: [0.0; 4], next: 0 } }
 }
 impl Field {
     pub fn front(&mut self, x: f32, y: f32, t: f32, strength: f32) {
@@ -71,9 +77,8 @@ impl Field {
 /// Field and material parameters. Every one is a plain number so it can be set exactly.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Fx {
-    /// Lattice pitch for text and shapes, and for pictures (logical px).
+    /// Lattice pitch for text and shapes (logical px). Pictures have their own, in `PicFx`.
     pub pitch: f32,
-    pub pic_pitch: f32,
     /// How far each unit may sit off the lattice, 0..1 of the pitch.
     pub jitter: f32,
     /// Sideways slip of thin bands while a front passes, 0 = none.
@@ -91,10 +96,9 @@ pub struct Fx {
     /// How long a new instance takes to condense (seconds).
     pub enter: f32,
     pub square: bool,
-    pub light: bool,
 }
 impl Default for Fx {
     fn default() -> Self {
-        Self { pitch: 5.0, pic_pitch: 8.0, jitter: 0.0, glitch: 0.4, wave_speed: 760.0, wave_life: 1.4, wave_width: 26.0, wave_tail: 150.0, push: 5.0, lens: 84.0, enter: 0.45, square: false, light: false }
+        Self { pitch: 5.0, jitter: 0.0, glitch: 0.4, wave_speed: 760.0, wave_life: 1.4, wave_width: 26.0, wave_tail: 150.0, push: 5.0, lens: 84.0, enter: 0.45, square: false }
     }
 }

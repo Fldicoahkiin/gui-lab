@@ -1,10 +1,12 @@
 //! Widgets are plain functions that return element trees. Each one is a file so it can be copied out
 //! and changed.
 mod button;
+mod choice;
 mod number;
 mod toggle;
 
 pub use button::button;
+pub use choice::choice;
 pub use number::{Edit, Spec, number};
 pub use toggle::toggle;
 

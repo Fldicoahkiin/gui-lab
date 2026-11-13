@@ -3,7 +3,7 @@ use lab::demo::{self, Msg};
 use lab::el::{El, Key, Paint, col, row, space, text_lh};
 use lab::ui::{Rect, Ui};
 
-fn font() -> Vec<u8> { std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/NotoSansSC-Regular.otf")).expect("font") }
+fn font() -> Vec<lab::text::Face> { lab::text::load_bundled(concat!(env!("CARGO_MANIFEST_DIR"), "/assets")).expect("fonts") }
 
 const PARA: &str = "一段用来测量的文字，中文和 Latin words 混排，宽度变窄时会多出几行。";
 

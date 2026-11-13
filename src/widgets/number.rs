@@ -2,7 +2,7 @@
 //! value can be typed (digits, `.`, `-`, Backspace; Enter commits, Esc cancels) or stepped with
 //! Up / Down (Shift for ×10).
 use super::{CONTROL_H, LABEL, LINE, RADIUS};
-use crate::el::{El, Key, Paint, row, space, text};
+use crate::el::{El, Font, Key, Paint, row, space, text};
 use std::rc::Rc;
 use taffy::AlignItems;
 
@@ -28,7 +28,8 @@ pub fn number<M: Clone + 'static>(key: &str, label: &str, value: f32, spec: Spec
     let editing = draft.is_some();
     let step = |dir: f32, glyph: &str, k: &str| row().key(format!("{key}/{k}")).center().width(CONTROL_H).height(CONTROL_H).radius(RADIUS)
         .fill(Paint::GROUND).border(LINE, Paint::FAINT).on_press(msg(Edit::Set(spec.clamp(value + dir * spec.step))))
-        .child(text(glyph, LABEL + 2.0, Paint::TEXT));
+        // The mono face: the pixel CJK face has no minus sign, and the steps then match in every theme.
+        .child(text(glyph, LABEL + 2.0, Paint::TEXT).font(Font::Mono));
     let handler = {
         let (msg, draft) = (msg.clone(), draft.clone());
         move |k: Key, shift: bool| -> Option<M> {

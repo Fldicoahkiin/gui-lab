@@ -1,6 +1,10 @@
 //! Text: shaping and line breaking by parley; every glyph is then kept as its own instance.
 //! Each glyph is rasterised once into an atlas that stores two things per texel: coverage, and how
 //! close that texel is to the nearest ink (255 at ink, falling to 0 at `SPREAD` pixels away).
+//!
+//! Several font faces can be registered; each text element picks one. A face can be marked as a pixel
+//! face: it is then drawn only at whole multiples of its native size, on whole device pixels, with
+//! coverage cut at one half, so its edges are ink or ground and nothing in between.
 use crate::scene::{GLYPH, Instance};
 use parley::fontique::{Blob, Collection, CollectionOptions};
 use parley::layout::PositionedLayoutItem;
@@ -14,21 +18,59 @@ use swash::zeno::{Format, Vector};
 pub const SPREAD: i32 = 12;
 pub const ATLAS: u32 = 2048;
 
-/// A paragraph to draw: text, font size, line height and the width it was laid out at (logical px).
+/// The faces that ship in `assets/`, in the order `bundled` registers them.
+pub const SANS: u8 = 0;
+pub const PIXEL: u8 = 1;
+pub const MONO: u8 = 2;
+pub const SANS_FILE: &str = "NotoSansSC-Regular.otf";
+pub const PIXEL_FILE: &str = "FusionPixel-12px-Proportional-zh_hans.otf";
+pub const MONO_FILE: &str = "DepartureMono-Regular.otf";
+
+/// A font file to register. `pixel` is the native size (px) of a pixel face.
+pub struct Face { pub data: Vec<u8>, pub pixel: Option<f32> }
+impl Face {
+    pub fn outline(data: Vec<u8>) -> Self { Self { data, pixel: None } }
+    pub fn pixel(data: Vec<u8>, size: f32) -> Self { Self { data, pixel: Some(size) } }
+}
+/// Noto Sans SC, Fusion Pixel 12 px, Departure Mono (11 px), as `SANS`, `PIXEL`, `MONO`.
+pub fn bundled(sans: Vec<u8>, pixel: Vec<u8>, mono: Vec<u8>) -> Vec<Face> {
+    vec![Face::outline(sans), Face::pixel(pixel, 12.0), Face::pixel(mono, 11.0)]
+}
+/// Read the bundled faces from a directory (native only; the web page passes the bytes in).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn load_bundled(dir: &str) -> std::io::Result<Vec<Face>> {
+    let r = |f: &str| std::fs::read(format!("{dir}/{f}"));
+    Ok(bundled(r(SANS_FILE)?, r(PIXEL_FILE)?, r(MONO_FILE)?))
+}
+
+/// A paragraph to draw: text, face, font size, line height and the width it was laid out at
+/// (logical px).
 #[derive(Clone, Copy)]
-pub struct Para<'a> { pub s: &'a str, pub size: f32, pub line: f32, pub width: f32 }
+pub struct Para<'a> { pub s: &'a str, pub face: u8, pub size: f32, pub line: f32, pub width: f32, pub print: f32 }
 
 #[derive(Clone, Copy)]
 struct Slot { x: u32, y: u32, w: u32, h: u32, left: i32, top: i32 }
+
+/// Text, face, size bits, line bits, width bits.
+type MeasureKey = (String, u8, u32, u32, u32);
+
+struct Family { name: String, pixel: Option<f32>, data: Arc<Vec<u8>> }
+
+/// One glyph rasterised on its own (for the mark atlas): coverage rows, placement, and the face's
+/// advance and line box at that size, px.
+pub struct Raster { pub data: Vec<u8>, pub w: u32, pub h: u32, pub left: i32, pub top: i32, pub advance: f32, pub ascent: f32, pub descent: f32 }
 
 pub struct Text {
     fonts: FontContext,
     layouts: LayoutContext<()>,
     scaler: ScaleContext,
-    family: String,
+    families: Vec<Family>,
+    /// Device px per logical px: pixel faces snap their size in device px.
+    scale: f32,
     slots: HashMap<(u64, u32, u32, u8), Option<Slot>>,
-    /// Layout asks for the same paragraph at the same width many times; keyed by text, size bits, width bits.
-    measured: HashMap<(String, u32, u32, u32), (f32, f32)>,
+    /// Layout asks for the same paragraph at the same width many times; keyed by text, face, size bits,
+    /// line bits, width bits.
+    measured: HashMap<MeasureKey, (f32, f32)>,
     /// RG8: coverage, nearness-to-ink.
     pub pixels: Vec<u8>,
     pub dirty: bool,
@@ -36,22 +78,47 @@ pub struct Text {
 }
 
 impl Text {
-    pub fn new(font: Vec<u8>) -> Self {
+    pub fn new(faces: Vec<Face>) -> Self {
         let mut collection = Collection::new(CollectionOptions { shared: false, system_fonts: false });
-        let reg = collection.register_fonts(Blob::new(Arc::new(font)), None);
-        let family = reg.first().and_then(|(id, _)| collection.family_name(*id).map(str::to_owned)).unwrap_or_default();
+        let families = faces.into_iter().map(|f| {
+            let data = Arc::new(f.data);
+            let reg = collection.register_fonts(Blob::new(data.clone()), None);
+            let name = reg.first().and_then(|(id, _)| collection.family_name(*id).map(str::to_owned)).unwrap_or_default();
+            Family { name, pixel: f.pixel, data }
+        }).collect();
         Self {
             fonts: FontContext { collection, source_cache: Default::default() },
-            layouts: LayoutContext::new(), scaler: ScaleContext::new(), family,
+            layouts: LayoutContext::new(), scaler: ScaleContext::new(), families, scale: 1.0,
             slots: HashMap::new(), measured: HashMap::new(), pixels: vec![0; (ATLAS * ATLAS * 2) as usize], dirty: true, pen: (1, 1, 0),
+        }
+    }
+
+    pub fn faces(&self) -> usize { self.families.len() }
+    pub fn is_pixel(&self, face: u8) -> bool { self.family(face).pixel.is_some() }
+    /// Native size of a pixel face, px.
+    pub fn native(&self, face: u8) -> Option<f32> { self.family(face).pixel }
+    fn family(&self, face: u8) -> &Family { &self.families[(face as usize).min(self.families.len() - 1)] }
+
+    pub fn set_scale(&mut self, scale: f32) {
+        if scale != self.scale { self.scale = scale; self.measured.clear(); }
+    }
+
+    /// The logical size a face is really drawn at: pixel faces go to the nearest whole multiple (at
+    /// least one) of their native size in device px, since anything between would smear their pixels.
+    pub fn size_for(&self, face: u8, size: f32) -> f32 {
+        match self.family(face).pixel {
+            Some(native) => ((size * self.scale / native).round().max(1.0) * native) / self.scale,
+            None => size,
         }
     }
 
     /// Shape and break `s` at `size` logical px. Measuring and drawing use this same call, so the
     /// line breaks on screen are exactly the ones layout planned for.
-    fn layout(&mut self, s: &str, size: f32, line: f32, max_width: Option<f32>) -> Layout<()> {
+    fn layout(&mut self, s: &str, face: u8, size: f32, line: f32, max_width: Option<f32>) -> Layout<()> {
+        let size = self.size_for(face, size);
+        let fi = (face as usize).min(self.families.len() - 1);
         let mut b = self.layouts.ranged_builder(&mut self.fonts, s, 1.0, true);
-        b.push_default(StyleProperty::FontFamily(FontFamily::named(&self.family)));
+        b.push_default(StyleProperty::FontFamily(FontFamily::named(&self.families[fi].name)));
         b.push_default(StyleProperty::FontSize(size));
         b.push_default(LineHeight::Absolute(line));
         let mut l: Layout<()> = b.build(s);
@@ -60,21 +127,39 @@ impl Text {
     }
 
     /// Width and height of a paragraph in logical px when limited to `max_width`.
-    pub fn measure(&mut self, s: &str, size: f32, line: f32, max_width: Option<f32>) -> (f32, f32) {
-        let k = (s.to_owned(), size.to_bits(), line.to_bits(), max_width.unwrap_or(-1.0).to_bits());
+    pub fn measure(&mut self, s: &str, face: u8, size: f32, line: f32, max_width: Option<f32>) -> (f32, f32) {
+        let k = (s.to_owned(), face, size.to_bits(), line.to_bits(), max_width.unwrap_or(-1.0).to_bits());
         if let Some(v) = self.measured.get(&k) { return *v; }
         if self.measured.len() > 4096 { self.measured.clear(); }
-        let l = self.layout(s, size, line, max_width);
+        let l = self.layout(s, face, size, line, max_width);
         let v = (l.width().ceil(), l.height().ceil());
         self.measured.insert(k, v);
         v
     }
 
+    /// Rasterise one character of a face at `px` device px, outside any layout (for the mark atlas).
+    /// Pixel faces are cut at half coverage as they are on the page.
+    pub fn raster(&mut self, face: u8, ch: char, px: f32) -> Option<Raster> {
+        let fam = self.family(face);
+        let (data, pixel) = (fam.data.clone(), fam.pixel.is_some());
+        let fref = swash::FontRef::from_index(&data, 0)?;
+        let gid = fref.charmap().map(ch);
+        let m = fref.metrics(&[]).scale(px);
+        let advance = fref.glyph_metrics(&[]).scale(px).advance_width(gid);
+        let mut scaler = self.scaler.builder(fref).size(px).hint(false).build();
+        let img = Render::new(&[Source::Outline]).format(Format::Alpha).render(&mut scaler, gid)?;
+        let mut data = img.data;
+        if pixel { for c in &mut data { *c = if *c >= 128 { 255 } else { 0 }; } }
+        Some(Raster { data, w: img.placement.width, h: img.placement.height, left: img.placement.left, top: img.placement.top, advance, ascent: m.ascent, descent: m.descent })
+    }
+
     /// Call `out` once per visible glyph with its instance (device px) and glyph id. `origin` is
     /// logical px.
     pub fn emit(&mut self, p: Para<'_>, origin: (f32, f32), proto: Instance, scale: f32, mut out: impl FnMut(Instance, u32)) {
-        let l = self.layout(p.s, p.size, p.line, Some(p.width));
-        let (ox, oy) = (origin.0 * scale, origin.1 * scale);
+        let l = self.layout(p.s, p.face, p.size, p.line, Some(p.width));
+        let pixel = self.is_pixel(p.face);
+        // A pixel face starts on a whole device pixel so its pixels land on the screen's.
+        let (ox, oy) = if pixel { ((origin.0 * scale).round(), (origin.1 * scale).round()) } else { (origin.0 * scale, origin.1 * scale) };
         for ln in l.lines() {
             for item in ln.items() {
                 let PositionedLayoutItem::GlyphRun(gr) = item else { continue };
@@ -86,12 +171,14 @@ impl Text {
                 let mut scaler = self.scaler.builder(fref).size(fsize).hint(false).normalized_coords(coords.iter().copied()).build();
                 for g in gr.positioned_glyphs() {
                     let (gx, gy) = (ox + g.x * scale, (oy + g.y * scale).round());
-                    let sub = ((gx.fract() * 4.0) as u8).min(3);
+                    let gx = if pixel { gx.round() } else { gx };
+                    let sub = if pixel { 0 } else { ((gx.fract() * 4.0) as u8).min(3) };
                     let key = (font.data.id(), g.id, fsize.to_bits(), sub);
                     let slot = match self.slots.get(&key) {
                         Some(s) => *s,
                         None => {
-                            let img = Render::new(&[Source::Outline]).format(Format::Alpha).offset(Vector::new(sub as f32 / 4.0, 0.0)).render(&mut scaler, g.id as _);
+                            let mut img = Render::new(&[Source::Outline]).format(Format::Alpha).offset(Vector::new(sub as f32 / 4.0, 0.0)).render(&mut scaler, g.id as _);
+                            if pixel && let Some(i) = img.as_mut() { for c in &mut i.data { *c = if *c >= 128 { 255 } else { 0 }; } }
                             let made = img.and_then(|i| store(&mut self.pixels, &mut self.pen, &i.data, i.placement.width, i.placement.height, i.placement.left, i.placement.top));
                             self.dirty |= made.is_some();
                             self.slots.insert(key, made);
@@ -104,6 +191,7 @@ impl Text {
                     inst.rect = [gx.floor() + sl.left as f32 - SPREAD as f32, gy - sl.top as f32 - SPREAD as f32, sl.w as f32, sl.h as f32];
                     inst.uv = [sl.x as f32 / a, sl.y as f32 / a, (sl.x + sl.w) as f32 / a, (sl.y + sl.h) as f32 / a];
                     inst.paint[3] = GLYPH;
+                    inst.extra[1] = p.print;
                     out(inst, g.id);
                 }
             }

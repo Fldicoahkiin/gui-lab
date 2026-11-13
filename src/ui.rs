@@ -1,8 +1,8 @@
 //! Runtime: state, view, layout, hit-testing, focus, scrolling and instance birth times. No GPU here,
 //! so all of it can be tested headless.
-use crate::el::{Content, El, Key, OnKey, Paint};
+use crate::el::{Content, El, Font, Key, OnDrag, OnKey, Paint};
 use crate::scene::{Field, Instance, PICTURE, SHAPE, Scene};
-use crate::text::{Para, Text};
+use crate::text::{Face, Para, Text};
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use taffy::prelude::*;
@@ -47,7 +47,10 @@ pub struct Node<M> {
     radius: f32,
     on_press: Option<M>,
     on_key: Option<OnKey<M>>,
+    on_drag: Option<OnDrag<M>>,
     on_blur: Option<M>,
+    loose: f32,
+    wipe: Option<f32>,
     tid: NodeId,
 }
 impl<M> Node<M> {
@@ -79,6 +82,8 @@ pub struct Ui<S, M> {
     hover: Option<String>,
     focus: Option<String>,
     pressed: Option<String>,
+    /// The element being dragged, if its press started a drag.
+    dragging: Option<String>,
     /// The last input came from the keyboard, so the marks follow focus rather than the pointer.
     keyboard: bool,
     marks: Marks,
@@ -86,11 +91,11 @@ pub struct Ui<S, M> {
 
 impl<S, M: Clone> Ui<S, M> {
     /// `w`, `h` are device px; `scale` is device px per logical px.
-    pub fn new(state: S, view: fn(&S) -> El<M>, update: fn(&mut S, M), font: Vec<u8>, w: u32, h: u32, scale: f32) -> Self {
+    pub fn new(state: S, view: fn(&S) -> El<M>, update: fn(&mut S, M), faces: Vec<Face>, w: u32, h: u32, scale: f32) -> Self {
         let mut ui = Self {
-            state, view, update, text: Text::new(font), size: (0.0, 0.0), scale, now: 0.0, nodes: vec![], scene: Scene::default(),
+            state, view, update, text: Text::new(faces), size: (0.0, 0.0), scale, now: 0.0, nodes: vec![], scene: Scene::default(),
             owners: vec![], page_len: 0, field: Field::default(), scroll: HashMap::new(), births: HashMap::new(),
-            hover: None, focus: None, pressed: None, keyboard: false, marks: Marks::default(),
+            hover: None, focus: None, pressed: None, dragging: None, keyboard: false, marks: Marks::default(),
         };
         ui.resize(w, h, scale);
         ui
@@ -114,6 +119,7 @@ impl<S, M: Clone> Ui<S, M> {
     // ── Input ────────────────────────────────────────────────────────────────────────────────────
     pub fn resize(&mut self, w: u32, h: u32, scale: f32) {
         self.scale = scale;
+        self.text.set_scale(scale);
         self.size = (w.max(1) as f32 / scale, h.max(1) as f32 / scale);
         self.relayout();
     }
@@ -149,6 +155,16 @@ impl<S, M: Clone> Ui<S, M> {
         self.field.pointer = [x * s, y * s, 1.0, 0.0];
         self.keyboard = false;
         self.hover = self.hit(x, y).and_then(|i| self.up(i, |n| n.focusable)).map(|i| self.nodes[i].key.clone());
+        if let Some(i) = self.dragging.as_deref().and_then(|k| self.nodes.iter().position(|n| n.key == k)) { self.drag(i, x, y); }
+    }
+
+    /// Send a node's drag message for a pointer at (x, y), logical px.
+    fn drag(&mut self, i: usize, x: f32, y: f32) {
+        let n = &self.nodes[i];
+        let Some(f) = n.on_drag.clone() else { return };
+        let fx = ((x - n.rect.x) / n.rect.w.max(1.0)).clamp(0.0, 1.0);
+        let fy = ((y - n.rect.y) / n.rect.h.max(1.0)).clamp(0.0, 1.0);
+        self.send(f(fx, fy));
     }
     pub fn pointer_leave(&mut self) {
         self.field.pointer = [-1e5, -1e5, 0.0, 0.0];
@@ -162,6 +178,11 @@ impl<S, M: Clone> Ui<S, M> {
         let hit = self.hit(x, y);
         let target = hit.and_then(|i| self.up(i, |n| n.focusable)).map(|i| self.nodes[i].key.clone());
         self.set_focus(target);
+        if let Some(i) = hit.and_then(|i| self.up(i, |n| n.on_drag.is_some())) {
+            self.dragging = Some(self.nodes[i].key.clone());
+            self.drag(i, x, y);
+            return;
+        }
         let pressed = hit.and_then(|i| self.up(i, |n| n.on_press.is_some()));
         if let Some(i) = pressed {
             self.pressed = Some(self.nodes[i].key.clone());
@@ -171,6 +192,7 @@ impl<S, M: Clone> Ui<S, M> {
     }
 
     pub fn release(&mut self, _x: f32, _y: f32) {
+        self.dragging = None;
         // A held element condenses back from loose when let go.
         if let Some(k) = self.pressed.take() { self.rebirth(&k); }
     }
@@ -309,14 +331,14 @@ impl<S, M: Clone> Ui<S, M> {
         // The root is the window, whatever its contents would like.
         let mut el = el;
         el.style.size = Size { width: length(self.size.0), height: length(self.size.1) };
-        let root = flatten(el, None, "root".into(), &mut tree, &mut nodes);
+        let root = flatten(el, None, "root".into(), [0; 3], &mut tree, &mut nodes);
         let text = &mut self.text;
         let measure = |input: taffy::LayoutInput, _: NodeId, ctx: Option<&mut usize>, style: &Style| {
             let none = |_: *const (), _: f32| 0.0;
             match ctx.map(|i| &nodes[*i].content) {
-                Some(Content::Text { s, size, line, .. }) => taffy::compute_leaf_layout(input, style, none, |known, avail| {
+                Some(Content::Text { s, size, line, font, .. }) => taffy::compute_leaf_layout(input, style, none, |known, avail| {
                     let limit = known.width.or(match avail.width { AvailableSpace::Definite(w) => Some(w), AvailableSpace::MinContent => Some(0.0), AvailableSpace::MaxContent => None });
-                    let (w, h) = text.measure(s, *size, *line, limit);
+                    let (w, h) = text.measure(s, font.resolve([0; 3]), *size, *line, limit);
                     Size { width: known.width.unwrap_or(w), height: known.height.unwrap_or(h) }
                 }),
                 Some(Content::Picture { ratio, .. }) => taffy::compute_leaf_layout(input, style, none, |known, avail| {
@@ -375,6 +397,7 @@ impl<S, M: Clone> Ui<S, M> {
             [x0, y0, x1 - x0, y1 - y0]
         };
         let mut births = HashMap::with_capacity(self.births.len());
+        self.field.wipe = [0.0; 4];
         let mut held = vec![false; self.nodes.len()];
         for i in 0..self.nodes.len() {
             let n = &self.nodes[i];
@@ -383,7 +406,7 @@ impl<S, M: Clone> Ui<S, M> {
             if seen.w <= 0.0 || seen.h <= 0.0 { continue; }
             let c = n.clip;
             let clip = [c.x * s, c.y * s, c.right() * s, c.bottom() * s];
-            let loose = if held[i] { 1.0 } else { 0.0 };
+            let loose = if held[i] { 1.0 } else { n.loose };
             let mut put = |scene: &mut Scene, owners: &mut Vec<(usize, u64)>, mut inst: Instance, id: u64| {
                 let born = *births.entry(id).or_insert_with(|| self.births.get(&id).copied().unwrap_or(self.now));
                 inst.clip = clip;
@@ -396,9 +419,9 @@ impl<S, M: Clone> Ui<S, M> {
             if let Some(p) = n.fill { put(&mut self.scene, &mut self.owners, shape(p, 0.0), ident(&n.key, u32::MAX, 0)); }
             if let Some((w, p)) = n.border { put(&mut self.scene, &mut self.owners, shape(p, w), ident(&n.key, u32::MAX - 1, 0)); }
             match &n.content {
-                Content::Text { s: str, size, line, paint } => {
+                Content::Text { s: str, size, line, paint, font, print } => {
                     let proto = Instance { paint: [paint.tone, paint.accent, paint.alpha, 0.0], ..Default::default() };
-                    let para = Para { s: str, size: *size, line: *line, width: n.inner.w + 1.0 };
+                    let para = Para { s: str, face: font.resolve([0; 3]), size: *size, line: *line, width: n.inner.w + 1.0, print: *print };
                     let mut seq = 0;
                     let (scene, owners) = (&mut self.scene, &mut self.owners);
                     self.text.emit(para, (n.inner.x, n.inner.y), proto, s, |inst, glyph| {
@@ -406,9 +429,15 @@ impl<S, M: Clone> Ui<S, M> {
                         seq += 1;
                     });
                 }
-                Content::Picture { id, .. } => {
-                    let inst = Instance { rect: dev(n.inner), uv: [0.0, 0.0, 1.0, 1.0], paint: [1.0, 0.0, 1.0, PICTURE], clip, extra: [0.0, *id as f32, 0.0, 0.0] };
+                Content::Picture { id, fx, .. } => {
+                    let inst = Instance { rect: dev(n.inner), uv: [0.0, 0.0, 1.0, 1.0], paint: [1.0, *fx as f32, 1.0, PICTURE], clip, extra: [0.0, *id as f32, 0.0, 0.0] };
                     put(&mut self.scene, &mut self.owners, inst, ident(&n.key, u32::MAX - 2, *id));
+                    // The wipe is a half-plane source in the field, acting over the visible picture.
+                    if let Some(x) = n.wipe {
+                        let r = n.inner.intersect(&c);
+                        self.field.wipe = [(n.inner.x + x * n.inner.w) * s, 1.0, 0.0, 0.0];
+                        self.field.wipe_rect = [r.x * s, r.y * s, r.right() * s, r.bottom() * s];
+                    }
                 }
                 Content::None => {}
             }
@@ -447,19 +476,23 @@ fn ident(key: &str, part: u32, glyph: u32) -> u64 {
 }
 
 /// Move an element tree into flat nodes (paint order) and a taffy tree. Unkeyed nodes are keyed by path.
-fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, tree: &mut TaffyTree<usize>, nodes: &mut Vec<Node<M>>) -> NodeId {
-    let El { key, style, content, fill, border, radius, on_press, on_key, on_blur, focusable, scroll, children } = el;
+/// Font roles are inherited: each text leaf's role is resolved here to the face of its nearest
+/// `fonts` ancestor.
+fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], tree: &mut TaffyTree<usize>, nodes: &mut Vec<Node<M>>) -> NodeId {
+    let El { key, style, mut content, fill, border, radius, on_press, on_key, on_drag, on_blur, focusable, scroll, fonts, loose, wipe, children } = el;
     let key = if key.is_empty() { path } else { key };
+    let roles = fonts.unwrap_or(roles);
+    if let Content::Text { font, .. } = &mut content { *font = Font::Face(font.resolve(roles)); }
     let i = nodes.len();
     let leaf = !matches!(content, Content::None);
     let placeholder = NodeId::from(0u64);
     nodes.push(Node {
         key, parent, rect: Rect::default(), clip: Rect::default(), inner: Rect::default(), scroll, focusable, extent: 0.0,
-        content, fill, border, radius, on_press, on_key, on_blur, tid: placeholder,
+        content, fill, border, radius, on_press, on_key, on_drag, on_blur, loose, wipe, tid: placeholder,
     });
     let kids: Vec<NodeId> = children.into_iter().enumerate().map(|(n, c)| {
         let p = format!("{}/{n}", nodes[i].key);
-        flatten(c, Some(i), p, tree, nodes)
+        flatten(c, Some(i), p, roles, tree, nodes)
     }).collect();
     let tid = if leaf { tree.new_leaf_with_context(style, i) } else { tree.new_with_children(style, &kids) }.expect("taffy node");
     nodes[i].tid = tid;

@@ -37,15 +37,29 @@ impl Key {
     }
 }
 
+/// Which face a text element is set in: a role that the nearest `fonts` ancestor (normally the
+/// theme, at the root) resolves, or a face index directly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Font { Display, Body, Mono, Face(u8) }
+impl Font {
+    pub fn resolve(self, roles: [u8; 3]) -> u8 {
+        match self { Font::Display => roles[0], Font::Body => roles[1], Font::Mono => roles[2], Font::Face(f) => f }
+    }
+}
+
 pub enum Content {
     None,
-    Text { s: String, size: f32, line: f32, paint: Paint },
-    /// A picture by id, with its height as a fraction of its width.
-    Picture { id: u32, ratio: f32 },
+    /// `print` > 0 prints the glyphs through a lattice of that pitch (logical px): each cell is filled
+    /// when the glyph covers more than half of it.
+    Text { s: String, size: f32, line: f32, paint: Paint, font: Font, print: f32 },
+    /// A picture by id, with its height as a fraction of its width, and the `PicFx` slot it uses.
+    Picture { id: u32, ratio: f32, fx: u8 },
 }
 
 /// Handles a key while the element has focus; the flag is Shift.
 pub type OnKey<M> = Rc<dyn Fn(Key, bool) -> Option<M>>;
+/// Handles a press and the drag that follows, with the pointer as a fraction of the element (0..1).
+pub type OnDrag<M> = Rc<dyn Fn(f32, f32) -> M>;
 
 pub struct El<M> {
     pub key: String,
@@ -57,11 +71,19 @@ pub struct El<M> {
     pub radius: f32,
     pub on_press: Option<M>,
     pub on_key: Option<OnKey<M>>,
+    pub on_drag: Option<OnDrag<M>>,
     /// Sent when focus leaves this element.
     pub on_blur: Option<M>,
     pub focusable: bool,
     /// Scrolls its children vertically and clips them.
     pub scroll: bool,
+    /// Face for each font role in this subtree (display, body, mono).
+    pub fonts: Option<[u8; 3]>,
+    /// How loose this element is at rest, 0..1 (a picture at 1 shows its marks).
+    pub loose: f32,
+    /// A compare wipe over this element: the line's position as a fraction of its width. Right of it
+    /// the element is fully loosened, left of it untouched.
+    pub wipe: Option<f32>,
     pub children: Vec<El<M>>,
 }
 
@@ -69,7 +91,7 @@ impl<M> El<M> {
     fn new(style: Style, content: Content) -> Self {
         // Nothing shrinks unless asked: fixed sizes stay fixed inside columns and scroll areas.
         let style = Style { flex_shrink: 0.0, ..style };
-        Self { key: String::new(), style, content, fill: None, border: None, radius: 0.0, on_press: None, on_key: None, on_blur: None, focusable: false, scroll: false, children: vec![] }
+        Self { key: String::new(), style, content, fill: None, border: None, radius: 0.0, on_press: None, on_key: None, on_drag: None, on_blur: None, focusable: false, scroll: false, fonts: None, loose: 0.0, wipe: None, children: vec![] }
     }
     pub fn key(mut self, k: impl Into<String>) -> Self { self.key = k.into(); self }
     pub fn gap(mut self, g: f32) -> Self { self.style.gap = Size { width: length(g), height: length(g) }; self }
@@ -94,6 +116,16 @@ impl<M> El<M> {
     pub fn on_press(mut self, m: M) -> Self { self.on_press = Some(m); self.focusable = true; self }
     pub fn on_key(mut self, f: impl Fn(Key, bool) -> Option<M> + 'static) -> Self { self.on_key = Some(Rc::new(f)); self.focusable = true; self }
     pub fn on_blur(mut self, m: M) -> Self { self.on_blur = Some(m); self }
+    pub fn on_drag(mut self, f: impl Fn(f32, f32) -> M + 'static) -> Self { self.on_drag = Some(Rc::new(f)); self }
+    pub fn fonts(mut self, roles: [u8; 3]) -> Self { self.fonts = Some(roles); self }
+    pub fn loose(mut self, k: f32) -> Self { self.loose = k; self }
+    pub fn wipe(mut self, x: f32) -> Self { self.wipe = Some(x); self }
+    /// Set a text element in another face or role.
+    pub fn font(mut self, f: Font) -> Self { if let Content::Text { font, .. } = &mut self.content { *font = f; } self }
+    /// Print a text element through a lattice of this pitch (logical px).
+    pub fn print(mut self, pitch: f32) -> Self { if let Content::Text { print, .. } = &mut self.content { *print = pitch; } self }
+    /// Choose the `PicFx` slot of a picture.
+    pub fn pic_fx(mut self, slot: u8) -> Self { if let Content::Picture { fx, .. } = &mut self.content { *fx = slot; } self }
     pub fn scroll(mut self) -> Self { self.scroll = true; self.style.overflow.y = taffy::Overflow::Scroll; self.style.scrollbar_width = 0.0; self }
     pub fn child(mut self, c: El<M>) -> Self { self.children.push(c); self }
     pub fn children(mut self, c: impl IntoIterator<Item = El<M>>) -> Self { self.children.extend(c); self }
@@ -103,10 +135,10 @@ pub fn row<M>() -> El<M> { El::new(Style { display: Display::Flex, flex_directio
 pub fn col<M>() -> El<M> { El::new(Style { display: Display::Flex, flex_direction: FlexDirection::Column, ..Default::default() }, Content::None) }
 pub fn space<M>(w: f32, h: f32) -> El<M> { El::new(Style { size: Size { width: length(w), height: length(h) }, ..Default::default() }, Content::None) }
 pub fn text<M>(s: impl Into<String>, size: f32, paint: Paint) -> El<M> {
-    El::new(Style::default(), Content::Text { s: s.into(), size, line: (size * 1.6).round(), paint })
+    El::new(Style::default(), Content::Text { s: s.into(), size, line: (size * 1.6).round(), paint, font: Font::Body, print: 0.0 })
 }
 /// A text leaf with an explicit line height.
 pub fn text_lh<M>(s: impl Into<String>, size: f32, line: f32, paint: Paint) -> El<M> {
-    El::new(Style::default(), Content::Text { s: s.into(), size, line, paint })
+    El::new(Style::default(), Content::Text { s: s.into(), size, line, paint, font: Font::Body, print: 0.0 })
 }
-pub fn picture<M>(id: u32, ratio: f32) -> El<M> { El::new(Style { size: Size { width: percent(1.0), height: auto() }, ..Default::default() }, Content::Picture { id, ratio }) }
+pub fn picture<M>(id: u32, ratio: f32) -> El<M> { El::new(Style { size: Size { width: percent(1.0), height: auto() }, ..Default::default() }, Content::Picture { id, ratio, fx: 0 }) }

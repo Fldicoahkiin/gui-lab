@@ -1,7 +1,11 @@
 pub mod demo;
 pub mod el;
+pub mod marks;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod offscreen;
 pub mod render;
 pub mod scene;
+pub mod style;
 pub mod text;
 pub mod ui;
 pub mod widgets;
@@ -20,7 +24,7 @@ mod web {
     thread_local! { static STATE: RefCell<Option<State>> = const { RefCell::new(None) }; }
 
     #[wasm_bindgen]
-    pub async fn start(canvas: web_sys::HtmlCanvasElement, font: Vec<u8>, scale: f32) -> Result<(), JsValue> {
+    pub async fn start(canvas: web_sys::HtmlCanvasElement, sans: Vec<u8>, pixel: Vec<u8>, mono: Vec<u8>, scale: f32) -> Result<(), JsValue> {
         console_error_panic_hook::set_once();
         let (w, h) = (canvas.width(), canvas.height());
         // WebGPU where an adapter really exists, WebGL2 otherwise.
@@ -35,9 +39,8 @@ mod web {
         let config = surface.get_default_config(&adapter, w, h).map(|mut c| { c.format = format; c }).ok_or("surface not supported")?;
         surface.configure(&device, &config);
         let mut r = Renderer::new(device, queue, format, w, h);
-        let (pw, ph) = (640, 320);
-        r.set_picture(0, pw, ph, &demo::picture_pixels(pw, ph));
-        let ui = demo::new_ui(font, w, h, scale);
+        for (id, pw, ph, px) in demo::pictures() { r.set_picture(id, pw, ph, &px); }
+        let ui = demo::new_ui(crate::text::bundled(sans, pixel, mono), w, h, scale);
         STATE.with(|s| *s.borrow_mut() = Some(State { ui, r, surface, config, started: false }));
         Ok(())
     }
@@ -65,8 +68,8 @@ mod web {
                 _ => { s.surface.configure(s.r.device(), &s.config); return; }
             };
             let view = tex.texture.create_view(&Default::default());
-            let fx = s.ui.state.fx;
-            s.r.draw(&view, &mut s.ui, &fx);
+            let look = s.ui.state.look();
+            s.r.draw(&view, &mut s.ui, &look);
             drop(view);
             s.r.queue().present(tex);
         });
