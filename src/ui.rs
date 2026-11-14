@@ -415,6 +415,23 @@ impl<S, M: Clone> Ui<S, M> {
             || self.marks_moving || now < self.gaze_until
             || self.static_loose
     }
+    /// About how much of the window (0..1) can be loose at `now`: all of it while a front lives, things
+    /// condense, a morph or flow runs; otherwise the area of instances held loose, a burst, the lens over
+    /// pictures and a compare wipe. The renderer uses it to decide whether a reduced material pass pays.
+    pub fn loose_estimate(&self, now: f32, lens_radius: f32) -> f32 {
+        let tm = &self.timing;
+        if self.field.fronts.iter().any(|f| f[3] > 0.0 && now - f[2] < tm.wave_life) || now < self.latest_birth + tm.enter
+            || self.run.is_some() || !self.flows.is_empty() || !self.ghosts.is_empty() { return 1.0; }
+        let s = self.scale;
+        let screen = (self.size.0 * s * self.size.1 * s).max(1.0);
+        let clip = |r: [f32; 4]| { let w = (r[0] + r[2]).min(self.size.0 * s) - r[0].max(0.0); let h = (r[1] + r[3]).min(self.size.1 * s) - r[1].max(0.0); w.max(0.0) * h.max(0.0) };
+        let mut area: f32 = self.scene.instances[..self.page_len].iter().filter(|i| i.extra[2] > 0.0).map(|i| clip(i.rect)).sum();
+        if self.field.burst_at(now) > 0.0 { let b = self.field.burst; area += clip([b[0], b[1], b[2] - b[0], b[3] - b[1]]); }
+        let pictures = self.scene.instances.iter().any(|i| i.paint[3] == PICTURE);
+        if pictures && self.field.pointer[2] > 0.0 { area += std::f32::consts::PI * (lens_radius * s * 1.5).powi(2); }
+        if self.field.wipe[1] > 0.0 { let r = self.field.wipe_rect; area += (r[2] - self.field.wipe[0]).max(0.0) * (r[3] - r[1]).max(0.0); }
+        (area / screen).min(1.0)
+    }
     /// The next timed wake: the caret's next blink, or when the state asked for a tick.
     fn wake_at(&self, now: f32) -> Option<f32> {
         let blink = self.caret.map(|(_, reset, _)| reset + ((now - reset) / BLINK).floor().max(0.0) * BLINK + BLINK);

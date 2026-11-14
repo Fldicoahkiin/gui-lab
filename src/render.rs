@@ -47,6 +47,8 @@ const NEAR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const ATLAS_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg8Unorm;
 
 const MARKS_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg8Unorm;
+/// The reduced material pass runs only when at least this fraction of the window can be loose.
+pub const LO_MIN_AREA: f32 = 0.15;
 
 /// The particle pass's own uniforms (see `particles.wgsl`).
 #[repr(C)]
@@ -413,10 +415,8 @@ impl Renderer {
         // when something can be loose (at rest every pixel is shaded at full resolution anyway).
         let auto = look.quality <= 0.0;
         let q = if auto { self.auto.quality() } else { crate::perf::LEVELS.iter().copied().min_by(|a, b| (a - look.quality).abs().total_cmp(&(b - look.quality).abs())).unwrap_or(1.0) };
-        let sc = ui.scene();
-        let f = ui.field();
-        let loose = ui.moving_at(now) || tiles.is_some() || f.wipe[1] > 0.0 || sc.instances.iter().any(|i| i.extra[2] > 0.0)
-            || (f.pointer[2] > 0.0 && sc.instances.iter().any(|i| i.paint[3] == crate::scene::PICTURE));
+        // A small loose area (a lens, one held control) costs less at full resolution than a second pass.
+        let loose = tiles.is_some() || ui.loose_estimate(now, look.fx.lens) >= LO_MIN_AREA;
         let lo = (q < 1.0 && (loose || self.always_lo)).then(|| { let (w, h) = self.lo_for(q); [1.0 / q, q, w as f32, h as f32] });
         let pending = ui.perf().pending;
         self.frame_q(target, Frame { scene: ui.scene(), field: ui.field(), look, scale, t: now, mt, split, tiles }, true, lo);
