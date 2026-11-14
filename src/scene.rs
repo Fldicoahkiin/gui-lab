@@ -79,10 +79,12 @@ pub struct Field {
     /// Hover and press put one over the control; the glitch material reads it.
     pub burst: [f32; 4],
     pub burst_t: [f32; 4],
+    /// Up to four boxes (x0, y0, x1, y1, device px) that fronts pass by (`El::calm`).
+    pub calm: [[f32; 4]; 4],
     pub next: usize,
 }
 impl Default for Field {
-    fn default() -> Self { Self { fronts: [[0.0; 4]; 8], pointer: [-1e5, -1e5, 0.0, 0.0], wipe: [0.0; 4], wipe_rect: [0.0; 4], burst: [0.0; 4], burst_t: [0.0, 0.0, 0.0, 0.0], next: 0 } }
+    fn default() -> Self { Self { fronts: [[0.0; 4]; 8], pointer: [-1e5, -1e5, 0.0, 0.0], wipe: [0.0; 4], wipe_rect: [0.0; 4], burst: [0.0; 4], burst_t: [0.0, 0.0, 0.0, 0.0], calm: [[0.0; 4]; 4], next: 0 } }
 }
 impl Field {
     pub fn front(&mut self, x: f32, y: f32, t: f32, strength: f32) {
@@ -119,14 +121,16 @@ pub struct Fx {
     pub wave_tail: f32,
     /// How far instances are pushed as a front passes under them (logical px).
     pub push: f32,
-    /// Pointer lens over pictures: radius (logical px).
+    /// Pointer lens over pictures: radius (logical px), and how hard its edge is (0: a soft bell, as
+    /// loose as it is near the centre; 1: fully loose inside the radius, not at all outside).
     pub lens: f32,
+    pub lens_hard: f32,
     /// How long a new instance takes to condense (seconds).
     pub enter: f32,
     pub square: bool,
 }
 impl Default for Fx {
     fn default() -> Self {
-        Self { pitch: 5.0, jitter: 0.0, glitch: 0.4, wave_speed: 760.0, wave_life: 1.4, wave_width: 26.0, wave_tail: 150.0, push: 5.0, lens: 84.0, enter: 0.45, square: false }
+        Self { pitch: 5.0, jitter: 0.0, glitch: 0.4, wave_speed: 760.0, wave_life: 1.4, wave_width: 26.0, wave_tail: 150.0, push: 5.0, lens: 84.0, lens_hard: 0.0, enter: 0.45, square: false }
     }
 }

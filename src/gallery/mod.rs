@@ -395,7 +395,8 @@ pub fn view(s: &Gallery) -> El<Msg> {
     let th = s.theme();
     // A scene has the whole window under the top bar.
     if let Page::Scene(i) = s.page {
-        return col().key("gallery").fonts(th.roles()).fill_width().fill_height().child(top_bar(s)).child(divider(th.hairline).key("top-rule"))
+        // On a scene the top bar is chrome, like the strip: fronts the scene makes pass it by.
+        return col().key("gallery").fonts(th.roles()).fill_width().fill_height().child(top_bar(s).calm()).child(divider(th.hairline).key("top-rule"))
             .child(col().key(format!("main/{}", s.page.hash())).grow(1.0).fill_width().child(scenes::page(s, i as usize)));
     }
     let mut root = col().key("gallery").fonts(th.roles()).fill_width().fill_height().child(top_bar(s)).child(divider(th.hairline).key("top-rule"));
@@ -501,5 +502,6 @@ pub fn new_ui(faces: Vec<Face>, w: u32, h: u32, scale: f32) -> GalleryUi {
             scenes::tick(s, t) || changed
         })
         .on_unused_key(scenes::key)
+        .on_input(scenes::heard)
         .on_key_up(scenes::key_up)
 }

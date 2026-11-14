@@ -76,6 +76,7 @@ pub struct Node<M> {
     pub scope: bool,
     anchor: Option<String>,
     clips: bool,
+    calm: bool,
     tid: NodeId,
 }
 impl<M> Node<M> {
@@ -226,6 +227,9 @@ pub struct Ui<S, M> {
     /// the state changed.
     unused_key: Option<fn(&mut S, Key, bool) -> bool>,
     released: Option<fn(&mut S, Key) -> bool>,
+    /// Told of every press, wheel turn and key from the person (before it is handled); returns whether
+    /// the state changed.
+    input: Option<fn(&mut S) -> bool>,
 }
 
 impl<S, M: Clone> Ui<S, M> {
@@ -247,6 +251,10 @@ impl<S, M: Clone> Ui<S, M> {
     /// Give the state the keys nothing on the page used (Esc on a scene, a key that is held);
     /// `f` returns whether the state changed.
     pub fn on_unused_key(mut self, f: fn(&mut S, Key, bool) -> bool) -> Self { self.unused_key = Some(f); self }
+    /// Hear of every press, wheel turn and key press before it is handled (a demonstration that the
+    /// person takes over).
+    pub fn on_input(mut self, f: fn(&mut S) -> bool) -> Self { self.input = Some(f); self }
+    fn heard(&mut self) { if let Some(f) = self.input && f(&mut self.state) { self.relayout(); } }
     /// Tell the state when a key is let go; `f` returns whether the state changed.
     pub fn on_key_up(mut self, f: fn(&mut S, Key) -> bool) -> Self { self.released = Some(f); self }
     /// A key let go.
@@ -265,7 +273,7 @@ impl<S, M: Clone> Ui<S, M> {
             hover: None, focus: None, pressed: None, capture: None, modal_at: None, modal_key: None, return_focus: None, split: None, splits: 0,
             keyboard: false, marks: Marks::default(), sized: None, commands: None, unseen: vec![], base: vec![], tags: vec![], roles: vec![],
             run: None, painted_phase: 0, flows: HashMap::new(), ghosts: vec![], body_len: 0, animating: false, lifted: HashMap::new(),
-            gaze_of: None, gaze_seen: HashMap::new(), annots: vec![], hovered: None, ticked: None, unused_key: None, released: None,
+            gaze_of: None, gaze_seen: HashMap::new(), annots: vec![], hovered: None, ticked: None, unused_key: None, released: None, input: None,
         };
         ui.resize(w, h, scale);
         ui
@@ -385,6 +393,7 @@ impl<S, M: Clone> Ui<S, M> {
     pub fn press(&mut self, x: f32, y: f32) {
         // A press without a release before it (a lost pointer-up) ends the old capture.
         self.capture = None;
+        self.heard();
         self.pointer_move(x, y);
         let s = self.scale;
         self.field.front(x * s, y * s, self.now, 1.0);
@@ -425,6 +434,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// A wheel with both axes. A horizontal scroll node takes `dx`, or `dy` when there is no `dx`
     /// (most wheels only turn one way).
     pub fn wheel_xy(&mut self, x: f32, y: f32, dx: f32, dy: f32) {
+        self.heard();
         let mut at = self.hit(x, y);
         while let Some(i) = at.and_then(|i| self.up(i, |n| n.scroll)) {
             let d = if self.nodes[i].horizontal { if dx != 0.0 { dx } else { dy } } else { dy };
@@ -435,6 +445,7 @@ impl<S, M: Clone> Ui<S, M> {
 
     /// A key press; the flag is Shift. Returns whether anything used it.
     pub fn key(&mut self, k: Key, shift: bool) -> bool {
+        self.heard();
         self.keyboard = true;
         if k == Key::Tab { self.cycle_focus(shift); return true; }
         let lo = self.modal_at.unwrap_or(0);
@@ -602,6 +613,10 @@ impl<S, M: Clone> Ui<S, M> {
             match c {
                 Cmd::Morph { from, to, spec } => self.morph(&from, &to, spec),
                 Cmd::Front { x, y, strength } => { let s = self.scale; self.field.front(x * s, y * s, self.now, strength); }
+                Cmd::FrontAt { key, strength } => if let Some(n) = self.nodes.iter().find(|n| n.key == key) {
+                    let ((x, y), s) = (n.rect.center(), self.scale);
+                    self.field.front(x * s, y * s, self.now, strength);
+                },
                 Cmd::Flow(_) => {}
             }
         }
@@ -727,6 +742,8 @@ impl<S, M: Clone> Ui<S, M> {
         };
         let mut births = HashMap::with_capacity(self.births.len());
         self.field.wipe = [0.0; 4];
+        self.field.calm = [[0.0; 4]; 4];
+        let mut calms = 0;
         let mut held = vec![false; self.nodes.len()];
         // Everything beneath an open modal layer is held partly loose.
         let beneath = self.modal_at.and_then(|m| self.nodes[m].modal.as_ref()).map_or(0.0, |m| m.beneath);
@@ -750,6 +767,12 @@ impl<S, M: Clone> Ui<S, M> {
             let hidden = match (role, &self.run) { (1, Some(r)) => now >= r.src_until, (2, Some(r)) => now < r.dst_from, _ => n.hidden };
             let c = n.clip;
             let clip = [c.x * s, c.y * s, c.right() * s, c.bottom() * s];
+            if n.calm && !hidden && calms < self.field.calm.len() {
+                // Its box as seen, a little larger, so a front's push cannot carry an edge across it.
+                let r = seen;
+                self.field.calm[calms] = [(r.x - 4.0) * s, (r.y - 4.0) * s, (r.right() + 4.0) * s, (r.bottom() + 4.0) * s];
+                calms += 1;
+            }
             let under = self.modal_at.is_some_and(|m| i < m);
             let loose = if held[i] { 1.0 } else if under { n.loose.max(n.loosen).max(beneath) } else { n.loose.max(n.loosen) };
             let mat = n.mat;
@@ -1067,7 +1090,13 @@ impl<S, M: Clone> Ui<S, M> {
             if g.has(kinds::LEADER) { continue; }
             let mut tag = String::new();
             if g.has(kinds::INDEX) { tag = format!("{:02}", gaze::count(a.index as f32, p) as u32); }
-            if g.has(kinds::KIND) { if !tag.is_empty() { tag.push(' '); } tag.push_str(a.label.as_deref().unwrap_or(a.kind)); }
+            if g.has(kinds::KIND) {
+                if !tag.is_empty() { tag.push(' '); }
+                // A callout may ask for where the element is: `{xy}` becomes its centre in the scope.
+                let (cx, cy) = a.rect.center();
+                let xy = format!("x {:.0}  y {:.0}", cx - scope.x, cy - scope.y);
+                tag.push_str(&a.label.as_deref().unwrap_or(a.kind).replace("{xy}", &xy));
+            }
             if !tag.is_empty() {
                 let y = if a.rect.y - LINE - 2.0 >= view.y { a.rect.y - LINE - 2.0 } else { a.rect.y + 2.0 };
                 // Two elements starting at the same corner: the later tag moves along.
@@ -1209,7 +1238,7 @@ fn hoist<M>(el: &mut El<M>, out: &mut Vec<El<M>>) {
 /// `off` is (disabled, hidden), both inherited; `flow` is the nearest flow id above and its node.
 #[allow(clippy::too_many_arguments)]
 fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], off: (bool, bool), flow: Option<(Rc<str>, usize)>, inh: Inherit, tree: &mut TaffyTree<usize>, nodes: &mut Vec<Node<M>>) -> NodeId {
-    let El { key, style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, annotate, gaze_scope, material, loosen, anchor, clips, children } = el;
+    let El { key, style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, annotate, gaze_scope, material, loosen, anchor, clips, calm, children } = el;
     let key = if key.is_empty() { path } else { key };
     let roles = fonts.unwrap_or(roles);
     let (off, hidden) = (off.0 || disabled, off.1 || hidden);
@@ -1224,7 +1253,7 @@ fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], of
     nodes.push(Node {
         key, parent, rect: Rect::default(), clip: Rect::default(), inner: Rect::default(), scroll, horizontal, focusable, disabled: off, extent: 0.0,
         content, fill, border, radius, on_press, on_key, on_drag, on_blur, loose, wipe, bar, reveal, commit, modal, hidden, flow: flow.clone(),
-        mat: inh.code(), loosen: inh.loosen, annotate, scope: gaze_scope, anchor, clips, tid: placeholder,
+        mat: inh.code(), loosen: inh.loosen, annotate, scope: gaze_scope, anchor, clips, calm, tid: placeholder,
     });
     let kids: Vec<NodeId> = children.into_iter().enumerate().map(|(n, c)| {
         let p = format!("{}/{n}", nodes[i].key);

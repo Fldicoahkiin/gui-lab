@@ -26,7 +26,7 @@ struct U {
   bg: vec4f,
   fg: vec4f,
   accent: vec4f,
-  pointer: vec4f,  // x, y, strength, _    (device px)
+  pointer: vec4f,  // x, y, strength (device px), how hard the lens's edge is
   wipe: vec4f,     // half-plane source: line x, strength, _, _
   wipe_rect: vec4f,// where it acts: x0, y0, x1, y1
   split: vec4f,    // a commit: origin x, y (device px), start time, on
@@ -38,6 +38,7 @@ struct U {
   burst: vec4f,    // a burst's rect, device px (x0, y0, x1, y1)
   burst_t: vec4f,  // its start time, strength, length (s)
   mats: array<vec4f, 24>, // every material's numbers, two vec4s each (style.rs MAT_PARAMS)
+  calm: array<vec4f, 4>,  // boxes fronts pass by (x0, y0, x1, y1, device px)
 };
 @group(0) @binding(0) var<uniform> u: U;
 @group(0) @binding(1) var samp: sampler;
@@ -94,7 +95,9 @@ fn vs_pad(i: VIn, spad: f32) -> VOut {
   // Each instance rides the wave: it is pushed outward a little as a front passes under it.
   let centre = i.rect.xy + i.rect.zw * 0.5;
   let w = u.fb.z * 1.3 * u.res.z;
+  let still = calm_at(centre);
   for (var k = 0; k < 8; k++) {
+    if (still) { break; }
     let f = front_at(centre, u.fronts[k]);
     let dir = normalize(centre - u.fronts[k].xy + vec2f(1e-4));
     p += dir * exp(-(f.y * f.y) / (w * w)) * f.x * u.fc.x * u.res.z;
@@ -273,7 +276,15 @@ fn h1(p: vec2f) -> f32 { return fract(sin(dot(p, vec2f(127.1, 311.7))) * 43758.5
 fn h2(p: vec2f) -> vec2f { return vec2f(h1(p), h1(p + vec2f(19.19, 73.3))); }
 
 /// How disturbed a point is by passing fronts: 1 on a front, a soft tail behind it.
+fn calm_at(p: vec2f) -> bool {
+  for (var j = 0; j < 4; j++) {
+    let r = u.calm[j];
+    if (r.z > r.x && p.x >= r.x && p.y >= r.y && p.x < r.z && p.y < r.w) { return true; }
+  }
+  return false;
+}
 fn wave(p: vec2f, tail_gain: f32) -> f32 {
+  if (calm_at(p)) { return 0.0; }
   var k = 0.0;
   let s = u.res.z;
   let w = max(u.fb.z, 1e-3) * s;
@@ -296,7 +307,9 @@ fn half_plane(p: vec2f) -> f32 {
 fn field(p: vec2f, tail_gain: f32) -> f32 { return max(wave(p, tail_gain), half_plane(p)); }
 fn lens(p: vec2f) -> f32 {
   let d = (p - u.pointer.xy) / (max(u.fc.y, 1e-3) * u.res.z);
-  return exp(-dot(d, d)) * u.pointer.z * step(0.5, u.fc.y);
+  let bell = exp(-dot(d, d));
+  let disc = 1.0 - step(1.0, length(d));
+  return mix(bell, disc, clamp(u.pointer.w, 0.0, 1.0)) * u.pointer.z * step(0.5, u.fc.y);
 }
 fn ink(p: vec2f) -> vec4f { return textureSampleLevel(tex0, samp, p / u.res.xy, 0.0); }
 fn near(p: vec2f) -> vec4f { return textureSampleLevel(tex1, samp, p / u.res.xy, 0.0); }

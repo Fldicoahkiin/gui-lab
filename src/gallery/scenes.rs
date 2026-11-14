@@ -11,13 +11,14 @@ use crate::widgets::{Edit, Spec, TextEdit, Variant, button_as, input, number, se
 use crate::wrap::{Around, Silhouette};
 use std::sync::OnceLock;
 use taffy::{AlignItems, JustifyContent};
+use taffy::style_helpers::length;
 
 /// Hash name, title, what it is, and the style preset (index into `styles()`) it opens in.
 pub const SCENES: [(&str, &str, &str, usize); 7] = [
     ("opening", "开场", "满屏的点聚成标题，再散开拼出一页；然后由一台机器一步一步操作这一页。", 1),
     ("reading", "读一篇文章", "图文混排的长文。拖动图片，文字沿着它的真实轮廓重新排开。", 2),
-    ("printing", "一张图的印法", "同一张图分成几块，每块一种记号。移动指针，记号在指针下显现；拖动分界线。", 8),
-    ("morph", "变形", "一个词散成粒子，拼成一张图；图变成记号，再合成一个按钮。", 10),
+    ("printing", "一张图的印法", "同一张图分成五块，每块一种记号。指针下显出这一块的记号；拖动分界线，或只用一种记号对比原图。", 8),
+    ("morph", "变形", "一个粗重的词散成粒子，拼成一张图；图变成记号，再合成一个能用的小界面。", 10),
     ("xray", "透视", "按住空格，界面被拆开：边框、编号和中间图浮出来。松开，合回去。", 6),
     ("sound", "声音", "一段按节拍生成的信号进入场：低频推动整页起伏，频谱散成点，文字仍然可读。", 3),
     ("styles", "十二种风格", "同一个界面，在十二个风格预设之间切换，变化从按下的地方传开。", 7),
@@ -32,7 +33,8 @@ const fn p(name: &'static str, min: f32, max: f32, step: f32, decimals: usize, u
 pub const PARAMS: [&[P]; COUNT] = [
     &[p("节拍", 200.0, 2000.0, 50.0, 0, "ms", 750.0), p("飞行", 300.0, 3000.0, 50.0, 0, "ms", 1100.0), p("弧度", 0.0, 200.0, 2.0, 0, "px", 60.0), p("点距", 2.0, 12.0, 0.5, 1, "px", 4.0)],
     &[p("间隔", 0.0, 60.0, 1.0, 0, "px", 14.0), p("图宽", 120.0, 520.0, 10.0, 0, "px", 300.0), p("字号", 12.0, 24.0, 1.0, 0, "px", 17.0), p("行高", 18.0, 44.0, 1.0, 0, "px", 30.0)],
-    &[p("点距", 2.0, 32.0, 0.5, 1, "px", 8.0), p("级数", 2.0, 16.0, 1.0, 0, "", 8.0), p("透镜", 20.0, 300.0, 5.0, 0, "px", 130.0), p("松开", 0.0, 1.0, 0.05, 2, "", 0.0)],
+    &[p("点距", 4.0, 32.0, 0.5, 1, "px", 9.0), p("级数", 2.0, 16.0, 1.0, 0, "", 10.0), p("透镜", 20.0, 400.0, 5.0, 0, "px", 150.0), p("松开", 0.0, 1.0, 0.05, 2, "", 0.0),
+      p("记号", 0.0, 11.0, 1.0, 0, "", 10.0), p("调色板", 0.0, 7.0, 1.0, 0, "", 0.0)],
     &[p("飞行", 300.0, 3000.0, 50.0, 0, "ms", 1300.0), p("弧度", 0.0, 200.0, 2.0, 0, "px", 80.0), p("错开", 0.0, 0.9, 0.05, 2, "", 0.5), p("点距", 2.0, 12.0, 0.5, 1, "px", 4.0)],
     &[p("层距", 40.0, 600.0, 5.0, 0, "px", 380.0), p("标注", 2.0, 40.0, 1.0, 0, "个", 14.0), p("等距线", 1.5, 12.0, 0.5, 1, "px", 3.0)],
     &[p("速度", 60.0, 180.0, 1.0, 0, "BPM", 112.0), p("强度", 0.0, 1.0, 0.05, 2, "", 0.7), p("低频", 0.0, 2.0, 0.05, 2, "", 1.0), p("种子", 0.0, 99.0, 1.0, 0, "", 7.0)],
@@ -48,7 +50,8 @@ pub enum SMsg {
     // Opening
     Start,
     Restart,
-    Pause,
+    /// The person took over the opening's page; the operator goes on.
+    Resume,
     OpType(TextEdit),
     OpSwitch,
     OpTab(usize),
@@ -59,9 +62,18 @@ pub enum SMsg {
     // Printing: move seam `i` to a fraction of the picture; which picture; marks everywhere or not.
     Seam(usize, f32),
     Picture(usize),
+    /// Five strips or one; the one strip's compare line.
+    PrMode(usize),
+    Compare(f32),
     // Morph: become form `i`, the next one.
     Form(usize),
     NextForm,
+    PrevForm,
+    /// Go round by itself; the little interface's switch, number and button.
+    Loop,
+    MoSwitch,
+    MoNum(Edit),
+    MoGo,
     // X-ray: take apart (held) or put back; keep apart.
     Apart(bool),
     KeepApart,
@@ -85,14 +97,26 @@ pub struct Scenes {
     pub op_tab: usize,
     pub op_count: u32,
     pub op_value: f32,
+    /// Whether the operator has done this step's action (it flies first, then acts), and whether the
+    /// person has taken over.
+    pub op_acted: bool,
+    pub taken: bool,
     // Reading
     pub obj: [(f32, f32); 2],
     pub obstacle: usize,
     // Printing
     pub seams: [f32; 4],
     pub pic: usize,
-    // Morph
+    pub pr_mode: usize,
+    pub cmp: f32,
+    // Morph: the form shown, going round by itself and since when, the little interface's state.
     pub form: usize,
+    pub looping: bool,
+    pub form_at: f32,
+    pub mo_on: bool,
+    pub mo_n: f32,
+    pub mo_draft: Option<String>,
+    pub mo_sent: u32,
     // X-ray
     pub apart: bool,
     pub keep: bool,
@@ -113,8 +137,8 @@ impl Default for Scenes {
         let mut p = [[0.0; 6]; COUNT];
         for (i, ps) in PARAMS.iter().enumerate() { for (j, q) in ps.iter().enumerate() { p[i][j] = q.default; } }
         Self {
-            p, strip: true, shown: 0, at: 0.0, op: 0, running: false, op_text: TextEdit::default(), op_switch: false, op_tab: 0, op_count: 0, op_value: 12.0,
-            obj: [(330.0, 120.0), (30.0, 330.0)], obstacle: 0, seams: [0.2, 0.4, 0.6, 0.8], pic: 0, form: 0, apart: false, keep: false,
+            p, strip: true, shown: 0, at: 0.0, op: 0, running: false, op_text: TextEdit::default(), op_switch: false, op_tab: 0, op_count: 0, op_value: 12.0, op_acted: false, taken: false,
+            obj: [(330.0, 120.0), (30.0, 330.0)], obstacle: 0, seams: [0.2, 0.4, 0.6, 0.8], pic: 0, pr_mode: 0, cmp: 0.45, form: 0, looping: false, form_at: 0.0, mo_on: true, mo_n: 3.0, mo_draft: None, mo_sent: 0, apart: false, keep: false,
             playing: false, song: 0.0, since: 0.0, beat: -1, levels: [0.0; BANDS], look: 7,
         }
     }
@@ -126,10 +150,10 @@ impl Scenes {
         let d = Scenes::default();
         self.p[scene] = d.p[scene];
         match scene {
-            0 => { self.shown = 0; self.op = 0; self.running = false; self.op_text = d.op_text; self.op_switch = false; self.op_tab = 0; self.op_count = 0; self.op_value = d.op_value; }
+            0 => { self.shown = 0; self.op = 0; self.running = false; self.op_text = d.op_text; self.op_switch = false; self.op_tab = 0; self.op_count = 0; self.op_value = d.op_value; self.op_acted = false; self.taken = false; }
             1 => { self.obj = d.obj; self.obstacle = 0; }
-            2 => { self.seams = d.seams; self.pic = 0; }
-            3 => self.form = 0,
+            2 => { self.seams = d.seams; self.pic = 0; self.pr_mode = 0; self.cmp = d.cmp; }
+            3 => { self.form = 0; self.looping = false; self.mo_on = d.mo_on; self.mo_n = d.mo_n; self.mo_draft = None; self.mo_sent = 0; }
             4 => { self.apart = false; self.keep = false; }
             5 => { self.playing = false; self.song = 0.0; self.beat = -1; self.levels = [0.0; BANDS]; }
             _ => {}
@@ -152,7 +176,7 @@ pub fn update(g: &mut Gallery, m: SMsg) {
         }
         SMsg::Start => if g.sc.shown == 0 { begin(g, now) },
         SMsg::Restart => { let p = g.sc.p[0]; g.sc.reset(0); g.sc.p[0] = p; }
-        SMsg::Pause => { g.sc.running = !g.sc.running; g.sc.at = now; }
+        SMsg::Resume => if g.sc.shown == 2 && g.sc.op < OPS.len() { g.sc.taken = false; g.sc.running = true; g.sc.at = now - 10.0; },
         SMsg::OpType(t) => g.sc.op_text = t,
         SMsg::OpSwitch => g.sc.op_switch = !g.sc.op_switch,
         SMsg::OpTab(i) => g.sc.op_tab = i,
@@ -166,8 +190,19 @@ pub fn update(g: &mut Gallery, m: SMsg) {
             g.sc.seams[i] = f.clamp(lo, hi);
         }
         SMsg::Picture(i) => g.sc.pic = i.min(2),
+        SMsg::PrMode(i) => g.sc.pr_mode = i.min(1),
+        SMsg::Compare(f) => g.sc.cmp = f.clamp(0.0, 1.0),
         SMsg::Form(i) => form_to(g, i),
         SMsg::NextForm => { let n = (g.sc.form + 1) % FORMS.len(); form_to(g, n); }
+        SMsg::PrevForm => { let n = (g.sc.form + FORMS.len() - 1) % FORMS.len(); form_to(g, n); }
+        SMsg::Loop => { g.sc.looping = !g.sc.looping; g.sc.form_at = now; }
+        SMsg::MoSwitch => g.sc.mo_on = !g.sc.mo_on,
+        SMsg::MoNum(e) => match e {
+            Edit::Set(v) => { g.sc.mo_n = MO_SPEC.clamp(v); g.sc.mo_draft = None; }
+            Edit::Draft(d) => g.sc.mo_draft = Some(d),
+            Edit::Cancel => g.sc.mo_draft = None,
+        },
+        SMsg::MoGo => { g.sc.mo_sent += 1; form_to(g, 0); }
         SMsg::Apart(a) => apart(g, a || g.sc.keep),
         SMsg::KeepApart => { g.sc.keep = !g.sc.keep; let k = g.sc.keep; apart(g, k); }
         SMsg::Play => {
@@ -192,9 +227,9 @@ pub fn key(g: &mut Gallery, k: Key, _shift: bool) -> bool {
     let Page::Scene(i) = g.page else { return false };
     if k == Key::Escape { super::update(g, Msg::Go(Page::Scenes)); return true; }
     match (i, k) {
-        (0, Key::Enter | Key::Char(' ')) => { update(g, if g.sc.shown == 0 { SMsg::Start } else { SMsg::Pause }); true }
+        (0, Key::Enter | Key::Char(' ')) if g.sc.shown == 0 => { update(g, SMsg::Start); true }
         (3, Key::Right | Key::Char(' ') | Key::Enter) => { update(g, SMsg::NextForm); true }
-        (3, Key::Left) => { let n = (g.sc.form + FORMS.len() - 1) % FORMS.len(); update(g, SMsg::Form(n)); true }
+        (3, Key::Left) => { update(g, SMsg::PrevForm); true }
         (4, Key::Char(' ')) => { if !g.sc.apart { update(g, SMsg::Apart(true)); } true }
         (5, Key::Char(' ')) => { update(g, SMsg::Play); true }
         (6, Key::Right) => { let n = (g.sc.look + 1) % 12; update(g, SMsg::Look(n)); true }
@@ -212,6 +247,7 @@ pub fn key_up(g: &mut Gallery, k: Key) -> bool {
 pub fn tick(g: &mut Gallery, t: f32) -> bool {
     match g.page {
         Page::Scene(0) => tick_opening(g, t),
+        Page::Scene(3) => tick_morph(g, t),
         Page::Scene(5) => tick_sound(g, t),
         _ => false,
     }
@@ -225,16 +261,14 @@ pub fn look(g: &Gallery, l: &mut Look) {
         0 => {
             l.fx.pitch = q(3);
             // The operator's target is framed as it is reached.
-            l.gaze = Gaze { mode: GazeMode::All, kinds: gaze::FRAME | gaze::KIND | gaze::SIZE, density: 2.0, draw_ms: 360.0, colour: l.theme.accent, only_marked: true };
+            l.gaze = Gaze { mode: GazeMode::All, kinds: gaze::FRAME | gaze::KIND, density: 2.0, draw_ms: 300.0, colour: l.theme.accent, only_marked: true };
         }
         2 => {
-            let base = PicFx { pitch: q(0), levels: q(1), ground: 0.1, ..PicFx::default() };
-            l.pics[0] = PicFx { gamma: 1.1, ground: 0.0, ..PicFx { set: set::CHARS as f32, ..base } };
-            l.pics[1] = PicFx { palette: 3.0, colours: 4.0, spread: 0.6, pitch: (q(0) * 0.6).max(2.0), ..PicFx { set: set::PIXEL as f32, ..base } };
-            l.pics[2] = PicFx { follow: 1.0, colour: colour::TWO as f32, tint_a: [0.05, 0.05, 0.07], tint_b: [0.95, 0.92, 0.84], ..PicFx { set: set::STROKE as f32, ..base } };
-            l.pics[3] = PicFx { glow: 1.2, gamma: 0.8, ground: 0.0, colour: colour::GIVEN as f32, tint_a: l.theme.accent, ..PicFx { set: set::GLOW as f32, ..base } };
-            l.pics[4] = PicFx { relief: 1.4, ground: 0.25, pitch: q(0) * 1.3, ..PicFx { set: set::BRICK as f32, ..base } };
+            for (k, f) in print_strips(q(0), q(1), l.theme.accent).into_iter().enumerate() { l.pics[k] = f; }
+            l.pics[PR_ONE as usize] = print_one(q(4), q(0), q(1), q(5));
+            // Inside the lens the strip's own marks, fully: a hard edge, no half-loose ring around it.
             l.fx.lens = q(2);
+            l.fx.lens_hard = 1.0;
             l.gaze.mode = GazeMode::Off;
         }
         3 => l.fx.pitch = q(3),
@@ -256,6 +290,39 @@ pub fn look(g: &Gallery, l: &mut Look) {
     }
 }
 
+// ── Printing's marks ──
+
+/// The `PicFx` slot of the one-strip mode (the five strips use 0–4).
+const PR_ONE: u8 = 5;
+/// The five strips at base pitch `pitch` and `levels` brightness levels: characters, limited-colour
+/// pixels, strokes along the forms, glow, bricks in relief.
+pub fn print_strips(pitch: f32, levels: f32, accent: [f32; 3]) -> [PicFx; 5] {
+    let base = PicFx { pitch, levels, ground: 0.1, ..PicFx::default() };
+    [
+        // Characters read on a dark ground: never below pitch 9, sixteen glyphs, their own colours,
+        // lifted (a gamma under 1 puts the denser glyphs on more of the picture).
+        PicFx { pitch: (pitch + 1.0).max(9.0), levels: 16.0, gamma: 0.7, ground: 0.0, colour: colour::ORIGINAL as f32, ..PicFx { set: set::CHARS as f32, ..base } },
+        PicFx { palette: 3.0, colours: 4.0, spread: 0.6, pitch: (pitch * 0.6).max(3.0), ..PicFx { set: set::PIXEL as f32, ..base } },
+        PicFx { follow: 1.0, colour: colour::TWO as f32, tint_a: [0.05, 0.05, 0.07], tint_b: [0.95, 0.92, 0.84], ..PicFx { set: set::STROKE as f32, ..base } },
+        PicFx { glow: 1.2, gamma: 0.8, ground: 0.0, colour: colour::GIVEN as f32, tint_a: accent, ..PicFx { set: set::GLOW as f32, ..base } },
+        PicFx { relief: 1.4, ground: 0.25, pitch: pitch * 1.3, ..PicFx { set: set::BRICK as f32, ..base } },
+    ]
+}
+/// The one strip: mark set `s`, pitch, levels and palette `pal` (0 = the picture's own colours, else
+/// `marks::PALETTES[pal - 1]`).
+pub fn print_one(s: f32, pitch: f32, levels: f32, pal: f32) -> PicFx {
+    let s = s.round().clamp(0.0, (set::COUNT - 1) as f32) as u8;
+    let mut f = PicFx { pitch, levels, ..super::mark_defaults(s) };
+    if s == set::CHARS { f.pitch = pitch.max(9.0); f.gamma = 0.7; }
+    let pal = pal.round() as usize;
+    if pal > 0 && pal <= crate::marks::PALETTES.len() {
+        f.palette = (pal - 1) as f32;
+        f.colours = crate::marks::PALETTES[pal - 1].1 as f32;
+        f.spread = f.spread.max(0.5);
+    } else { f.colours = 0.0; }
+    f
+}
+
 // ── Opening ──────────────────────────────────────────────────────────────────────────────────────
 
 fn morph_spec(g: &Gallery, scene: usize) -> MorphSpec {
@@ -273,16 +340,26 @@ fn begin(g: &mut Gallery, now: f32) {
     g.sc.running = true;
     g.sc.op = 0;
 }
-/// The operator's script: where it goes, what it says there, and what it does on arrival.
+/// The operator's script: the control it goes to, and the caption of what it does there.
 const OPS: [(&str, &str); 9] = [
-    ("op/search", "输入框"), ("op/search", "输入 点"), ("op/search", "输入 与"), ("op/search", "输入 线"),
-    ("op/switch", "开关"), ("op/num", "数字 +4"), ("op/tabs", "标签页 2"), ("op/publish", "按钮"), ("op/cards", "卡片"),
+    ("op/search", "点到搜索框"), ("op/search", "输入“点”"), ("op/search", "输入“与”"), ("op/search", "输入“线”"),
+    ("op/switch", "打开开关"), ("op/num", "间距加 4"), ("op/tabs", "切到“面”"), ("op/publish", "按下“发布”"), ("op/cards", "看一看卡片"),
 ];
+fn mark_key(n: usize) -> String { format!("op/mark{n}") }
+/// The person pressed, scrolled or typed: on the opening's page, the operator stops and leaves the page
+/// to them.
+pub fn heard(g: &mut Gallery) -> bool {
+    if g.page != Page::Scene(0) || g.sc.shown != 2 || !g.sc.running { return false; }
+    g.sc.running = false;
+    g.sc.taken = true;
+    true
+}
 fn tick_opening(g: &mut Gallery, t: f32) -> bool {
     let sc = &mut g.sc;
     if !sc.running { return false; }
     let beat = sc.p[0][0] / 1000.0;
     let flight = sc.p[0][1] / 1000.0;
+    let fly = op_fly(sc.p[0][0]) / 1000.0;
     match sc.shown {
         // The title holds a moment, then scatters into the page.
         1 if t >= sc.at + flight + 0.9 => {
@@ -292,27 +369,40 @@ fn tick_opening(g: &mut Gallery, t: f32) -> bool {
             g.sc.at = t;
             true
         }
-        2 if t >= sc.at + if sc.op == 0 { flight + 0.8 } else { beat } => {
-            if sc.op >= OPS.len() { sc.running = false; return true; }
+        // The mark has arrived: it acts, with a press ripple where it is.
+        2 if sc.op > 0 && !sc.op_acted && t >= sc.at + fly + 0.05 => {
             match sc.op {
-                1 => sc.op_text = TextEdit::new("点"),
-                2 => sc.op_text = TextEdit::new("点与"),
-                3 => sc.op_text = TextEdit::new("点与线"),
-                4 => sc.op_switch = !sc.op_switch,
-                5 => sc.op_value += 4.0,
-                6 => sc.op_tab = 2,
-                7 => sc.op_count += 1,
+                2 => sc.op_text = TextEdit::new("点"),
+                3 => sc.op_text = TextEdit::new("点与"),
+                4 => sc.op_text = TextEdit::new("点与线"),
+                5 => sc.op_switch = !sc.op_switch,
+                6 => sc.op_value += 4.0,
+                7 => sc.op_tab = 2,
+                8 => sc.op_count += 1,
                 _ => {}
             }
+            sc.op_acted = true;
+            let key = mark_key(sc.op);
+            g.cmds.push(Cmd::FrontAt { key, strength: 0.8 });
+            true
+        }
+        // The next step: the mark flies from the last control to the next one, as a short trail.
+        2 if t >= sc.at + if sc.op == 0 { flight + 0.8 } else { beat.max(fly + 0.3) } => {
+            if sc.op >= OPS.len() { sc.running = false; return true; }
             sc.op += 1;
+            sc.op_acted = false;
             sc.at = t;
-            // The operator's mark flies from the last control to this one.
-            g.cmds.push(Cmd::Flow(FlowSpec { flow_ms: 380.0, flow_loose: 0.35, out_ms: 160.0 }));
+            if sc.op > 1 {
+                let spec = MorphSpec { loosen_ms: 60.0, duration_ms: op_fly(sc.p[0][0]), tighten_ms: 120.0, curl: sc.p[0][2], lattice: sc.p[0][3], stagger: 0.75, threshold: 0.2, ..MorphSpec::default() };
+                g.cmds.push(Cmd::Morph { from: mark_key(sc.op - 1), to: mark_key(sc.op), spec });
+            }
             true
         }
         _ => false,
     }
 }
+/// How long the operator's mark is in the air between two controls (ms), for a beat of `beat` ms.
+fn op_fly(beat: f32) -> f32 { (beat * 0.55).clamp(180.0, 650.0) }
 
 fn opening(g: &Gallery, w: f32, h: f32) -> El<Msg> {
     let sc = &g.sc;
@@ -330,25 +420,62 @@ fn opening(g: &Gallery, w: f32, h: f32) -> El<Msg> {
     if sc.shown == 0 {
         stage = stage.child(button_as("op/start", "开始", Variant::Accent, Msg::Scene(SMsg::Start)).height(44.0).pad(28.0, 0.0).absolute(Some(w * 0.5 - 50.0), Some(h * 0.5 - 22.0), None, None));
     }
+    // One line at the bottom: what the operator is doing, or that the page is yours now.
+    if sc.shown == 2 {
+        let n = sc.op.min(OPS.len());
+        let (say, act): (String, Option<El<Msg>>) = if sc.taken {
+            ("你接手了：这一页现在是普通的页面。".into(), Some(button_as("op/resume", "继续演示", Variant::Default, Msg::Scene(SMsg::Resume))))
+        } else if sc.op == 0 {
+            ("机器准备操作这一页。按下或键入任何东西，就由你接手。".into(), None)
+        } else if !sc.running {
+            ("演示结束：这一页现在是普通的页面。".into(), Some(button_as("op/again", "重新开始", Variant::Quiet, Msg::Scene(SMsg::Restart))))
+        } else {
+            (format!("{:02} / {:02}　{}", n, OPS.len(), OPS[n - 1].1), None)
+        };
+        let mut line = row().key("op/caption").width(w).gap(14.0).align(AlignItems::CENTER).justify(JustifyContent::CENTER)
+            .child(space(10.0, 10.0).radius(5.0).fill(if sc.running { Paint::ACCENT } else { Paint::DIM }))
+            .child(text(say, 15.0, Paint::TEXT).key(format!("op/say{}-{}", sc.op, sc.taken)));
+        if let Some(a) = act { line = line.child(a); }
+        stage = stage.child(line.absolute(Some(0.0), Some(h - 34.0), None, None));
+    }
     stage
 }
 
-/// The operator's mark: rides along inside the control it is at, so it is wherever layout puts it.
-fn operator<M>(g: &Gallery, key: &str) -> Option<El<M>> {
-    let sc = &g.sc;
-    if sc.shown != 2 || sc.op == 0 { return None; }
-    let at = OPS[(sc.op - 1).min(OPS.len() - 1)].0;
-    (at == key).then(|| col().key(format!("op/mark{}", sc.op)).flow("operator").width(22.0).height(22.0).center().absolute(None, Some(-6.0), Some(-6.0), None)
-        .child(space(22.0, 22.0).radius(11.0).border(1.5, Paint::ACCENT))
-        .child(space(8.0, 8.0).radius(4.0).fill(Paint::ACCENT).absolute(Some(7.0), Some(7.0), None, None)))
+/// The operator's mark (crosshair, corner brackets, a dot; ~34 px), on the control it is at.
+/// The annotation layer frames it and writes where it is.
+fn mark_el<M>(n: usize, hidden: bool) -> El<M> {
+    let a = Paint::ACCENT;
+    let (s, l, t) = (34.0, 10.0, 3.0);
+    let mut m = col().key(mark_key(n)).width(s).height(s).hidden_until_morphed(hidden).annotate("{xy}");
+    for (x, y) in [(0.0, 0.0), (s - l, 0.0), (0.0, s - t), (s - l, s - t)] { m = m.child(space(l, t).fill(a).absolute(Some(x), Some(y), None, None)); }
+    for (x, y) in [(0.0, 0.0), (s - t, 0.0), (0.0, s - l), (s - t, s - l)] { m = m.child(space(t, l).fill(a).absolute(Some(x), Some(y), None, None)); }
+    let c = s * 0.5;
+    m.child(space(t, 8.0).fill(a).absolute(Some(c - t * 0.5), Some(5.0), None, None))
+        .child(space(t, 8.0).fill(a).absolute(Some(c - t * 0.5), Some(s - 13.0), None, None))
+        .child(space(8.0, t).fill(a).absolute(Some(5.0), Some(c - t * 0.5), None, None))
+        .child(space(8.0, t).fill(a).absolute(Some(s - 13.0), Some(c - t * 0.5), None, None))
+        .child(space(5.0, 5.0).radius(2.5).fill(a).absolute(Some(c - 2.5), Some(c - 2.5), None, None))
 }
-/// A control the operator may be at: annotated while it is there.
+/// A control the operator may be at: its mark over it (and the last one, hidden, for the flight),
+/// and the control annotated with what is being done while it is there.
 fn op_at(g: &Gallery, key: &str, el: El<Msg>) -> El<Msg> {
     let sc = &g.sc;
-    let mut c = col().key(format!("{key}/at")).child(el);
-    if let Some(m) = operator(g, key) {
+    let mut c = row().key(format!("{key}/at")).align(AlignItems::START).child(el);
+    if key == "op/cards" { c = c.fill_width(); }
+    if sc.shown != 2 || sc.op == 0 || sc.taken { return c; }
+    let at = |n: usize| OPS[(n - 1).min(OPS.len() - 1)].0 == key;
+    let mut marks = vec![];
+    if sc.op > 1 && at(sc.op - 1) { marks.push(mark_el(sc.op - 1, true)); }
+    if at(sc.op) {
+        marks.push(mark_el(sc.op, false));
+        c = c.annotate(OPS[(sc.op - 1).min(OPS.len() - 1)].1);
+    }
+    if !marks.is_empty() {
+        // Over the control's top right corner (where its action usually is), drawn after it. The
+        // margins add up to nothing, so the page does not move when the mark comes or goes.
+        let mut m = stack(marks).key(format!("{key}/marks"));
+        m.style.margin = taffy::Rect { left: length(-24.0), right: length(-10.0), top: length(-12.0), bottom: length(-22.0) };
         c = c.child(m);
-        if sc.op > 0 { c = c.annotate(OPS[(sc.op - 1).min(OPS.len() - 1)].1); }
     }
     c
 }
@@ -444,71 +571,143 @@ fn reading(g: &Gallery, w: f32, _h: f32) -> El<Msg> {
 const STRIP_NAMES: [&str; 5] = ["字符", "像素画", "笔触", "光点", "积木"];
 fn printing(g: &Gallery, w: f32, h: f32) -> El<Msg> {
     let sc = &g.sc;
-    let id = [BUST, SKY, TERRAIN][sc.pic.min(2)];
+    let q = |j| sc.get(2, j);
+    let id = [SKY, TERRAIN, BUST][sc.pic.min(2)];
     let r_ = ratio(id);
-    let pw = w.min((h - 110.0) / r_).max(200.0);
+    // The picture covers the whole wall (cropped, centred), so it fills most of the window.
+    let top = 26.0;
+    let wh = (h - 64.0 - top).min(w * 0.9).max(200.0).round();
+    let pw = w.max(wh / r_).round();
     let ph = (pw * r_).round();
-    let loose = sc.get(2, 3);
-    let edges = [0.0, sc.seams[0], sc.seams[1], sc.seams[2], sc.seams[3], 1.0];
-    // Labels above the picture and the seams in gaps between the windows: nothing is drawn over the
+    let (ox, oy) = (((w - pw) * 0.5).round(), ((wh - ph) * 0.5).round());
+    let loose = q(3);
+    let label = |t: String, x: f32| text(t, 14.0, Paint::TEXT).font(Font::Mono).absolute(Some(x), Some(0.0), None, None);
+    // Labels above the picture, seams and handles in the gaps and below it: nothing is drawn over the
     // picture itself, so every one of its pixels is the picture's own.
-    let top = 22.0;
-    let gap = 6.0;
-    let mut wall = col().key("pr/wall").width(pw).height(ph + top + 22.0).gaze_scope();
-    for k in 0..5 {
-        let (x0, x1) = ((edges[k] * pw).round(), (edges[k + 1] * pw).round());
-        let (l, r) = (if k == 0 { 0.0 } else { gap * 0.5 }, if k == 4 { 0.0 } else { gap * 0.5 });
-        // A window onto the same picture, at the same place: each window shows it in its own marks.
-        wall = wall.child(col().key(format!("pr/region{k}")).width((x1 - x0 - l - r).max(0.0)).height(ph).clip().absolute(Some(x0 + l), Some(top), None, None)
-            .child(picture(id, r_).key(format!("pr/pic{k}")).pic_fx(k as u8).loose(loose).width(pw).absolute(Some(-x0 - l), Some(0.0), None, None)));
-        if x1 - x0 > 40.0 {
-            wall = wall.child(text(format!("{:02} {}", k + 1, STRIP_NAMES[k]), 12.0, Paint::DIM).font(Font::Mono).absolute(Some(x0 + l + 2.0), Some(0.0), None, None));
+    let mut wall = col().key("pr/wall").width(w).height(wh + top + 24.0).gaze_scope();
+    if sc.pr_mode == 1 {
+        let f = print_one(q(4), q(0), q(1), q(5));
+        let set_name = set::NAMES[f.set as usize];
+        let pal = q(5).round() as usize;
+        let pal_name = if pal == 0 { "原色".to_owned() } else { crate::marks::PALETTES[pal - 1].0.to_owned() };
+        let x = (sc.cmp * w).round();
+        wall = wall
+            .child(label("原图".into(), 2.0))
+            .child(label(format!("{set_name} · 点距 {:.0} · {pal_name}", f.pitch), (x + 10.0).min(w - 260.0)))
+            .child(col().key("pr/one").width(w).height(wh).clip().absolute(Some(0.0), Some(top), None, None)
+                .child(picture(id, r_).key("pr/one-pic").pic_fx(PR_ONE).loose(loose).width(pw).absolute(Some(ox), Some(oy), None, None)
+                    .wipe(((sc.cmp * w - ox) / pw).clamp(0.0, 1.0)).on_drag(move |x, _| Msg::Scene(SMsg::Compare(((x * pw + ox) / w).clamp(0.0, 1.0))))))
+            .child(col().key("pr/compare").width(28.0).height(24.0).absolute(Some(x - 14.0), Some(top + wh), None, None).align(AlignItems::CENTER)
+                .on_drag_with(move |d| Some(Msg::Scene(SMsg::Compare((x + d.dx) / w))))
+                .on_key(move |k, shift| { let s = if shift { 0.1 } else { 0.02 }; let f = x / w; match k { Key::Left => Some(Msg::Scene(SMsg::Compare(f - s))), Key::Right => Some(Msg::Scene(SMsg::Compare(f + s))), _ => None } })
+                .child(space(2.0, 8.0).fill(Paint::ACCENT))
+                .child(space(14.0, 14.0).radius(7.0).fill(Paint::ACCENT)));
+    } else {
+        let edges = [0.0, sc.seams[0], sc.seams[1], sc.seams[2], sc.seams[3], 1.0];
+        let strips = print_strips(q(0), q(1), [0.0; 3]);
+        let gap = 6.0;
+        for k in 0..5 {
+            let (x0, x1) = ((edges[k] * w).round(), (edges[k + 1] * w).round());
+            let (l, r) = (if k == 0 { 0.0 } else { gap * 0.5 }, if k == 4 { 0.0 } else { gap * 0.5 });
+            // A window onto the same picture, at the same place: each window shows it in its own marks.
+            wall = wall.child(col().key(format!("pr/region{k}")).width((x1 - x0 - l - r).max(0.0)).height(wh).clip().absolute(Some(x0 + l), Some(top), None, None)
+                .child(picture(id, r_).key(format!("pr/pic{k}")).pic_fx(k as u8).loose(loose).width(pw).absolute(Some(ox - x0 - l), Some(oy), None, None)));
+            let name = if x1 - x0 > 150.0 { format!("{:02} {} · {:.0}", k + 1, STRIP_NAMES[k], strips[k].pitch) } else { format!("{:02} {}", k + 1, STRIP_NAMES[k]) };
+            if x1 - x0 > 56.0 { wall = wall.child(label(name, x0 + l + 2.0)); }
+        }
+        for i in 0..4 {
+            let x = (sc.seams[i] * w).round();
+            let f0 = sc.seams[i];
+            let seam = col().key(format!("pr/seam{i}")).width(24.0).height(wh + 24.0).absolute(Some(x - 12.0), Some(top), None, None).align(AlignItems::CENTER)
+                .on_drag_with(move |d| Some(Msg::Scene(SMsg::Seam(i, f0 + d.dx / w))))
+                .on_key(move |k, shift| { let s = if shift { 0.1 } else { 0.02 }; match k { Key::Left => Some(Msg::Scene(SMsg::Seam(i, f0 - s))), Key::Right => Some(Msg::Scene(SMsg::Seam(i, f0 + s))), _ => None } })
+                .child(space(1.0, wh).fill(Paint::ACCENT.alpha(0.7)))
+                .child(space(14.0, 14.0).radius(7.0).fill(Paint::ACCENT).absolute(Some(5.0), Some(wh + 6.0), None, None));
+            wall = wall.child(seam);
         }
     }
-    for i in 0..4 {
-        let x = (sc.seams[i] * pw).round();
-        let f0 = sc.seams[i];
-        let seam = col().key(format!("pr/seam{i}")).width(24.0).height(ph + 22.0).absolute(Some(x - 12.0), Some(top), None, None).align(AlignItems::CENTER)
-            .on_drag_with(move |d| Some(Msg::Scene(SMsg::Seam(i, f0 + d.dx / pw))))
-            .on_key(move |k, shift| { let s = if shift { 0.1 } else { 0.02 }; match k { Key::Left => Some(Msg::Scene(SMsg::Seam(i, f0 - s))), Key::Right => Some(Msg::Scene(SMsg::Seam(i, f0 + s))), _ => None } })
-            .child(space(1.0, ph).fill(Paint::ACCENT.alpha(0.7)))
-            .child(space(14.0, 14.0).radius(7.0).fill(Paint::ACCENT).absolute(Some(5.0), Some(ph + 6.0), None, None));
-        wall = wall.child(seam);
-    }
-    col().key("pr/page").gap(12.0).align(AlignItems::CENTER)
+    let hint = if sc.pr_mode == 1 { "拖动图下的圆点（或图上）移动对比线：左边是原图，右边是记号。记号、点距、调色板在下面的参数里。" }
+        else { "指针下的一圈是这一块的记号；拖动分界线；把“松开”设为 1，整张都是记号。" };
+    col().key("pr/page").gap(10.0).align(AlignItems::CENTER)
+        .child(row().key("pr/bar").width(w).gap(12.0).align(AlignItems::CENTER).wrap()
+            .child(segmented("pr/mode", &["五种记号", "一种记号"], sc.pr_mode, 28.0, |i| Msg::Scene(SMsg::PrMode(i))))
+            .child(segmented("pr/which", &["天空", "地形", "胸像"], sc.pic, 28.0, |i| Msg::Scene(SMsg::Picture(i))))
+            .child(text(hint, 12.0, Paint::DIM).shrink()))
         .child(wall)
-        .child(row().gap(12.0).align(AlignItems::CENTER).wrap()
-            .child(segmented("pr/which", &["胸像", "天空", "地形"], sc.pic, 28.0, |i| Msg::Scene(SMsg::Picture(i))))
-            .child(text("指针下的一圈显出这一块的记号；松开设为 1 时整张都是记号。", 12.0, Paint::DIM)))
 }
 
 // ── Morph ────────────────────────────────────────────────────────────────────────────────────────
 
-pub const FORMS: [&str; 4] = ["字", "图", "记号", "按钮"];
+pub const FORMS: [&str; 4] = ["字", "图", "记号", "界面"];
+/// How long each form stays when going round, after its flight (s).
+const MO_DWELL: f32 = 2.6;
+const MO_SPEC: Spec = Spec { min: 1.0, max: 9.0, step: 1.0, decimals: 0, unit: "份" };
 fn form_key(i: usize) -> String { format!("mo/form{i}") }
 fn form_to(g: &mut Gallery, i: usize) {
     if i == g.sc.form || i >= FORMS.len() { return; }
     let spec = morph_spec(g, 3);
     g.cmds.push(Cmd::Morph { from: form_key(g.sc.form), to: form_key(i), spec });
     g.sc.form = i;
+    g.sc.form_at = g.clock;
+}
+/// Going round: each form stays its dwell after the flight, then becomes the next.
+fn tick_morph(g: &mut Gallery, t: f32) -> bool {
+    if !g.sc.looping { return false; }
+    let wait = g.sc.p[3][0] / 1000.0 + MO_DWELL;
+    if t < g.sc.form_at + wait { return false; }
+    let n = (g.sc.form + 1) % FORMS.len();
+    form_to(g, n);
+    true
+}
+/// The fourth form: a small interface that works once it has landed.
+fn mo_card(g: &Gallery, cw: f32) -> El<Msg> {
+    let sc = &g.sc;
+    col().key("mo/ui").width(cw).gap(14.0).pad(22.0, 20.0).radius(14.0).fill(Paint::tone(0.06)).border(1.5, Paint::DIM)
+        .child(row().fill_width().justify(JustifyContent::SPACE_BETWEEN).align(AlignItems::BASELINE)
+            .child(text("山与水", 30.0, Paint::INK).font(Font::Display).weight(1.0))
+            .child(text(format!("已出发 {} 次", sc.mo_sent), 13.0, Paint::DIM).font(Font::Mono).key("mo/ui/sent")))
+        .child(picture(SKY, ratio(SKY)).key("mo/ui/pic").pic_fx(super::STYLE_SLOT))
+        .child(text_lh("傍晚的山和水。选好份数，按“出发”，界面又变回那个字。", 14.0, 22.0, Paint::TEXT))
+        .child(row().fill_width().gap(14.0).align(AlignItems::CENTER).wrap()
+            .child(switch("mo/ui/fav", "收藏", sc.mo_on, None, Msg::Scene(SMsg::MoSwitch)).width(130.0))
+            .child(number("mo/ui/n", "份数", sc.mo_n, MO_SPEC, sc.mo_draft.as_deref(), |e| Msg::Scene(SMsg::MoNum(e))))
+            .child(space(0.0, 0.0).grow(1.0))
+            .child(button_as("mo/ui/go", "出发", Variant::Accent, Msg::Scene(SMsg::MoGo)).height(38.0).pad(22.0, 0.0)))
 }
 fn morph(g: &Gallery, w: f32, h: f32) -> El<Msg> {
     let f = g.sc.form;
-    let pw = (w * 0.8).min(560.0).min((h - 120.0) / ratio(SKY));
-    let size = (w / 4.2).clamp(72.0, 200.0);
+    // Narrow, the steps, the button and the switch take two rows under the stage.
+    let sh = (h - if w < 640.0 { 130.0 } else { 60.0 }).max(200.0);
+    let pw = (w * 0.86).min(900.0).min((sh - 20.0) / ratio(SKY)).round();
+    let size = (w / 3.0).min(sh * 0.62).clamp(80.0, 320.0).round();
+    let cw = (w - 16.0).min(520.0);
     let forms = [
-        text_lh("山与水", size, size * 1.15, Paint::INK).font(Font::Display).weight(3.0),
+        text_lh("山与水", size, size * 1.12, Paint::INK).font(Font::Display).weight((size * 0.035).min(10.0)),
         col().width(pw).child(picture(SKY, ratio(SKY)).key("mo/pic").pic_fx(super::STYLE_SLOT)),
         col().width(pw).child(picture(SKY, ratio(SKY)).key("mo/marks").pic_fx(super::STYLE_SLOT).loose(1.0)),
-        row().key("mo/go-button").height(96.0).pad(56.0, 0.0).radius(48.0).border(3.0, Paint::ACCENT).fill(Paint::ACCENT.alpha(0.12)).center().on_press(Msg::Scene(SMsg::Form(0)))
-            .child(text("出发", 40.0, Paint::ACCENT).weight(1.5)),
+        mo_card(g, cw),
     ];
     let stage = stack(forms.into_iter().enumerate().map(|(i, e)| col().key(form_key(i)).hidden_until_morphed(i != f).child(e))).key("mo/stack");
-    col().key("mo/page").width(w).height(h).align(AlignItems::CENTER).gap(16.0)
-        .child(col().key("mo/stage").width(w).grow(1.0).center().on_press(Msg::Scene(SMsg::NextForm)).focusable(false).child(stage))
-        .child(row().gap(12.0).align(AlignItems::CENTER).wrap().justify(JustifyContent::CENTER)
-            .child(segmented("mo/forms", &FORMS, f, 30.0, |i| Msg::Scene(SMsg::Form(i))))
-            .child(button_as("mo/next", "下一步 →", Variant::Default, Msg::Scene(SMsg::NextForm))))
+    // The steps: one row, the current one lit; press one to go there, or ← → with the row focused.
+    let mut steps = row().key("mo/steps").gap(0.0).align(AlignItems::CENTER).focusable(true)
+        .on_key(|k, _| match k { Key::Left => Some(Msg::Scene(SMsg::PrevForm)), Key::Right => Some(Msg::Scene(SMsg::NextForm)), _ => None });
+    for (i, name) in FORMS.iter().enumerate() {
+        let on = i == f;
+        if i > 0 { steps = steps.child(space(36.0, 1.5).fill(if i <= f { Paint::ACCENT } else { Paint::FAINT })); }
+        steps = steps.child(col().key(format!("mo/step:{i}")).gap(4.0).pad(10.0, 6.0).align(AlignItems::CENTER).on_press(Msg::Scene(SMsg::Form(i))).focusable(false)
+            .child(text(format!("{:02}", i + 1), 11.0, if on { Paint::ACCENT } else { Paint::DIM }).font(Font::Mono))
+            .child(text(*name, 16.0, if on { Paint::ACCENT } else { Paint::TEXT }))
+            .child(space(if on { 22.0 } else { 0.0 }, 2.0).fill(Paint::ACCENT)));
+    }
+    // The stage is pressable only while it is not the interface (whose own controls take presses).
+    let mut st = col().key("mo/stage").width(w).height(sh).center().child(stage);
+    if f != 3 { st = st.on_press(Msg::Scene(SMsg::NextForm)).focusable(false); }
+    col().key("mo/page").width(w).height(h).align(AlignItems::CENTER).gap(10.0)
+        .child(st)
+        .child(row().gap(18.0).align(AlignItems::CENTER).wrap().justify(JustifyContent::CENTER)
+            .child(steps)
+            .child(button_as("mo/next", "下一步 →", Variant::Default, Msg::Scene(SMsg::NextForm)))
+            .child(switch("mo/loop", "循环", g.sc.looping, None, Msg::Scene(SMsg::Loop)).width(110.0)))
 }
 
 // ── X-ray ────────────────────────────────────────────────────────────────────────────────────────
@@ -612,9 +811,10 @@ fn tick_sound(g: &mut Gallery, t: f32) -> bool {
     let beat = (st * g.sc.p[5][0] / 60.0).floor() as i64;
     if beat != g.sc.beat {
         g.sc.beat = beat;
-        // The kick: a front from below the middle of the page, as strong as the low end.
-        let s = (g.sc.p[5][1] * g.sc.p[5][2] * 0.9).clamp(0.15, 1.0);
-        g.cmds.push(Cmd::Front { x: g.width * 0.5, y: g.height * 0.92, strength: s });
+        // The kick: a front from below the middle of the page, as strong as the low end times the
+        // intensity; at intensity 0 nothing moves. The strip and the controls are calm (`El::calm`).
+        let s = (g.sc.p[5][1] * g.sc.p[5][2] * 0.9).clamp(0.0, 1.0);
+        if s > 0.01 { g.cmds.push(Cmd::Front { x: g.width * 0.5, y: g.height * 0.92, strength: s }); }
     }
     true
 }
@@ -650,7 +850,7 @@ fn sound(g: &Gallery, w: f32, h: f32) -> El<Msg> {
             })))
         .child(col().key("snd/lower").align(AlignItems::CENTER).gap(14.0)
             .child(spec)
-            .child(row().gap(12.0).align(AlignItems::CENTER)
+            .child(row().key("snd/controls").gap(12.0).align(AlignItems::CENTER).calm()
                 .child(button_as("snd/play", if sc.playing { "暂停" } else { "播放" }, Variant::Accent, Msg::Scene(SMsg::Play)).width(96.0))
                 .child(text("空格：播放 / 暂停", 12.0, Paint::DIM))))
 }
@@ -726,12 +926,15 @@ pub fn page(g: &Gallery, i: usize) -> El<Msg> {
 
 fn strip(g: &Gallery, i: usize, pad: f32) -> El<Msg> {
     let narrow = g.width < 720.0;
-    let mut r = row().key(format!("scene/{i}/strip")).fill_width().pad(pad, 10.0).gap(14.0).align(AlignItems::CENTER);
+    // The strip is the scene's chrome: the field's fronts pass it by.
+    let mut r = row().key(format!("scene/{i}/strip")).fill_width().pad(pad, 10.0).gap(14.0).align(AlignItems::CENTER).calm();
     // Narrow: one row that scrolls sideways, so the stage keeps the height.
     r = if narrow { r.scroll_x().bar() } else { r.wrap() };
     r = r.child(button_as(format!("scene/{i}/strip-toggle"), if g.sc.strip { "收起参数" } else { "参数" }, Variant::Quiet, Msg::Scene(SMsg::Strip)));
     if g.sc.strip {
         for (j, q) in PARAMS[i].iter().enumerate() {
+            // Printing shows the numbers of the mode it is in.
+            if i == 2 && !(if g.sc.pr_mode == 1 { [4, 0, 1, 5] } else { [0, 1, 2, 3] }).contains(&j) { continue; }
             let t = Target::Scene(i, j);
             r = r.child(number(&format!("scene/{i}/p{j}"), q.name, g.sc.get(i, j), q.spec, g.draft(t), move |e: Edit| Msg::Num(t, e)));
         }

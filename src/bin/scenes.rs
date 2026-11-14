@@ -79,9 +79,16 @@ fn script(d: &mut Dir, i: usize) -> usize {
             d.wait(0.75); d.snap("the dots fly");
             d.wait(1.1); d.snap("the title");
             d.wait(1.0); d.snap("the title scatters into the page");
-            d.wait(3.2); d.snap("the operator types");
-            d.wait(5.0); d.snap("done; the page is a page");
-            3
+            d.wait(1.95); d.snap("the operator's mark flies to the search field");
+            d.wait(0.45); d.snap("it types; a ripple where it acts");
+            d.wait(2.7); d.snap("the switch, the number");
+            // The person takes over: any press stops the operator.
+            let r = d.ui.node("op/stage").expect("stage").rect;
+            d.ui.press(r.x + 8.0, r.y + 8.0); d.ui.release(r.x + 8.0, r.y + 8.0); d.ui.pointer_leave();
+            d.wait(0.6); d.snap("taken over: 继续演示");
+            d.click("op/resume");
+            d.wait(3.5); d.snap("resumed, then done");
+            4
         }
         1 => {
             d.snap("rest");
@@ -99,24 +106,35 @@ fn script(d: &mut Dir, i: usize) -> usize {
         2 => {
             d.snap("rest");
             let r = d.ui.node("pr/wall").expect("wall").rect;
-            d.hover(r.x + r.w * 0.33, r.y + r.h * 0.42); d.wait(0.3); d.snap("the pointer between pixels and strokes");
-            d.hover(r.x + r.w * 0.5, r.y + r.h * 0.3); d.wait(0.3); d.snap("over strokes");
-            d.hover(r.x + r.w * 0.66, r.y + r.h * 0.62); d.wait(0.3); d.snap("between strokes and glow");
+            d.hover(r.x + r.w * 0.1, r.y + r.h * 0.45); d.wait(0.3); d.snap("the lens over the characters");
+            d.hover(r.x + r.w * 0.4, r.y + r.h * 0.4); d.wait(0.3); d.snap("across pixels and strokes");
+            d.hover(r.x + r.w * 0.72, r.y + r.h * 0.55); d.wait(0.3); d.snap("glow");
             d.ui.pointer_leave();
             d.drag("pr/seam1", -r.w * 0.12, 0.0, 0.5, false);
             d.send(Msg::Num(lab::gallery::Target::Scene(2, 3), lab::widgets::Edit::Set(1.0)));
             d.wait(1.0); d.snap("seam moved, marks everywhere");
-            d.click("pr/which:1"); d.wait(1.0); d.snap("another picture");
-            4
+            d.send(Msg::Num(lab::gallery::Target::Scene(2, 3), lab::widgets::Edit::Set(0.0)));
+            d.click("pr/mode:1"); d.wait(1.0); d.snap("one strip: glow against the original");
+            d.drag("pr/compare", -r.w * 0.2, 0.0, 0.4, false);
+            d.send(Msg::Num(lab::gallery::Target::Scene(2, 4), lab::widgets::Edit::Set(0.0)));
+            d.send(Msg::Num(lab::gallery::Target::Scene(2, 5), lab::widgets::Edit::Set(2.0)));
+            d.wait(1.0); d.snap("characters, three-colour palette");
+            d.send(Msg::Num(lab::gallery::Target::Scene(2, 4), lab::widgets::Edit::Set(2.0)));
+            d.send(Msg::Num(lab::gallery::Target::Scene(2, 5), lab::widgets::Edit::Set(6.0)));
+            d.click("pr/which:2"); d.wait(1.0); d.snap("pixels, PICO-8, the bust");
+            1
         }
         3 => {
-            d.snap("rest: a word");
+            d.snap("rest: a heavy word");
             d.click("mo/next"); d.wait(0.75); d.snap("the word in flight");
             d.wait(1.5); d.snap("a picture");
             d.click("mo/next"); d.wait(2.4); d.snap("the picture as marks");
-            d.click("mo/next"); d.wait(0.9); d.snap("marks into a button");
-            d.wait(1.6); d.snap("a button");
-            1
+            d.click("mo/next"); d.wait(0.9); d.snap("marks into an interface");
+            d.wait(1.6); d.snap("the interface");
+            d.click("mo/ui/fav"); d.click("mo/ui/n/more"); d.wait(0.6); d.snap("it works: switch off, 3 to 4");
+            d.click("mo/ui/go"); d.wait(0.9); d.snap("出发: back into the word");
+            d.wait(2.0); d.snap("the word again");
+            5
         }
         4 => {
             d.snap("rest");

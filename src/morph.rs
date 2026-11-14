@@ -81,6 +81,8 @@ pub enum Cmd {
     /// A front from (x, y), logical px, of this strength (0..1): for things that disturb the page by
     /// themselves, such as a beat.
     Front { x: f32, y: f32, strength: f32 },
+    /// A front from the centre of the element `key` as laid out by this update.
+    FrontAt { key: String, strength: f32 },
 }
 
 /// What a tile is in the pairing.

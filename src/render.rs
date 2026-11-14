@@ -37,6 +37,7 @@ struct Uniforms {
     burst_t: [f32; 4],
     /// Every material's numbers, two vec4s each.
     mats: [[f32; 4]; 2 * MATERIAL_COUNT],
+    calm: [[f32; 4]; 4],
 }
 
 const INK: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -498,9 +499,9 @@ impl Renderer {
             fb: [fx.wave_speed, fx.wave_life, fx.wave_width, fx.wave_tail],
             fc: [fx.push, fx.lens, fx.enter, flag(fx.square)],
             fd: [look.material.id() as f32, flag(self.out_format.is_srgb()), SPREAD as f32, marks::PALETTES.len() as f32],
-            bg, fg, accent, pointer: field.pointer, wipe: field.wipe, wipe_rect: field.wipe_rect, split, fronts: field.fronts, pics,
+            bg, fg, accent, pointer: [field.pointer[0], field.pointer[1], field.pointer[2], fx.lens_hard], wipe: field.wipe, wipe_rect: field.wipe_rect, split, fronts: field.fronts, pics,
             ground2: [th.ground2[0], th.ground2[1], th.ground2[2], look.loose_scale], second: c(th.second), third: c(th.third),
-            burst: field.burst, burst_t: field.burst_t, mats,
+            burst: field.burst, burst_t: field.burst_t, mats, calm: field.calm,
         };
         self.queue.write_buffer(&self.ubuf, 0, bytemuck::bytes_of(&u));
     }
