@@ -15,7 +15,19 @@ fn gallery_at(p: Page) -> GalleryUi {
 }
 fn go(ui: &mut GalleryUi, p: Page) { gallery::update(&mut ui.state, Msg::Go(p)); ui.relayout(); }
 fn centre(ui: &GalleryUi, k: &str) -> (f32, f32) { ui.node(k).unwrap_or_else(|| panic!("no node {k}")).rect.center() }
-fn click(ui: &mut GalleryUi, k: &str) { let (x, y) = centre(ui, k); ui.press(x, y); ui.release(x, y); }
+fn click(ui: &mut GalleryUi, k: &str) {
+    // The rail scrolls: bring a rail item into its view first.
+    for _ in 0..60 {
+        let n = ui.node(k).unwrap_or_else(|| panic!("no node {k}"));
+        let (c, r) = (n.clip, n.rect);
+        if !k.starts_with("nav/") || (r.y >= c.y && r.bottom() <= c.bottom()) { break; }
+        let rail = ui.node("rail").expect("rail").rect;
+        ui.wheel(rail.center().0, rail.center().1, if r.y < c.y { -120.0 } else { 120.0 });
+    }
+    let (x, y) = centre(ui, k);
+    ui.press(x, y);
+    ui.release(x, y);
+}
 fn comp(hash: &str) -> Page { Page::Comp(COMPONENTS.iter().position(|c| c.hash == hash).expect("component")) }
 
 // ── Drag capture ─────────────────────────────────────────────────────────────────────────────────
@@ -323,7 +335,9 @@ fn navigation_keeps_the_shell_and_renews_the_page() {
 fn every_page_has_a_plain_hash() {
     let forbidden = ["settings", "sidebar", "customize", "upgrade", "downloads"];
     let pages = Page::all();
-    assert_eq!(pages.len(), COMPONENTS.len() + 12 + 12 + 1 + 12 + 2 + 2 + 1 + 7);
+    // The components, the ten thousand rows, mark sets, materials, the annotation page, styles, morph
+    // and flow, type and demo, the scene list and the scenes.
+    assert_eq!(pages.len(), COMPONENTS.len() + 1 + 12 + 12 + 1 + 12 + 2 + 2 + 1 + 7);
     for p in pages {
         let h = p.hash();
         assert!(!h.is_empty() && h.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'), "{h}");

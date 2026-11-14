@@ -36,3 +36,35 @@ pub fn list<M: Clone + 'static>(key: &str, rows: &[(&str, &str)], selected: Opti
     }
     l
 }
+
+/// A list of `count` rows, `row_h` tall, that builds only the rows it shows and a few around them
+/// (`El::virtual_rows`), so it can hold any number of rows. Like `list` it is one focus stop: Up / Down,
+/// Page Up / Page Down, Home / End move the selection, and the runtime scrolls the selected row into view
+/// (built or not). `row(i)` is what row `i` shows; the row itself (keyed `key:i`) is pressed to select it.
+pub fn list_virtual<M: Clone + 'static>(key: &str, count: usize, row_h: f32, height: f32, selected: Option<usize>, select: impl Fn(usize) -> M + 'static, row_of: impl Fn(usize) -> El<M> + 'static) -> El<M> {
+    let select: Rc<dyn Fn(usize) -> M> = Rc::new(select);
+    let page = ((height / row_h).floor() as usize).saturating_sub(1).max(1);
+    let keys = {
+        let select = select.clone();
+        move |k: Key, _: bool| -> Option<M> {
+            if count == 0 { return None; }
+            let to = match (k, selected) {
+                (Key::Down, None) | (Key::Home, _) => 0,
+                (Key::Up, None) | (Key::End, _) => count - 1,
+                (Key::Down, Some(i)) => (i + 1).min(count - 1),
+                (Key::Up, Some(i)) => i.saturating_sub(1),
+                (Key::PageDown, s) => s.map_or(0, |i| (i + page).min(count - 1)),
+                (Key::PageUp, s) => s.map_or(0, |i| i.saturating_sub(page)),
+                _ => return None,
+            };
+            (Some(to) != selected).then(|| select(to))
+        }
+    };
+    let k = key.to_owned();
+    col().key(key).scroll().bar().height(height).radius(6.0).border(LINE, Paint::FAINT).on_key(keys)
+        .virtual_rows(count, row_h, 6, selected, move |i| {
+            let on = selected == Some(i);
+            let r = row().key(format!("{k}:{i}")).pad(14.0, 0.0).gap(12.0).align(AlignItems::CENTER).on_press(select(i)).focusable(false).child(row_of(i));
+            if on { r.fill(SELECTED) } else { r }
+        })
+}

@@ -26,14 +26,14 @@ pub const NARROW: f32 = 720.0;
 pub const RAIL: f32 = 220.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Page { Comp(usize), Marks(u8), Material(u8), Gaze, Style(u8), Morph, Flow, Type, Demo, Scenes, Scene(u8) }
+pub enum Page { Comp(usize), LongList, Marks(u8), Material(u8), Gaze, Style(u8), Morph, Flow, Type, Demo, Scenes, Scene(u8) }
 
 pub const MARK_HASH: [&str; set::COUNT] = ["chars", "dither", "pixel", "mosaic", "brick", "dots", "cross", "diagonal", "diamond", "lines", "glow", "stroke"];
 
 impl Page {
     /// Every page, in rail order.
     pub fn all() -> Vec<Page> {
-        let mut v: Vec<Page> = (0..COMPONENTS.len()).map(Page::Comp).collect();
+        let mut v: Vec<Page> = comp_pages();
         v.extend((0..set::COUNT as u8).map(Page::Marks));
         v.extend((0..MATERIAL_COUNT as u8).map(Page::Material));
         v.push(Page::Gaze);
@@ -49,6 +49,7 @@ impl Page {
     pub fn hash(self) -> String {
         match self {
             Page::Comp(i) => COMPONENTS[i].hash.to_owned(),
+            Page::LongList => "list-10k".into(),
             Page::Marks(s) => format!("marks-{}", MARK_HASH[s as usize]),
             Page::Material(m) => format!("material-{}", Material::from_id(m).name()),
             Page::Gaze => "gaze".into(),
@@ -70,6 +71,7 @@ impl Page {
     pub fn name(self) -> &'static str {
         match self {
             Page::Comp(i) => COMPONENTS[i].title,
+            Page::LongList => "一万行",
             Page::Marks(s) => set::NAMES[s as usize],
             Page::Material(m) => Material::from_id(m).name(),
             Page::Gaze => "标注层",
@@ -125,6 +127,9 @@ pub enum Msg {
     Text(TextEdit),
     /// The multi-line field on the input page.
     Notes(TextEdit),
+    /// The ten thousand rows: select row `i`; flip row `i`'s switch.
+    LongPick(usize),
+    LongToggle(usize),
     DialogText(TextEdit),
     Switch,
     Level(f32),
@@ -225,6 +230,9 @@ pub struct Gallery {
     pub quality: f32,
     /// The input page's multi-line field.
     pub notes: TextEdit,
+    /// The ten thousand rows: the selected one, and which switches were flipped from where they start.
+    pub long_pick: Option<usize>,
+    pub long_on: Vec<bool>,
 }
 
 impl Default for Gallery {
@@ -239,7 +247,7 @@ impl Default for Gallery {
             menu: 0, mats: MaterialParams::all(), loose: 0.0, style: None, gaze: Gaze::default(), loose_scale: 1.0, style_pic: PicFx::default(),
             gaze_page: Gaze { mode: GazeMode::All, kinds: gaze::FRAME | gaze::INDEX | gaze::SIZE, density: 12.0, ..Gaze::default() },
             hovered: None, clock: 0.0, choices: [0, 0, 0, 0, 0, 0, 0, 0], toggles: [true, false, true, false, true, false, false, false],
-            slides: [0.35, 0.4, 0.6, 14.0, 0.5, 2.0, 0.0, 0.5], query: TextEdit::new("lay"), sc: Scenes::default(), overlay: false, quality: 1.0, notes: TextEdit::new("第一行\n第二行，长一些的一行会在框的宽度里折行。"),
+            slides: [0.35, 0.4, 0.6, 14.0, 0.5, 2.0, 0.0, 0.5], query: TextEdit::new("lay"), sc: Scenes::default(), overlay: false, quality: 1.0, long_pick: None, long_on: vec![], notes: TextEdit::new("第一行\n第二行，长一些的一行会在框的宽度里折行。"),
         }
     }
 }
@@ -382,6 +390,8 @@ pub fn update(s: &mut Gallery, m: Msg) {
         Msg::Press => s.presses += 1,
         Msg::Text(t) => s.text = t,
         Msg::Notes(t) => s.notes = t,
+        Msg::LongPick(i) => s.long_pick = Some(i),
+        Msg::LongToggle(i) => { if s.long_on.len() <= i { s.long_on.resize(i + 1, false); } s.long_on[i] = !s.long_on[i]; }
         Msg::DialogText(t) => s.dialog_text = t,
         Msg::Switch => s.on = !s.on,
         Msg::Level(v) => s.level = v,
@@ -424,7 +434,10 @@ pub fn view(s: &Gallery) -> El<Msg> {
     if narrow {
         root = root.child(rail_row(s)).child(divider(th.hairline).key("rail-rule")).child(main);
     } else {
-        root = root.child(row().key("body").grow(1.0).fill_width().align(AlignItems::STRETCH)
+        // `min_height(0)`: the row is as tall as the window allows, not as tall as the rail's contents (which
+        // made the page itself as tall as the rail, so the page never scrolled once the rail was longer
+        // than the window).
+        root = root.child(row().key("body").grow(1.0).min_height(0.0).fill_width().align(AlignItems::STRETCH)
             .child(rail(s)).child(vdivider(th.hairline).key("rail-rule")).child(main.shrink()));
     }
     root
@@ -457,10 +470,17 @@ fn top_bar(s: &Gallery) -> El<Msg> {
             .child(button_as("reset", "恢复默认", Variant::Default, Msg::Reset)))
 }
 
+/// The component pages: one per component, and the list's ten thousand rows right after the list.
+fn comp_pages() -> Vec<Page> {
+    let mut v: Vec<Page> = (0..COMPONENTS.len()).map(Page::Comp).collect();
+    v.insert(pages::LIST + 1, Page::LongList);
+    v
+}
+
 /// The groups and their pages.
 fn groups() -> [(&'static str, Vec<Page>); 8] {
     [
-        ("组件", (0..COMPONENTS.len()).map(Page::Comp).collect()),
+        ("组件", comp_pages()),
         ("记号", (0..set::COUNT as u8).map(Page::Marks).collect()),
         ("材质", (0..MATERIAL_COUNT as u8).map(Page::Material).collect()),
         ("标注", vec![Page::Gaze]),

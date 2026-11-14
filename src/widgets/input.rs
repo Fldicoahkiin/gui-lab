@@ -17,6 +17,9 @@ use crate::el::{Cursor, El, Key, Mods, Paint, Phase, TextInput, col, row, text, 
 use crate::text::{next_grapheme, next_word, prev_grapheme, prev_word, word_range};
 use taffy::AlignItems;
 
+/// A byte range.
+pub type Range = (usize, usize);
+
 /// The most undo steps kept.
 pub const UNDO: usize = 100;
 
@@ -56,7 +59,7 @@ impl TextEdit {
 
     /// What the field shows: the text with any composition inserted at the caret, the caret, the
     /// selection and the composed part, as byte ranges of that string.
-    pub fn display(&self) -> (String, usize, Option<(usize, usize)>, Option<(usize, usize)>) {
+    pub fn display(&self) -> (String, usize, Option<Range>, Option<Range>) {
         let c = self.caret_byte();
         match &self.preedit {
             Some(p) => (format!("{}{}{}", &self.text[..c], p, &self.text[c..]), c + p.len(), None, Some((c, c + p.len()))),
@@ -89,8 +92,8 @@ impl TextEdit {
     }
     /// Insert `s` over the selection, keeping to `max` characters.
     fn insert(&mut self, s: &str, max: usize, multiline: bool, g: Group) -> bool {
-        let clean: String = s.chars().map(|c| if c == '\r' { '\n' } else { c }).filter(|&c| !c.is_control() || (c == '\n' && multiline)).collect();
-        let clean = if multiline { clean } else { clean.replace('\n', " ") };
+        let s = s.replace("\r\n", "\n").replace('\r', "\n");
+        let clean: String = s.chars().map(|c| if c == '\n' && !multiline { ' ' } else { c }).filter(|&c| !c.is_control() || c == '\n').collect();
         let room = max.saturating_sub(self.text.chars().count() - self.selection().map_or(0, |(a, b)| b - a));
         let clean: String = clean.chars().take(room).collect();
         if clean.is_empty() && self.selection().is_none() { return false; }
@@ -121,7 +124,7 @@ impl TextEdit {
         let changed = match ev {
             TextInput::Insert(s) => { e.preedit = None; e.insert(s, max, multiline, if s.chars().count() == 1 { Group::Typing } else { Group::None }) || self.preedit.is_some() }
             TextInput::Paste(s) => e.insert(s, max, multiline, Group::None),
-            TextInput::Cut => { if self.selection().is_none() { return None; } e.snapshot(Group::None); e.delete_selection() }
+            TextInput::Cut => { self.selection()?; e.snapshot(Group::None); e.delete_selection() }
             TextInput::Compose { text, .. } => {
                 if text.is_empty() { e.preedit = None; }
                 else {
@@ -238,8 +241,10 @@ pub fn input<M: Clone + 'static>(key: &str, edit: &TextEdit, placeholder: &str, 
 pub fn textarea<M: Clone + 'static>(key: &str, edit: &TextEdit, placeholder: &str, width: f32, rows: usize, max: usize, msg: impl Fn(TextEdit) -> M + 'static) -> El<M> {
     let now = edit.clone();
     let line = 22.0;
+    // Outlined, not filled: a filled box this tall is one of the "big" shapes chrome and liquid shade,
+    // and the text in it would sit on metal.
     col().key(key).width(width).height(rows as f32 * line + 16.0).pad(10.0, 8.0).radius(RADIUS)
-        .fill(Paint::GROUND).border(LINE, Paint::DIM).scroll().bar().multiline().cursor(Cursor::Text)
+        .border(LINE, Paint::DIM).scroll().bar().multiline().cursor(Cursor::Text)
         .on_text(move |ev| now.handle(&ev, max, true).map(&msg))
         .child(shown(edit, placeholder, LABEL, Some(line)).fill_width().key(format!("{key}/text")))
 }

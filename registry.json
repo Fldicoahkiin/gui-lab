@@ -47,9 +47,10 @@
       "name": "input",
       "title": "输入框",
       "functions": [
-        "input"
+        "input",
+        "textarea"
       ],
-      "description": "输入一行文字。左右方向键、Home 和 End 移动插入点，退格键和 Delete 删除。",
+      "description": "输入一行或多行文字（textarea）。可以点、拖动、双击选择，Shift 加方向键扩展选区；Ctrl / ⌘ 加 A、C、X、V、Z 全选、复制、剪切、粘贴、撤销；支持输入法，正在组字的部分画在插入点上，带下划线。",
       "files": [
         "src/widgets/input.rs"
       ],

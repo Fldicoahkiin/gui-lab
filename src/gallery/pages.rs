@@ -7,7 +7,7 @@ use crate::morph::{Ease, FlowSpec, MorphSpec};
 use crate::style::set;
 use crate::text::{MONO, PIXEL, SANS};
 use crate::widgets::{
-    Edit, Spec, TextEdit, Variant, button_as, card, choice, dialog, divider, image, input, list, number, scroll_area, segmented,
+    Edit, Spec, TextEdit, Variant, button_as, card, choice, dialog, divider, image, input, list, list_virtual, number, scroll_area, segmented,
     slider, switch, switch_sized, tabs, textarea, vdivider,
 };
 use taffy::{AlignItems, JustifyContent};
@@ -50,7 +50,7 @@ pub const COMPONENTS: [Comp; 13] = [
     Comp { hash: "number", title: "数字", func: "number", desc: "精确设置一个数值：获得焦点后直接键入，或用方向键和两侧的按钮按步长改；在数值上横向拖动可以连续调。",
         file: "src/widgets/number.rs", source: include_str!("../widgets/number.rs"),
         params: &[p("最小值", -1000.0, 1000.0, 1.0, 0, "", 0.0), p("最大值", -1000.0, 1000.0, 1.0, 0, "", 100.0), p("步长", 0.01, 100.0, 0.5, 2, "", 0.5), p("小数位", 0.0, 4.0, 1.0, 0, "", 1.0)] },
-    Comp { hash: "input", title: "输入框", func: "input", desc: "输入一行文字。左右方向键、Home 和 End 移动插入点，退格键和 Delete 删除。",
+    Comp { hash: "input", title: "输入框", func: "input", desc: "输入一行或多行文字（textarea）。可以点、拖动、双击选择，Shift 加方向键扩展选区；Ctrl / ⌘ 加 A、C、X、V、Z 全选、复制、剪切、粘贴、撤销；支持输入法，正在组字的部分画在插入点上，带下划线。",
         file: "src/widgets/input.rs", source: include_str!("../widgets/input.rs"),
         params: &[p("宽度", 120.0, 600.0, 10.0, 0, "px", 300.0), p("最多字数", 1.0, 200.0, 1.0, 0, "", 40.0)] },
     Comp { hash: "switch", title: "开关", func: "switch / switch_sized", desc: "在两种状态之间切换一项设置。",
@@ -88,6 +88,7 @@ pub const COMPONENTS: [Comp; 13] = [
 pub fn page(s: &Gallery) -> El<Msg> {
     match s.page {
         Page::Comp(i) => comp_page(s, i),
+        Page::LongList => long_page(s),
         Page::Marks(k) => marks_page(s, k),
         Page::Morph => morph_page(s),
         Page::Flow => flow_page(s),
@@ -151,6 +152,25 @@ pub(super) fn source(h: &str, file: &str, src: &str) -> El<Msg> {
     col().key(format!("{h}/source")).fill_width().gap(8.0)
         .child(text(file, 12.0, Paint::DIM).font(Font::Mono))
         .child(scroll_area(&format!("{h}/code"), 380.0, lines).fill_width())
+}
+
+/// Ten thousand rows, each with text and a small switch, in a list that builds only what it shows.
+pub const LONG_ROWS: usize = 10_000;
+fn long_page(s: &Gallery) -> El<Msg> {
+    let h = "list-10k";
+    let on = s.long_on.clone();
+    let rows = list_virtual("long", LONG_ROWS, 40.0, (s.height - 290.0).clamp(240.0, 900.0), s.long_pick, Msg::LongPick, move |i| {
+        let flipped = on.get(i).copied().unwrap_or(false);
+        let state = (i % 3 == 0) != flipped;
+        row().gap(12.0).grow(1.0).align(AlignItems::CENTER)
+            .child(text(format!("{:05}", i + 1), 12.0, Paint::DIM).font(Font::Mono).width(48.0))
+            .child(text(format!("第 {} 行 · 只有看得见的行在树里", i + 1), 14.0, Paint::TEXT).grow(1.0))
+            .child(switch_sized(format!("long/sw{i}"), "", state, None, 14.0, Msg::LongToggle(i)).width(44.0))
+    });
+    col().key(format!("{h}/page")).fill_width().max_width(980.0).gap(24.0)
+        .child(header(s, h, "一万行", "list_virtual", "一万行，每行一段文字和一个小开关。只有看得见的行（和上下各几行）在界面树里；滚动只移动它们，不重新布局；方向键、Page Up / Page Down、Home、End 换选中的行，选中的行滚进视野。"))
+        .child(rows.fill_width())
+        .child(text(format!("选中：{}", s.long_pick.map_or("—".to_owned(), |i| format!("第 {} 行", i + 1))), 13.0, Paint::DIM).key("long/picked"))
 }
 
 fn comp_page(s: &Gallery, c: usize) -> El<Msg> {

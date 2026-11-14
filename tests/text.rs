@@ -72,15 +72,15 @@ fn selection_by_shift_cmd_a_and_pointer() {
     // The pointer: place, drag, double-click a word, triple-click everything (bytes in the shown text).
     let e = TextEdit::new("one two three");
     let p = |at, phase, clicks| TextInput::Pointer { at, phase, clicks, shift: false };
-    let placed = run(&e, &[p(5, Phase::Start, 1)]);
-    assert_eq!((placed.caret, placed.selection()), (5, None));
-    let dragged = run(&e, &[p(5, Phase::Start, 1), p(9, Phase::Move, 1)]);
+    let placed = run(&e, &[p(4, Phase::Start, 1)]);
+    assert_eq!((placed.caret, placed.selection()), (4, None));
+    let dragged = run(&e, &[p(4, Phase::Start, 1), p(8, Phase::Move, 1)]);
     assert_eq!(dragged.selected(), "two ");
     assert_eq!(run(&e, &[p(5, Phase::Start, 2)]).selected(), "two");
     assert_eq!(run(&e, &[p(5, Phase::Start, 2), p(10, Phase::Move, 2)]).selected(), "two three");
     assert_eq!(run(&e, &[p(5, Phase::Start, 3)]).selected(), "one two three");
     let shift = run(&placed, &[TextInput::Pointer { at: 13, phase: Phase::Start, clicks: 1, shift: true }]);
-    assert_eq!(shift.selected(), "o three");
+    assert_eq!(shift.selected(), "two three");
 }
 
 #[test]
@@ -134,7 +134,7 @@ fn multiline_keeps_line_breaks() {
     assert_eq!(e.text, "ab\n");
     assert!(TextEdit::new("ab").handle(&key(Key::Enter, Mods::default()), 99, false).is_none(), "not in a single line");
     assert_eq!(TextEdit::default().handle(&TextInput::Paste("a\nb".into()), 99, false).unwrap().text, "a b");
-    assert_eq!(TextEdit::default().handle(&TextInput::Paste("a\r\nb".into()), 99, true).unwrap().text, "a\n\nb".replace("\n\n", "\n"));
+    assert_eq!(TextEdit::default().handle(&TextInput::Paste("a\r\nb".into()), 99, true).unwrap().text, "a\nb");
 }
 
 // ── The runtime ──────────────────────────────────────────────────────────────────────────────────

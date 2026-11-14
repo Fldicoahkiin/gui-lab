@@ -82,6 +82,10 @@ pub struct Node<M> {
     pub multiline: bool,
     pub selectable: bool,
     pub cursor: Option<Cursor>,
+    /// A virtual list: its row count, row height and selected row.
+    pub virt: Option<(usize, f32, Option<usize>)>,
+    /// The box layout gave it, relative to its parent (scrolling does not change it).
+    local: taffy::Layout,
     tid: NodeId,
 }
 impl<M> Node<M> {
@@ -286,6 +290,14 @@ pub struct Ui<S, M> {
     sel_drag: bool,
     /// The last press: when, where, and how many presses in a row it made (a double click is 2).
     clicks: (f32, f32, f32, u8),
+    // ── Incremental layout (DESIGN.md §1.13) ──
+    /// The taffy tree, kept across layouts: each key's taffy node, and what its measured content was.
+    tree: TaffyTree<usize>,
+    tids: HashMap<String, NodeId>,
+    mkeys: HashMap<NodeId, u64>,
+    /// Virtual lists: each one's viewport height as last placed, and the rows it has built.
+    virt_views: HashMap<String, f32>,
+    virt_made: HashMap<String, (usize, usize)>,
 }
 
 /// What the runtime needs from the look to know whether anything is still moving: how long fronts live
@@ -361,6 +373,7 @@ impl<S, M: Clone> Ui<S, M> {
             marks_moving: false, caret: None, caret_on: true, static_loose: false, mclock: 0.0, moving: false,
             perf: crate::perf::Perf { quality: 1.0, ..Default::default() }, span: 0, painting: false, overlay: false, overlay_at: 0.0,
             text_capture: None, sel: None, sel_drag: false, clicks: (f32::NEG_INFINITY, 0.0, 0.0, 0),
+            tree: TaffyTree::new(), tids: HashMap::new(), mkeys: HashMap::new(), virt_views: HashMap::new(), virt_made: HashMap::new(),
         };
         ui.resize(w, h, scale);
         ui
@@ -663,7 +676,7 @@ impl<S, M: Clone> Ui<S, M> {
         let mut at = self.hit(x, y);
         while let Some(i) = at.and_then(|i| self.up(i, |n| n.scroll)) {
             let d = if self.nodes[i].horizontal { if dx != 0.0 { dx } else { dy } } else { dy };
-            if d != 0.0 && self.scroll_by(i, d) { self.relayout(); return; }
+            if d != 0.0 && self.scroll_by(i, d) { self.scrolled(); return; }
             at = self.nodes[i].parent;
         }
     }
@@ -879,7 +892,7 @@ impl<S, M: Clone> Ui<S, M> {
                 a = self.nodes[p].parent;
             }
             if !moved { return; }
-            self.relayout();
+            self.scrolled();
         }
     }
 
@@ -947,6 +960,16 @@ impl<S, M: Clone> Ui<S, M> {
     /// be seen (a newly selected row).
     fn reveal_marked(&mut self, key: &str) {
         let Some(root) = self.nodes.iter().position(|n| n.key == key) else { return };
+        // A virtual list's selected row may not be built: scroll by its index.
+        if let Some((_, rh, Some(sel))) = self.nodes[root].virt {
+            let n = &self.nodes[root];
+            let view = n.rect.h - (n.inner.y - n.rect.y) * 2.0;
+            let off = self.scroll.get(&n.key).copied().unwrap_or(0.0);
+            let (top, bottom) = (sel as f32 * rh, (sel + 1) as f32 * rh);
+            let to = if top < off { top } else if bottom > off + view { bottom - view } else { off };
+            if to != off && self.scroll_by(root, to - off) { self.scrolled(); }
+            return;
+        }
         let marked: Vec<String> = (root..self.nodes.len()).filter(|&i| self.nodes[i].reveal && self.within(i, root)).map(|i| self.nodes[i].key.clone()).collect();
         for k in marked { self.reveal_key(&k); }
     }
@@ -967,7 +990,7 @@ impl<S, M: Clone> Ui<S, M> {
                 a = self.nodes[p].parent;
             }
             if !moved || guard > 4 { break; }
-            self.relayout();
+            self.scrolled();
         }
     }
 
@@ -975,7 +998,7 @@ impl<S, M: Clone> Ui<S, M> {
         let dy = match k { Key::Up => -40.0, Key::Down => 40.0, Key::PageUp => -self.size.1 * 0.8, Key::PageDown => self.size.1 * 0.8, _ => return false };
         let start = from.or_else(|| (!self.nodes.is_empty()).then_some(0));
         let Some(i) = start.and_then(|i| self.up(i, |n| n.scroll && !n.horizontal).or_else(|| self.nodes.iter().position(|n| n.scroll && !n.horizontal))) else { return false };
-        if self.scroll_by(i, dy) { self.relayout(); }
+        if self.scroll_by(i, dy) { self.scrolled(); }
         true
     }
 
@@ -1025,11 +1048,12 @@ impl<S, M: Clone> Ui<S, M> {
         }
     }
 
+    /// View → nodes → the taffy tree, kept from the last layout and changed only where the new view
+    /// differs (DESIGN.md §1.13) → absolute rects → scene.
     fn layout(&mut self) {
         if let Some(f) = self.look_of { self.timing = Timing::of(&f(&self.state)); }
         self.perf.counters.views += 1;
         let el = (self.view)(&self.state);
-        let mut tree: TaffyTree<usize> = TaffyTree::new();
         let mut nodes = Vec::new();
         // The root is the window, whatever its contents would like.
         let mut el = el;
@@ -1044,48 +1068,115 @@ impl<S, M: Clone> Ui<S, M> {
             l.style.size = Size { width: length(self.size.0), height: length(self.size.1) };
             el.children.push(l);
         }
-        let root = flatten(el, None, "root".into(), [0; 3], (false, false), None, Inherit::default(), &mut tree, &mut nodes);
-        let text = &mut self.text;
-        let measure = |input: taffy::LayoutInput, _: NodeId, ctx: Option<&mut usize>, style: &Style| {
-            let none = |_: *const (), _: f32| 0.0;
-            match ctx.map(|i| &nodes[*i].content) {
-                Some(Content::Text { s, size, line, font, around, .. }) => taffy::compute_leaf_layout(input, style, none, |known, avail| {
-                    let limit = known.width.or(match avail.width { AvailableSpace::Definite(w) => Some(w), AvailableSpace::MinContent => Some(0.0), AvailableSpace::MaxContent => None });
-                    // Text flowing around obstacles fills whatever width it is given.
-                    let limit = if around.is_some() { limit.filter(|w| *w > 0.0).or(Some(600.0)) } else { limit };
-                    let (w, h) = text.measure_around(s, font.resolve([0; 3]), *size, *line, limit, around.as_deref());
-                    Size { width: known.width.unwrap_or(w), height: known.height.unwrap_or(h) }
-                }),
-                Some(Content::Picture { ratio, .. }) => taffy::compute_leaf_layout(input, style, none, |known, avail| {
-                    let w = known.width.or(avail.width.into_option()).unwrap_or(0.0);
-                    Size { width: w, height: known.height.unwrap_or((w * ratio).round()) }
-                }),
-                _ => taffy::compute_leaf_layout(input, style, none, |_, _| Size::ZERO),
-            }
-        };
-        let space = Size { width: AvailableSpace::Definite(self.size.0), height: AvailableSpace::Definite(self.size.1) };
-        self.perf.counters.layouts += 1;
-        if tree.compute_layout_with_measure(root, space, measure).is_err() { return; }
+        // Virtual lists build the rows their viewport shows, at their scroll offset (the viewport as it
+        // was last laid out; the window's height the first time).
+        let mut vx = VirtCtx { scroll: &self.scroll, views: &self.virt_views, window: self.size.1, made: HashMap::new() };
+        let mut built = Built::default();
+        flatten(el, None, "root".into(), [0; 3], (false, false), None, Inherit::default(), &mut vx, &mut built, &mut nodes);
+        self.virt_made = vx.made;
 
-        // How tall each scroll node's contents are, so stored offsets can be clamped before placing.
+        // The taffy tree: a node whose key was there last time keeps its taffy node; its style, children
+        // and measured content are compared and only what differs is set (which marks it and its
+        // ancestors dirty). Children come after their parents in `nodes`, so going backwards every
+        // node's children have their taffy nodes already.
+        let mut changed = false;
+        let mut used: HashSet<NodeId> = HashSet::with_capacity(nodes.len());
+        let mut tids: HashMap<String, NodeId> = HashMap::with_capacity(nodes.len());
+        for i in (0..nodes.len()).rev() {
+            let leaf = !matches!(nodes[i].content, Content::None);
+            let style = std::mem::take(&mut built.styles[i]);
+            let mk = measure_key(&nodes[i].content);
+            let kids: Vec<NodeId> = built.kids[i].iter().map(|&c| nodes[c].tid).collect();
+            let old = self.tids.get(&nodes[i].key).copied().filter(|t| !used.contains(t));
+            let tid = match old {
+                Some(t) => {
+                    if self.tree.style(t).map_or(true, |o| *o != style) { let _ = self.tree.set_style(t, style); changed = true; }
+                    if leaf {
+                        if self.tree.child_count(t) > 0 { let _ = self.tree.set_children(t, &[]); changed = true; }
+                        let _ = self.tree.set_node_context(t, Some(i));
+                        if self.mkeys.get(&t) != Some(&mk) { let _ = self.tree.mark_dirty(t); changed = true; }
+                    } else {
+                        let _ = self.tree.set_node_context(t, None);
+                        if self.tree.children(t).map_or(true, |c| c != kids) { let _ = self.tree.set_children(t, &kids); changed = true; }
+                    }
+                    t
+                }
+                None => {
+                    changed = true;
+                    if leaf { self.tree.new_leaf_with_context(style, i) } else { self.tree.new_with_children(style, &kids) }.expect("taffy node")
+                }
+            };
+            used.insert(tid);
+            self.mkeys.insert(tid, mk);
+            nodes[i].tid = tid;
+            tids.insert(nodes[i].key.clone(), tid);
+        }
+        // What is gone from the view goes from the tree.
+        for (_, t) in self.tids.drain() {
+            if !used.contains(&t) { let _ = self.tree.remove(t); self.mkeys.remove(&t); changed = true; }
+        }
+        self.tids = tids;
+        let root = nodes[0].tid;
+        // Nothing changed that layout depends on (taffy's own dirty flag is not kept for the root): the
+        // boxes from last time stand.
+        if changed {
+            let text = &mut self.text;
+            let measure = |input: taffy::LayoutInput, _: NodeId, ctx: Option<&mut usize>, style: &Style| {
+                let none = |_: *const (), _: f32| 0.0;
+                match ctx.map(|i| &nodes[*i].content) {
+                    Some(Content::Text { s, size, line, font, around, nowrap, .. }) => taffy::compute_leaf_layout(input, style, none, |known, avail| {
+                        let limit = known.width.or(match avail.width { AvailableSpace::Definite(w) => Some(w), AvailableSpace::MinContent => Some(0.0), AvailableSpace::MaxContent => None });
+                        // Text flowing around obstacles fills whatever width it is given; text kept on one
+                        // line is as wide as it is.
+                        let limit = if around.is_some() { limit.filter(|w| *w > 0.0).or(Some(600.0)) } else if *nowrap { None } else { limit };
+                        let (w, h) = text.measure_around(s, font.resolve([0; 3]), *size, *line, limit, around.as_deref());
+                        Size { width: known.width.unwrap_or(w), height: known.height.unwrap_or(h) }
+                    }),
+                    Some(Content::Picture { ratio, .. }) => taffy::compute_leaf_layout(input, style, none, |known, avail| {
+                        let w = known.width.or(avail.width.into_option()).unwrap_or(0.0);
+                        Size { width: w, height: known.height.unwrap_or((w * ratio).round()) }
+                    }),
+                    _ => taffy::compute_leaf_layout(input, style, none, |_, _| Size::ZERO),
+                }
+            };
+            let space = Size { width: AvailableSpace::Definite(self.size.0), height: AvailableSpace::Definite(self.size.1) };
+            self.perf.counters.layouts += 1;
+            if self.tree.compute_layout_with_measure(root, space, measure).is_err() { return; }
+        } else {
+            self.perf.counters.layouts_skipped += 1;
+        }
+        for n in nodes.iter_mut() { n.local = *self.tree.layout(n.tid).expect("node in tree"); }
+        self.nodes = nodes;
+        self.place();
+        self.modal_at = self.nodes.iter().rposition(|n| n.modal.is_some());
+        self.layer_changed();
+        self.paint();
+    }
+
+    /// Absolute rects, clips and scroll extents from the laid-out (relative) boxes and the scroll
+    /// offsets: all that scrolling changes. No view, no layout, no shaping.
+    fn place(&mut self) {
+        let nodes = &mut self.nodes;
+        // How long each scroll node's contents are, so stored offsets can be clamped before placing.
+        for n in nodes.iter_mut() { n.extent = 0.0; }
         for i in 0..nodes.len() {
-            let l = *tree.layout(nodes[i].tid).expect("node in tree");
+            let l = nodes[i].local;
             if let Some(p) = nodes[i].parent && nodes[p].scroll {
-                let pl = tree.layout(nodes[p].tid).expect("node in tree");
+                let pl = nodes[p].local;
                 let end = if nodes[p].horizontal { l.location.x + l.size.width + pl.padding.right + pl.border.right }
                           else { l.location.y + l.size.height + pl.padding.bottom + pl.border.bottom };
                 nodes[p].extent = nodes[p].extent.max(end);
             }
         }
         for n in nodes.iter().filter(|n| n.scroll) {
-            let size = tree.layout(n.tid).map(|l| if n.horizontal { l.size.width } else { l.size.height }).unwrap_or(0.0);
+            let size = if n.horizontal { n.local.size.width } else { n.local.size.height };
             let max = (n.extent - size).max(0.0);
             if let Some(o) = self.scroll.get_mut(&n.key) { *o = o.clamp(0.0, max); }
         }
         let screen = Rect::new(0.0, 0.0, self.size.0, self.size.1);
         let mut inside = vec![screen; nodes.len()];
         for i in 0..nodes.len() {
-            let l = *tree.layout(nodes[i].tid).expect("node in tree");
+            let l = nodes[i].local;
             let (origin, clip) = match nodes[i].parent {
                 Some(p) => {
                     let off = if nodes[p].scroll { self.scroll.get(&nodes[p].key).copied().unwrap_or(0.0) } else { 0.0 };
@@ -1108,11 +1199,20 @@ impl<S, M: Clone> Ui<S, M> {
             let inner_border = n.rect.inset(b.left, b.top, b.right, b.bottom);
             n.inner = inner_border.inset(p.left, p.top, p.right, p.bottom);
             inside[i] = if n.scroll { clip.intersect(&inner_border) } else if n.clips { clip.intersect(&n.rect) } else { clip };
+            if n.virt.is_some() { self.virt_views.insert(n.key.clone(), n.rect.h); }
         }
-        self.nodes = nodes;
-        self.modal_at = self.nodes.iter().rposition(|n| n.modal.is_some());
-        self.layer_changed();
-        self.paint();
+    }
+
+    /// After a scroll offset changed: move everything (no layout) — unless a virtual list scrolled past
+    /// the rows it has built, which then builds the rows it now shows.
+    fn scrolled(&mut self) {
+        let past = self.nodes.iter().any(|n| {
+            let (Some(v), Some(&(a, b))) = (&n.virt, self.virt_made.get(&n.key)) else { return false };
+            let off = self.scroll.get(&n.key).copied().unwrap_or(0.0);
+            let (first, last) = visible_rows(off, n.rect.h, v.0, v.1);
+            first < a || last > b
+        });
+        if past { self.relayout(); } else { self.place(); self.paint(); }
     }
 
     /// A modal layer opened or closed: focus moves into it (remembering where it was), or back.
@@ -1735,13 +1835,42 @@ fn hoist<M>(el: &mut El<M>, out: &mut Vec<El<M>>) {
     }
 }
 
-/// Move an element tree into flat nodes (paint order) and a taffy tree. Unkeyed nodes are keyed by path.
+/// What `flatten` needs to build a virtual list's rows (scroll offsets, viewport heights from the last
+/// layout, the window's height) and the row ranges it built.
+struct VirtCtx<'a> { scroll: &'a HashMap<String, f32>, views: &'a HashMap<String, f32>, window: f32, made: HashMap<String, (usize, usize)> }
+/// Per node, what goes to the taffy tree: its style and its children.
+#[derive(Default)]
+struct Built { styles: Vec<Style>, kids: Vec<Vec<usize>> }
+
+/// The rows `first..last` a viewport `h` tall at offset `off` shows.
+fn visible_rows(off: f32, h: f32, count: usize, row_h: f32) -> (usize, usize) {
+    let rh = row_h.max(1.0);
+    let first = ((off / rh).floor().max(0.0) as usize).min(count);
+    let last = (((off + h) / rh).ceil().max(0.0) as usize).min(count);
+    (first, last.max(first))
+}
+
+/// What a leaf's measured size depends on: when it is unchanged, taffy's cached size stands.
+fn measure_key(c: &Content) -> u64 {
+    let mut h = DefaultHasher::new();
+    match c {
+        Content::Text { s, size, line, font, around, nowrap, .. } => {
+            (s, size.to_bits(), line.to_bits(), font.resolve([0; 3]), around.as_ref().map_or(0, |a| a.id()), nowrap).hash(&mut h);
+        }
+        Content::Picture { ratio, .. } => ratio.to_bits().hash(&mut h),
+        Content::None => 0u8.hash(&mut h),
+    }
+    h.finish()
+}
+
+/// Move an element tree into flat nodes (paint order). Unkeyed nodes are keyed by path.
 /// Font roles are inherited: each text leaf's role is resolved here to the face of its nearest
 /// `fonts` ancestor. So is being disabled: a disabled subtree has no handlers and cannot take focus.
 /// `off` is (disabled, hidden), both inherited; `flow` is the nearest flow id above and its node.
+/// A virtual list's rows are built here, for what its viewport shows.
 #[allow(clippy::too_many_arguments)]
-fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], off: (bool, bool), flow: Option<(Rc<str>, usize)>, inh: Inherit, tree: &mut TaffyTree<usize>, nodes: &mut Vec<Node<M>>) -> NodeId {
-    let El { key, style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, annotate, gaze_scope, material, loosen, anchor, clips, calm, mut on_text, multiline, selectable, cursor, children } = el;
+fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], off: (bool, bool), flow: Option<(Rc<str>, usize)>, inh: Inherit, vx: &mut VirtCtx, built: &mut Built, nodes: &mut Vec<Node<M>>) -> usize {
+    let El { key, style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, annotate, gaze_scope, material, loosen, anchor, clips, calm, mut on_text, multiline, selectable, cursor, virt, mut children } = el;
     let key = if key.is_empty() { path } else { key };
     let roles = fonts.unwrap_or(roles);
     let (off, hidden) = (off.0 || disabled, off.1 || hidden);
@@ -1752,18 +1881,40 @@ fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], of
     // A material override nests: a deeper one gets a higher level, so it wins where both draw.
     let mut inh = inh.with(material, loosen);
     inh.select |= selectable;
-    let leaf = !matches!(content, Content::None);
+    let virt_info = virt.as_ref().map(|v| (v.count, v.row_h, v.selected));
+    if let Some(v) = virt {
+        // Only the rows the viewport shows, and `overscan` more on each side, are built; a column as tall
+        // as all the rows holds them, so the scroll extent is the whole list's.
+        let offset = vx.scroll.get(&key).copied().unwrap_or(0.0);
+        let h = vx.views.get(&key).copied().unwrap_or(vx.window);
+        let (first, last) = visible_rows(offset, h, v.count, v.row_h);
+        let (a, b) = (first.saturating_sub(v.overscan), (last + v.overscan).min(v.count));
+        vx.made.insert(key.clone(), (a, b));
+        // The built rows flow from a padding as tall as the rows above them.
+        let mut rows = crate::el::col().key(format!("{key}/rows")).fill_width().height(v.count as f32 * v.row_h);
+        rows.style.padding.top = length(a as f32 * v.row_h);
+        for r in a..b {
+            let mut row = (v.build)(r);
+            if row.key.is_empty() { row.key = format!("{key}/row{r}"); }
+            row.style.size.height = length(v.row_h);
+            row.style.flex_shrink = 0.0;
+            rows.children.push(row);
+        }
+        children = vec![rows];
+    }
     let placeholder = NodeId::from(0u64);
     nodes.push(Node {
         key, parent, rect: Rect::default(), clip: Rect::default(), inner: Rect::default(), scroll, horizontal, focusable, disabled: off, extent: 0.0,
         content, fill, border, radius, on_press, on_key, on_drag, on_blur, loose, wipe, bar, reveal, commit, modal, hidden, flow: flow.clone(),
-        mat: inh.code(), loosen: inh.loosen, annotate, scope: gaze_scope, anchor, clips, calm, on_text, multiline, selectable: inh.select, cursor, tid: placeholder,
+        mat: inh.code(), loosen: inh.loosen, annotate, scope: gaze_scope, anchor, clips, calm, on_text, multiline, selectable: inh.select, cursor,
+        virt: virt_info, local: taffy::Layout::new(), tid: placeholder,
     });
-    let kids: Vec<NodeId> = children.into_iter().enumerate().map(|(n, c)| {
+    built.styles.push(style);
+    built.kids.push(vec![]);
+    for (n, c) in children.into_iter().enumerate() {
         let p = format!("{}/{n}", nodes[i].key);
-        flatten(c, Some(i), p, roles, (off, hidden), flow.clone(), inh, tree, nodes)
-    }).collect();
-    let tid = if leaf { tree.new_leaf_with_context(style, i) } else { tree.new_with_children(style, &kids) }.expect("taffy node");
-    nodes[i].tid = tid;
-    tid
+        let k = flatten(c, Some(i), p, roles, (off, hidden), flow.clone(), inh, vx, built, nodes);
+        built.kids[i].push(k);
+    }
+    i
 }

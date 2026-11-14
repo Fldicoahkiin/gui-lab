@@ -101,7 +101,12 @@ pub struct Renderer {
     pictures: HashMap<u32, wgpu::BindGroup>,
     instances: wgpu::Buffer,
     capacity: usize,
-    pipes: [wgpu::RenderPipeline; 8], // ink, near, near for the modal layer, material, liquid field, annotations, ink for the modal layer, material upsample
+    pipes: [wgpu::RenderPipeline; 7], // ink, near, near for the modal layer, material, liquid field, annotations, ink for the modal layer
+    /// The upsample after a reduced material pass: made the first time a quality below 1 is used (it holds
+    /// the whole material again, and compiling it at start-up is slow on a CPU rasteriser).
+    up_pipe: Option<wgpu::RenderPipeline>,
+    shader: wgpu::ShaderModule,
+    pl: wgpu::PipelineLayout,
     ink: wgpu::TextureView,
     near: wgpu::TextureView,
     soft: wgpu::TextureView,
@@ -167,8 +172,6 @@ impl Renderer {
             pipe("vs_soft", "fs_soft", INK, Some(wgpu::BlendState { color: add, alpha: add }), true),
             pipe("vs_annot", "fs_annot", out_format, Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING), true),
             pipe("vs_inst", "fs_ink_top", INK, Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING), true),
-            // After a reduced material pass: rest pixels at full resolution, loose ones from the reduced pass.
-            pipe("vs_full", "fs_material_up", out_format, None, false),
         ];
         let tiles = Self::tiles(&device);
         let ubuf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: std::mem::size_of::<Uniforms>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
@@ -201,7 +204,7 @@ impl Renderer {
         let mut r = Self {
             device, queue, out_format, layout, ubuf, sampler, atlas, atlas_view, marks, marks_view, palette_view, chars, chars_view,
             before: blank.clone(), blank: blank.clone(), split_seen: 0, split: [0.0; 4], last_look: None, marks_ready: false, hide_glyphs: false,
-            pictures: HashMap::new(), instances, capacity, pipes, annots, annot_capacity: 256,
+            pictures: HashMap::new(), instances, capacity, pipes, annots, annot_capacity: 256, up_pipe: None, shader, pl,
             ink: blank.clone(), soft: blank.clone(), lo: blank.clone(), lo_key: (0, 0, 0), material_up: material.clone(), auto: Default::default(), always_lo: false,
             near: blank, material_first: material.clone(), material, size: (0, 0), tiles,
         };
@@ -338,6 +341,17 @@ impl Renderer {
     fn lo_for(&mut self, q: f32) -> (u32, u32) {
         let (w, h) = ((self.size.0 as f32 * q).ceil() as u32, (self.size.1 as f32 * q).ceil() as u32);
         let key = (w, h, (q * 1000.0) as u32);
+        if self.up_pipe.is_none() {
+            // After a reduced material pass: rest pixels at full resolution, loose ones from the reduced pass.
+            self.up_pipe = Some(self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("fs_material_up"), layout: Some(&self.pl),
+                vertex: wgpu::VertexState { module: &self.shader, entry_point: Some("vs_full"), compilation_options: Default::default(), buffers: &[] },
+                primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, ..Default::default() },
+                depth_stencil: None, multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState { module: &self.shader, entry_point: Some("fs_material_up"), compilation_options: Default::default(), targets: &[Some(wgpu::ColorTargetState { format: self.out_format, blend: None, write_mask: wgpu::ColorWrites::ALL })] }),
+                multiview_mask: None, cache: None,
+            }));
+        }
         if key != self.lo_key {
             self.lo_key = key;
             self.lo = Self::target(&self.device, w, h, self.out_format);
@@ -523,7 +537,7 @@ impl Renderer {
         {
             let mut pass = clear(&mut enc, target, wgpu::Color::BLACK);
             if lo.is_some() {
-                pass.set_pipeline(&self.pipes[7]);
+                pass.set_pipeline(self.up_pipe.as_ref().expect("made with the reduced target"));
                 pass.set_bind_group(0, &self.material_up, &[]);
             } else {
                 pass.set_pipeline(&self.pipes[3]);

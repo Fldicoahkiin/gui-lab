@@ -22,7 +22,7 @@ pub use dialog::dialog;
 pub use divider::{divider, vdivider};
 pub use image::image;
 pub use input::{TextEdit, input, textarea};
-pub use list::list;
+pub use list::{list, list_virtual};
 pub use menu::menu;
 pub use number::{Edit, SCRUB, Spec, number};
 pub use scroll::scroll_area;

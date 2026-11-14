@@ -93,6 +93,8 @@ mod web {
     #[wasm_bindgen] pub fn cut(t: f32) -> Option<String> { with(|s| { s.ui.tick(t); s.ui.cut() }).flatten() }
     /// Where the focused field's caret is (x, y, w, h, CSS px), or nothing when focus is not on one.
     #[wasm_bindgen] pub fn ime_rect() -> Vec<f32> { with(|s| s.ui.ime_rect().map(|r| vec![r.x, r.y, r.w, r.h]).unwrap_or_default()).unwrap_or_default() }
+    /// Where the element with this key is (x, y, w, h, CSS px), or nothing: for automation and tests.
+    #[wasm_bindgen] pub fn node_rect(key: &str) -> Vec<f32> { with(|s| s.ui.node(key).map(|n| vec![n.rect.x, n.rect.y, n.rect.w, n.rect.h]).unwrap_or_default()).unwrap_or_default() }
     /// The CSS cursor for where the pointer is.
     #[wasm_bindgen] pub fn cursor() -> String { with(|s| s.ui.cursor().css().to_owned()).unwrap_or_else(|| "default".into()) }
     /// A DOM key name let go.

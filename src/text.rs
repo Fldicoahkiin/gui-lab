@@ -82,8 +82,11 @@ pub struct Text {
     pub pixels: Vec<u8>,
     pub dirty: bool,
     pen: (u32, u32, u32),
-    /// Paragraphs shaped and broken by parley so far (cache misses), for the work counters.
+    /// Paragraphs shaped and broken by parley so far (cache misses), for the work counters; with
+    /// `log_shapes`, which texts they were (for tests).
     shaped: u64,
+    pub log_shapes: bool,
+    pub shape_log: Vec<String>,
 }
 
 impl Text {
@@ -100,7 +103,7 @@ impl Text {
         Self {
             fonts: FontContext { collection, source_cache: Default::default() },
             layouts: LayoutContext::new(), scaler: ScaleContext::new(), families, scale: 1.0,
-            slots: HashMap::new(), measured: HashMap::new(), cache: [HashMap::new(), HashMap::new()], pixels: vec![0; (ATLAS * ATLAS * 2) as usize], dirty: true, pen: (1, 1, 0), shaped: 0,
+            slots: HashMap::new(), measured: HashMap::new(), cache: [HashMap::new(), HashMap::new()], pixels: vec![0; (ATLAS * ATLAS * 2) as usize], dirty: true, pen: (1, 1, 0), shaped: 0, log_shapes: false, shape_log: vec![],
         }
     }
 
@@ -134,8 +137,22 @@ impl Text {
         let k = (s.to_owned(), face, size.to_bits(), line.to_bits(), max_width.unwrap_or(-1.0).to_bits(), around.map_or(0, Around::id));
         if let Some(l) = self.cache[0].get(&k) { return l.clone(); }
         if let Some(l) = self.cache[1].remove(&k) { self.cache[0].insert(k, l.clone()); return l; }
+        // Text that fits on its line without breaking is laid out the same at any width it fits in: the
+        // unbounded layout serves (what layout measured is what is drawn).
+        if let Some(w) = max_width && around.is_none() {
+            let free = (k.0.clone(), k.1, k.2, k.3, (-1.0f32).to_bits(), k.5);
+            let l = self.cache[0].get(&free).or_else(|| self.cache[1].get(&free)).cloned();
+            if let Some(l) = l && l.width() <= w && !s.contains('\n') {
+                self.cache[0].insert(k, l.clone());
+                return l;
+            }
+        }
         if self.cache[0].len() >= 2048 { self.cache.swap(0, 1); self.cache[0].clear(); }
         let l = Rc::new(self.shape(s, face, size, line, max_width, around));
+        // One line that did not need breaking is also the unbounded layout (see above).
+        if max_width.is_some() && around.is_none() && l.lines().count() <= 1 && !s.contains('\n') {
+            self.cache[0].entry((k.0.clone(), k.1, k.2, k.3, (-1.0f32).to_bits(), k.5)).or_insert_with(|| l.clone());
+        }
         self.cache[0].insert(k, l.clone());
         l
     }
@@ -143,6 +160,7 @@ impl Text {
     /// line breaks on screen are exactly the ones layout planned for.
     fn shape(&mut self, s: &str, face: u8, size: f32, line: f32, max_width: Option<f32>, around: Option<&Around>) -> Layout<()> {
         self.shaped += 1;
+        if self.log_shapes { self.shape_log.push(s.to_owned()); }
         let size = self.size_for(face, size);
         let fi = (face as usize).min(self.families.len() - 1);
         let mut b = self.layouts.ranged_builder(&mut self.fonts, s, 1.0, true);
@@ -290,7 +308,7 @@ impl Text {
 pub enum Nav { Up, Down, LineStart, LineEnd }
 
 /// The grapheme boundary before byte `at` (0 at the start).
-pub fn prev_grapheme(s: &str, at: usize) -> usize { s.grapheme_indices(true).map(|(i, _)| i).take_while(|&i| i < at).last().unwrap_or(0) }
+pub fn prev_grapheme(s: &str, at: usize) -> usize { s.grapheme_indices(true).rev().map(|(i, _)| i).find(|&i| i < at).unwrap_or(0) }
 /// The grapheme boundary after byte `at` (the end at the end).
 pub fn next_grapheme(s: &str, at: usize) -> usize { s.grapheme_indices(true).map(|(i, g)| i + g.len()).find(|&e| e > at).unwrap_or(s.len()) }
 /// Is this piece a word (letters, digits, or an ideograph) rather than spaces or punctuation?
@@ -298,7 +316,7 @@ fn wordy(w: &str) -> bool { w.chars().any(char::is_alphanumeric) }
 /// The start of the word before byte `at` (skipping spaces and punctuation first). Each CJK ideograph
 /// is a word of its own (UAX #29).
 pub fn prev_word(s: &str, at: usize) -> usize {
-    s.split_word_bound_indices().filter(|(i, w)| *i < at && wordy(w)).map(|(i, _)| i).last().unwrap_or(0)
+    s.split_word_bound_indices().rev().find(|(i, w)| *i < at && wordy(w)).map_or(0, |(i, _)| i)
 }
 /// The end of the word after byte `at`.
 pub fn next_word(s: &str, at: usize) -> usize {

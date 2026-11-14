@@ -192,8 +192,14 @@ pub struct El<M> {
     pub selectable: bool,
     /// The pointer's shape over this element (else derived: text, pointer, grab).
     pub cursor: Option<Cursor>,
+    /// A virtual list (DESIGN.md §1.13): the runtime builds only the rows it can see (and a few around).
+    pub virt: Option<Virtual<M>>,
     pub children: Vec<El<M>>,
 }
+
+/// Rows of a virtual list: how many, how tall each (logical px), how many beyond the visible ones to
+/// build on each side, what row `i` is, and which row is selected (it is scrolled into view after a key).
+pub struct Virtual<M> { pub count: usize, pub row_h: f32, pub overscan: usize, pub build: Rc<dyn Fn(usize) -> El<M>>, pub selected: Option<usize> }
 
 /// Pointer shapes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -209,7 +215,7 @@ impl<M> El<M> {
     fn new(style: Style, content: Content) -> Self {
         // Nothing shrinks unless asked: fixed sizes stay fixed inside columns and scroll areas.
         let style = Style { flex_shrink: 0.0, ..style };
-        Self { key: String::new(), style, content, fill: None, border: None, radius: 0.0, on_press: None, on_key: None, on_drag: None, on_blur: None, focusable: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, modal: None, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, clips: false, calm: false, on_text: None, multiline: false, selectable: false, cursor: None, children: vec![] }
+        Self { key: String::new(), style, content, fill: None, border: None, radius: 0.0, on_press: None, on_key: None, on_drag: None, on_blur: None, focusable: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, modal: None, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, clips: false, calm: false, on_text: None, multiline: false, selectable: false, cursor: None, virt: None, children: vec![] }
     }
     pub fn key(mut self, k: impl Into<String>) -> Self { self.key = k.into(); self }
     pub fn gap(mut self, g: f32) -> Self { self.style.gap = Size { width: length(g), height: length(g) }; self }
@@ -218,6 +224,7 @@ impl<M> El<M> {
     pub fn height(mut self, h: f32) -> Self { self.style.size.height = length(h); self }
     pub fn min_width(mut self, w: f32) -> Self { self.style.min_size.width = length(w); self }
     pub fn max_width(mut self, w: f32) -> Self { self.style.max_size.width = length(w); self }
+    pub fn min_height(mut self, h: f32) -> Self { self.style.min_size.height = length(h); self }
     pub fn fill_width(mut self) -> Self { self.style.size.width = percent(1.0); self }
     /// Width as a fraction of the parent's.
     pub fn width_frac(mut self, f: f32) -> Self { self.style.size.width = percent(f); self }
@@ -244,6 +251,13 @@ impl<M> El<M> {
     pub fn selectable(mut self) -> Self { self.selectable = true; self }
     /// The pointer's shape over this element.
     pub fn cursor(mut self, c: Cursor) -> Self { self.cursor = Some(c); self }
+    /// Make this (a scroll node) a virtual list of `count` rows `row_h` tall: only the visible rows and
+    /// `overscan` more on each side exist in the tree; row `i` is `build(i)` (keyed `key/row{i}` unless it
+    /// has a key). Its children are replaced by the rows.
+    pub fn virtual_rows(mut self, count: usize, row_h: f32, overscan: usize, selected: Option<usize>, build: impl Fn(usize) -> El<M> + 'static) -> Self {
+        self.virt = Some(Virtual { count, row_h, overscan, build: Rc::new(build), selected });
+        self
+    }
     /// Show bytes `a..b` of a text element as selected (while its field has focus).
     pub fn select(mut self, a: usize, b: usize) -> Self { if let Content::Text { select, .. } = &mut self.content { *select = (a != b).then_some((a.min(b), a.max(b))); } self }
     /// Underline bytes `a..b` of a text element (text being composed).
@@ -311,14 +325,15 @@ impl<M> El<M> {
 
     /// The same tree sending other messages: lets one application embed another's view.
     pub fn map<N: 'static>(self, f: Rc<dyn Fn(M) -> N>) -> El<N> where M: 'static {
-        let El { key, style, content, fill, border, radius, on_press, on_key, on_drag, on_blur, focusable, scroll, horizontal, bar, reveal, disabled, commit, modal, fonts, loose, wipe, flow, hidden, annotate, gaze_scope, material, loosen, anchor, clips, calm, on_text, multiline, selectable, cursor, children } = self;
+        let El { key, style, content, fill, border, radius, on_press, on_key, on_drag, on_blur, focusable, scroll, horizontal, bar, reveal, disabled, commit, modal, fonts, loose, wipe, flow, hidden, annotate, gaze_scope, material, loosen, anchor, clips, calm, on_text, multiline, selectable, cursor, virt, children } = self;
+        let virt = virt.map(|v| { let f = f.clone(); let b = v.build; Virtual { count: v.count, row_h: v.row_h, overscan: v.overscan, selected: v.selected, build: Rc::new(move |i: usize| b(i).map(f.clone())) as Rc<dyn Fn(usize) -> El<N>> } });
         let on_key = on_key.map(|k| { let f = f.clone(); Rc::new(move |key: Key, shift: bool| k(key, shift).map(|m| f(m))) as OnKey<N> });
         let on_text = on_text.map(|t| { let f = f.clone(); Rc::new(move |i: TextInput| t(i).map(|m| f(m))) as OnText<N> });
         let on_drag = on_drag.map(|d| { let f = f.clone(); Rc::new(move |g: Drag| d(g).map(|m| f(m))) as OnDrag<N> });
         El {
             key, style, content, fill, border, radius, on_press: on_press.map(|m| f(m)), on_key, on_drag, on_blur: on_blur.map(|m| f(m)),
             focusable, scroll, horizontal, bar, reveal, disabled, commit, modal: modal.map(|m| Modal { dismiss: f(m.dismiss), beneath: m.beneath }),
-            fonts, loose, wipe, flow, hidden, annotate, gaze_scope, material, loosen, anchor, clips, calm, on_text, multiline, selectable, cursor, children: children.into_iter().map(|c| c.map(f.clone())).collect(),
+            fonts, loose, wipe, flow, hidden, annotate, gaze_scope, material, loosen, anchor, clips, calm, on_text, multiline, selectable, cursor, virt, children: children.into_iter().map(|c| c.map(f.clone())).collect(),
         }
     }
 }

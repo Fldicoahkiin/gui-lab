@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, Ime, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, OwnedDisplayHandle};
 use winit::keyboard::{Key as WKey, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
@@ -33,6 +33,8 @@ struct App {
     run: Option<Running>,
     start: Instant,
     mods: ModifiersState,
+    /// An input method is composing (its keys are its own).
+    composing: bool,
     /// Logical px.
     cursor: (f32, f32),
     /// Frames to save (path, ms after start), soonest first; when to close.
@@ -117,13 +119,24 @@ impl ApplicationHandler for App {
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => s.ui.resize(s.config.width, s.config.height, scale_factor as f32),
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor = (position.x as f32 / scale, position.y as f32 / scale);
+                s.ui.tick(now);
                 s.ui.pointer_move(self.cursor.0, self.cursor.1);
             }
-            WindowEvent::CursorLeft { .. } => s.ui.pointer_leave(),
+            WindowEvent::CursorLeft { .. } => { s.ui.tick(now); s.ui.pointer_leave() }
             WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => {
                 let (x, y) = self.cursor;
                 s.ui.tick(now);
-                if state == ElementState::Pressed { s.ui.press(x, y) } else { s.ui.release(x, y) }
+                if state == ElementState::Pressed { s.ui.press_with(x, y, self.mods.shift_key()) } else { s.ui.release(x, y) }
+            }
+            // The input method: its composition is shown in the field, its commit inserted.
+            WindowEvent::Ime(ime) => {
+                s.ui.tick(now);
+                match ime {
+                    Ime::Preedit(text, cursor) => { self.composing = !text.is_empty(); s.ui.ime_preedit(&text, cursor); }
+                    Ime::Commit(text) => { self.composing = false; s.ui.ime_commit(&text); }
+                    Ime::Disabled => if self.composing { self.composing = false; s.ui.ime_preedit("", None); },
+                    Ime::Enabled => {}
+                }
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 // winit: positive is away from the user (up / left); the framework scrolls down for positive.
@@ -135,10 +148,28 @@ impl ApplicationHandler for App {
             }
             WindowEvent::ModifiersChanged(m) => self.mods = m.state(),
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
-                // Shortcuts with Command / Control / Alt belong to the system.
-                if self.mods.control_key() || self.mods.super_key() || self.mods.alt_key() { return; }
                 s.ui.tick(now);
-                for k in key(&event.logical_key) { s.ui.key(k, self.mods.shift_key()); }
+                let cmd = if cfg!(target_os = "macos") { self.mods.super_key() } else { self.mods.control_key() };
+                let mods = lab::el::Mods { shift: self.mods.shift_key(), cmd, alt: self.mods.alt_key() };
+                if cmd {
+                    // The clipboard, through the system's (arboard); Cmd+A / Z / Y go to the text field.
+                    match &event.logical_key {
+                        WKey::Character(c) if c.eq_ignore_ascii_case("c") => { if let Some(t) = s.ui.copy() { clipboard(|b| b.set_text(t).is_ok()); } }
+                        WKey::Character(c) if c.eq_ignore_ascii_case("x") => { if let Some(t) = s.ui.cut() { clipboard(|b| b.set_text(t).is_ok()); } }
+                        WKey::Character(c) if c.eq_ignore_ascii_case("v") => { if let Some(t) = clipboard(|b| b.get_text().ok()).flatten() { s.ui.paste(&t); } }
+                        k => for k in key(k) { s.ui.key_mods(k, mods); },
+                    }
+                    return;
+                }
+                // While the input method composes, the keys are its own.
+                if self.composing { return; }
+                // In a text field, characters are text (what the key produced, with the layout's shifts).
+                if s.ui.text_focused() && !mods.alt && let Some(t) = event.text.as_ref().filter(|t| t.chars().all(|c| !c.is_control())) {
+                    s.ui.text_input(t);
+                    return;
+                }
+                if mods.alt { return; }
+                for k in key(&event.logical_key) { s.ui.key_mods(k, mods); }
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 s.ui.tick(now);
@@ -168,6 +199,15 @@ impl ApplicationHandler for App {
                 }
                 // Nothing changed and nothing moves: no frame (the event loop waits for input or a wake).
                 if !s.ui.needs_frame(now) { s.skipped += 1; s.ui.perf_mut().skipped += 1; return; }
+                // The input method follows the focused field's caret; the pointer's shape follows what is under it.
+                match s.ui.ime_rect() {
+                    Some(r) => {
+                        s.window.set_ime_allowed(true);
+                        s.window.set_ime_cursor_area(winit::dpi::LogicalPosition::new(r.x, r.y), winit::dpi::LogicalSize::new(r.w.max(1.0), r.h));
+                    }
+                    None => s.window.set_ime_allowed(false),
+                }
+                s.window.set_cursor(cursor_icon(s.ui.cursor()));
                 let t0 = Instant::now();
                 let frame = match s.surface.get_current_texture() {
                     wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
@@ -204,6 +244,20 @@ impl ApplicationHandler for App {
         if shot_due { s.window.request_redraw(); }
         el.set_control_flow(if next.is_finite() { ControlFlow::WaitUntil(self.start + std::time::Duration::from_secs_f32(next.max(now))) } else { ControlFlow::Wait });
     }
+}
+
+/// Use the system clipboard (opened for each use; `None` when there is none).
+fn clipboard<R>(f: impl FnOnce(&mut arboard::Clipboard) -> R) -> Option<R> {
+    match arboard::Clipboard::new() {
+        Ok(mut b) => Some(f(&mut b)),
+        Err(e) => { eprintln!("no clipboard: {e}"); None }
+    }
+}
+
+fn cursor_icon(c: lab::el::Cursor) -> winit::window::CursorIcon {
+    use lab::el::Cursor as C;
+    use winit::window::CursorIcon as I;
+    match c { C::Default => I::Default, C::Pointer => I::Pointer, C::Text => I::Text, C::Grab => I::Grab, C::Grabbing => I::Grabbing, C::ColResize => I::ColResize, C::RowResize => I::RowResize }
 }
 
 /// Draw a frame into an off-screen texture of the surface's format and read it back as RGBA8.
@@ -251,7 +305,7 @@ fn main() -> std::process::ExitCode {
         }
     }
     shots.sort_by(|a, b| a.1.total_cmp(&b.1));
-    let mut app = App { display: el.owned_display_handle(), page, run: None, start: Instant::now(), mods: ModifiersState::empty(), cursor: (0.0, 0.0), shots, exit_after, reported: 0.0 };
+    let mut app = App { display: el.owned_display_handle(), page, run: None, start: Instant::now(), mods: ModifiersState::empty(), composing: false, cursor: (0.0, 0.0), shots, exit_after, reported: 0.0 };
     match el.run_app(&mut app) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(e) => { eprintln!("{e}"); std::process::ExitCode::FAILURE }
