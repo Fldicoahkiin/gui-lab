@@ -197,6 +197,8 @@ pub struct MorphRun {
     pub dst_ramp: [f32; 4],
     pub end: f32,
     pub particles: Vec<Particle>,
+    /// On the GPU path: the grid the GPU simulates (and `particles` is empty).
+    pub grid: Option<morph::Grid>,
     /// Tile size, device px, and the instances of the source and the target (looseness 1).
     pub tile: f32,
     pub src: Vec<Instance>,
@@ -354,6 +356,8 @@ pub struct Ui<S, M> {
     /// Every mesh `scene3d` elements can name; which copy the pointer was last over (element key, hit).
     meshes: crate::mesh::Library,
     mesh_hover: Option<(String, Option<crate::mesh::MeshHit>)>,
+    /// The renderer can simulate particles on the GPU (it says so on every draw).
+    particle_gpu: bool,
 }
 
 /// One element of the accessibility mirror (DESIGN.md §1.14): what a screen reader is told about it.
@@ -505,7 +509,7 @@ impl<S, M: Clone> Ui<S, M> {
             tree: TaffyTree::new(), tids: HashMap::new(), mkeys: HashMap::new(), virt_views: HashMap::new(), virt_made: HashMap::new(),
             scrolling: Scrolling::default(), touch: None, touches: HashSet::new(), touching: false, fling: None, over: HashMap::new(), event_t: None,
             recs: HashMap::new(), recomps: HashMap::new(), slides: HashMap::new(), no_recompose: false,
-            meshes: crate::mesh::Library::default(), mesh_hover: None,
+            meshes: crate::mesh::Library::default(), mesh_hover: None, particle_gpu: false,
         };
         ui.resize(w, h, scale);
         ui
@@ -532,6 +536,9 @@ impl<S, M: Clone> Ui<S, M> {
     pub fn dragging(&self) -> Option<&str> { self.capture.as_ref().map(|c| c.key.as_str()) }
     /// The morph in progress, if any.
     pub fn morph_run(&self) -> Option<&MorphRun> { self.run.as_ref() }
+    /// Whether morphs with many tiles may run on the GPU (the renderer sets it; headless runs are CPU).
+    pub fn set_particle_gpu(&mut self, on: bool) { self.particle_gpu = on; }
+    pub fn particle_gpu(&self) -> bool { self.particle_gpu }
     /// Every mesh `scene3d` elements can draw (DESIGN.md §1.18).
     pub fn meshes(&self) -> &crate::mesh::Library { &self.meshes }
     /// Add a mesh (one made in code, or read with `mesh::load_gltf`); views name it by the id returned.
@@ -2053,7 +2060,7 @@ impl<S, M: Clone> Ui<S, M> {
         let p = &self.perf;
         let sm = p.summary(crate::perf::now_ms());
         let row = |name: &str, v: [f32; 3]| format!("{name:<14}{:>7.2}{:>7.2}{:>7.2}", v[0], v[1], v[2]);
-        let parts = self.run.as_ref().map_or(0, |r| r.particles.len());
+        let parts = self.run.as_ref().map_or(0, |r| r.grid.map_or(r.particles.len() as u32, |g| g.count()));
         let lines = [
             format!("F2 frames      {:>3}/s  drawn {} skipped {}", sm.fps, p.drawn, p.skipped),
             format!("{:<14}{:>7}{:>7}{:>7}", "ms", "last", "avg", "max"),
@@ -2061,7 +2068,7 @@ impl<S, M: Clone> Ui<S, M> {
             row("scene build", sm.scene),
             row("gpu submit", sm.submit),
             row("total", sm.total),
-            format!("instances {}  particles {}  glyph atlas {:.0}%", self.scene.instances.len(), parts, self.text.atlas_use() * 100.0),
+            format!("instances {}  particles {} {}  glyph atlas {:.0}%", self.scene.instances.len(), parts, if p.particle_path.is_empty() { "cpu" } else { p.particle_path }, self.text.atlas_use() * 100.0),
             format!("layouts {}  shaped {}  views {}", p.counters.layouts, self.text.shaped(), p.counters.views),
             format!("quality {}{}  {}  dpr {}", p.quality, if p.auto { " auto" } else { "" }, if p.backend.is_empty() { "?" } else { &p.backend }, self.scale),
         ];
@@ -2156,9 +2163,11 @@ impl<S, M: Clone> Ui<S, M> {
         let mut k0 = 0.0;
         if let Some(r) = &mut self.run {
             let reverse = r.from == to && r.to == from;
-            if reverse && let Some(clock) = r.clock(now) {
+            // The GPU path turns around once; a second reversal starts a new morph from where it is.
+            if reverse && let Some(clock) = r.clock(now) && r.grid.is_none_or(|g| g.turned.is_none()) {
                 let dur = spec.duration_ms / 1000.0 * (1.0 - spec.stagger.clamp(0.0, 0.9));
                 morph::reverse(&mut r.particles, clock, r.spec.ease, dur);
+                if let Some(g) = &mut r.grid { g.turned = Some((clock, dur)); }
                 std::mem::swap(&mut r.from, &mut r.to);
                 r.spec = MorphSpec { ease: spec.ease, ..r.spec };
                 r.flight = Some([now, now + dur]);
@@ -2189,7 +2198,13 @@ impl<S, M: Clone> Ui<S, M> {
         let (src, dst) = (self.collect(from), self.collect(to));
         if src.is_empty() || dst.is_empty() { return; }
         let pitch = (spec.lattice * self.scale).max(1.5);
-        let tiles = morph::tiles(&src, &dst, pitch, &spec, &self.text.pixels);
+        // Many tiles: the GPU simulates a grid (when the renderer can), the CPU builds nothing.
+        let above = self.look().particles.gpu_above;
+        let grid = match (morph::ink_bounds(&src), morph::ink_bounds(&dst)) {
+            (Some(a), Some(b)) if self.particle_gpu && morph::Grid::estimate(a, b, pitch) > above => Some(morph::Grid::new(a, b, (spec.lattice * self.scale).max(1.0), spec.count_max.max(above))),
+            _ => None,
+        };
+        let tiles = if let Some(g) = grid { morph::Tiles { particles: vec![], tile: g.a[2] } } else { morph::tiles(&src, &dst, pitch, &spec, &self.text.pixels) };
         let (loosen, flight) = (spec.loosen_ms / 1000.0 * (1.0 - k0), spec.duration_ms / 1000.0);
         let (t1, t2) = (now + loosen, now + loosen + flight);
         let id = next_run();
@@ -2197,7 +2212,7 @@ impl<S, M: Clone> Ui<S, M> {
             id, upload: id, from: from.into(), to: to.into(), spec,
             src_until: t1, src_ramp: [k0, now, 1.0, t1], flight: Some([t1, t2]),
             dst_from: t2, dst_ramp: [1.0, t2, 0.0, t2 + tighten], end: t2 + tighten,
-            particles: tiles.particles, tile: tiles.tile, src, dst,
+            particles: tiles.particles, grid, tile: tiles.tile, src, dst,
         });
         self.paint();
     }

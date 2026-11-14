@@ -71,6 +71,7 @@ impl App {
         surface.configure(&device, &config);
         eprintln!("surface: {}×{} {:?}, present mode {:?}", config.width, config.height, config.format, config.present_mode);
         let mut r = Renderer::new(device, queue, format, config.width, config.height);
+        r.set_particle_tier(lab::render::particle_tier(&adapter));
         for (id, pw, ph, px) in lab::demo::pictures() { r.set_picture(id, pw, ph, &px); }
         let faces = lab::text::load_bundled(concat!(env!("CARGO_MANIFEST_DIR"), "/assets")).map_err(|e| e.to_string())?;
         let mut ui = gallery::new_ui(faces, config.width, config.height, window.scale_factor() as f32);

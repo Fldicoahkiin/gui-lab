@@ -21,6 +21,9 @@ use swash::zeno::{Format, Vector};
 
 pub const SPREAD: i32 = 12;
 pub const ATLAS: u32 = 2048;
+/// Paragraph layouts kept per generation of the layout cache (DESIGN.md §1.13). A page's source listing is
+/// a paragraph per line, so this is well above the longest page.
+pub const LAYOUT_CACHE: usize = 4096;
 
 /// The faces that ship in `assets/`, in the order `bundled` registers them.
 pub const SANS: u8 = 0;
@@ -147,7 +150,7 @@ impl Text {
                 return l;
             }
         }
-        if self.cache[0].len() >= 2048 { self.cache.swap(0, 1); self.cache[0].clear(); }
+        if self.cache[0].len() >= LAYOUT_CACHE { self.cache.swap(0, 1); self.cache[0].clear(); }
         let l = Rc::new(self.shape(s, face, size, line, max_width, around));
         // One line that did not need breaking is also the unbounded layout (see above).
         if max_width.is_some() && around.is_none() && l.lines().count() <= 1 && !s.contains('\n') {

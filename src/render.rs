@@ -57,7 +57,44 @@ pub const LO_MIN_AREA: f32 = 0.15;
 /// The particle pass's own uniforms (see `particles.wgsl`).
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct PartUniforms { res: [f32; 4], m: [f32; 4], bg: [f32; 4], fg: [f32; 4], accent: [f32; 4] }
+struct PartUniforms {
+    res: [f32; 4], m: [f32; 4], bg: [f32; 4], fg: [f32; 4], accent: [f32; 4],
+    ga: [f32; 4], gb: [f32; 4], gd: [f32; 4], ge: [f32; 4], gp: [f32; 4], gf: [f32; 4], gw: [f32; 4], fronts: [[f32; 4]; 8],
+}
+
+/// How particles can be simulated here (DESIGN.md §1.10): a compute shader (WebGPU, native), a fragment
+/// shader into float targets (WebGL2 with 32- or 16-bit float render targets), or not at all (the CPU
+/// path, capped at `MorphSpec::count_max`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParticleTier { Compute, Float32, Float16, Cpu }
+impl ParticleTier {
+    pub fn name(self) -> &'static str { match self { ParticleTier::Compute => "gpu compute", ParticleTier::Float32 => "gpu rgba32f", ParticleTier::Float16 => "gpu rgba16f", ParticleTier::Cpu => "cpu (no float targets)" } }
+}
+/// What this adapter can do for particles.
+pub fn particle_tier(adapter: &wgpu::Adapter) -> ParticleTier {
+    let f = |fmt| adapter.get_texture_format_features(fmt).allowed_usages;
+    let compute = adapter.get_downlevel_capabilities().flags.contains(wgpu::DownlevelFlags::COMPUTE_SHADERS) && adapter.limits().max_storage_textures_per_shader_stage > 0
+        && f(wgpu::TextureFormat::Rgba32Float).contains(wgpu::TextureUsages::STORAGE_BINDING);
+    if compute { ParticleTier::Compute }
+    else if f(wgpu::TextureFormat::Rgba32Float).contains(wgpu::TextureUsages::RENDER_ATTACHMENT) { ParticleTier::Float32 }
+    else if f(wgpu::TextureFormat::Rgba16Float).contains(wgpu::TextureUsages::RENDER_ATTACHMENT) { ParticleTier::Float16 }
+    else { ParticleTier::Cpu }
+}
+
+/// The GPU path's state: two textures of per-tile offset and velocity, one step after the other.
+struct Sim {
+    tier: ParticleTier,
+    states: [wgpu::TextureView; 2],
+    width: u32,
+    cur: usize,
+    steps: u32,
+    /// The morph and the run (a reversal is a new run) the state belongs to.
+    run: (u32, u32),
+    frag: Option<wgpu::RenderPipeline>,
+    compute: Option<(wgpu::ComputePipeline, wgpu::BindGroupLayout)>,
+}
+/// One step of the simulation: 1/60 s, so a fixed clock gives the same state.
+pub const SIM_DT: f32 = 1.0 / 60.0;
 
 /// A morph's tiles on the GPU: the stage-1 pictures of its two elements (source ink, target ink,
 /// source near, target near), drawn once per morph, and the tile buffer, uploaded once per run.
@@ -73,6 +110,13 @@ struct Tiles {
     /// Which morph the pictures are of, and which run the buffer holds.
     seen: u32,
     uploaded: u32,
+    /// Grid tiles (the GPU path): their pipelines, the state texture a stage-1 pass reads (when a grid
+    /// is drawn this frame: its bind group and count), an empty state for the CPU path.
+    gpipes: [wgpu::RenderPipeline; 2],
+    grid_now: Option<(wgpu::BindGroup, u32)>,
+    no_state: wgpu::TextureView,
+    sim: Option<Sim>,
+    tier: ParticleTier,
 }
 
 pub struct Renderer {
@@ -132,6 +176,8 @@ pub struct Renderer {
     size: (u32, u32),
     tiles: Tiles,
     mesh: MeshGpu,
+    /// Rows of the particle state textures.
+    sim_rows: u32,
 }
 
 /// The mesh pass's uniforms (see `mesh.wgsl`).
@@ -175,7 +221,7 @@ struct MeshGpu {
 
 /// What one frame is drawn from. `tiles`: a morph's tiles are flying, this many seconds in, with this
 /// curl (device px), ease, the picture flag of the morph's picture (0 if none) and the flight's length.
-struct Frame<'a> { scene: &'a Scene, field: &'a Field, look: &'a Look, lib: &'a crate::mesh::Library, scale: f32, t: f32, mt: f32, split: [f32; 4], tiles: Option<[f32; 5]> }
+struct Frame<'a> { scene: &'a Scene, field: &'a Field, look: &'a Look, lib: &'a crate::mesh::Library, scale: f32, t: f32, mt: f32, split: [f32; 4], tiles: Option<[f32; 5]>, grid: Option<(crate::morph::Grid, f32, f32)> }
 
 impl Renderer {
     pub fn new(device: wgpu::Device, queue: wgpu::Queue, out_format: wgpu::TextureFormat, w: u32, h: u32) -> Self {
@@ -251,7 +297,7 @@ impl Renderer {
             before: blank.clone(), blank: blank.clone(), split_seen: 0, split: [0.0; 4], last_look: None, marks_ready: false, hide_glyphs: false,
             pictures: HashMap::new(), instances, capacity, pipes, annots, annot_capacity: 256, up_pipe: None, shader, pl,
             ink: blank.clone(), soft: blank.clone(), lo: blank.clone(), lo_key: (0, 0, 0), material_up: material.clone(), auto: Default::default(), always_lo: false,
-            near: blank, material_first: material.clone(), material, size: (0, 0), tiles, mesh,
+            near: blank, material_first: material.clone(), material, size: (0, 0), tiles, mesh, sim_rows: 0,
         };
         r.set_picture(u32::MAX, 1, 1, &[0, 0, 0, 255]);
         r.resize(w, h);
@@ -267,6 +313,8 @@ impl Renderer {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: None, entries: &[
             wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::VERTEX_FRAGMENT, count: None, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None } },
             tex(1), tex(2), tex(3), tex(4),
+            wgpu::BindGroupLayoutEntry { binding: 5, visibility: wgpu::ShaderStages::VERTEX_FRAGMENT | wgpu::ShaderStages::COMPUTE, count: None,
+                ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false } },
         ] });
         let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
         let bufs = [Some(wgpu::VertexBufferLayout {
@@ -283,12 +331,25 @@ impl Renderer {
             multiview_mask: None, cache: None,
         });
         let pipes = [pipe("fs_part_ink", INK, wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING), pipe("fs_part_near", NEAR, wgpu::BlendState { color: maxb, alpha: maxb })];
+        let gpipe = |fs: &str, format, blend| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some(fs), layout: Some(&pl),
+            vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_grid"), compilation_options: Default::default(), buffers: &[] },
+            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleStrip, ..Default::default() },
+            depth_stencil: None, multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some(fs), compilation_options: Default::default(), targets: &[Some(wgpu::ColorTargetState { format, blend: Some(blend), write_mask: wgpu::ColorWrites::ALL })] }),
+            multiview_mask: None, cache: None,
+        });
+        let gpipes = [gpipe("fs_part_ink", INK, wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING), gpipe("fs_part_near", NEAR, wgpu::BlendState { color: maxb, alpha: maxb })];
         let ubuf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: std::mem::size_of::<PartUniforms>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let snaps = std::array::from_fn(|i| Self::target(device, 1, 1, if i < 2 { INK } else { NEAR }));
-        let group = Self::tile_group(device, &layout, &ubuf, &snaps);
+        let no_state = device.create_texture(&wgpu::TextureDescriptor {
+            label: None, size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,
+            dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba32Float, usage: wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[],
+        }).create_view(&Default::default());
+        let group = Self::tile_group(device, &layout, &ubuf, &snaps, &no_state);
         let capacity = 1024;
         let buf = Self::particle_buffer(device, capacity);
-        Tiles { layout, pipes, ubuf, snaps, group, buf, capacity, count: 0, seen: 0, uploaded: 0 }
+        Tiles { layout, pipes, ubuf, snaps, group, buf, capacity, count: 0, seen: 0, uploaded: 0, gpipes, grid_now: None, no_state, sim: None, tier: ParticleTier::Cpu }
     }
     fn mesh_gpu(device: &wgpu::Device) -> MeshGpu {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: None, source: wgpu::ShaderSource::Wgsl(include_str!("mesh.wgsl").into()) });
@@ -428,10 +489,10 @@ impl Renderer {
         self.pictures.get(&picture).or_else(|| self.pictures.get(&u32::MAX))
     }
 
-    fn tile_group(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, ubuf: &wgpu::Buffer, snaps: &[wgpu::TextureView; 4]) -> wgpu::BindGroup {
+    fn tile_group(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, ubuf: &wgpu::Buffer, snaps: &[wgpu::TextureView; 4], state: &wgpu::TextureView) -> wgpu::BindGroup {
         let mut entries = vec![wgpu::BindGroupEntry { binding: 0, resource: ubuf.as_entire_binding() }];
-        // Bindings 1–4: source ink, target ink, source near, target near.
-        for (k, v) in [&snaps[0], &snaps[1], &snaps[2], &snaps[3]].into_iter().enumerate() { entries.push(wgpu::BindGroupEntry { binding: k as u32 + 1, resource: wgpu::BindingResource::TextureView(v) }); }
+        // Bindings 1–4: source ink, target ink, source near, target near; 5 the simulation's state.
+        for (k, v) in [&snaps[0], &snaps[1], &snaps[2], &snaps[3], state].into_iter().enumerate() { entries.push(wgpu::BindGroupEntry { binding: k as u32 + 1, resource: wgpu::BindingResource::TextureView(v) }); }
         device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout, entries: &entries })
     }
     fn particle_buffer(device: &wgpu::Device, n: usize) -> wgpu::Buffer {
@@ -495,8 +556,147 @@ impl Renderer {
         self.split = [0.0; 4];
         let t = &mut self.tiles;
         t.snaps = [Self::target(&self.device, w, h, INK), Self::target(&self.device, w, h, INK), Self::target(&self.device, w, h, NEAR), Self::target(&self.device, w, h, NEAR)];
-        t.group = Self::tile_group(&self.device, &t.layout, &t.ubuf, &t.snaps);
+        t.group = Self::tile_group(&self.device, &t.layout, &t.ubuf, &t.snaps, &t.no_state);
         t.seen = 0;
+    }
+
+    /// Say what the adapter can do for particles (`particle_tier`); until then morphs stay on the CPU.
+    pub fn set_particle_tier(&mut self, tier: ParticleTier) { self.tiles.tier = tier; }
+    pub fn particle_tier(&self) -> ParticleTier { self.tiles.tier }
+
+    /// The simulation's state for `count` tiles, made (or grown) when needed.
+    fn sim_for(&mut self, count: u32) {
+        let tier = self.tiles.tier;
+        let width = count.clamp(1, 1024);
+        let rows = count.div_ceil(width).max(1);
+        // The state is read by index (row by row, `width` wide), so a big enough one serves any smaller count.
+        if self.tiles.sim.as_ref().is_some_and(|s| s.width * self.sim_rows() >= count) { return; }
+        let format = if tier == ParticleTier::Float16 { wgpu::TextureFormat::Rgba16Float } else { wgpu::TextureFormat::Rgba32Float };
+        let usage = wgpu::TextureUsages::TEXTURE_BINDING | if tier == ParticleTier::Compute { wgpu::TextureUsages::STORAGE_BINDING } else { wgpu::TextureUsages::RENDER_ATTACHMENT };
+        let tex = || self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("particle state"), size: wgpu::Extent3d { width, height: rows, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,
+            dimension: wgpu::TextureDimension::D2, format, usage: usage | wgpu::TextureUsages::COPY_DST, view_formats: &[],
+        }).create_view(&Default::default());
+        let states = [tex(), tex()];
+        let (frag, compute) = match self.tiles.sim.take() {
+            Some(s) => (s.frag, s.compute),
+            None => (None, None),
+        };
+        let pl = self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&self.tiles.layout)], immediate_size: 0 });
+        let frag = frag.or_else(|| (tier != ParticleTier::Compute).then(|| {
+            let shader = self.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: None, source: wgpu::ShaderSource::Wgsl(include_str!("particles.wgsl").into()) });
+            self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("fs_sim"), layout: Some(&pl),
+                vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_sim"), compilation_options: Default::default(), buffers: &[] },
+                primitive: Default::default(), depth_stencil: None, multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some("fs_sim"), compilation_options: Default::default(), targets: &[Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })] }),
+                multiview_mask: None, cache: None,
+            })
+        }));
+        let compute = compute.or_else(|| (tier == ParticleTier::Compute).then(|| {
+            let src = format!("{}\n{}", include_str!("particles.wgsl"), include_str!("sim_cs.wgsl"));
+            let shader = self.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: None, source: wgpu::ShaderSource::Wgsl(src.into()) });
+            let tex = |binding| wgpu::BindGroupLayoutEntry { binding, visibility: wgpu::ShaderStages::COMPUTE, count: None,
+                ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false } };
+            let layout = self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: None, entries: &[
+                wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::COMPUTE, count: None, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None } },
+                tex(1), tex(2), tex(3), tex(4),
+                wgpu::BindGroupLayoutEntry { binding: 5, visibility: wgpu::ShaderStages::COMPUTE, count: None, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false } },
+                wgpu::BindGroupLayoutEntry { binding: 6, visibility: wgpu::ShaderStages::COMPUTE, count: None, ty: wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba32Float, view_dimension: wgpu::TextureViewDimension::D2 } },
+            ] });
+            let cpl = self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
+            (self.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("cs_sim"), layout: Some(&cpl), module: &shader, entry_point: Some("cs_sim"), compilation_options: Default::default(), cache: None }), layout)
+        }));
+        self.tiles.sim = Some(Sim { tier, states, width, cur: 0, steps: 0, run: (0, 0), frag, compute });
+        self.sim_rows_set(rows);
+    }
+    fn sim_rows(&self) -> u32 { self.sim_rows }
+    fn sim_rows_set(&mut self, r: u32) { self.sim_rows = r; }
+
+    /// Zero both state textures (a new morph: every tile on its path).
+    fn sim_clear(&mut self) {
+        let Some(sim) = &self.tiles.sim else { return };
+        let mut enc = self.device.create_command_encoder(&Default::default());
+        if sim.tier == ParticleTier::Compute {
+            // Storage textures cannot be render targets here: zeros are written instead.
+            let bytes = (sim.width * self.sim_rows * 16) as usize;
+            let zeros = vec![0u8; bytes];
+            for v in &sim.states {
+                self.queue.write_texture(wgpu::TexelCopyTextureInfo { texture: v.texture(), mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All }, &zeros,
+                    wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(sim.width * 16), rows_per_image: Some(self.sim_rows) },
+                    wgpu::Extent3d { width: sim.width, height: self.sim_rows, depth_or_array_layers: 1 });
+            }
+        } else {
+            for v in &sim.states { drop(clear(&mut enc, v, wgpu::Color::TRANSPARENT)); }
+        }
+        self.queue.submit([enc.finish()]);
+    }
+
+    /// The particle uniforms: the frame's, and for the GPU path its grid, forces, pointer and fronts.
+    #[allow(clippy::too_many_arguments)]
+    fn part_uniforms(&self, look: &Look, scale: f32, clock: f32, m: [f32; 4], grid: Option<(crate::morph::Grid, f32, f32)>, field: &Field, now: f32) -> PartUniforms {
+        let th = &look.theme;
+        let c = |v: [f32; 3]| [v[0], v[1], v[2], 1.0];
+        let pa = &look.particles;
+        let mut u = PartUniforms { res: [self.size.0 as f32, self.size.1 as f32, scale, clock], m, bg: c(th.ground), fg: c(th.ink), accent: c(th.accent),
+            ga: [0.0; 4], gb: [0.0; 4], gd: [0.0; 4], ge: [SIM_DT, 0.0, -1.0, 0.0], gp: [0.0; 4], gf: [0.0; 4], gw: [0.0; 4], fronts: [[0.0; 4]; 8] };
+        if let Some((g, stagger, start)) = grid {
+            u.ga = g.a; u.gb = g.b;
+            u.gd = [g.cols as f32, g.rows as f32, self.tiles.sim.as_ref().map_or(1.0, |s| s.width as f32), stagger];
+            let (tc, td) = g.turned.unwrap_or((-1.0, 0.0));
+            u.ge = [SIM_DT, start, tc, td];
+            u.gp = [field.pointer[0], field.pointer[1], pa.pointer * scale * field.pointer[2], pa.pointer_radius * scale];
+            u.gf = [pa.curl * scale, pa.curl_scale * scale, pa.damping, pa.spring];
+            u.gw = [look.fx.wave_speed * scale, look.fx.wave_width * scale, pa.front * scale, now];
+            u.fronts = field.fronts;
+        }
+        u
+    }
+
+    /// Bring the GPU path's state up to `clock` (seconds into the flight) in fixed steps.
+    #[allow(clippy::too_many_arguments)]
+    fn sim_run(&mut self, look: &Look, scale: f32, m: [f32; 4], grid: crate::morph::Grid, stagger: f32, start: f32, field: &Field, ids: (u32, u32), clock: f32) {
+        self.sim_for(grid.count());
+        let fresh = self.tiles.sim.as_ref().is_some_and(|s| s.run.0 != ids.0);
+        if fresh { self.sim_clear(); }
+        let Some(sim) = &mut self.tiles.sim else { return };
+        if sim.run != ids { if fresh { sim.cur = 0; } sim.steps = 0; sim.run = ids; }
+        let target = (clock / SIM_DT + 1e-3).floor().max(0.0) as u32;
+        // A host that fell far behind skips ahead rather than stalling.
+        if target > sim.steps + 8 { sim.steps = target - 8; }
+        while self.tiles.sim.as_ref().is_some_and(|s| s.steps < target) {
+            let steps = self.tiles.sim.as_ref().map_or(0, |s| s.steps);
+            let t = (steps + 1) as f32 * SIM_DT;
+            let u = self.part_uniforms(look, scale, t, m, Some((grid, stagger, start)), field, start + t);
+            self.queue.write_buffer(&self.tiles.ubuf, 0, bytemuck::bytes_of(&u));
+            let Some(sim) = &self.tiles.sim else { return };
+            let (from, to) = (sim.cur, 1 - sim.cur);
+            let read = Self::tile_group(&self.device, &self.tiles.layout, &self.tiles.ubuf, &self.tiles.snaps, &sim.states[from]);
+            let mut enc = self.device.create_command_encoder(&Default::default());
+            if let Some((pipe, layout)) = &sim.compute {
+                let t = &self.tiles;
+                let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout, entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: t.ubuf.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&t.snaps[0]) },
+                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&t.snaps[1]) },
+                    wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&t.snaps[2]) },
+                    wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&t.snaps[3]) },
+                    wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&sim.states[from]) },
+                    wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(&sim.states[to]) },
+                ] });
+                let mut pass = enc.begin_compute_pass(&Default::default());
+                pass.set_pipeline(pipe);
+                pass.set_bind_group(0, &group, &[]);
+                pass.dispatch_workgroups(sim.width.div_ceil(8), self.sim_rows.div_ceil(8), 1);
+            } else if let Some(pipe) = &sim.frag {
+                let mut pass = clear(&mut enc, &sim.states[to], wgpu::Color::TRANSPARENT);
+                pass.set_pipeline(pipe);
+                pass.set_bind_group(0, &read, &[]);
+                pass.draw(0..3, 0..1);
+            }
+            self.queue.submit([enc.finish()]);
+            if let Some(sim) = &mut self.tiles.sim { sim.cur = to; sim.steps += 1; }
+        }
     }
 
     pub fn device(&self) -> &wgpu::Device { &self.device }
@@ -568,7 +768,7 @@ impl Renderer {
             self.split_seen = sp.id;
             if let Some(old) = self.last_look {
                 let before = self.before.clone();
-                self.frame(&before, Frame { scene: &sp.scene, field: &sp.field, look: &old, lib: ui.meshes(), scale, t: sp.t, mt, split: [0.0; 4], tiles: None }, false);
+                self.frame(&before, Frame { scene: &sp.scene, field: &sp.field, look: &old, lib: ui.meshes(), scale, t: sp.t, mt, split: [0.0; 4], tiles: None, grid: None }, false);
                 self.split = [sp.at[0], sp.at[1], sp.t, 1.0];
             }
         }
@@ -579,6 +779,8 @@ impl Renderer {
         let split = self.split;
         // A morph: picture its two elements once, upload its tiles once per run.
         let mut tiles = None;
+        let mut grid = None;
+        ui.set_particle_gpu(self.tiles.tier != ParticleTier::Cpu);
         if let Some(run) = ui.morph_run() {
             if run.id != self.tiles.seen {
                 self.tiles.seen = run.id;
@@ -610,6 +812,18 @@ impl Renderer {
             let pic = run.src.iter().chain(&run.dst).find(|i| i.paint[3] == crate::scene::PICTURE).map_or(0.0, |i| (i.paint[1] + 1.0) / 8.0);
             let len = run.flight.map_or(0.0, |f| f[1] - f[0]);
             tiles = run.clock(now).map(|c| [c, run.spec.curl * scale, run.spec.ease.index() as f32, pic, len]);
+            // The GPU path: step the simulation up to now (fixed steps), then draw from its state.
+            if let (Some(g), Some(c), Some(f)) = (run.grid, run.clock(now), run.flight) {
+                // A run turned around flies its way back over `turned.1`; its flight length is the original's.
+                let flen = if g.turned.is_some() { run.spec.duration_ms / 1000.0 } else { len };
+                let m = [run.spec.curl * scale, run.spec.ease.index() as f32, pic, flen];
+                let ids = (run.id, run.upload);
+                let stagger = run.spec.stagger;
+                let field = *ui.field();
+                self.sim_run(look, scale, m, g, stagger, f[0], &field, ids, c);
+                grid = Some((g, stagger, f[0]));
+                tiles = Some([c, m[0], m[1], pic, flen]);
+            }
         }
         // The material's resolution: the look's level, or the automatic one. The reduced pass runs only
         // when something can be loose (at rest every pixel is shaded at full resolution anyway).
@@ -619,11 +833,12 @@ impl Renderer {
         let loose = tiles.is_some() || ui.loose_estimate(now, look.fx.lens) >= LO_MIN_AREA;
         let lo = (q < 1.0 && (loose || self.always_lo)).then(|| { let (w, h) = self.lo_for(q); [1.0 / q, q, w as f32, h as f32] });
         let pending = ui.perf().pending;
-        self.frame_q(target, Frame { scene: ui.scene(), field: ui.field(), look, lib: ui.meshes(), scale, t: now, mt, split, tiles }, true, lo);
+        self.frame_q(target, Frame { scene: ui.scene(), field: ui.field(), look, lib: ui.meshes(), scale, t: now, mt, split, tiles, grid }, true, lo);
         let submit = (crate::perf::now_ms() - started) as f32;
-        let parts = ui.morph_run().map_or(0, |r| if r.clock(now).is_some() { r.particles.len() as u32 } else { 0 });
+        let parts = ui.morph_run().map_or(0, |r| if r.clock(now).is_some() { r.grid.map_or(r.particles.len() as u32, |g| g.count()) } else { 0 });
+        let path = ui.morph_run().map_or(self.tiles.tier.name(), |r| if r.grid.is_some() { self.tiles.tier.name() } else { "cpu" });
         let p = ui.perf_mut();
-        p.quality = q; p.auto = auto; p.particles = parts;
+        p.quality = q; p.auto = auto; p.particles = parts; p.particle_path = path;
         p.frame(submit);
         if auto { self.auto.feed(pending.update_layout + pending.scene + submit); }
         ui.frame_drawn();
@@ -651,6 +866,13 @@ impl Renderer {
             let mut pass = clear(enc, view, wgpu::Color::TRANSPARENT);
             let mut pending = tiles > 0;
             let draw_tiles = |pass: &mut wgpu::RenderPass<'_>| {
+                if let Some((group, n)) = &self.tiles.grid_now {
+                    // The GPU path: tile `i` is instance `i`, its place read from the state texture.
+                    pass.set_pipeline(&self.tiles.gpipes[k]);
+                    pass.set_bind_group(0, group, &[]);
+                    pass.draw(0..4, 0..*n);
+                    return;
+                }
                 pass.set_pipeline(&self.tiles.pipes[k]);
                 pass.set_bind_group(0, &self.tiles.group, &[]);
                 pass.set_vertex_buffer(0, self.tiles.buf.slice(..));
@@ -689,11 +911,18 @@ impl Renderer {
         let scene = f.scene;
         self.uniforms(f.field, f.look, f.scale, f.t, f.mt, f.split, lo.unwrap_or([1.0, 1.0, self.size.0 as f32, self.size.1 as f32]));
         self.upload(scene);
-        let tiles = match f.tiles {
-            Some([clock, curl, ease, pic, len]) if self.tiles.count > 0 => {
-                let th = &f.look.theme;
-                let c = |v: [f32; 3]| [v[0], v[1], v[2], 1.0];
-                let u = PartUniforms { res: [self.size.0 as f32, self.size.1 as f32, f.scale, clock], m: [curl, ease, pic, len], bg: c(th.ground), fg: c(th.ink), accent: c(th.accent) };
+        self.tiles.grid_now = None;
+        let tiles = match (f.tiles, f.grid) {
+            (Some([clock, curl, ease, pic, len]), Some(g)) => {
+                let u = self.part_uniforms(f.look, f.scale, clock, [curl, ease, pic, len], Some(g), f.field, f.t);
+                self.queue.write_buffer(&self.tiles.ubuf, 0, bytemuck::bytes_of(&u));
+                let sim = self.tiles.sim.as_ref().expect("stepped before the frame");
+                let group = Self::tile_group(&self.device, &self.tiles.layout, &self.tiles.ubuf, &self.tiles.snaps, &sim.states[sim.cur]);
+                self.tiles.grid_now = Some((group, g.0.count()));
+                g.0.count()
+            }
+            (Some([clock, curl, ease, pic, len]), None) if self.tiles.count > 0 => {
+                let u = self.part_uniforms(f.look, f.scale, clock, [curl, ease, pic, len], None, f.field, f.t);
                 self.queue.write_buffer(&self.tiles.ubuf, 0, bytemuck::bytes_of(&u));
                 self.tiles.count
             }

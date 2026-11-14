@@ -8,12 +8,23 @@ struct PU {
   res: vec4f, // width, height, scale, seconds into the flight
   m: vec4f,   // curl (device px), ease (0 linear, 1 in-out cubic, 2 out-expo), picture flag (near.g) of the morph's picture or 0, flight length (s)
   bg: vec4f, fg: vec4f, accent: vec4f, // theme colours
+  // The GPU path (DESIGN.md §1.10, GPU particles): tiles are a grid over each element, paired by place.
+  ga: vec4f, // source grid: x0, y0, tile w, tile h (device px)
+  gb: vec4f, // target grid
+  gd: vec4f, // grid columns, rows, state texture width, stagger
+  ge: vec4f, // dt of one step (s), the run's absolute start time, turned around at this flight clock (or -1), over this long
+  gp: vec4f, // pointer x, y (device px), strength (+ pulls, − pushes), radius (device px)
+  gf: vec4f, // curl noise strength (px/s²), its scale (px), damping (1/s), spring back to the path (1/s²)
+  gw: vec4f, // fronts: speed (device px/s), width (device px), push (px/s²), now (absolute s)
+  fronts: array<vec4f, 8>, // x, y, start time (absolute), strength
 };
 @group(0) @binding(0) var<uniform> pu: PU;
 @group(0) @binding(1) var src_ink: texture_2d<f32>;
 @group(0) @binding(2) var dst_ink: texture_2d<f32>;
 @group(0) @binding(3) var src_near: texture_2d<f32>;
 @group(0) @binding(4) var dst_near: texture_2d<f32>;
+// The GPU path's state: per tile, its offset from the eased path (xy, device px) and velocity (zw).
+@group(0) @binding(5) var state: texture_2d<f32>;
 
 // The same hash, noise, curves and opacities as morph.rs.
 fn hash(x0: u32) -> u32 {
@@ -76,6 +87,7 @@ struct POut {
   @location(0) @interpolate(flat) org: vec2f,
   @location(1) @interpolate(flat) ab: vec4f,
   @location(2) @interpolate(flat) w: vec4f, // content mix, opacity, where encodings switch, progress
+  @location(3) @interpolate(flat) k: vec4f, // texels per px of the tile on the source side (xy) and the target side (zw)
 };
 
 @vertex fn vs_part(i: PIn) -> POut {
@@ -92,8 +104,116 @@ struct POut {
   var w = u;
   if (i.misc.x > 2.5 && i.misc.x < 3.5) { w = 0.0; }
   if (i.misc.x > 3.5) { w = 1.0; }
-  o.org = org; o.ab = i.ab; o.w = vec4f(w, a, i.misc.w, u);
+  o.org = org; o.ab = i.ab; o.w = vec4f(w, a, i.misc.w, u); o.k = vec4f(1.0);
   return o;
+}
+
+// ── The GPU path ───────────────────────────────────────────────────────────────────────────────
+// Tile `i` is cell (i mod columns, i div columns) of a grid over each element's ink bounds (the two grids
+// have the same columns and rows, so the pairing keeps places in order, as the CPU's Morton ranks do).
+// Its run is the CPU's: the side facing the target leaves first, the seed spreads departures. Where it
+// is: the eased path (the same `place`) plus an offset the simulation integrates, scaled by sin(πu), so
+// at progress 0 and 1 it is exactly its cell.
+struct Cell { a: vec2f, b: vec2f, seed: f32, delay: f32, dur: f32, swap: f32 };
+fn grid_cell(i: u32) -> Cell {
+  let cols = u32(pu.gd.x);
+  let g = vec2f(f32(i % cols), f32(i / cols));
+  var c: Cell;
+  c.a = pu.ga.xy + g * pu.ga.zw;
+  c.b = pu.gb.xy + g * pu.gb.zw;
+  c.seed = unit(hash(i ^ 0x9e3779b9u));
+  c.swap = 0.3 + 0.4 * unit(hash((i + 7777777u) ^ 0x9e3779b9u));
+  let dims = pu.gd.xy;
+  let ca = pu.ga.xy + pu.ga.zw * dims * 0.5;
+  let cb = pu.gb.xy + pu.gb.zw * dims * 0.5;
+  let d = cb - ca;
+  let len = length(d);
+  let reach = max((pu.ga.z * dims.x + pu.ga.w * dims.y) * 0.5, 1.0);
+  let st = clamp(pu.gd.w, 0.0, 0.9);
+  var lead = vnoise(c.a / 90.0, 0x68e31da4u) * 0.5 + 0.5;
+  if (len > 20.0) { lead = clamp(0.5 - dot(c.a - ca, d) / len / reach, 0.0, 1.0); }
+  c.delay = st * pu.m.w * 0.95 * clamp(0.6 * lead + 0.4 * c.seed, 0.0, 1.0);
+  c.dur = pu.m.w * (1.0 - st);
+  return c;
+}
+fn grid_u(c: Cell, clock: f32) -> f32 {
+  if (pu.ge.z >= 0.0) {
+    // Turned around: from where it was at that moment, all at once, back to the start.
+    let at = mix(0.0, 1.0, ease(clamp((pu.ge.z - c.delay) / max(c.dur, 1e-4), 0.0, 1.0)));
+    return mix(at, 0.0, ease(clamp(clock / max(pu.ge.w, 1e-4), 0.0, 1.0)));
+  }
+  return ease(clamp((clock - c.delay) / max(c.dur, 1e-4), 0.0, 1.0));
+}
+fn grid_place(c: Cell, u: f32, off: vec2f) -> vec2f {
+  return place(vec4f(c.a, c.b), u, vec4f(0.0, 0.0, c.seed, c.swap)) + off * sin(3.14159265 * u);
+}
+fn state_at(i: u32) -> vec4f {
+  let w = u32(pu.gd.z);
+  return textureLoad(state, vec2i(i32(i % w), i32(i / w)), 0);
+}
+
+@vertex fn vs_grid(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> POut {
+  let corner = vec2f(f32(vi & 1u), f32((vi >> 1u) & 1u));
+  let c = grid_cell(ii);
+  let u = grid_u(c, pu.res.w);
+  let org = grid_place(c, u, state_at(ii).xy);
+  let size = mix(pu.ga.zw, pu.gb.zw, u);
+  let p = org + corner * size;
+  var o: POut;
+  o.pos = vec4f(p.x / pu.res.x * 2.0 - 1.0, 1.0 - p.y / pu.res.y * 2.0, 0.0, 1.0);
+  o.org = org; o.ab = vec4f(c.a, c.b); o.w = vec4f(u, 1.0, c.swap, u);
+  o.k = vec4f(pu.ga.zw / max(size, vec2f(1e-4)), pu.gb.zw / max(size, vec2f(1e-4)));
+  return o;
+}
+
+/// One step of the simulation for tile `i`: forces act on its offset from the eased path. The same
+/// function runs as a compute shader (WebGPU, native) and as a fragment shader into a float target
+/// (WebGL2), so both tiers integrate alike.
+fn integrate(i: u32, s: vec4f) -> vec4f {
+  if (i >= u32(pu.gd.x * pu.gd.y)) { return vec4f(0.0); }
+  let c = grid_cell(i);
+  let dt = pu.ge.x;
+  let clock = pu.res.w;
+  let u = grid_u(c, clock);
+  // At the ends of the flight the tile is its cell: no offset, no speed.
+  if (u <= 0.0 || u >= 1.0) { return vec4f(0.0); }
+  var off = s.xy;
+  var v = s.zw;
+  let at = grid_place(c, u, off);
+  // Curl noise: the gradient of smooth noise turned a quarter, so the swarm swirls without bunching.
+  let q = at / max(pu.gf.y, 1.0);
+  let e = 0.5;
+  let nx = vnoise(q + vec2f(e, 0.0), 0x2c1b3c6du) - vnoise(q - vec2f(e, 0.0), 0x2c1b3c6du);
+  let ny = vnoise(q + vec2f(0.0, e), 0x2c1b3c6du) - vnoise(q - vec2f(0.0, e), 0x2c1b3c6du);
+  var acc = vec2f(ny, -nx) / (2.0 * e) * pu.gf.x;
+  // The pointer pulls (strength > 0) or pushes (< 0) within its radius.
+  let to = pu.gp.xy - at;
+  let dp = length(to);
+  if (pu.gp.w > 0.0 && dp < pu.gp.w && dp > 1e-3) { acc += to / dp * pu.gp.z * (1.0 - dp / pu.gp.w); }
+  // A front passing: a kick outward from where it started.
+  for (var j = 0; j < 8; j++) {
+    let f = pu.fronts[j];
+    let age = pu.gw.w - f.z;
+    if (f.w <= 0.0 || age < 0.0) { continue; }
+    let r = age * pu.gw.x;
+    let d = distance(at, f.xy);
+    let band = exp(-((d - r) * (d - r)) / max(pu.gw.y * pu.gw.y, 1.0));
+    acc += normalize(at - f.xy + vec2f(1e-3)) * band * pu.gw.z * f.w;
+  }
+  acc -= v * pu.gf.z + off * pu.gf.w;
+  v += acc * dt;
+  off += v * dt;
+  return vec4f(off, v);
+}
+
+@vertex fn vs_sim(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4f {
+  return vec4f(f32((vi << 1u) & 2u) * 2.0 - 1.0, f32(vi & 2u) * 2.0 - 1.0, 0.0, 1.0);
+}
+/// The WebGL2 tier: one texel per tile, drawn into the next state texture.
+@fragment fn fs_sim(@builtin(position) f: vec4f) -> @location(0) vec4f {
+  let p = vec2u(floor(f.xy));
+  let i = p.y * u32(pu.gd.z) + p.x;
+  return integrate(i, textureLoad(state, vec2i(p), 0));
 }
 
 fn texel(t: texture_2d<f32>, p: vec2f) -> vec4f { return textureLoad(t, vec2i(clamp(floor(p), vec2f(0.0), pu.res.xy - 1.0)), 0); }
@@ -101,8 +221,8 @@ fn texel(t: texture_2d<f32>, p: vec2f) -> vec4f { return textureLoad(t, vec2i(cl
 struct Px { ink: vec4f, near: vec4f };
 fn tile_px(f: POut) -> Px {
   let o = f.pos.xy - f.org;
-  let sp = f.ab.xy + o;
-  let dp = f.ab.zw + o;
+  let sp = f.ab.xy + o * f.k.xy;
+  let dp = f.ab.zw + o * f.k.zw;
   let si = texel(src_ink, sp); let di = texel(dst_ink, dp);
   let sn = texel(src_near, sp); let dn = texel(dst_near, dp);
   let w = f.w.x;

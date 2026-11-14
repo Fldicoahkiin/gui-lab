@@ -539,7 +539,7 @@ fn morph_page(s: &Gallery) -> El<Msg> {
         .child(text("缓动", 14.0, Paint::DIM))
         .child(segmented("morph/ease", &Ease::NAMES, s.morph.ease.index(), 30.0, Msg::Ease));
     col().key("morph/page").fill_width().max_width(980.0).gap(34.0)
-        .child(header(s, h, "粒子", "Ui::morph / Cmd::Morph", "把一样东西按材质的点阵散成粒子，飞过去拼成另一样东西：先松开，粒子接手，飞行，再由目标接手、合拢。飞行途中按“反向”，粒子从当前位置原路返回。"))
+        .child(header(s, h, "变形", "Ui::morph / Cmd::Morph", "把一样东西按材质的点阵散成粒子，飞过去拼成另一样东西：先松开，粒子接手，飞行，再由目标接手、合拢。飞行途中按“反向”，粒子从当前位置原路返回。"))
         .child(section(h, "预览", col().fill_width().gap(14.0).child(stage).child(controls)))
         .child(section(h, "参数", col().fill_width().gap(14.0).child(nums).child(ease)))
         .child(section(h, "源码", source(h, "src/morph.rs", include_str!("../morph.rs"))))

@@ -26,6 +26,7 @@ impl Offscreen {
         let row = (w * 4).div_ceil(256) * 256;
         let buf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (row * h) as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
         let mut r = Renderer::new(device, queue, format, w, h);
+        r.set_particle_tier(crate::render::particle_tier(&adapter));
         for (id, pw, ph, px) in crate::demo::pictures() { r.set_picture(id, pw, ph, &px); }
         Ok(Self { r, target, buf, w, h, row })
     }
