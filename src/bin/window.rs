@@ -120,6 +120,10 @@ impl ApplicationHandler for App {
                 s.ui.tick(now);
                 for k in key(&event.logical_key) { s.ui.key(k, self.mods.shift_key()); }
             }
+            WindowEvent::KeyboardInput { event, .. } => {
+                s.ui.tick(now);
+                for k in key(&event.logical_key) { s.ui.key_up(k); }
+            }
             WindowEvent::RedrawRequested => {
                 s.ui.tick(now);
                 let frame = match s.surface.get_current_texture() {

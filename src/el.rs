@@ -1,5 +1,6 @@
 //! Describe: the interface is a tree of plain values. A view is a function from state to this tree.
 use std::rc::Rc;
+use crate::wrap::Around;
 pub use taffy::Style;
 use taffy::prelude::*;
 
@@ -60,7 +61,8 @@ pub enum Content {
     /// has focus.
     /// `weight` moves the outline threshold out by that many logical px (bolder) or in (lighter), so a
     /// heading can be heavy without a bold face.
-    Text { s: String, size: f32, line: f32, paint: Paint, font: Font, print: f32, caret: Option<usize>, weight: f32 },
+    /// `around` makes the paragraph flow around obstacles (see `wrap`).
+    Text { s: String, size: f32, line: f32, paint: Paint, font: Font, print: f32, caret: Option<usize>, weight: f32, around: Option<Rc<Around>> },
     /// A picture by id, with its height as a fraction of its width, and the `PicFx` slot it uses.
     Picture { id: u32, ratio: f32, fx: u8 },
 }
@@ -223,6 +225,9 @@ impl<M> El<M> {
     pub fn print(mut self, pitch: f32) -> Self { if let Content::Text { print, .. } = &mut self.content { *print = pitch; } self }
     /// Make a text element bolder (px > 0) or lighter (px < 0) by moving its outline (logical px).
     pub fn weight(mut self, px: f32) -> Self { if let Content::Text { weight, .. } = &mut self.content { *weight = px; } self }
+    /// Let a text element flow around the true outlines in `a` (coordinates relative to its own
+    /// content box), keeping `a.gap` px from their ink.
+    pub fn around(mut self, a: Around) -> Self { if let Content::Text { around, .. } = &mut self.content { *around = Some(Rc::new(a)); } self }
     /// Choose the `PicFx` slot of a picture.
     pub fn pic_fx(mut self, slot: u8) -> Self { if let Content::Picture { fx, .. } = &mut self.content { *fx = slot; } self }
     pub fn scroll(mut self) -> Self { self.scroll = true; self.style.overflow.y = taffy::Overflow::Scroll; self.style.scrollbar_width = 0.0; self }
@@ -250,11 +255,11 @@ pub fn row<M>() -> El<M> { El::new(Style { display: Display::Flex, flex_directio
 pub fn col<M>() -> El<M> { El::new(Style { display: Display::Flex, flex_direction: FlexDirection::Column, ..Default::default() }, Content::None) }
 pub fn space<M>(w: f32, h: f32) -> El<M> { El::new(Style { size: Size { width: length(w), height: length(h) }, ..Default::default() }, Content::None) }
 pub fn text<M>(s: impl Into<String>, size: f32, paint: Paint) -> El<M> {
-    El::new(Style::default(), Content::Text { s: s.into(), size, line: (size * 1.6).round(), paint, font: Font::Body, print: 0.0, caret: None, weight: 0.0 })
+    El::new(Style::default(), Content::Text { s: s.into(), size, line: (size * 1.6).round(), paint, font: Font::Body, print: 0.0, caret: None, weight: 0.0, around: None })
 }
 /// A text leaf with an explicit line height.
 pub fn text_lh<M>(s: impl Into<String>, size: f32, line: f32, paint: Paint) -> El<M> {
-    El::new(Style::default(), Content::Text { s: s.into(), size, line, paint, font: Font::Body, print: 0.0, caret: None, weight: 0.0 })
+    El::new(Style::default(), Content::Text { s: s.into(), size, line, paint, font: Font::Body, print: 0.0, caret: None, weight: 0.0, around: None })
 }
 pub fn picture<M>(id: u32, ratio: f32) -> El<M> { El::new(Style { size: Size { width: percent(1.0), height: auto() }, ..Default::default() }, Content::Picture { id, ratio, fx: 0 }) }
 /// Every child in the same place, centred in the stack (a one-cell grid): for things that replace one

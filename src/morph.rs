@@ -78,6 +78,9 @@ pub enum Cmd {
     Morph { from: String, to: String, spec: MorphSpec },
     /// The page is about to change: parts with the same flow id move instead of being replaced.
     Flow(FlowSpec),
+    /// A front from (x, y), logical px, of this strength (0..1): for things that disturb the page by
+    /// themselves, such as a beat.
+    Front { x: f32, y: f32, strength: f32 },
 }
 
 /// What a tile is in the pairing.

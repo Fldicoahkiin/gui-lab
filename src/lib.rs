@@ -12,6 +12,7 @@ pub mod style;
 pub mod text;
 pub mod ui;
 pub mod widgets;
+pub mod wrap;
 
 /// Web entry: the page is a canvas that forwards pointer, wheel, key and resize events here, and the
 /// page's `location.hash` (the gallery page, so it can be linked). Positions are CSS (logical) px;
@@ -70,6 +71,11 @@ mod web {
     #[wasm_bindgen] pub fn key(name: &str, shift: bool, t: f32) -> bool {
         let Some(k) = Key::from_name(name) else { return false };
         with(|s| { s.ui.tick(t); s.ui.key(k, shift) }).unwrap_or(false)
+    }
+    /// A DOM key name let go.
+    #[wasm_bindgen] pub fn key_up(name: &str, t: f32) {
+        let Some(k) = Key::from_name(name) else { return };
+        with(|s| { s.ui.tick(t); s.ui.key_up(k) });
     }
     #[wasm_bindgen] pub fn frame(t: f32) {
         with(|s| {

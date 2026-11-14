@@ -222,6 +222,10 @@ pub struct Ui<S, M> {
     /// tick; either returns whether the view changed.
     hovered: Option<fn(&mut S, Option<&str>) -> bool>,
     ticked: Option<fn(&mut S, f32) -> bool>,
+    /// Keys nothing on the page used (the flag is Shift), and keys let go; either returns whether
+    /// the state changed.
+    unused_key: Option<fn(&mut S, Key, bool) -> bool>,
+    released: Option<fn(&mut S, Key) -> bool>,
 }
 
 impl<S, M: Clone> Ui<S, M> {
@@ -240,6 +244,15 @@ impl<S, M: Clone> Ui<S, M> {
     /// Let the state know the time on every tick (for things that change by themselves, like a clock);
     /// `f` returns whether the view changed.
     pub fn on_tick(mut self, f: fn(&mut S, f32) -> bool) -> Self { self.ticked = Some(f); self }
+    /// Give the state the keys nothing on the page used (Esc on a scene, a key that is held);
+    /// `f` returns whether the state changed.
+    pub fn on_unused_key(mut self, f: fn(&mut S, Key, bool) -> bool) -> Self { self.unused_key = Some(f); self }
+    /// Tell the state when a key is let go; `f` returns whether the state changed.
+    pub fn on_key_up(mut self, f: fn(&mut S, Key) -> bool) -> Self { self.released = Some(f); self }
+    /// A key let go.
+    pub fn key_up(&mut self, k: Key) {
+        if let Some(f) = self.released && f(&mut self.state, k) { self.relayout(); }
+    }
     /// This frame's annotation records.
     pub fn annots(&self) -> &[gaze::Annot] { &self.annots }
     /// Take the commands `update` leaves in the state (morphs, flows) after every update.
@@ -252,7 +265,7 @@ impl<S, M: Clone> Ui<S, M> {
             hover: None, focus: None, pressed: None, capture: None, modal_at: None, modal_key: None, return_focus: None, split: None, splits: 0,
             keyboard: false, marks: Marks::default(), sized: None, commands: None, unseen: vec![], base: vec![], tags: vec![], roles: vec![],
             run: None, painted_phase: 0, flows: HashMap::new(), ghosts: vec![], body_len: 0, animating: false, lifted: HashMap::new(),
-            gaze_of: None, gaze_seen: HashMap::new(), annots: vec![], hovered: None, ticked: None,
+            gaze_of: None, gaze_seen: HashMap::new(), annots: vec![], hovered: None, ticked: None, unused_key: None, released: None,
         };
         ui.resize(w, h, scale);
         ui
@@ -441,7 +454,7 @@ impl<S, M: Clone> Ui<S, M> {
             self.send(m);
             return true;
         }
-        let Some(fi) = fi else { return self.key_scroll(None, k) };
+        let Some(fi) = fi else { return self.key_scroll(None, k) || self.unused(k, shift) };
         if matches!(k, Key::Enter | Key::Char(' ')) && let Some(m) = self.nodes[fi].on_press.clone() {
             let (cx, cy) = self.nodes[fi].rect.center();
             let s = self.scale;
@@ -452,7 +465,15 @@ impl<S, M: Clone> Ui<S, M> {
             self.rebirth(&key);
             return true;
         }
-        self.key_scroll(Some(fi), k)
+        self.key_scroll(Some(fi), k) || self.unused(k, shift)
+    }
+
+    /// A key nothing on the page used goes to the state, if it asked for them.
+    fn unused(&mut self, k: Key, shift: bool) -> bool {
+        match self.unused_key {
+            Some(f) => { let used = f(&mut self.state, k, shift); if used { self.relayout(); } used }
+            None => false,
+        }
     }
 
     // ── Internals ────────────────────────────────────────────────────────────────────────────────
@@ -577,7 +598,13 @@ impl<S, M: Clone> Ui<S, M> {
         let old = flow.map(|_| self.record());
         self.layout();
         if let (Some(f), Some(old)) = (flow, old) { self.flow_from(old, f); }
-        for c in cmds { if let Cmd::Morph { from, to, spec } = c { self.morph(&from, &to, spec); } }
+        for c in cmds {
+            match c {
+                Cmd::Morph { from, to, spec } => self.morph(&from, &to, spec),
+                Cmd::Front { x, y, strength } => { let s = self.scale; self.field.front(x * s, y * s, self.now, strength); }
+                Cmd::Flow(_) => {}
+            }
+        }
     }
 
     fn layout(&mut self) {
@@ -602,9 +629,11 @@ impl<S, M: Clone> Ui<S, M> {
         let measure = |input: taffy::LayoutInput, _: NodeId, ctx: Option<&mut usize>, style: &Style| {
             let none = |_: *const (), _: f32| 0.0;
             match ctx.map(|i| &nodes[*i].content) {
-                Some(Content::Text { s, size, line, font, .. }) => taffy::compute_leaf_layout(input, style, none, |known, avail| {
+                Some(Content::Text { s, size, line, font, around, .. }) => taffy::compute_leaf_layout(input, style, none, |known, avail| {
                     let limit = known.width.or(match avail.width { AvailableSpace::Definite(w) => Some(w), AvailableSpace::MinContent => Some(0.0), AvailableSpace::MaxContent => None });
-                    let (w, h) = text.measure(s, font.resolve([0; 3]), *size, *line, limit);
+                    // Text flowing around obstacles fills whatever width it is given.
+                    let limit = if around.is_some() { limit.filter(|w| *w > 0.0).or(Some(600.0)) } else { limit };
+                    let (w, h) = text.measure_around(s, font.resolve([0; 3]), *size, *line, limit, around.as_deref());
                     Size { width: known.width.unwrap_or(w), height: known.height.unwrap_or(h) }
                 }),
                 Some(Content::Picture { ratio, .. }) => taffy::compute_leaf_layout(input, style, none, |known, avail| {
@@ -751,9 +780,9 @@ impl<S, M: Clone> Ui<S, M> {
             if let Some(p) = n.fill { put(&mut sink, shape(p, 0.0), ident(&n.key, u32::MAX, 0), None); }
             if let Some((w, p)) = n.border { put(&mut sink, shape(p, w), ident(&n.key, u32::MAX - 1, 0), None); }
             match &n.content {
-                Content::Text { s: str, size, line, paint, font, print, caret, weight } => {
+                Content::Text { s: str, size, line, paint, font, print, caret, weight, around } => {
                     let proto = Instance { paint: [paint.tone, paint.accent, paint.alpha, 0.0], look: [mat, paint.hue as f32, (n.inner.y * s).round(), (line * s).round().max(1.0)], ..Default::default() };
-                    let para = Para { s: str, face: font.resolve([0; 3]), size: *size, line: *line, width: n.inner.w + 1.0, print: *print };
+                    let para = Para { s: str, face: font.resolve([0; 3]), size: *size, line: *line, width: n.inner.w + if around.is_some() { 0.0 } else { 1.0 }, print: *print, around: around.as_deref() };
                     let mut seq = 0;
                     let wpx = weight * s;
                     self.text.emit(para, (n.inner.x, n.inner.y), proto, s, |mut inst, glyph| {
@@ -1008,7 +1037,7 @@ impl<S, M: Clone> Ui<S, M> {
             let (w, _) = text.measure(str, MONO, SIZE, LINE, None);
             bar(out, dev(x) - t * 2.0, dev(y), dev(w) + t * 4.0, dev(LINE), 1.0, true);
             let proto = Instance { paint: [0.0, 0.0, 1.0, 0.0], look: col, ..Default::default() };
-            text.emit(Para { s: str, face: MONO, size: SIZE, line: LINE, width: 1e5, print: 0.0 }, (x, y), proto, s, |mut i, _| { i.clip = clip; out.push(i); });
+            text.emit(Para { s: str, face: MONO, size: SIZE, line: LINE, width: 1e5, print: 0.0, around: None }, (x, y), proto, s, |mut i, _| { i.clip = clip; out.push(i); });
             w
         };
         let mut tags: Vec<Rect> = vec![];

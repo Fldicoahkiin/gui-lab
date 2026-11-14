@@ -45,6 +45,7 @@
       if (w.key(e.key, e.shiftKey, now()) || e.key === 'Tab') e.preventDefault();
       sync();
     });
+    window.addEventListener('keyup', e => { w.key_up(e.key, now()); sync(); });
     new ResizeObserver(() => { fit(); w.resize(canvas.width, canvas.height, dpr); }).observe(stage);
     const loop = () => { w.frame(now()); requestAnimationFrame(loop); };
     requestAnimationFrame(loop);

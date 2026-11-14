@@ -116,6 +116,14 @@ fn box_d(local: vec2f, size: vec2f, r: f32) -> f32 {
 fn inst(i: VOut) -> vec4f {
   if (i.pos.x < i.clip.x || i.pos.y < i.clip.y || i.pos.x >= i.clip.z || i.pos.y >= i.clip.w) { discard; }
   let kind = i.paint.w;
+  if (kind > 1.5) {
+    // A picture with an alpha channel (a cut-out) has its true outline: outside it, nothing is there.
+    var d = box_d(i.local, i.size, 0.0);
+    let ta = textureSampleLevel(tex1, samp, clamp(i.uv, vec2f(0.0), vec2f(1.0)), 0.0).a;
+    let inside = d <= 0.0 && ta > 0.5;
+    let near = clamp(0.5 - d / (2.0 * u.fd.z), 0.0, 1.0) * step(0.5, ta);
+    return vec4f(clamp(0.5 - d, 0.0, 1.0) * ta, near, select(0.0, 1.0, inside), d);
+  }
   if (kind < 0.5) {
     let g = textureSampleLevel(tex0, samp, i.uv, 0.0);
     // A weight (device px in extra.x) moves the outline: the coverage comes from the signed distance.
@@ -125,10 +133,10 @@ fn inst(i: VOut) -> vec4f {
     }
     return vec4f(g.r, g.g, 0.0, (0.5 - g.g) * 2.0 * u.fd.z);
   }
-  var d = box_d(i.local, i.size, select(i.radius, 0.0, kind > 1.5));
+  var d = box_d(i.local, i.size, i.radius);
   if (i.extra.x > 0.0) { d = abs(d + i.extra.x * 0.5) - i.extra.x * 0.5; }
   let near = clamp(0.5 - d / (2.0 * u.fd.z), 0.0, 1.0);
-  return vec4f(clamp(0.5 - d, 0.0, 1.0), near, select(0.0, 1.0, kind > 1.5 && d <= 0.0), d);
+  return vec4f(clamp(0.5 - d, 0.0, 1.0), near, 0.0, d);
 }
 
 /// Whether the height materials (chrome, liquid) shade this instance: shapes whose shorter side and

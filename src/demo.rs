@@ -253,12 +253,14 @@ pub const SPHERE: u32 = 0;
 pub const SKY: u32 = 1;
 pub const TERRAIN: u32 = 2;
 pub const BUST: u32 = 3;
+/// The bust cut out of its ground: transparent around its silhouette, so it has a true outline.
+pub const CUTOUT: u32 = 4;
 pub const PICTURE_NAMES: [&str; 4] = ["球", "天空", "地形", "胸像"];
-pub const PICTURE_SIZES: [(u32, u32); 4] = [(640, 320), (640, 400), (640, 400), (640, 400)];
+pub const PICTURE_SIZES: [(u32, u32); 5] = [(640, 320), (640, 400), (640, 400), (640, 400), (520, 400)];
 
 /// Every demo picture: id, width, height, RGBA8.
 pub fn pictures() -> Vec<(u32, u32, u32, Vec<u8>)> {
-    let f: [fn(u32, u32) -> Vec<u8>; 4] = [picture_pixels, sky_pixels, terrain_pixels, bust_pixels];
+    let f: [fn(u32, u32) -> Vec<u8>; 5] = [picture_pixels, sky_pixels, terrain_pixels, bust_pixels, cutout_pixels];
     f.iter().enumerate().map(|(i, f)| { let (w, h) = PICTURE_SIZES[i]; (i as u32, w, h, f(w, h)) }).collect()
 }
 
@@ -360,7 +362,10 @@ pub fn terrain_pixels(w: u32, h: u32) -> Vec<u8> {
 
 /// A plaster bust in the dark, lit from the upper left: a height field made from soft ellipsoids
 /// (head, brow, nose, cheeks, chin, neck, shoulders) with carved eyes and noisy hair, then shaded.
-pub fn bust_pixels(w: u32, h: u32) -> Vec<u8> {
+pub fn bust_pixels(w: u32, h: u32) -> Vec<u8> { bust(w, h, false) }
+/// The bust with its ground transparent (alpha 0 outside the figure, edges anti-aliased).
+pub fn cutout_pixels(w: u32, h: u32) -> Vec<u8> { bust(w, h, true) }
+fn bust(w: u32, h: u32, cut: bool) -> Vec<u8> {
     let (sw, sh) = (w as f32, h as f32);
     let k = sh / 400.0;
     let cx = sw * 0.5;
@@ -396,7 +401,7 @@ pub fn bust_pixels(w: u32, h: u32) -> Vec<u8> {
         h
     };
     let light = norm([-0.55, -0.6, 0.58]);
-    rgba(w, h, |x, y| {
+    let mut px = rgba(w, h, |x, y| {
         let hz = z(x, y);
         let bg = { let d = ((x - sw * 0.35).powi(2) + (y - sh * 0.3).powi(2)).sqrt() / sh; scale3([0.10, 0.10, 0.13], (1.0 - d).max(0.0).powi(3)) };
         if hz < -300.0 { return bg; }
@@ -409,7 +414,20 @@ pub fn bust_pixels(w: u32, h: u32) -> Vec<u8> {
         let albedo = [0.86, 0.79, 0.70];
         let l = lam.powf(1.4);
         add3(scale3(albedo, 0.03 + 0.95 * l), [spec + rim * 0.5, spec + rim * 0.6, spec + rim * 0.8])
-    })
+    });
+    if cut {
+        // Coverage from four samples a texel: the figure is where the height field is.
+        for y in 0..h { for x in 0..w {
+            let n = [(0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)].iter().filter(|(dx, dy)| z(x as f32 + dx, y as f32 + dy) >= -300.0).count();
+            px[((y * w + x) * 4 + 3) as usize] = (n as f32 / 4.0 * 255.0).round() as u8;
+        } }
+    }
+    px
+}
+/// The cut-out's alpha, for its outline (`wrap::Silhouette::from_alpha`).
+pub fn cutout_alpha() -> (u32, u32, Vec<u8>) {
+    let (w, h) = PICTURE_SIZES[CUTOUT as usize];
+    (w, h, cutout_pixels(w, h).chunks(4).map(|p| p[3]).collect())
 }
 
 /// Centre or radii of an ellipsoid, px.

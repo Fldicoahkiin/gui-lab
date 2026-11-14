@@ -7,6 +7,7 @@
 //! face: it is then drawn only at whole multiples of its native size, on whole device pixels, with
 //! coverage cut at one half, so its edges are ink or ground and nothing in between.
 use crate::scene::{GLYPH, Instance};
+use crate::wrap::Around;
 use parley::fontique::{Blob, Collection, CollectionOptions};
 use parley::layout::PositionedLayoutItem;
 use parley::style::{FontFamily, FontFamilyName, StyleProperty};
@@ -47,13 +48,13 @@ pub fn load_bundled(dir: &str) -> std::io::Result<Vec<Face>> {
 /// A paragraph to draw: text, face, font size, line height and the width it was laid out at
 /// (logical px).
 #[derive(Clone, Copy)]
-pub struct Para<'a> { pub s: &'a str, pub face: u8, pub size: f32, pub line: f32, pub width: f32, pub print: f32 }
+pub struct Para<'a> { pub s: &'a str, pub face: u8, pub size: f32, pub line: f32, pub width: f32, pub print: f32, pub around: Option<&'a Around> }
 
 #[derive(Clone, Copy)]
 struct Slot { x: u32, y: u32, w: u32, h: u32, left: i32, top: i32 }
 
-/// Text, face, size bits, line bits, width bits.
-type MeasureKey = (String, u8, u32, u32, u32);
+/// Text, face, size bits, line bits, width bits, what it flows around.
+type MeasureKey = (String, u8, u32, u32, u32, u64);
 
 struct Family { name: String, pixel: Option<f32>, data: Arc<Vec<u8>>, blob: u64 }
 
@@ -117,7 +118,7 @@ impl Text {
 
     /// Shape and break `s` at `size` logical px. Measuring and drawing use this same call, so the
     /// line breaks on screen are exactly the ones layout planned for.
-    fn layout(&mut self, s: &str, face: u8, size: f32, line: f32, max_width: Option<f32>) -> Layout<()> {
+    fn layout(&mut self, s: &str, face: u8, size: f32, line: f32, max_width: Option<f32>, around: Option<&Around>) -> Layout<()> {
         let size = self.size_for(face, size);
         let fi = (face as usize).min(self.families.len() - 1);
         let mut b = self.layouts.ranged_builder(&mut self.fonts, s, 1.0, true);
@@ -128,17 +129,25 @@ impl Text {
         b.push_default(StyleProperty::FontSize(size));
         b.push_default(LineHeight::Absolute(line));
         let mut l: Layout<()> = b.build(s);
-        l.break_all_lines(max_width);
+        match around {
+            None => l.break_all_lines(max_width),
+            Some(a) => flow_around(&mut l, a, max_width.unwrap_or(1e5), line),
+        }
         l
     }
 
     /// Width and height of a paragraph in logical px when limited to `max_width`.
-    pub fn measure(&mut self, s: &str, face: u8, size: f32, line: f32, max_width: Option<f32>) -> (f32, f32) {
-        let k = (s.to_owned(), face, size.to_bits(), line.to_bits(), max_width.unwrap_or(-1.0).to_bits());
+    pub fn measure(&mut self, s: &str, face: u8, size: f32, line: f32, max_width: Option<f32>) -> (f32, f32) { self.measure_around(s, face, size, line, max_width, None) }
+    /// The same, flowing around obstacles: the width is the whole column's, the height reaches the last line.
+    pub fn measure_around(&mut self, s: &str, face: u8, size: f32, line: f32, max_width: Option<f32>, around: Option<&Around>) -> (f32, f32) {
+        let k = (s.to_owned(), face, size.to_bits(), line.to_bits(), max_width.unwrap_or(-1.0).to_bits(), around.map_or(0, Around::id));
         if let Some(v) = self.measured.get(&k) { return *v; }
         if self.measured.len() > 4096 { self.measured.clear(); }
-        let l = self.layout(s, face, size, line, max_width);
-        let v = (l.width().ceil(), l.height().ceil());
+        let l = self.layout(s, face, size, line, max_width, around);
+        let v = match around {
+            None => (l.width().ceil(), l.height().ceil()),
+            Some(_) => (max_width.unwrap_or(l.width()).ceil(), l.lines().map(|ln| ln.metrics().block_max_coord).fold(0.0f32, f32::max).ceil()),
+        };
         self.measured.insert(k, v);
         v
     }
@@ -146,7 +155,7 @@ impl Text {
     /// Where a caret at byte `index` of a paragraph goes: x, top and height, logical px. `origin` is
     /// where the paragraph is drawn.
     pub fn caret(&mut self, p: Para<'_>, origin: (f32, f32), index: usize) -> Option<crate::ui::Rect> {
-        let l = self.layout(p.s, p.face, p.size, p.line, Some(p.width));
+        let l = self.layout(p.s, p.face, p.size, p.line, Some(p.width), p.around);
         let at = index.min(p.s.len());
         let b = parley::Cursor::from_byte_index(&l, at, parley::Affinity::Downstream).geometry(&l, 1.0);
         let h = (b.y1 - b.y0) as f32;
@@ -172,7 +181,7 @@ impl Text {
     /// Call `out` once per visible glyph with its instance (device px) and glyph id. `origin` is
     /// logical px.
     pub fn emit(&mut self, p: Para<'_>, origin: (f32, f32), proto: Instance, scale: f32, mut out: impl FnMut(Instance, u32)) {
-        let l = self.layout(p.s, p.face, p.size, p.line, Some(p.width));
+        let l = self.layout(p.s, p.face, p.size, p.line, Some(p.width), p.around);
         let para_pixel = self.is_pixel(p.face);
         // A pixel face starts on a whole device pixel so its pixels land on the screen's.
         let (ox, oy) = if para_pixel { ((origin.0 * scale).round(), (origin.1 * scale).round()) } else { (origin.0 * scale, origin.1 * scale) };
@@ -216,6 +225,32 @@ impl Text {
             }
         }
     }
+}
+
+/// Break `l` into lines that keep out of the obstacles in `a`: down the column a line height at a
+/// time, each band's free pieces (left to right) take a line each; a band with no free piece is
+/// skipped a few px at a time.
+fn flow_around(l: &mut Layout<()>, a: &Around, width: f32, line: f32) {
+    let mut br = l.break_lines();
+    br.state_mut().set_layout_max_advance(width);
+    let mut y = 0.0f32;
+    let mut pieces: std::collections::VecDeque<(f32, f32)> = Default::default();
+    let mut guard = 0;
+    while !br.is_done() && guard < 100_000 {
+        guard += 1;
+        if pieces.is_empty() {
+            pieces = a.free(width, y, y + line).into();
+            if pieces.is_empty() { y += 4.0; continue; }
+        }
+        let (x0, x1) = pieces.pop_front().expect("a free piece");
+        let st = br.state_mut();
+        st.set_line_x(x0);
+        st.set_line_max_advance((x1 - x0).min(width));
+        st.set_line_y(y as f64);
+        if br.break_next().is_none() { break; }
+        if pieces.is_empty() { y += line; }
+    }
+    br.finish();
 }
 
 /// Put one glyph image, padded by the spread, into the atlas. `None` when it is empty or the atlas is
