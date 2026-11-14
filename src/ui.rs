@@ -105,6 +105,8 @@ pub struct Node<M> {
     tid: NodeId,
 }
 impl<M> Node<M> {
+    /// The nearest flow id at or above this node (`El::flow`).
+    pub fn flow(&self) -> Option<&str> { self.flow.as_ref().map(|f| &*f.0) }
     pub fn text(&self) -> Option<&str> { if let Content::Text { s, .. } = &self.content { Some(s) } else { None } }
     pub fn pressable(&self) -> bool { self.on_press.is_some() }
     /// What the annotation layer calls this element.

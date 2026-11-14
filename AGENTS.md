@@ -104,8 +104,11 @@ use lab::morph::{Cmd, FlowSpec, MorphSpec};
 let mut cmds: Vec<Cmd> = vec![];
 cmds.push(Cmd::Morph { from: "a".into(), to: "b".into(), spec: MorphSpec::default() });
 cmds.push(Cmd::Flow(FlowSpec::default()));     // before a page change: shared `.flow(id)` parts move
-cmds.push(Cmd::Press { key: "go".into() });    // press an element as a person would
-assert_eq!(cmds.len(), 3);
+cmds.push(Cmd::Press { key: "go".into() });    // press an element as a person would (not counted as input)
+cmds.push(Cmd::Commit { x: 400.0, y: 300.0 });  // keep the frame, play the new look's transition from here
+cmds.push(Cmd::Focus { key: "go".into() });     // focus an element after this layout
+cmds.push(Cmd::Scrub(Some(0.5)));               // hold the morph in progress half way (None: let it go on)
+assert_eq!(cmds.len(), 6);
 ```
 
 9. Materials and the look: one global material, overrides per subtree:
@@ -134,6 +137,8 @@ material draws it (its outline and creases are edges in the nearness). Hear the 
 `.on_pick(|Pick| ..)` (`Pick::Hover` / `Pick::Press` carry `MeshHit { object, instance }`); turn it with
 `widgets::orbit(key, scene, &state.orbit, Msg::Orbit)` and call `Orbit::update` / `Orbit::step` (see
 `docs/recipes/mesh.md`). Morphs with many tiles run on the GPU by themselves (`Look::particles.gpu_above`).
+A scene that changes into another with shared actors is a commit plus a flow (`docs/recipes/chapter.md`;
+the film, `src/gallery/film.rs`, is twelve of them). `Ui::on_pointer` tells the state where the pointer is.
 A style preset is data: `preset::presets()`, change a number (`Preset::set_number("transition.steps.0.a", 3.0)`)
 or read JSON (`Preset::from_json`), then `preset.apply(&look)`; a commit (`El::commit`) that applies it
 plays its transition (`docs/recipes/preset.md`).
