@@ -33,10 +33,12 @@ pub struct Scene {
     /// Where the modal layer starts, if one is open. Everything from here on is drawn over the page
     /// and hides it in the near image too (see the renderer).
     pub layer: Option<u32>,
+    /// Stage 3, the annotation layer (DESIGN.md §1.7): drawn after the material, exactly, never loose.
+    pub annot: Vec<Instance>,
 }
 
 impl Scene {
-    pub fn clear(&mut self) { self.instances.clear(); self.batches.clear(); self.layer = None; }
+    pub fn clear(&mut self) { self.instances.clear(); self.batches.clear(); self.layer = None; self.annot.clear(); }
     /// Everything pushed from now on is in the modal layer.
     pub fn begin_layer(&mut self) { self.layer = Some(self.instances.len() as u32); }
     pub fn push(&mut self, i: Instance) {
@@ -69,15 +71,30 @@ pub struct Field {
     /// disturbance is `strength`, left of it nothing. It acts only inside `wipe_rect` (x0, y0, x1, y1).
     pub wipe: [f32; 4],
     pub wipe_rect: [f32; 4],
+    /// A short burst over a rect (x0, y0, x1, y1), and when it started, how strong, how long (s).
+    /// Hover and press put one over the control; the glitch material reads it.
+    pub burst: [f32; 4],
+    pub burst_t: [f32; 4],
     pub next: usize,
 }
 impl Default for Field {
-    fn default() -> Self { Self { fronts: [[0.0; 4]; 8], pointer: [-1e5, -1e5, 0.0, 0.0], wipe: [0.0; 4], wipe_rect: [0.0; 4], next: 0 } }
+    fn default() -> Self { Self { fronts: [[0.0; 4]; 8], pointer: [-1e5, -1e5, 0.0, 0.0], wipe: [0.0; 4], wipe_rect: [0.0; 4], burst: [0.0; 4], burst_t: [0.0, 0.0, 0.0, 0.0], next: 0 } }
 }
 impl Field {
     pub fn front(&mut self, x: f32, y: f32, t: f32, strength: f32) {
         self.fronts[self.next] = [x, y, t, strength];
         self.next = (self.next + 1) % self.fronts.len();
+    }
+    /// A burst over `rect` (device px, x0 y0 x1 y1, or the whole window when `None`) from time `t`,
+    /// `strength` 0..1, lasting `secs`.
+    pub fn burst(&mut self, rect: Option<[f32; 4]>, t: f32, strength: f32, secs: f32) {
+        self.burst = rect.unwrap_or([-1e6, -1e6, 1e6, 1e6]);
+        self.burst_t = [t, strength, secs.max(1e-3), 0.0];
+    }
+    /// How strong the burst is at time `t` (it fades out linearly).
+    pub fn burst_at(&self, t: f32) -> f32 {
+        let age = t - self.burst_t[0];
+        if age < 0.0 || age > self.burst_t[2] { 0.0 } else { self.burst_t[1] * (1.0 - age / self.burst_t[2]) }
     }
 }
 

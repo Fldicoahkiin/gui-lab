@@ -34,4 +34,4 @@ pub const CONTROL_H: f32 = 30.0;
 pub const LINE: f32 = 1.0;
 pub const RADIUS: f32 = 4.0;
 /// The accent colour at low strength, for what is selected.
-pub const SELECTED: crate::el::Paint = crate::el::Paint { tone: 0.0, accent: 1.0, alpha: 0.14 };
+pub const SELECTED: crate::el::Paint = crate::el::Paint { tone: 0.0, accent: 1.0, alpha: 0.14, hue: 0 };

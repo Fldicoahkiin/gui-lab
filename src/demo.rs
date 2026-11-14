@@ -165,7 +165,7 @@ fn content(s: &Demo) -> El<Msg> {
         let mut item = row().key(format!("item/{i}")).height(36.0).pad(14.0, 0.0).gap(12.0).align(AlignItems::CENTER).on_press(Msg::Pick(i))
             .child(text(format!("第 {} 项", i + 1), 15.0, if on { Paint::ACCENT } else { Paint::TEXT }).grow(1.0))
             .child(text(format!("Item {:02}", i + 1), 13.0, Paint::DIM).font(Font::Mono));
-        if on { item = item.fill(Paint { tone: 0.0, accent: 1.0, alpha: 0.12 }); }
+        if on { item = item.fill(Paint { tone: 0.0, accent: 1.0, alpha: 0.12, hue: 0 }); }
         list = list.child(item);
     }
     let body_line = (sz.body * 1.75).round();

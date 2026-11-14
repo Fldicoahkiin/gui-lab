@@ -3,18 +3,25 @@ use std::rc::Rc;
 pub use taffy::Style;
 use taffy::prelude::*;
 
-/// How an instance is inked. `tone` mixes ground→ink, `accent` mixes that toward the accent colour.
+/// How an instance is inked. `tone` mixes ground→ink, `accent` mixes that toward one of the theme's
+/// accent colours: `hue` 0 is `accent`, 1 `second`, 2 `third`.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Paint { pub tone: f32, pub accent: f32, pub alpha: f32 }
+pub struct Paint { pub tone: f32, pub accent: f32, pub alpha: f32, pub hue: u8 }
 impl Paint {
-    pub const fn tone(tone: f32) -> Self { Self { tone, accent: 0.0, alpha: 1.0 } }
+    pub const fn tone(tone: f32) -> Self { Self { tone, accent: 0.0, alpha: 1.0, hue: 0 } }
+    /// Full colour in the theme's accent number `hue` (0, 1, 2).
+    pub const fn hue(hue: u8) -> Self { Self { tone: 1.0, accent: 1.0, alpha: 1.0, hue } }
+    pub const fn alpha(self, alpha: f32) -> Self { Self { alpha, ..self } }
+    /// The instance form of `accent`: the hue rides in the same number (accent + 2 × hue), only where
+    /// there is accent.
+    pub fn accent_code(&self) -> f32 { if self.accent > 0.0 { self.accent + 2.0 * self.hue.min(2) as f32 } else { 0.0 } }
     pub const INK: Self = Self::tone(1.0);
     pub const TEXT: Self = Self::tone(0.86);
     pub const DIM: Self = Self::tone(0.5);
     pub const FAINT: Self = Self::tone(0.2);
     /// The page's own ground colour: invisible, but it keeps the ground units out.
     pub const GROUND: Self = Self::tone(0.0);
-    pub const ACCENT: Self = Self { tone: 1.0, accent: 1.0, alpha: 1.0 };
+    pub const ACCENT: Self = Self { tone: 1.0, accent: 1.0, alpha: 1.0, hue: 0 };
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -126,6 +133,14 @@ pub struct El<M> {
     pub flow: Option<String>,
     /// Laid out but not drawn and takes no input, unless a morph is showing it (DESIGN.md §1.10).
     pub hidden: bool,
+    /// An explicit callout for the annotation layer (DESIGN.md §1.7).
+    pub annotate: Option<String>,
+    /// The annotation layer only looks inside subtrees marked as its scope (when any is).
+    pub gaze_scope: bool,
+    /// Per-element material (collage, §1.6): the material id for this subtree, inherited.
+    pub material: Option<u8>,
+    /// Looseness for the whole subtree (inherited; the larger of this and each element's own wins).
+    pub loosen: f32,
     pub children: Vec<El<M>>,
 }
 
@@ -133,7 +148,7 @@ impl<M> El<M> {
     fn new(style: Style, content: Content) -> Self {
         // Nothing shrinks unless asked: fixed sizes stay fixed inside columns and scroll areas.
         let style = Style { flex_shrink: 0.0, ..style };
-        Self { key: String::new(), style, content, fill: None, border: None, radius: 0.0, on_press: None, on_key: None, on_drag: None, on_blur: None, focusable: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, modal: None, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, children: vec![] }
+        Self { key: String::new(), style, content, fill: None, border: None, radius: 0.0, on_press: None, on_key: None, on_drag: None, on_blur: None, focusable: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, modal: None, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, annotate: None, gaze_scope: false, material: None, loosen: 0.0, children: vec![] }
     }
     pub fn key(mut self, k: impl Into<String>) -> Self { self.key = k.into(); self }
     pub fn gap(mut self, g: f32) -> Self { self.style.gap = Size { width: length(g), height: length(g) }; self }
@@ -179,6 +194,21 @@ impl<M> El<M> {
     pub fn flow(mut self, id: impl Into<String>) -> Self { self.flow = Some(id.into()); self }
     /// Lay this out but do not draw it until a morph shows it.
     pub fn hidden_until_morphed(mut self, h: bool) -> Self { self.hidden = h; self }
+    /// A callout label for the annotation layer ("①  电源开关").
+    pub fn annotate(mut self, label: impl Into<String>) -> Self { self.annotate = Some(label.into()); self }
+    /// Make this subtree what the annotation layer looks at.
+    pub fn gaze_scope(mut self) -> Self { self.gaze_scope = true; self }
+    /// Draw this subtree with another material (`style::Material` id), under the collage material.
+    pub fn material(mut self, id: u8) -> Self { self.material = Some(id); self }
+    /// Hold the whole subtree at looseness `k`.
+    pub fn loosen(mut self, k: f32) -> Self { self.loosen = k; self }
+    /// Take this element out of the flow and pin it to its parent's edges (logical px; `None` is auto).
+    pub fn absolute(mut self, left: Option<f32>, top: Option<f32>, right: Option<f32>, bottom: Option<f32>) -> Self {
+        let v = |o: Option<f32>| o.map_or(auto(), length);
+        self.style.position = taffy::Position::Absolute;
+        self.style.inset = Rect { left: v(left), top: v(top), right: v(right), bottom: v(bottom) };
+        self
+    }
     /// Set a text element in another face or role.
     pub fn font(mut self, f: Font) -> Self { if let Content::Text { font, .. } = &mut self.content { *font = f; } self }
     /// Print a text element through a lattice of this pitch (logical px).
@@ -195,13 +225,13 @@ impl<M> El<M> {
 
     /// The same tree sending other messages: lets one application embed another's view.
     pub fn map<N: 'static>(self, f: Rc<dyn Fn(M) -> N>) -> El<N> where M: 'static {
-        let El { key, style, content, fill, border, radius, on_press, on_key, on_drag, on_blur, focusable, scroll, horizontal, bar, reveal, disabled, commit, modal, fonts, loose, wipe, flow, hidden, children } = self;
+        let El { key, style, content, fill, border, radius, on_press, on_key, on_drag, on_blur, focusable, scroll, horizontal, bar, reveal, disabled, commit, modal, fonts, loose, wipe, flow, hidden, annotate, gaze_scope, material, loosen, children } = self;
         let on_key = on_key.map(|k| { let f = f.clone(); Rc::new(move |key: Key, shift: bool| k(key, shift).map(|m| f(m))) as OnKey<N> });
         let on_drag = on_drag.map(|d| { let f = f.clone(); Rc::new(move |g: Drag| d(g).map(|m| f(m))) as OnDrag<N> });
         El {
             key, style, content, fill, border, radius, on_press: on_press.map(|m| f(m)), on_key, on_drag, on_blur: on_blur.map(|m| f(m)),
             focusable, scroll, horizontal, bar, reveal, disabled, commit, modal: modal.map(|m| Modal { dismiss: f(m.dismiss), beneath: m.beneath }),
-            fonts, loose, wipe, flow, hidden, children: children.into_iter().map(|c| c.map(f.clone())).collect(),
+            fonts, loose, wipe, flow, hidden, annotate, gaze_scope, material, loosen, children: children.into_iter().map(|c| c.map(f.clone())).collect(),
         }
     }
 }
