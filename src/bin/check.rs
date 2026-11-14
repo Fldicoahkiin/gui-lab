@@ -2,10 +2,14 @@
 //!  1. Light theme, a fully loosened picture: no pixel inside the picture equals the page ground.
 //!  2. Pitch 1 at any looseness: the picture is the original, within 1/255.
 //!  3. Pixel faces at 1× and 2×: inside their text, only the ink colour and the ground colour.
+//!  4. Morphs (§1.10), plain and dot: the hand-over frame equals the source at looseness 1 and the
+//!     landing frame the target at looseness 1, within 2/255 over each element; mid-flight, under the
+//!     light theme, tiles are drawn outside and between the two elements.
 //!
 //! usage: check
 use lab::demo::{BUST, PICTURE_SIZES, SKY, SPHERE, TERRAIN};
-use lab::el::{El, Font, Paint, col, picture, text_lh};
+use lab::el::{El, Font, Paint, col, picture, row, space, text_lh};
+use lab::morph::MorphSpec;
 use lab::marks::PALETTES;
 use lab::offscreen::Offscreen;
 use lab::style::{DARK, LIGHT, Look, Material, PicFx, Theme, set};
@@ -144,6 +148,62 @@ fn main() {
     }
     eprintln!("3. pixel type: {} failing", failed - before);
 
+    // ── 4. Morphs hand over without a visible change ────────────────────────────────────────────────
+    let before = failed;
+    let spec = MorphSpec { loosen_ms: 250.0, duration_ms: 1000.0, ..MorphSpec::default() };
+    // Times that are exact in binary, so the clocks of the compared frames agree to the bit.
+    let (t0, t1, t2) = (50.0f32, 50.25f32, 51.25f32);
+    let landed = t2 - 1.0 / 64.0;
+    let mut worst = 0;
+    for (pair, name) in PAIR_NAMES.iter().enumerate() {
+        for material in [Material::Plain, Material::Dot] {
+            let look = Look { theme: DARK, material, ..Look::default() };
+            let new = |s: Stage| { let mut ui = Ui::new(s, stage, |_, _| {}, fonts(), W, H, 1.0); ui.pointer_leave(); ui };
+            let mut moving = new(Stage { pair, loose: [0.0, 0.0], shown: [true, false] });
+            moving.tick(t0);
+            moving.morph("a", "b", spec);
+            let (ra, rb) = (moving.node("a").expect("a").rect, moving.node("b").expect("b").rect);
+            // (a) The hand-over.
+            let mut src = new(Stage { pair, loose: [1.0, 0.0], shown: [true, false] });
+            src.tick(t1);
+            moving.tick(t1);
+            if moving.morph_run().and_then(|r| r.clock(t1)) != Some(0.0) { eprintln!("FAIL morph {pair}: not in flight at the hand-over"); failed += 1; }
+            let d = diff(&o.render(&mut src, &look), &o.render(&mut moving, &look), ra);
+            // (b) The landing.
+            let mut dst = new(Stage { pair, loose: [0.0, 1.0], shown: [false, true] });
+            dst.tick(landed);
+            moving.tick(landed);
+            let e = diff(&o.render(&mut dst, &look), &o.render(&mut moving, &look), rb);
+            eprintln!("   morph {} {:?}: hand-over {d}/255, landing {e}/255", name, material);
+            worst = worst.max(d).max(e);
+            if d > 2 || e > 2 { eprintln!("FAIL morph {}: {:?} differs", name, material); failed += 1; }
+        }
+        // (c) Mid-flight, light theme: tiles outside both elements' rects.
+        let look = Look { theme: LIGHT, material: Material::Dot, ..Look::default() };
+        let mut moving = Ui::new(Stage { pair, loose: [0.0, 0.0], shown: [true, false] }, stage, |_, _| {}, fonts(), W, H, 1.0);
+        moving.pointer_leave();
+        moving.tick(t0);
+        moving.morph("a", "b", spec);
+        let (ra, rb) = (moving.node("a").expect("a").rect, moving.node("b").expect("b").rect);
+        moving.tick(t1 + 0.5);
+        let img = o.render(&mut moving, &look);
+        let ground = rgb8(LIGHT.ground);
+        let out = |r: lab::ui::Rect, x: u32, y: u32| (x as f32) < r.x - 16.0 || (x as f32) >= r.right() + 16.0 || (y as f32) < r.y - 16.0 || (y as f32) >= r.bottom() + 16.0;
+        // The ground units of the dot material are within about 70/255 of the ground; tiles are much further.
+        let far = |c: [u8; 3]| (0..3).any(|i| (c[i] as i32 - ground[i] as i32).abs() > 100);
+        let n = (0..H).flat_map(|y| (0..W).map(move |x| (x, y))).filter(|&(x, y)| out(ra, x, y) && out(rb, x, y) && far(px(&img, W, x, y))).count();
+        eprintln!("   morph {} mid-flight: {n} tile pixels outside both elements", name);
+        if n < 300 { eprintln!("FAIL morph {}: nothing in the air", name); failed += 1; }
+        // Control: the same count at rest finds nothing.
+        let mut rest = Ui::new(Stage { pair, loose: [0.0, 0.0], shown: [true, false] }, stage, |_, _| {}, fonts(), W, H, 1.0);
+        rest.pointer_leave();
+        rest.tick(t0);
+        let img = o.render(&mut rest, &look);
+        let n = (0..H).flat_map(|y| (0..W).map(move |x| (x, y))).filter(|&(x, y)| out(ra, x, y) && out(rb, x, y) && far(px(&img, W, x, y))).count();
+        if n > 0 { eprintln!("FAIL control: {n} far pixels outside the elements at rest"); failed += 1; }
+    }
+    eprintln!("4. morphs: largest difference {worst}/255, {} failing", failed - before);
+
     if failed > 0 { eprintln!("{failed} checks failed"); std::process::exit(1); }
     eprintln!("all checks passed");
 }
@@ -156,4 +216,35 @@ fn type_page(_: &Theme) -> El<()> {
         .child(text_lh("Departure Mono 0123 ABC xyz", 11.0, 18.0, Paint::TEXT).font(Font::Face(MONO)).key("mono11"))
         .child(text_lh("Departure Mono 0123 ABC xyz", 22.0, 30.0, Paint::DIM).font(Font::Face(MONO)).key("mono22"))
         .child(text_lh(ZH, 16.0, 26.0, Paint::TEXT).font(Font::Face(SANS)).key("sans"))
+}
+
+/// Two elements side by side, either of which can be drawn loose or hidden: the source "a" and the
+/// target "b" of a morph.
+struct Stage { pair: usize, loose: [f32; 2], shown: [bool; 2] }
+const PAIRS: usize = 3;
+const PAIR_NAMES: [&str; PAIRS] = ["text→picture", "shape→paragraph", "picture→text"];
+/// `loose` is not inherited, so it goes on the leaf.
+fn element(kind: u8, k: f32) -> El<()> {
+    match kind {
+        0 => text_lh("变换", 96.0, 120.0, Paint::INK).loose(k),
+        1 => { let (w, h) = PICTURE_SIZES[SKY as usize]; col().width(260.0).child(picture(SKY, h as f32 / w as f32).loose(k)) }
+        2 => space(160.0, 160.0).radius(80.0).fill(Paint::ACCENT).loose(k),
+        _ => col().width(240.0).child(text_lh("屏幕上的任何东西都能散成粒子，飞到别处，变成另一样东西。", 16.0, 28.0, Paint::TEXT).loose(k)),
+    }
+}
+fn stage(s: &Stage) -> El<()> {
+    let (a, b) = [(0, 1), (2, 3), (1, 0)][s.pair];
+    row().pad(30.0, 60.0).gap(200.0).align(taffy::AlignItems::CENTER)
+        .child(element(a, s.loose[0]).key("a").hidden_until_morphed(!s.shown[0]))
+        .child(element(b, s.loose[1]).key("b").hidden_until_morphed(!s.shown[1]))
+}
+/// Largest channel difference over a rect (logical = device px here).
+fn diff(a: &[u8], b: &[u8], r: lab::ui::Rect) -> i32 {
+    let (x0, y0, x1, y1) = device_rect(r, 1.0);
+    let mut d = 0;
+    for y in y0..y1.min(H) { for x in x0..x1.min(W) {
+        let (p, q) = (px(a, W, x, y), px(b, W, x, y));
+        for c in 0..3 { d = d.max((p[c] as i32 - q[c] as i32).abs()); }
+    } }
+    d
 }

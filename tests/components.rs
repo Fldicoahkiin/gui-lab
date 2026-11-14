@@ -132,6 +132,9 @@ fn dialog_traps_focus_and_dismisses() {
     assert_eq!(ui.modal(), None);
     assert_eq!(ui.state.dialog, 0);
     assert_eq!(ui.focus(), Some(open));
+    // (Parts still flowing from the page change are drawn in a layer of their own until they land.)
+    let t = ui.now();
+    ui.tick(t + 1.0);
     assert_eq!(ui.scene().layer, None);
     // The close button closes it too.
     click(&mut ui, open);
@@ -309,7 +312,7 @@ fn navigation_keeps_the_shell_and_renews_the_page() {
 fn every_page_has_a_plain_hash() {
     let forbidden = ["settings", "sidebar", "customize", "upgrade", "downloads"];
     let pages = Page::all();
-    assert_eq!(pages.len(), COMPONENTS.len() + 12 + 2);
+    assert_eq!(pages.len(), COMPONENTS.len() + 12 + 2 + 2);
     for p in pages {
         let h = p.hash();
         assert!(!h.is_empty() && h.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'), "{h}");

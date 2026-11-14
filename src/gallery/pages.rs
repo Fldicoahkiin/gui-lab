@@ -1,8 +1,9 @@
 //! The pages of the gallery: one per component, one per mark set, and the type. Every component page
 //! has the same parts, top to bottom: title, one sentence, 预览, 变体, 参数, 源码.
 use super::{Gallery, IMAGE_SLOT, MARK_SLOT, Msg, Page, Target, WIPE_SPEC};
-use crate::demo::{self, BUST, PICTURE_NAMES, PICTURE_SIZES, SKY};
-use crate::el::{El, Font, Paint, col, picture, row, space, text, text_lh};
+use crate::demo::{self, BUST, PICTURE_NAMES, PICTURE_SIZES, SKY, SPHERE, TERRAIN};
+use crate::el::{El, Font, Paint, col, picture, row, space, stack, text, text_lh};
+use crate::morph::{Ease, FlowSpec, MorphSpec};
 use crate::style::set;
 use crate::text::{MONO, PIXEL, SANS};
 use crate::widgets::{
@@ -88,6 +89,8 @@ pub fn page(s: &Gallery) -> El<Msg> {
     match s.page {
         Page::Comp(i) => comp_page(s, i),
         Page::Marks(k) => marks_page(s, k),
+        Page::Morph => morph_page(s),
+        Page::Flow => flow_page(s),
         Page::Type | Page::Demo => type_page(s),
     }
 }
@@ -98,7 +101,8 @@ fn header(s: &Gallery, h: &str, title: &str, ident: &str, desc: &str) -> El<Msg>
     let sz = s.theme().sizes;
     col().key(format!("{h}/header")).gap(10.0)
         .child(row().key(format!("{h}/title-row")).wrap().gap(16.0).align(AlignItems::BASELINE)
-            .child(text_lh(title, sz.display, (sz.display * 1.3).round(), Paint::INK).font(Font::Display).key(format!("{h}/title")))
+            // The title is the same thing on every page: it flows when the page changes.
+            .child(text_lh(title, sz.display, (sz.display * 1.3).round(), Paint::INK).font(Font::Display).key(format!("{h}/title")).flow("page-title"))
             .child(text(ident, 13.0, Paint::DIM).font(Font::Mono)))
         .child(text_lh(desc, sz.body, (sz.body * 1.7).round(), Paint::DIM).key(format!("{h}/desc")))
 }
@@ -404,5 +408,119 @@ fn type_page(s: &Gallery) -> El<Msg> {
         .child(section(h, "比例字体 Noto Sans SC", sans))
         .child(section(h, "像素字体 Fusion Pixel 12", pixel))
         .child(section(h, "像素字体 Departure Mono 11", mono))
+        .child(space(1.0, 24.0))
+}
+
+// ── Transformations ──────────────────────────────────────────────────────────────────────────────
+
+/// The numbers of a `MorphSpec`, in the order of `morph_slot`.
+pub const MORPH_PARAMS: [ParamDef; 7] = [
+    p("松开时长", 0.0, 3000.0, 10.0, 0, "ms", 220.0),
+    p("飞行时长", 50.0, 6000.0, 10.0, 0, "ms", 900.0),
+    p("合拢时长", 0.0, 3000.0, 10.0, 0, "ms", 260.0),
+    p("粒子上限", 100.0, 200000.0, 1000.0, 0, "", 40000.0),
+    p("覆盖阈值", 0.05, 1.0, 0.05, 2, "", 0.5),
+    p("弧度", 0.0, 400.0, 2.0, 0, "px", 48.0),
+    p("错开", 0.0, 0.9, 0.05, 2, "", 0.35),
+];
+pub fn morph_slot(m: &mut MorphSpec, i: usize) -> &mut f32 {
+    match i { 0 => &mut m.loosen_ms, 1 => &mut m.duration_ms, 2 => &mut m.tighten_ms, 3 => &mut m.count_max, 4 => &mut m.threshold, 5 => &mut m.curl, _ => &mut m.stagger }
+}
+/// The numbers of a `FlowSpec`, in the order of `flow_slot`.
+pub const FLOW_PARAMS: [ParamDef; 3] = [
+    p("流动时长", 0.0, 3000.0, 10.0, 0, "ms", 420.0),
+    p("流动时松开度", 0.0, 1.0, 0.05, 2, "", 0.25),
+    p("消失时长", 0.0, 2000.0, 10.0, 0, "ms", 180.0),
+];
+pub fn flow_slot(f: &mut FlowSpec, i: usize) -> &mut f32 {
+    match i { 0 => &mut f.flow_ms, 1 => &mut f.flow_loose, _ => &mut f.out_ms }
+}
+
+pub const MORPH_NAMES: [&str; 7] = ["标题", "段落", "图片", "圆", "环", "按钮", "卡片"];
+const PARAGRAPH: &str = "屏幕上的任何东西都能散成粒子，飞到别处，变成另一样东西。粒子就是材质的点阵里的格子，所以松开的样子和粒子是同一回事。";
+
+/// Candidate `i` of the morph stage, hidden unless it is the one shown.
+fn shape(s: &Gallery, i: usize) -> El<Msg> {
+    let k = Gallery::shape_key(i);
+    let el = match i {
+        0 => text_lh("变换", 120.0, 150.0, Paint::INK).font(Font::Display).key(k),
+        1 => col().key(k).width(460.0).child(text_lh(PARAGRAPH, 17.0, 30.0, Paint::TEXT)),
+        2 => col().key(k).width(460.0).child(picture(SPHERE, 0.5).key("morph/picture").pic_fx(IMAGE_SLOT)),
+        3 => space(220.0, 220.0).key(k).radius(110.0).fill(Paint::ACCENT),
+        4 => space(220.0, 220.0).key(k).radius(110.0).border(18.0, Paint::INK),
+        5 => button_as(k, "开始", Variant::Accent, Msg::Press).height(56.0).pad(40.0, 0.0).radius(8.0),
+        _ => card(k, Some("一张卡片"), text_lh("卡片里可以放任何东西：文字、图片和控件。", 15.0, 26.0, Paint::TEXT)).width(340.0),
+    };
+    el.hidden_until_morphed(i != s.shape)
+}
+
+fn morph_page(s: &Gallery) -> El<Msg> {
+    let h = "morph";
+    let stage = stack((0..MORPH_NAMES.len()).map(|i| shape(s, i))).key("morph/stage").fill_width().height(400.0).radius(6.0).border(1.0, Paint::FAINT);
+    let controls = row().key("morph/controls").wrap().gap(12.0).align(AlignItems::CENTER)
+        .child(text("变成", 13.0, Paint::DIM))
+        .child(segmented("morph/targets", &MORPH_NAMES, s.shape, 30.0, Msg::MorphTo))
+        .child(button_as("morph/back", "反向", Variant::Default, Msg::MorphBack).disabled(s.shape_before.is_none()));
+    let mut nums = row().key("morph/params").fill_width().wrap().gap(10.0);
+    for (i, d) in MORPH_PARAMS.iter().enumerate() {
+        let t = Target::Morph(i);
+        let v = *morph_slot(&mut s.morph.clone(), i);
+        nums = nums.child(number(&format!("morph/p{i}"), d.name, v, d.spec, s.draft(t), move |e| Msg::Num(t, e)).width(330.0));
+    }
+    let ease = row().key("morph/ease-row").gap(12.0).align(AlignItems::CENTER)
+        .child(text("缓动", 14.0, Paint::DIM))
+        .child(segmented("morph/ease", &Ease::NAMES, s.morph.ease.index(), 30.0, Msg::Ease));
+    col().key("morph/page").fill_width().max_width(980.0).gap(34.0)
+        .child(header(s, h, "粒子", "Ui::morph / Cmd::Morph", "把一样东西按材质的点阵散成粒子，飞过去拼成另一样东西：先松开，粒子接手，飞行，再由目标接手、合拢。飞行途中按“反向”，粒子从当前位置原路返回。"))
+        .child(section(h, "预览", col().fill_width().gap(14.0).child(stage).child(controls)))
+        .child(section(h, "参数", col().fill_width().gap(14.0).child(nums).child(ease)))
+        .child(section(h, "源码", source(h, "src/morph.rs", include_str!("../morph.rs"))))
+        .child(space(1.0, 24.0))
+}
+
+const FLOW_ITEMS: [(&str, &str, u32); 6] = [
+    ("球", "一个被光照亮的球体，停在地平线上方。", SPHERE),
+    ("傍晚", "低垂的太阳，被下方照亮的云层，和渐渐隐入雾气的山脊。", SKY),
+    ("地形", "按高度着色的地形，等高线一圈套一圈。", TERRAIN),
+    ("胸像", "一尊石膏胸像，光从左上方来。", BUST),
+    ("天空", "同一片天空，换一种记号来看。", SKY),
+    ("山", "同一片地形，从另一个方向看。", TERRAIN),
+];
+
+fn ratio(id: u32) -> f32 { let (w, h) = PICTURE_SIZES[id as usize]; h as f32 / w as f32 }
+
+fn flow_page(s: &Gallery) -> El<Msg> {
+    let h = "flow";
+    let sz = s.theme().sizes;
+    let body = match s.opened {
+        None => {
+            let mut g = row().key("flow/list").fill_width().wrap().gap(16.0);
+            for (i, (title, sub, id)) in FLOW_ITEMS.iter().enumerate() {
+                g = g.child(col().key(format!("flow/card{i}")).width(270.0).gap(10.0).pad(12.0, 12.0).radius(6.0).border(1.0, Paint::FAINT).on_press(Msg::Open(Some(i)))
+                    .child(col().flow(format!("flow/pic{i}")).child(picture(*id, ratio(*id)).key(format!("flow/card{i}/picture")).pic_fx(IMAGE_SLOT)))
+                    .child(text(*title, 17.0, Paint::INK).font(Font::Display).key(format!("flow/card{i}/title")).flow(format!("flow/title{i}")))
+                    .child(text(*sub, 12.0, Paint::DIM)));
+            }
+            g
+        }
+        Some(i) => {
+            let (title, sub, id) = FLOW_ITEMS[i.min(FLOW_ITEMS.len() - 1)];
+            col().key("flow/detail").fill_width().gap(18.0)
+                .child(button_as("flow/back", "返回", Variant::Default, Msg::Open(None)))
+                .child(text_lh(title, 40.0, 52.0, Paint::INK).font(Font::Display).key("flow/detail/title").flow(format!("flow/title{i}")))
+                .child(col().width(720.0).flow(format!("flow/pic{i}")).child(picture(id, ratio(id)).key("flow/detail/picture").pic_fx(IMAGE_SLOT)))
+                .child(text_lh(sub, sz.body, (sz.body * 1.7).round(), Paint::TEXT).key("flow/detail/text"))
+        }
+    };
+    let mut nums = row().key("flow/params").fill_width().wrap().gap(10.0);
+    for (i, d) in FLOW_PARAMS.iter().enumerate() {
+        let t = Target::Flow(i);
+        let v = *flow_slot(&mut s.flow.clone(), i);
+        nums = nums.child(number(&format!("flow/p{i}"), d.name, v, d.spec, s.draft(t), move |e| Msg::Num(t, e)).width(330.0));
+    }
+    col().key("flow/page").fill_width().max_width(980.0).gap(34.0)
+        .child(header(s, h, "换页", "El::flow / Cmd::Flow", "换页时，两页共有的部分从旧位置移到新位置，途中稍微松开，到达时重新清晰；其余的旧内容松开、淡出，新内容凝结出来。按一张卡片打开它，按“返回”回到列表。"))
+        .child(section(h, "预览", body))
+        .child(section(h, "参数", nums))
         .child(space(1.0, 24.0))
 }

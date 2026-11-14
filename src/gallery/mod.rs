@@ -6,20 +6,21 @@ mod pages;
 
 use crate::demo::{self, Demo};
 use crate::el::{El, Font, Paint, col, row, space, text};
+use crate::morph::{Cmd, Ease, FlowSpec, MorphSpec};
 use crate::style::{Look, MATERIALS, Material, PicFx, THEMES, Theme, set};
 use crate::text::Face;
 use crate::widgets::{Edit, SELECTED, Spec, TextEdit, Variant, button_as, divider, segmented, vdivider};
 use std::rc::Rc;
 use taffy::AlignItems;
 
-pub use pages::{COMPONENTS, Comp, ParamDef};
+pub use pages::{COMPONENTS, Comp, FLOW_PARAMS, MORPH_NAMES, MORPH_PARAMS, ParamDef, flow_slot, morph_slot};
 
 /// Below this width (logical px) the rail becomes a row of tabs under the top bar.
 pub const NARROW: f32 = 720.0;
 pub const RAIL: f32 = 220.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Page { Comp(usize), Marks(u8), Type, Demo }
+pub enum Page { Comp(usize), Marks(u8), Morph, Flow, Type, Demo }
 
 pub const MARK_HASH: [&str; set::COUNT] = ["chars", "dither", "pixel", "mosaic", "brick", "dots", "cross", "diagonal", "diamond", "lines", "glow", "stroke"];
 
@@ -28,6 +29,7 @@ impl Page {
     pub fn all() -> Vec<Page> {
         let mut v: Vec<Page> = (0..COMPONENTS.len()).map(Page::Comp).collect();
         v.extend((0..set::COUNT as u8).map(Page::Marks));
+        v.extend([Page::Morph, Page::Flow]);
         v.push(Page::Type);
         v.push(Page::Demo);
         v
@@ -37,6 +39,8 @@ impl Page {
         match self {
             Page::Comp(i) => COMPONENTS[i].hash.to_owned(),
             Page::Marks(s) => format!("marks-{}", MARK_HASH[s as usize]),
+            Page::Morph => "morph".into(),
+            Page::Flow => "flow".into(),
             Page::Type => "type".into(),
             Page::Demo => "demo".into(),
         }
@@ -51,6 +55,8 @@ impl Page {
         match self {
             Page::Comp(i) => COMPONENTS[i].title,
             Page::Marks(s) => set::NAMES[s as usize],
+            Page::Morph => "粒子",
+            Page::Flow => "换页",
             Page::Type => "字号与字体",
             Page::Demo => "骨架演示",
         }
@@ -67,6 +73,9 @@ pub enum Target {
     Wipe,
     /// The live number on the number page.
     Value,
+    /// Morph parameter `i` (see `MORPH_PARAMS`), flow parameter `i` (`FLOW_PARAMS`).
+    Morph(usize),
+    Flow(usize),
     /// A variant: shown, but its value does not change.
     Shown,
 }
@@ -91,6 +100,12 @@ pub enum Msg {
     Show(u32),
     Wipe(f32),
     Demo(demo::Msg),
+    /// Morph what the stage shows into candidate `i`; back into what it was; the curve of the flight.
+    MorphTo(usize),
+    MorphBack,
+    Ease(usize),
+    /// Open a card of the page-change page, or go back to the list.
+    Open(Option<usize>),
 }
 
 pub struct Gallery {
@@ -118,6 +133,15 @@ pub struct Gallery {
     pub demo: Demo,
     /// The window's logical width, kept up to date by the runtime (`Ui::on_resize`).
     pub width: f32,
+    /// The morph page: what the stage shows, what it showed before, how morphs go.
+    pub shape: usize,
+    pub shape_before: Option<usize>,
+    pub morph: MorphSpec,
+    /// The page-change page: which card is open, and how shared parts flow (on every page change).
+    pub opened: Option<usize>,
+    pub flow: FlowSpec,
+    /// Commands for the runtime, taken after every update.
+    pub cmds: Vec<Cmd>,
 }
 
 impl Default for Gallery {
@@ -128,6 +152,7 @@ impl Default for Gallery {
             edit: None, presses: 0, value: 42.0, text: TextEdit::default(), dialog_text: TextEdit::default(), on: true, level: 40.0,
             tab: 0, pick: 1, row: Some(2), dialog: 0, marks: std::array::from_fn(|s| mark_defaults(s as u8)), shown: demo::BUST, wipe: 0.3,
             demo: Demo::default(), width: 1280.0,
+            shape: 0, shape_before: None, morph: MorphSpec::default(), opened: None, flow: FlowSpec::default(), cmds: vec![],
         }
     }
 }
@@ -161,6 +186,16 @@ impl Gallery {
         if let Page::Marks(s) = self.page { pics[MARK_SLOT as usize] = self.marks[s as usize]; }
         Look { fx: self.demo.fx, theme: self.theme(), material: self.material, pics }
     }
+    /// The key of morph candidate `i` on the morph page.
+    pub fn shape_key(i: usize) -> String { format!("morph/c{i}") }
+    fn morph_to(&mut self, i: usize) {
+        if i == self.shape || i >= MORPH_NAMES.len() { return; }
+        // The tiles are the material's lattice cells.
+        let spec = MorphSpec { lattice: self.demo.fx.pitch, ..self.morph };
+        self.cmds.push(Cmd::Morph { from: Self::shape_key(self.shape), to: Self::shape_key(i), spec });
+        self.shape_before = Some(self.shape);
+        self.shape = i;
+    }
     pub fn draft(&self, t: Target) -> Option<&str> { self.edit.as_ref().filter(|(k, _)| *k == t).map(|(_, d)| d.as_str()) }
     /// Go to the page a hash names; returns whether it names one.
     pub fn route(&mut self, hash: &str) -> bool {
@@ -170,7 +205,15 @@ impl Gallery {
 
 pub fn update(s: &mut Gallery, m: Msg) {
     match m {
-        Msg::Go(p) => { s.page = p; s.edit = None; s.dialog = 0; }
+        Msg::Go(p) => {
+            // Parts the two pages share (the page title, the rail's selection) move rather than vanish.
+            if p != s.page { s.cmds.push(Cmd::Flow(s.flow)); }
+            s.page = p; s.edit = None; s.dialog = 0;
+        }
+        Msg::MorphTo(i) => s.morph_to(i),
+        Msg::MorphBack => if let Some(b) = s.shape_before { s.morph_to(b); },
+        Msg::Ease(i) => s.morph.ease = Ease::from_index(i),
+        Msg::Open(o) => { if o != s.opened { s.cmds.push(Cmd::Flow(s.flow)); } s.opened = o; }
         Msg::Theme(i) => { s.theme = i.min(THEMES.len() - 1); s.demo.theme = s.theme; }
         Msg::Material(i) => { s.material = MATERIALS[i.min(MATERIALS.len() - 1)].0; s.demo.material = s.material; }
         Msg::Reset => {
@@ -178,6 +221,7 @@ pub fn update(s: &mut Gallery, m: Msg) {
             s.params = d.params; s.marks = d.marks; s.wipe = d.wipe; s.edit = None;
             s.value = d.value; s.level = d.level;
             s.demo = Demo { theme: s.theme, material: s.material, ..Demo::default() };
+            s.morph = d.morph; s.flow = d.flow;
         }
         // Variants are shown as they are: typing into one does not change it.
         Msg::Num(Target::Shown, _) => {}
@@ -188,6 +232,8 @@ pub fn update(s: &mut Gallery, m: Msg) {
                 Target::Pic(k, i) => { let (f, scale) = demo::pic_slot(&mut s.marks[k as usize], i); *f = v / scale; }
                 Target::Wipe => s.wipe = v,
                 Target::Value => s.value = v,
+                Target::Morph(i) => *morph_slot(&mut s.morph, i) = v,
+                Target::Flow(i) => *flow_slot(&mut s.flow, i) = v,
                 Target::Shown => {}
             }
             s.edit = None;
@@ -250,11 +296,12 @@ fn top_bar(s: &Gallery) -> El<Msg> {
             .child(button_as("reset", "恢复默认", Variant::Default, Msg::Reset)))
 }
 
-/// The three groups and their pages.
-fn groups() -> [(&'static str, Vec<Page>); 3] {
+/// The groups and their pages.
+fn groups() -> [(&'static str, Vec<Page>); 4] {
     [
         ("组件", (0..COMPONENTS.len()).map(Page::Comp).collect()),
         ("记号", (0..set::COUNT as u8).map(Page::Marks).collect()),
+        ("变换", vec![Page::Morph, Page::Flow]),
         ("排版", vec![Page::Type, Page::Demo]),
     ]
 }
@@ -263,7 +310,8 @@ fn rail_item(s: &Gallery, p: Page, h: f32) -> El<Msg> {
     let on = s.page == p;
     let mut item = row().key(format!("nav/{}", p.hash())).height(h).pad(12.0, 0.0).radius(4.0).align(AlignItems::CENTER).on_press(Msg::Go(p))
         .child(text(p.name(), 14.0, if on { Paint::ACCENT } else { Paint::TEXT }));
-    if on { item = item.fill(SELECTED); }
+    // The selection is one thing that moves from item to item when the page changes.
+    if on { item = item.fill(SELECTED).flow("rail-selection"); }
     item
 }
 
@@ -291,5 +339,5 @@ pub type GalleryUi = crate::ui::Ui<Gallery, Msg>;
 
 pub fn new_ui(faces: Vec<Face>, w: u32, h: u32, scale: f32) -> GalleryUi {
     let state = Gallery { width: w as f32 / scale, ..Gallery::default() };
-    crate::ui::Ui::new(state, view, update, faces, w, h, scale).on_resize(|s, w, _| s.width = w)
+    crate::ui::Ui::new(state, view, update, faces, w, h, scale).on_resize(|s, w, _| s.width = w).on_commands(|s| std::mem::take(&mut s.cmds))
 }
