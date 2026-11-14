@@ -31,24 +31,34 @@
     const sync = () => { const h = '#' + w.hash(); if (location.hash !== h) location.hash = h; };
     window.addEventListener('hashchange', () => { if (!w.route(location.hash)) sync(); });
     sync();
-    canvas.addEventListener('pointermove', e => w.pointer_move(...at(e)));
-    canvas.addEventListener('pointerleave', () => w.pointer_leave());
-    canvas.addEventListener('pointerdown', e => { canvas.focus(); canvas.setPointerCapture(e.pointerId); const [x, y] = at(e); w.pointer_move(x, y); w.pointer_down(x, y, now()); sync(); });
-    canvas.addEventListener('pointerup', e => { w.pointer_up(...at(e)); sync(); });
+    // Frames on demand: the animation-frame loop runs only while the framework needs frames; when it
+    // does not, the loop stops, and input or a timed wake (the caret's blink, a clock) starts it again.
+    let raf = 0, timer = 0;
+    const loop = () => {
+      raf = 0; if (timer) { clearTimeout(timer); timer = 0; }
+      const d = w.frame(now());
+      if (d === 0) raf = requestAnimationFrame(loop);
+      else if (d > 0) timer = setTimeout(kick, d * 1000);
+    };
+    const kick = () => { if (!raf) raf = requestAnimationFrame(loop); };
+    canvas.addEventListener('pointermove', e => { w.pointer_move(...at(e), now()); kick(); });
+    canvas.addEventListener('pointerleave', () => { w.pointer_leave(now()); kick(); });
+    canvas.addEventListener('pointerdown', e => { canvas.focus(); canvas.setPointerCapture(e.pointerId); const [x, y] = at(e); w.pointer_move(x, y, now()); w.pointer_down(x, y, now()); sync(); kick(); });
+    canvas.addEventListener('pointerup', e => { w.pointer_up(...at(e), now()); sync(); kick(); });
     canvas.addEventListener('wheel', e => {
       e.preventDefault();
       const k = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? canvas.clientHeight : 1;
-      w.wheel(...at(e), e.deltaX * k, e.deltaY * k);
+      w.wheel(...at(e), e.deltaX * k, e.deltaY * k, now()); kick();
     }, { passive: false });
     window.addEventListener('keydown', e => {
       if (e.ctrlKey || e.metaKey || e.altKey) return;
       if (w.key(e.key, e.shiftKey, now()) || e.key === 'Tab') e.preventDefault();
-      sync();
+      sync(); kick();
     });
-    window.addEventListener('keyup', e => { w.key_up(e.key, now()); sync(); });
-    new ResizeObserver(() => { fit(); w.resize(canvas.width, canvas.height, dpr); }).observe(stage);
-    const loop = () => { w.frame(now()); requestAnimationFrame(loop); };
-    requestAnimationFrame(loop);
+    window.addEventListener('keyup', e => { w.key_up(e.key, now()); sync(); kick(); });
+    window.addEventListener('hashchange', kick);
+    new ResizeObserver(() => { fit(); w.resize(canvas.width, canvas.height, dpr); kick(); }).observe(stage);
+    kick();
   } catch (e) { msg.textContent = '这个浏览器没能启动图形功能：' + (e && e.message ? e.message : e); console.error(e); }
 })();
 </script>

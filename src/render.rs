@@ -113,7 +113,7 @@ pub struct Renderer {
 
 /// What one frame is drawn from. `tiles`: a morph's tiles are flying, this many seconds in, with this
 /// curl (device px), ease, the picture flag of the morph's picture (0 if none) and the flight's length.
-struct Frame<'a> { scene: &'a Scene, field: &'a Field, look: &'a Look, scale: f32, t: f32, split: [f32; 4], tiles: Option<[f32; 5]> }
+struct Frame<'a> { scene: &'a Scene, field: &'a Field, look: &'a Look, scale: f32, t: f32, mt: f32, split: [f32; 4], tiles: Option<[f32; 5]> }
 
 impl Renderer {
     pub fn new(device: wgpu::Device, queue: wgpu::Queue, out_format: wgpu::TextureFormat, w: u32, h: u32) -> Self {
@@ -334,13 +334,13 @@ impl Renderer {
             );
             text.dirty = false;
         }
-        let (scale, now) = (ui.scale(), ui.now());
+        let (scale, now, mt) = (ui.scale(), ui.now(), ui.material_clock());
         // A new commit: draw the frame as it was, in the look it had, into `before`, once.
         if let Some(sp) = ui.split() && sp.id != self.split_seen {
             self.split_seen = sp.id;
             if let Some(old) = self.last_look {
                 let before = self.before.clone();
-                self.frame(&before, Frame { scene: &sp.scene, field: &sp.field, look: &old, scale, t: sp.t, split: [0.0; 4], tiles: None }, false);
+                self.frame(&before, Frame { scene: &sp.scene, field: &sp.field, look: &old, scale, t: sp.t, mt, split: [0.0; 4], tiles: None }, false);
                 self.split = [sp.at[0], sp.at[1], sp.t, 1.0];
             }
         }
@@ -358,7 +358,7 @@ impl Renderer {
                     let mut sc = Scene::default();
                     for i in insts { sc.push(*i); }
                     let (iv, nv) = (self.tiles.snaps[ink].clone(), self.tiles.snaps[near].clone());
-                    self.uniforms(&Field::default(), look, scale, now, [0.0; 4]);
+                    self.uniforms(&Field::default(), look, scale, now, mt, [0.0; 4]);
                     self.upload(&sc);
                     let mut enc = self.device.create_command_encoder(&Default::default());
                     self.stage1(&mut enc, &sc, &iv, &nv, None, 0);
@@ -380,7 +380,8 @@ impl Renderer {
             let len = run.flight.map_or(0.0, |f| f[1] - f[0]);
             tiles = run.clock(now).map(|c| [c, run.spec.curl * scale, run.spec.ease.index() as f32, pic, len]);
         }
-        self.frame(target, Frame { scene: ui.scene(), field: ui.field(), look, scale, t: now, split, tiles }, true);
+        self.frame(target, Frame { scene: ui.scene(), field: ui.field(), look, scale, t: now, mt, split, tiles }, true);
+        ui.frame_drawn();
     }
 
     fn upload(&mut self, scene: &Scene) {
@@ -439,7 +440,7 @@ impl Renderer {
     /// uniforms and instances. `with_before` binds the old frame (not when drawing into it).
     fn frame(&mut self, target: &wgpu::TextureView, f: Frame<'_>, with_before: bool) {
         let scene = f.scene;
-        self.uniforms(f.field, f.look, f.scale, f.t, f.split);
+        self.uniforms(f.field, f.look, f.scale, f.t, f.mt, f.split);
         self.upload(scene);
         let tiles = match f.tiles {
             Some([clock, curl, ease, pic, len]) if self.tiles.count > 0 => {
@@ -481,7 +482,7 @@ impl Renderer {
         self.queue.submit([enc.finish()]);
     }
 
-    fn uniforms(&self, field: &Field, look: &Look, scale: f32, t: f32, split: [f32; 4]) {
+    fn uniforms(&self, field: &Field, look: &Look, scale: f32, t: f32, mt: f32, split: [f32; 4]) {
         let (fx, th) = (&look.fx, &look.theme);
         let c = |v: [f32; 3]| [v[0], v[1], v[2], 1.0];
         let (bg, fg, accent) = (c(th.ground), c(th.ink), c(th.accent));
@@ -495,7 +496,7 @@ impl Renderer {
         }
         let u = Uniforms {
             res: [self.size.0 as f32, self.size.1 as f32, scale, t],
-            fa: [fx.pitch, 0.0, fx.jitter, fx.glitch],
+            fa: [fx.pitch, mt, fx.jitter, fx.glitch],
             fb: [fx.wave_speed, fx.wave_life, fx.wave_width, fx.wave_tail],
             fc: [fx.push, fx.lens, fx.enter, flag(fx.square)],
             fd: [look.material.id() as f32, flag(self.out_format.is_srgb()), SPREAD as f32, marks::PALETTES.len() as f32],

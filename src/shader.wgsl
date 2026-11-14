@@ -18,8 +18,8 @@
 //   marks by their own PicFx slot (DESIGN.md §1.6.1); text and shapes follow the material.
 
 struct U {
-  res: vec4f,      // width, height, scale, time
-  fa: vec4f,       // pitch, _, jitter, glitch          (lengths in logical px)
+  res: vec4f,      // width, height, scale, time (time terms of materials read the material clock, fa.y)
+  fa: vec4f,       // pitch, material clock (s), jitter, glitch   (lengths in logical px)
   fb: vec4f,       // wave speed, wave life, wave width, wave tail
   fc: vec4f,       // push, lens radius, enter time, square (0 dot, 1 square)
   fd: vec4f,       // material (0 plain, 1 dot), srgb surface, spread px, palette rows
@@ -193,7 +193,7 @@ fn ink_of(i: VOut, solid: bool) -> vec4f {
     if (k > 0.0) {
       // Dashes along the edge: the edge's own coordinate is x on the long sides and y on the short ones.
       let edge_y = min(i.local.y, i.size.y - i.local.y) > min(i.local.x, i.size.x - i.local.x);
-      let along = select(i.local.x, i.local.y, edge_y) + u.res.w * 40.0 * u.res.z;
+      let along = select(i.local.x, i.local.y, edge_y) + u.fa.y * 40.0 * u.res.z;
       let dash = max(mp(XRAY, 0).w * u.res.z, 2.0);
       stroke *= mix(1.0, step(fract(along / (dash * 2.0)), 0.5), smoothstep(0.05, 0.4, k));
     }
@@ -593,7 +593,8 @@ fn m_dot(frag: vec2f) -> vec3f {
   // ink by its true outline (the nearness image), never by a rectangle.
   var g = gnd(frag);
   let gp = 9.0 * s; let gc = floor(frag / gp); let gcen = (gc + 0.5) * gp;
-  let drift = (sin(gc.x * 0.21 + t * 0.33) + sin(gc.y * 0.37 - t * 0.21) + sin((gc.x + gc.y) * 0.13 + t * 0.17)) / 3.0;
+  let mt = u.fa.y;
+  let drift = (sin(gc.x * 0.21 + mt * 0.33) + sin(gc.y * 0.37 - mt * 0.21) + sin((gc.x + gc.y) * 0.13 + mt * 0.17)) / 3.0;
   var lvl = max(0.0, drift - 0.25) * 0.55 * step(h1(gc), 0.4) + wave(gcen, 0.16) * 0.95 + lens(gcen) * 0.7;
   lvl *= 1.0 - smoothstep(0.1, 0.35, near(gcen).r);
   let gu = unit(frag - gcen, gp * 0.42 * clamp(lvl, 0.0, 1.0)) * step(0.05, lvl);
@@ -763,7 +764,7 @@ fn m_glitch(p: vec2f, pic: bool) -> vec3f {
   let kr = clamp(kt(rc) + burst_k(rc), 0.0, 1.0);
   let here = select(exact(p), scene_at(p), pic);
   if (kr <= 0.0) { return here; }
-  let tq = floor(u.res.w * 1000.0 / hold);
+  let tq = floor(u.fa.y * 1000.0 / hold);
   var q = p;
   if (h1(vec2f(row, tq)) < kr * 0.7) { q.x += (h1(vec2f(row * 1.7, tq + 3.0)) - 0.5) * 2.0 * shift * kr; }
   let bc = floor(p / block);

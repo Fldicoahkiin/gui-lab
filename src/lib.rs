@@ -26,7 +26,7 @@ mod web {
     use std::cell::RefCell;
     use wasm_bindgen::prelude::*;
 
-    struct State { ui: GalleryUi, r: Renderer, surface: wgpu::Surface<'static>, config: wgpu::SurfaceConfiguration, started: bool }
+    struct State { ui: GalleryUi, r: Renderer, surface: wgpu::Surface<'static>, config: wgpu::SurfaceConfiguration, started: bool, drawn: u32, skipped: u32 }
     thread_local! { static STATE: RefCell<Option<State>> = const { RefCell::new(None) }; }
 
     #[wasm_bindgen]
@@ -48,7 +48,7 @@ mod web {
         for (id, pw, ph, px) in demo::pictures() { r.set_picture(id, pw, ph, &px); }
         let mut ui = gallery::new_ui(crate::text::bundled(sans, pixel, mono), w, h, scale);
         if ui.state.route(&hash) { ui.relayout(); }
-        STATE.with(|s| *s.borrow_mut() = Some(State { ui, r, surface, config, started: false }));
+        STATE.with(|s| *s.borrow_mut() = Some(State { ui, r, surface, config, started: false, drawn: 0, skipped: 0 }));
         Ok(())
     }
     fn with<R>(f: impl FnOnce(&mut State) -> R) -> Option<R> { STATE.with(|s| s.borrow_mut().as_mut().map(f)) }
@@ -56,11 +56,13 @@ mod web {
     #[wasm_bindgen] pub fn resize(w: u32, h: u32, scale: f32) {
         with(|s| { s.config.width = w.max(1); s.config.height = h.max(1); s.surface.configure(s.r.device(), &s.config); s.ui.resize(w, h, scale); });
     }
-    #[wasm_bindgen] pub fn pointer_move(x: f32, y: f32) { with(|s| s.ui.pointer_move(x, y)); }
-    #[wasm_bindgen] pub fn pointer_leave() { with(|s| s.ui.pointer_leave()); }
+    // Every input first brings the clock to its time: frames are drawn on demand, so the last tick may
+    // be long ago, and what the input starts (a burst, a front) starts now.
+    #[wasm_bindgen] pub fn pointer_move(x: f32, y: f32, t: f32) { with(|s| { s.ui.tick(t); s.ui.pointer_move(x, y) }); }
+    #[wasm_bindgen] pub fn pointer_leave(t: f32) { with(|s| { s.ui.tick(t); s.ui.pointer_leave() }); }
     #[wasm_bindgen] pub fn pointer_down(x: f32, y: f32, t: f32) { with(|s| { s.ui.tick(t); s.ui.press(x, y); }); }
-    #[wasm_bindgen] pub fn pointer_up(x: f32, y: f32) { with(|s| s.ui.release(x, y)); }
-    #[wasm_bindgen] pub fn wheel(x: f32, y: f32, dx: f32, dy: f32) { with(|s| s.ui.wheel_xy(x, y, dx, dy)); }
+    #[wasm_bindgen] pub fn pointer_up(x: f32, y: f32, t: f32) { with(|s| { s.ui.tick(t); s.ui.release(x, y) }); }
+    #[wasm_bindgen] pub fn wheel(x: f32, y: f32, dx: f32, dy: f32, t: f32) { with(|s| { s.ui.tick(t); s.ui.wheel_xy(x, y, dx, dy) }); }
     /// The page's hash changed (a link, Back): show that page. Returns whether it names one.
     #[wasm_bindgen] pub fn route(hash: &str) -> bool {
         with(|s| { let ok = s.ui.state.route(hash); if ok { s.ui.relayout(); } ok }).unwrap_or(false)
@@ -77,10 +79,21 @@ mod web {
         let Some(k) = Key::from_name(name) else { return };
         with(|s| { s.ui.tick(t); s.ui.key_up(k) });
     }
-    #[wasm_bindgen] pub fn frame(t: f32) {
+    /// Frames drawn and wakes that found nothing to draw, since the start.
+    #[wasm_bindgen] pub fn frames() -> Vec<u32> { with(|s| vec![s.drawn, s.skipped]).unwrap_or_default() }
+    /// Draw a frame if one is needed. Returns when the next one is: 0 as soon as possible (keep the
+    /// animation frame loop going), a delay in seconds (a timed wake), or -1 (only input can change
+    /// anything: stop until then).
+    #[wasm_bindgen] pub fn frame(t: f32) -> f32 {
         with(|s| {
             if !s.started { s.ui.restart(t); s.started = true; }
             s.ui.tick(t);
+            if s.ui.needs_frame(t) { draw(s); s.drawn += 1; } else { s.skipped += 1; }
+            s.ui.next_wake(t).map_or(-1.0, |w| (w - t).max(0.0))
+        }).unwrap_or(-1.0)
+    }
+    fn draw(s: &mut State) {
+        {
             let tex = match s.surface.get_current_texture() {
                 wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
                 _ => { s.surface.configure(s.r.device(), &s.config); return; }
@@ -90,6 +103,6 @@ mod web {
             s.r.draw(&view, &mut s.ui, &look);
             drop(view);
             s.r.queue().present(tex);
-        });
+        }
     }
 }

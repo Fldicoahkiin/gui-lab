@@ -253,6 +253,17 @@ pub fn tick(g: &mut Gallery, t: f32) -> bool {
     }
 }
 
+/// When a scene next wants a tick: every frame while the operator runs or the signal plays, the end of
+/// the dwell while the morph goes round; never at rest.
+pub fn wake(g: &Gallery, t: f32) -> Option<f32> {
+    match g.page {
+        Page::Scene(0) if g.sc.running => Some(t),
+        Page::Scene(3) if g.sc.looping => Some(g.sc.form_at + g.sc.p[3][0] / 1000.0 + MO_DWELL),
+        Page::Scene(5) if g.sc.playing => Some(t),
+        _ => None,
+    }
+}
+
 /// What a scene changes in the look: its picture marks, the field's push, the annotation layer.
 pub fn look(g: &Gallery, l: &mut Look) {
     let Page::Scene(i) = g.page else { return };

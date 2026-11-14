@@ -501,6 +501,12 @@ pub fn new_ui(faces: Vec<Face>, w: u32, h: u32, scale: f32) -> GalleryUi {
             s.clock = t;
             scenes::tick(s, t) || changed
         })
+        .on_look(|s| s.look())
+        .on_wake(|s, t| {
+            // The departure board wants the next whole second; scenes say for themselves.
+            let board = (s.page == Page::Style(1)).then(|| t.floor() + 1.0);
+            match (board, scenes::wake(s, t)) { (Some(a), Some(b)) => Some(a.min(b)), (a, b) => a.or(b) }
+        })
         .on_unused_key(scenes::key)
         .on_input(scenes::heard)
         .on_key_up(scenes::key_up)

@@ -4,7 +4,7 @@ use crate::el::{Content, Drag, El, Font, Key, Modal, OnDrag, OnKey, Paint, Phase
 use crate::morph::{self, Cmd, Ease, FlowSpec, MorphSpec, Particle};
 use crate::scene::{Field, Instance, PICTURE, SHAPE, Scene};
 use crate::gaze;
-use crate::style::{Gaze, GazeMode, gaze as kinds};
+use crate::style::{Gaze, GazeMode, Look, gaze as kinds};
 use crate::text::{Face, MONO, Para, Text};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -230,7 +230,46 @@ pub struct Ui<S, M> {
     /// Told of every press, wheel turn and key from the person (before it is handled); returns whether
     /// the state changed.
     input: Option<fn(&mut S) -> bool>,
+    // ── Demand-driven frames (DESIGN.md §1.11) ──
+    /// Something changed since the last frame was drawn (input, a new scene, an animation step).
+    dirty: bool,
+    /// The look, for the timings that decide whether anything is still moving.
+    look_of: Option<fn(&S) -> Look>,
+    timing: Timing,
+    /// When the state next wants a tick (a clock, a running demonstration), asked after every tick.
+    wake_of: Option<fn(&S, f32) -> Option<f32>>,
+    /// The newest birth time among drawn instances (they condense for `enter` seconds after it).
+    latest_birth: f32,
+    /// Until when an annotation is still drawing on.
+    gaze_until: f32,
+    /// The marks moved or faded on the last tick.
+    marks_moving: bool,
+    /// The caret: its page instance, when it last moved (blinking restarts there), its rect, and
+    /// whether it is shown in the current blink phase.
+    caret: Option<(usize, f32, [f32; 4])>,
+    caret_on: bool,
+    /// Some drawn instance holds a static looseness under a time-varying material (which moves it).
+    static_loose: bool,
+    /// The material clock: time terms of materials (glitch's hold, xray's dashes, dot's drift) read it.
+    /// It only runs while something moves, so a page at rest is a still image.
+    mclock: f32,
+    moving: bool,
 }
+
+/// What the runtime needs from the look to know whether anything is still moving: how long fronts live
+/// and how fast they travel, how long new instances condense, and whether the material (global, or
+/// any override) has a time term that moves loose things.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Timing { pub wave_life: f32, pub wave_speed: f32, pub enter: f32, pub material: u8 }
+impl Default for Timing {
+    fn default() -> Self { let f = crate::scene::Fx::default(); Self { wave_life: f.wave_life, wave_speed: f.wave_speed, enter: f.enter, material: crate::style::Material::default().id() } }
+}
+impl Timing {
+    pub fn of(l: &Look) -> Self { Self { wave_life: l.fx.wave_life, wave_speed: l.fx.wave_speed, enter: l.fx.enter, material: l.material.id() } }
+}
+
+/// Blink half-period of the caret, seconds.
+pub const BLINK: f32 = 0.53;
 
 impl<S, M: Clone> Ui<S, M> {
     /// Let the state know the window's logical size whenever it changes (for views that lay out
@@ -248,6 +287,13 @@ impl<S, M: Clone> Ui<S, M> {
     /// Let the state know the time on every tick (for things that change by themselves, like a clock);
     /// `f` returns whether the view changed.
     pub fn on_tick(mut self, f: fn(&mut S, f32) -> bool) -> Self { self.ticked = Some(f); self }
+    /// Read the look from the state, for the timings `needs_frame` uses (front life and speed, how long
+    /// new things condense, whether the material moves by itself).
+    pub fn on_look(mut self, f: fn(&S) -> Look) -> Self { self.look_of = Some(f); self.timing = Timing::of(&f(&self.state)); self }
+    /// Ask the state, after every tick, when it next wants one (`Some(now)`: every frame; a later time:
+    /// a timed wake; `None`: only on input). Without it, `on_tick` subscribers only tick when something
+    /// else draws a frame.
+    pub fn on_wake(mut self, f: fn(&S, f32) -> Option<f32>) -> Self { self.wake_of = Some(f); self }
     /// Give the state the keys nothing on the page used (Esc on a scene, a key that is held);
     /// `f` returns whether the state changed.
     pub fn on_unused_key(mut self, f: fn(&mut S, Key, bool) -> bool) -> Self { self.unused_key = Some(f); self }
@@ -259,6 +305,7 @@ impl<S, M: Clone> Ui<S, M> {
     pub fn on_key_up(mut self, f: fn(&mut S, Key) -> bool) -> Self { self.released = Some(f); self }
     /// A key let go.
     pub fn key_up(&mut self, k: Key) {
+        self.dirty = true;
         if let Some(f) = self.released && f(&mut self.state, k) { self.relayout(); }
     }
     /// This frame's annotation records.
@@ -274,6 +321,8 @@ impl<S, M: Clone> Ui<S, M> {
             keyboard: false, marks: Marks::default(), sized: None, commands: None, unseen: vec![], base: vec![], tags: vec![], roles: vec![],
             run: None, painted_phase: 0, flows: HashMap::new(), ghosts: vec![], body_len: 0, animating: false, lifted: HashMap::new(),
             gaze_of: None, gaze_seen: HashMap::new(), annots: vec![], hovered: None, ticked: None, unused_key: None, released: None, input: None,
+            dirty: true, look_of: None, timing: Timing::default(), wake_of: None, latest_birth: f32::NEG_INFINITY, gaze_until: f32::NEG_INFINITY,
+            marks_moving: false, caret: None, caret_on: true, static_loose: false, mclock: 0.0, moving: false,
         };
         ui.resize(w, h, scale);
         ui
@@ -310,8 +359,49 @@ impl<S, M: Clone> Ui<S, M> {
     /// Whether any part of a node is in a flow right now.
     pub fn flowing(&self) -> usize { self.flows.len() }
 
+    // ── Frames ───────────────────────────────────────────────────────────────────────────────────
+    /// Whether a frame has to be drawn at `now` (after `tick(now)`): input arrived or the scene changed
+    /// since the last drawn frame, or something is moving (a front, a burst, condensing, a morph, a
+    /// flow, the old page dissolving, the marks gliding, an annotation drawing on, a commit's front
+    /// still on screen, a time-varying material with something loose), or a timed wake is due (the
+    /// caret's blink, a clock the state keeps). When it is false the host draws nothing and waits for
+    /// input or `next_wake`.
+    pub fn needs_frame(&self, now: f32) -> bool { self.dirty || self.moving_at(now) || self.wake_at(now).is_some_and(|w| w <= now) }
+    /// When the next frame is needed: `now` if one is needed now, a later time for a timed wake, `None`
+    /// when only input can change anything.
+    pub fn next_wake(&self, now: f32) -> Option<f32> {
+        if self.dirty || self.moving_at(now) { return Some(now); }
+        self.wake_at(now).map(|w| w.max(now))
+    }
+    /// Ask for a frame even though nothing changed (the host lost what it showed).
+    pub fn invalidate(&mut self) { self.dirty = true; }
+    /// The host drew a frame of the current scene.
+    pub fn frame_drawn(&mut self) { self.dirty = false; }
+    /// The clock that materials' time terms read: it runs only while something moves.
+    pub fn material_clock(&self) -> f32 { self.mclock }
+    /// Is anything animating at `now`? (Not counting input or timed wakes.)
+    pub fn moving_at(&self, now: f32) -> bool {
+        let tm = &self.timing;
+        let fronts = self.field.fronts.iter().any(|f| f[3] > 0.0 && now - f[2] < tm.wave_life);
+        let split = self.split.as_ref().is_some_and(|sp| {
+            let (w, h) = (self.size.0 * self.scale, self.size.1 * self.scale);
+            (now - sp.t) * tm.wave_speed * self.scale < (w * w + h * h).sqrt() + 1.0
+        });
+        fronts || split || self.field.burst_at(now) > 0.0 || now < self.latest_birth + tm.enter
+            || self.run.is_some() || !self.flows.is_empty() || !self.ghosts.is_empty() || self.animating
+            || self.marks_moving || now < self.gaze_until
+            || self.static_loose
+    }
+    /// The next timed wake: the caret's next blink, or when the state asked for a tick.
+    fn wake_at(&self, now: f32) -> Option<f32> {
+        let blink = self.caret.map(|(_, reset, _)| reset + ((now - reset) / BLINK).floor().max(0.0) * BLINK + BLINK);
+        let asked = self.wake_of.and_then(|f| f(&self.state, now));
+        match (blink, asked) { (Some(a), Some(b)) => Some(a.min(b)), (a, b) => a.or(b) }
+    }
+
     // ── Input ────────────────────────────────────────────────────────────────────────────────────
     pub fn resize(&mut self, w: u32, h: u32, scale: f32) {
+        self.dirty = true;
         self.scale = scale;
         self.text.set_scale(scale);
         let size = (w.max(1) as f32 / scale, h.max(1) as f32 / scale);
@@ -325,18 +415,32 @@ impl<S, M: Clone> Ui<S, M> {
     /// Advance the clock to `t` seconds; the marks glide toward their target.
     pub fn tick(&mut self, t: f32) {
         let dt = (t - self.now).clamp(0.0, 0.1);
+        // The material clock runs only while something was moving.
+        if self.moving { self.mclock += dt; }
         self.now = t;
+        if let Some(f) = self.look_of { self.timing = Timing::of(&f(&self.state)); }
         if let Some(f) = self.ticked && f(&mut self.state, t) { self.relayout(); }
         let target = if self.keyboard { self.focus.clone() } else { self.hover.clone().or_else(|| self.focus.clone()) };
         let target = target.and_then(|k| self.node(&k).map(|n| (n.rect, n.clip)));
         let k = 1.0 - (-dt * 16.0).exp();
+        let before = (self.marks.at, self.marks.alpha);
         match target {
             Some((r, clip)) => {
-                self.marks.at = Some(match self.marks.at { Some(cur) if self.marks.alpha > 0.01 => cur.lerp(&r, k), _ => r });
+                let next = match self.marks.at { Some(cur) if self.marks.alpha > 0.01 => cur.lerp(&r, k), _ => r };
+                // Close enough is there: the glide ends instead of creeping on for ever.
+                let near = (next.x - r.x).abs() + (next.y - r.y).abs() + (next.w - r.w).abs() + (next.h - r.h).abs() < 0.1;
+                self.marks.at = Some(if near { r } else { next });
                 self.marks.clip = clip;
                 self.marks.alpha += (1.0 - self.marks.alpha) * k;
+                if self.marks.alpha > 0.995 { self.marks.alpha = 1.0; }
             }
-            None => self.marks.alpha -= self.marks.alpha * k,
+            None => { self.marks.alpha -= self.marks.alpha * k; if self.marks.alpha < 0.02 { self.marks.alpha = 0.0; } }
+        }
+        self.marks_moving = before != (self.marks.at, self.marks.alpha);
+        // The caret blinks in whole phases from when it last moved.
+        if let Some((_, reset, _)) = self.caret {
+            let on = ((t - reset).max(0.0) / BLINK).floor() as i64 % 2 == 0;
+            if on != self.caret_on { self.caret_on = on; self.dirty = true; }
         }
         // A morph moving into its next phase changes what is drawn; one that is over is dropped and the
         // view decides again.
@@ -347,6 +451,8 @@ impl<S, M: Clone> Ui<S, M> {
         };
         self.flows.retain(|_, f| t < f.start + f.dur);
         if repaint { self.paint(); } else { self.finish(); }
+        if self.marks_moving { self.dirty = true; }
+        self.moving = self.moving_at(t);
     }
 
     /// Start again at `t`: everything on the page condenses in from loose.
@@ -358,6 +464,7 @@ impl<S, M: Clone> Ui<S, M> {
 
     /// Logical px.
     pub fn pointer_move(&mut self, x: f32, y: f32) {
+        self.dirty = true;
         let s = self.scale;
         self.field.pointer = [x * s, y * s, 1.0, 0.0];
         self.keyboard = false;
@@ -381,6 +488,7 @@ impl<S, M: Clone> Ui<S, M> {
         if let Some(m) = (c.handler)(d) { self.send(m); }
     }
     pub fn pointer_leave(&mut self) {
+        self.dirty = true;
         self.field.pointer = [-1e5, -1e5, 0.0, 0.0];
         if self.hover.take().is_some() && let Some(f) = self.hovered && f(&mut self.state, None) { self.relayout(); }
     }
@@ -420,6 +528,7 @@ impl<S, M: Clone> Ui<S, M> {
     }
 
     pub fn release(&mut self, x: f32, y: f32) {
+        self.dirty = true;
         if self.capture.is_some() {
             self.drag(Phase::End, x, y);
             self.capture = None;
@@ -434,6 +543,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// A wheel with both axes. A horizontal scroll node takes `dx`, or `dy` when there is no `dx`
     /// (most wheels only turn one way).
     pub fn wheel_xy(&mut self, x: f32, y: f32, dx: f32, dy: f32) {
+        self.dirty = true;
         self.heard();
         let mut at = self.hit(x, y);
         while let Some(i) = at.and_then(|i| self.up(i, |n| n.scroll)) {
@@ -445,6 +555,7 @@ impl<S, M: Clone> Ui<S, M> {
 
     /// A key press; the flag is Shift. Returns whether anything used it.
     pub fn key(&mut self, k: Key, shift: bool) -> bool {
+        self.dirty = true;
         self.heard();
         self.keyboard = true;
         if k == Key::Tab { self.cycle_focus(shift); return true; }
@@ -623,6 +734,7 @@ impl<S, M: Clone> Ui<S, M> {
     }
 
     fn layout(&mut self) {
+        if let Some(f) = self.look_of { self.timing = Timing::of(&f(&self.state)); }
         let el = (self.view)(&self.state);
         let mut tree: TaffyTree<usize> = TaffyTree::new();
         let mut nodes = Vec::new();
@@ -757,6 +869,9 @@ impl<S, M: Clone> Ui<S, M> {
             _ => 0,
         }).collect();
         let mut counters: HashMap<usize, [u32; 2]> = HashMap::new();
+        let (mut latest, mut any_loose) = (f32::NEG_INFINITY, false);
+        let global = self.timing.material;
+        let mut caret_found: Option<(usize, [f32; 4])> = None;
         for i in 0..self.nodes.len() {
             let n = &self.nodes[i];
             if Some(i) == self.modal_at { self.scene.begin_layer(); }
@@ -777,7 +892,7 @@ impl<S, M: Clone> Ui<S, M> {
             let loose = if held[i] { 1.0 } else if under { n.loose.max(n.loosen).max(beneath) } else { n.loose.max(n.loosen) };
             let mat = n.mat;
             let dim = if n.disabled { 0.4 } else { 1.0 };
-            let mut sink = Sink { scene: &mut self.scene, owners: &mut self.owners, tags: &mut self.tags, unseen: &mut self.unseen, counters: &mut counters };
+            let mut sink = Sink { scene: &mut self.scene, owners: &mut self.owners, tags: &mut self.tags, unseen: &mut self.unseen, counters: &mut counters, latest: &mut latest, loose: &mut any_loose };
             let mut put = |sink: &mut Sink, mut inst: Instance, id: u64, glyph: Option<u32>| {
                 inst.clip = clip;
                 inst.paint[2] *= dim;
@@ -789,6 +904,10 @@ impl<S, M: Clone> Ui<S, M> {
                 let born = if role != 0 { *births.entry(id).or_insert(-1e4) }
                            else { *births.entry(id).or_insert_with(|| self.births.get(&id).copied().unwrap_or(now)) };
                 inst.extra[3] = born;
+                *sink.latest = sink.latest.max(born);
+                // Loose under a material that moves loose things by itself (its own override or the global one).
+                let m = if inst.look[0] >= 127.5 { (inst.look[0].round() as u32 % 16) as u8 } else { global };
+                *sink.loose |= loose > 0.0 && crate::style::Material::from_id(m).time_varying();
                 let tag = n.flow.as_ref().map(|(f, root)| {
                     let c = &mut sink.counters.entry(*root).or_default()[glyph.is_some() as usize];
                     let t = Tag { flow: f.clone(), glyph: glyph.is_some(), n: *c, gid: glyph.unwrap_or(0) };
@@ -818,7 +937,9 @@ impl<S, M: Clone> Ui<S, M> {
                     let focused = caret_at.is_some_and(|f| within(&self.nodes, i, f));
                     if let Some(at) = caret.filter(|_| focused) && let Some(r) = self.text.caret(para, (n.inner.x, n.inner.y), at) {
                         let bar = Instance { rect: dev(Rect::new(r.x, r.y, 1.5, r.h)), paint: [paint.tone, 1.0, 1.0, SHAPE], ..Default::default() };
+                        let before = sink.scene.instances.len();
                         put(&mut sink, bar, ident(&n.key, u32::MAX - 4, 0), None);
+                        if sink.scene.instances.len() > before { caret_found = Some((before, bar.rect)); }
                     }
                 }
                 Content::Picture { id, fx, .. } => {
@@ -847,6 +968,15 @@ impl<S, M: Clone> Ui<S, M> {
             }
         }
         self.births = births;
+        self.latest_birth = latest;
+        self.static_loose = any_loose;
+        // The caret blinks from where it last moved to: a new place starts it again, shown.
+        self.caret = caret_found.map(|(i, r)| match self.caret {
+            Some((_, reset, old)) if old == r => (i, reset, r),
+            _ => (i, now, r),
+        });
+        if let Some((_, reset, _)) = self.caret { self.caret_on = ((now - reset).max(0.0) / BLINK).floor() as i64 % 2 == 0; }
+        self.dirty = true;
         self.page_len = self.scene.instances.len();
         self.base = self.scene.instances.clone();
         self.painted_phase = self.run.as_ref().map_or(0, |r| r.phase(now));
@@ -891,7 +1021,9 @@ impl<S, M: Clone> Ui<S, M> {
                 self.scene.instances[i] = inst;
             }
         }
+        if active || self.animating { self.dirty = true; }
         self.animating = active;
+        if let Some((i, _, _)) = self.caret && i < self.page_len { self.scene.instances[i].paint[2] = if self.caret_on { self.base[i].paint[2] } else { 0.0 }; }
         self.ghosts.retain(|g| now < g.start + g.dur);
         for g in &self.ghosts {
             let p = ((now - g.start) / g.dur.max(1e-4)).clamp(0.0, 1.0);
@@ -1032,7 +1164,7 @@ impl<S, M: Clone> Ui<S, M> {
     fn paint_gaze(&mut self) {
         self.scene.annot.clear();
         let g = match self.gaze_of { Some(f) => f(&self.state), None => { self.annots.clear(); return; } };
-        if g.mode == GazeMode::Off { self.annots.clear(); self.gaze_seen.clear(); return; }
+        if g.mode == GazeMode::Off { self.annots.clear(); self.gaze_seen.clear(); self.gaze_until = f32::NEG_INFINITY; return; }
         let s = self.scale;
         let now = self.now;
         let window = Rect::new(0.0, 0.0, self.size.0, self.size.1);
@@ -1040,6 +1172,7 @@ impl<S, M: Clone> Ui<S, M> {
         let focus = self.focus.as_deref().and_then(|f| self.nodes.iter().position(|n| n.key == f));
         let annots = gaze::select(&self.nodes, &g, pointer, focus, window);
         self.gaze_seen = annots.iter().map(|a| (a.key.clone(), self.gaze_seen.get(&a.key).copied().unwrap_or(now))).collect();
+        self.gaze_until = self.gaze_seen.values().fold(f32::NEG_INFINITY, |m, &t| m.max(t + g.draw_ms / 1000.0));
         let (scope, scopes) = gaze::scope(&self.nodes, window);
         let view = scopes.first().map_or(window, |&i| self.nodes[i].clip);
         let clip = [view.x * s, view.y * s, view.right() * s, view.bottom() * s];
@@ -1194,6 +1327,8 @@ struct Sink<'a> {
     tags: &'a mut Vec<Option<Tag>>,
     unseen: &'a mut Vec<(usize, Instance)>,
     counters: &'a mut HashMap<usize, [u32; 2]>,
+    latest: &'a mut f32,
+    loose: &'a mut bool,
 }
 
 /// What a subtree passes down besides fonts: its material override (nesting level and id) and the

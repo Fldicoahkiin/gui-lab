@@ -12,13 +12,15 @@ use std::time::Instant;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, EventLoop, OwnedDisplayHandle};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, OwnedDisplayHandle};
 use winit::keyboard::{Key as WKey, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
 
 struct Running {
     window: Arc<Window>,
     frames: u64,
+    /// Redraw requests that found nothing to draw.
+    skipped: u64,
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     r: Renderer,
@@ -41,6 +43,12 @@ struct App {
 
 impl App {
     fn now(&self) -> f32 { self.start.elapsed().as_secs_f32() }
+    /// Every two seconds: how many frames were drawn and how many redraws found nothing to draw.
+    fn report(&mut self, now: f32) {
+        if now - self.reported < 2.0 { return; }
+        self.reported = now;
+        if let Some(s) = &self.run { eprintln!("{:6.1} s: {} frames, {} skipped", now, s.frames, s.skipped); }
+    }
 
     fn open(&mut self, el: &ActiveEventLoop) -> Result<Running, String> {
         let attrs = Window::default_attributes().with_title("gui-lab").with_inner_size(LogicalSize::new(1280.0, 860.0));
@@ -65,7 +73,7 @@ impl App {
         let mut ui = gallery::new_ui(faces, config.width, config.height, window.scale_factor() as f32);
         if let Some(p) = &self.page && ui.state.route(p) { ui.relayout(); }
         ui.restart(self.now());
-        Ok(Running { window, frames: 0, surface, config, r, ui })
+        Ok(Running { window, frames: 0, skipped: 0, surface, config, r, ui })
     }
 }
 
@@ -137,10 +145,8 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 s.ui.tick(now);
-                if now - self.reported >= 2.0 {
-                    self.reported = now;
-                    eprintln!("{:6.1} s: {} frames", now, s.frames);
-                }
+                self.report(now);
+                let Some(s) = self.run.as_mut() else { return };
                 if self.exit_after.is_some_and(|t| now * 1000.0 >= t) {
                     eprintln!("closing after {} frames", s.frames);
                     el.exit();
@@ -154,9 +160,13 @@ impl ApplicationHandler for App {
                         Ok(px) => { lab::offscreen::save_png(&path, s.config.width, s.config.height, &px); eprintln!("saved {path} at {:.1} s", now); }
                         Err(e) => eprintln!("could not read the frame back: {e}"),
                     }
-                    s.frames += 1;
+                    // The saved frame was not presented: the window still has to show it.
+                    s.ui.invalidate();
+                    s.window.request_redraw();
                     return;
                 }
+                // Nothing changed and nothing moves: no frame (the event loop waits for input or a wake).
+                if !s.ui.needs_frame(now) { s.skipped += 1; return; }
                 let t0 = Instant::now();
                 let frame = match s.surface.get_current_texture() {
                     wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
@@ -179,9 +189,19 @@ impl ApplicationHandler for App {
         }
     }
 
-    fn about_to_wait(&mut self, _: &ActiveEventLoop) {
-        // The field keeps moving (fronts, condensing, the ground), so draw continuously.
-        if let Some(s) = &self.run { s.window.request_redraw(); }
+    fn about_to_wait(&mut self, el: &ActiveEventLoop) {
+        // Frames on demand: draw when the runtime needs one, else sleep until its next timed wake (the
+        // caret's blink, a clock), the next report, a frame to save or the time to close.
+        let now = self.now();
+        self.report(now);
+        let Some(s) = &self.run else { return };
+        let mut wake = s.ui.next_wake(now);
+        if wake.is_some_and(|w| w <= now) { s.window.request_redraw(); wake = None; }
+        let others = [Some(self.reported + 2.0), self.shots.first().map(|(_, t)| t / 1000.0), self.exit_after.map(|t| t / 1000.0)];
+        let next = others.into_iter().flatten().chain(wake).fold(f32::INFINITY, f32::min);
+        let shot_due = self.shots.first().is_some_and(|(_, t)| now * 1000.0 >= *t) || self.exit_after.is_some_and(|t| now * 1000.0 >= t);
+        if shot_due { s.window.request_redraw(); }
+        el.set_control_flow(if next.is_finite() { ControlFlow::WaitUntil(self.start + std::time::Duration::from_secs_f32(next.max(now))) } else { ControlFlow::Wait });
     }
 }
 

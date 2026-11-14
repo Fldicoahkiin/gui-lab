@@ -143,6 +143,9 @@ pub const MATERIALS: [(Material, &str); MATERIAL_COUNT] = [
     (Material::Collage, "collage"), (Material::Near, "near"),
 ];
 impl Material {
+    /// Whether the material has a time term that moves loose things by itself (glitch's held rows,
+    /// xray's travelling dashes): while something is loose under it, frames keep coming.
+    pub fn time_varying(self) -> bool { matches!(self, Material::Glitch | Material::Xray) }
     pub fn id(self) -> u8 { self as u8 }
     pub fn from_id(i: u8) -> Material { MATERIALS[(i as usize).min(MATERIAL_COUNT - 1)].0 }
     pub fn name(self) -> &'static str { MATERIALS[self as usize].1 }
