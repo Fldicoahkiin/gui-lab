@@ -241,7 +241,7 @@ fn gallery_flow_page_and_shell() {
     let r = ui.node("flow/detail/picture").unwrap().rect;
     assert_eq!(ui.instances_of("flow/detail/picture")[0].rect, [r.x, r.y, r.w, r.h]);
     // The rail's selection moves from one item to the next on a page change.
-    click(&mut ui, "nav/type");
+    click(&mut ui, "nav/button");
     assert!(ui.flowing() > 0);
 }
 
