@@ -209,12 +209,17 @@ pub struct MorphRun {
     /// of which emitter its source and target are (`emitter << 24 | point`, or `morph::NO_TAG`).
     pub emit: Vec<Emitter>,
     pub tags: Vec<[u32; 2]>,
+    /// Held at this point of the flight (`Cmd::Scrub`), if it is.
+    pub scrub: Option<f32>,
 }
 /// A `scene3d` element that emits (or takes in) a morph's tiles: its key and the surface points.
 pub struct Emitter { pub key: String, pub points: Vec<crate::mesh::SurfacePoint> }
 impl MorphRun {
     /// Seconds into the flight, while the tiles are flying.
-    pub fn clock(&self, now: f32) -> Option<f32> { self.flight.filter(|f| now >= f[0] && now < f[1]).map(|f| now - f[0]) }
+    pub fn clock(&self, now: f32) -> Option<f32> {
+        if let (Some(u), Some(f)) = (self.scrub, self.flight) { return Some((u.clamp(0.0, 1.0) * (f[1] - f[0])).min(f[1] - f[0] - 1e-4).max(0.0)); }
+        self.flight.filter(|f| now >= f[0] && now < f[1]).map(|f| now - f[0])
+    }
     fn phase(&self, now: f32) -> u8 { (now >= self.src_until) as u8 | (self.clock(now).is_some() as u8) << 1 | ((now >= self.dst_from) as u8) << 2 }
 }
 pub fn ramp(r: [f32; 4], t: f32) -> f32 {
@@ -280,6 +285,9 @@ pub struct Ui<S, M> {
     /// Tells the state which element the pointer is over (when it changes), and the time on every
     /// tick; either returns whether the view changed.
     hovered: Option<fn(&mut S, Option<&str>) -> bool>,
+    pointer_of: Option<fn(&mut S, f32, f32) -> bool>,
+    /// A scripted press (`Cmd::Press`) is going on: it is not a person's input.
+    scripted: bool,
     ticked: Option<fn(&mut S, f32) -> bool>,
     /// Keys nothing on the page used (the flag is Shift), and keys let go; either returns whether
     /// the state changed.
@@ -496,7 +504,10 @@ impl<S, M: Clone> Ui<S, M> {
     /// Hear of every press, wheel turn and key press before it is handled (a demonstration that the
     /// person takes over).
     pub fn on_input(mut self, f: fn(&mut S) -> bool) -> Self { self.input = Some(f); self }
-    fn heard(&mut self) { if let Some(f) = self.input && f(&mut self.state) { self.relayout(); } }
+    /// Tell the state where a mouse or pen is (logical px) whenever it moves over the window; returns
+    /// whether the view changes. For views that follow the pointer itself (parallax, a highlight).
+    pub fn on_pointer(mut self, f: fn(&mut S, f32, f32) -> bool) -> Self { self.pointer_of = Some(f); self }
+    fn heard(&mut self) { if !self.scripted && let Some(f) = self.input && f(&mut self.state) { self.relayout(); } }
     /// Tell the state when a key is let go; `f` returns whether the state changed.
     pub fn on_key_up(mut self, f: fn(&mut S, Key) -> bool) -> Self { self.released = Some(f); self }
     /// A key let go.
@@ -516,7 +527,7 @@ impl<S, M: Clone> Ui<S, M> {
             hover: None, focus: None, pressed: None, capture: None, modal_at: None, modal_key: None, return_focus: None, split: None, splits: 0,
             keyboard: false, marks: Marks::default(), sized: None, commands: None, unseen: vec![], base: vec![], tags: vec![], roles: vec![],
             run: None, painted_phase: 0, flows: HashMap::new(), ghosts: vec![], body_len: 0, animating: false, lifted: HashMap::new(),
-            gaze_of: None, gaze_seen: HashMap::new(), annots: vec![], hovered: None, ticked: None, unused_key: None, released: None, input: None,
+            gaze_of: None, gaze_seen: HashMap::new(), annots: vec![], hovered: None, pointer_of: None, scripted: false, ticked: None, unused_key: None, released: None, input: None,
             dirty: true, look_of: None, timing: Timing::default(), wake_of: None, latest_birth: f32::NEG_INFINITY, gaze_until: f32::NEG_INFINITY,
             marks_moving: false, caret: None, caret_on: true, static_loose: false, mclock: 0.0, moving: false, gclock: 0.0, ground_moving: false,
             perf: crate::perf::Perf { quality: 1.0, ..Default::default() }, span: 0, painting: false, overlay: false, overlay_at: 0.0,
@@ -1024,6 +1035,7 @@ impl<S, M: Clone> Ui<S, M> {
         }
         if self.capture.is_some() { self.drag(Phase::Move, x, y); }
         if !self.touching { self.pick_hover(x, y); }
+        if !self.touching && let Some(f) = self.pointer_of && f(&mut self.state, x, y) { self.relayout(); }
         if let Some(k) = self.text_capture.clone() && let Some(fi) = self.nodes.iter().position(|n| n.key == k) && self.field_at() == Some(fi)
             && let Some(at) = self.leaf_of(fi).and_then(|l| self.text_hit(l, x, y)) {
             self.send_text(TextInput::Pointer { at, phase: Phase::Move, clicks: self.clicks.3, shift: false });
@@ -1654,6 +1666,8 @@ impl<S, M: Clone> Ui<S, M> {
         // Commands are taken first: a flow needs the frame as it is before the new layout.
         let cmds = self.commands.map(|f| f(&mut self.state)).unwrap_or_default();
         let flow = cmds.iter().find_map(|c| if let Cmd::Flow(f) = c { Some(*f) } else { None });
+        // A commit keeps the frame as it is before the new view.
+        if let Some((x, y)) = cmds.iter().find_map(|c| if let Cmd::Commit { x, y } = c { Some((*x, *y)) } else { None }) { self.snapshot(x, y); }
         let old = flow.map(|_| self.record());
         self.no_recompose = flow.is_some();
         self.layout();
@@ -1668,10 +1682,45 @@ impl<S, M: Clone> Ui<S, M> {
                     let (x, y) = self.nodes[i].rect.center();
                     self.front_from(Some(i), x, y, true, strength);
                 },
-                Cmd::Press { key } => { self.activate(&key); }
-                Cmd::Flow(_) => {}
+                Cmd::Press { key } => { self.scripted = true; self.activate(&key); self.scripted = false; }
+                Cmd::Focus { key } => self.focus_key(&key),
+                Cmd::Scrub(at) => self.scrub(at),
+                Cmd::Flow(_) | Cmd::Commit { .. } => {}
             }
         }
+        // A morph whose two elements are both gone (the page changed under it) ends: nothing is left
+        // to fly from or to.
+        if let Some(r) = &self.run && !self.nodes.iter().any(|n| n.key == r.from || n.key == r.to) { self.run = None; self.paint(); }
+    }
+
+    /// Hold the morph in progress at a point of its flight, or let it go on from there. While held, the
+    /// source and the target are not drawn and the tiles stay where the point puts them.
+    pub fn scrub(&mut self, at: Option<f32>) {
+        let now = self.now;
+        let tighten = self.run.as_ref().map_or(0.0, |r| r.spec.tighten_ms / 1000.0);
+        let Some(r) = &mut self.run else { return };
+        match at {
+            Some(u) => {
+                // A morph still loosening its source jumps to its flight.
+                let len = r.flight.map_or(r.spec.duration_ms / 1000.0, |f| f[1] - f[0]);
+                if r.flight.is_none() { r.flight = Some([now, now + len]); }
+                r.scrub = Some(u.clamp(0.0, 1.0));
+                r.src_until = now.min(r.src_until);
+                r.dst_from = NEVER;
+                r.end = NEVER;
+            }
+            None => {
+                let Some(u) = r.scrub.take() else { return };
+                let len = r.flight.map_or(0.0, |f| f[1] - f[0]);
+                let start = now - u * len;
+                r.flight = Some([start, start + len]);
+                r.dst_from = start + len;
+                r.dst_ramp = [1.0, start + len, 0.0, start + len + tighten];
+                r.end = start + len + tighten;
+            }
+        }
+        r.upload = next_run();
+        self.paint();
     }
 
     /// View → nodes → the taffy tree, kept from the last layout and changed only where the new view
@@ -1863,6 +1912,18 @@ impl<S, M: Clone> Ui<S, M> {
 
     /// Nodes → instances. Identity is key + part (+ glyph id), so unchanged things keep their birth time.
     fn paint(&mut self) {
+        self.paint_once();
+        // The glyph atlas filled up (many sizes over a long run): start it over and paint again, so every
+        // glyph on the page is in the new one. What was kept from before (tiles, ghosts) is dropped.
+        if self.text.is_full() {
+            self.text.refill();
+            self.recomps.clear();
+            self.recs.clear();
+            self.ghosts.clear();
+            self.paint_once();
+        }
+    }
+    fn paint_once(&mut self) {
         let t0 = crate::perf::now_ms();
         self.painting = true;
         self.paint_inner();
@@ -2256,13 +2317,14 @@ impl<S, M: Clone> Ui<S, M> {
         let (src, dst) = (self.collect(from), self.collect(to));
         if src.is_empty() || dst.is_empty() { return; }
         let pitch = (spec.lattice * self.scale).max(1.5);
-        // 3D elements emit from their surface (on the CPU path); the rest of each side from the screen.
+        // 3D elements emit from their surface (on the CPU path; the GPU's grid samples what the screen
+        // shows); the rest of each side from the screen.
         let (es, ed) = (self.emitters(from), self.emitters(to));
         let meshy = !es.is_empty() || !ed.is_empty();
         // Many tiles: the GPU simulates a grid (when the renderer can), the CPU builds nothing.
         let above = self.look().particles.gpu_above;
         let grid = match (morph::ink_bounds(&src), morph::ink_bounds(&dst)) {
-            (Some(a), Some(b)) if !meshy && self.particle_gpu && morph::Grid::estimate(a, b, pitch) > above => Some(morph::Grid::new(a, b, (spec.lattice * self.scale).max(1.0), spec.count_max.max(above))),
+            (Some(a), Some(b)) if self.particle_gpu && morph::Grid::estimate(a, b, pitch) > above => Some(morph::Grid::new(a, b, (spec.lattice * self.scale).max(1.0), spec.count_max.max(above))),
             _ => None,
         };
         let mut emit = vec![];
@@ -2280,7 +2342,7 @@ impl<S, M: Clone> Ui<S, M> {
             id, upload: id, from: from.into(), to: to.into(), spec,
             src_until: t1, src_ramp: [k0, now, 1.0, t1], flight: Some([t1, t2]),
             dst_from: t2, dst_ramp: [1.0, t2, 0.0, t2 + tighten], end: t2 + tighten,
-            particles: tiles.particles, grid, tile: tiles.tile, src, dst, emit, tags: tiles.tags,
+            particles: tiles.particles, grid, tile: tiles.tile, src, dst, emit, tags: tiles.tags, scrub: None,
         });
         self.reproject();
         self.paint();

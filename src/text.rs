@@ -75,6 +75,8 @@ pub struct Text {
     /// Device px per logical px: pixel faces snap their size in device px.
     scale: f32,
     slots: HashMap<(u64, u32, u32, u8), Option<Slot>>,
+    /// A glyph did not fit: the atlas is full (`Text::refill`).
+    full: bool,
     /// Layout asks for the same paragraph at the same width many times; keyed by text, face, size bits,
     /// line bits, width bits.
     measured: HashMap<MeasureKey, (f32, f32)>,
@@ -106,11 +108,23 @@ impl Text {
         Self {
             fonts: FontContext { collection, source_cache: Default::default() },
             layouts: LayoutContext::new(), scaler: ScaleContext::new(), families, scale: 1.0,
-            slots: HashMap::new(), measured: HashMap::new(), cache: [HashMap::new(), HashMap::new()], pixels: vec![0; (ATLAS * ATLAS * 2) as usize], dirty: true, pen: (1, 1, 0), shaped: 0, log_shapes: false, shape_log: vec![],
+            slots: HashMap::new(), full: false, measured: HashMap::new(), cache: [HashMap::new(), HashMap::new()], pixels: vec![0; (ATLAS * ATLAS * 2) as usize], dirty: true, pen: (1, 1, 0), shaped: 0, log_shapes: false, shape_log: vec![],
         }
     }
 
     pub fn faces(&self) -> usize { self.families.len() }
+    /// Whether a glyph found the atlas full since the last `refill`.
+    pub fn is_full(&self) -> bool { self.full }
+    /// Start the glyph atlas over (every glyph is drawn into it again as it is next emitted): for a
+    /// long-running page that has used many sizes (the film at several scales). Glyph instances made
+    /// before point at the old atlas and must be made again.
+    pub fn refill(&mut self) {
+        self.slots.clear();
+        self.pixels.iter_mut().for_each(|p| *p = 0);
+        self.pen = (1, 1, 0);
+        self.full = false;
+        self.dirty = true;
+    }
     /// How many paragraphs have been shaped (parley layouts built) so far.
     pub fn shaped(&self) -> u64 { self.shaped }
     /// How much of the glyph atlas is used, 0..1 (by rows).
@@ -286,7 +300,7 @@ impl Text {
                         None => {
                             let mut img = Render::new(&[Source::Outline]).format(Format::Alpha).offset(Vector::new(sub as f32 / 4.0, 0.0)).render(&mut scaler, g.id as _);
                             if pixel && let Some(i) = img.as_mut() { for c in &mut i.data { *c = if *c >= 128 { 255 } else { 0 }; } }
-                            let made = img.and_then(|i| store(&mut self.pixels, &mut self.pen, &i.data, i.placement.width, i.placement.height, i.placement.left, i.placement.top));
+                            let made = img.and_then(|i| { let m = store(&mut self.pixels, &mut self.pen, &i.data, i.placement.width, i.placement.height, i.placement.left, i.placement.top); if m.is_none() && i.placement.width > 0 && i.placement.height > 0 { self.full = true; } m });
                             self.dirty |= made.is_some();
                             self.slots.insert(key, made);
                             made
