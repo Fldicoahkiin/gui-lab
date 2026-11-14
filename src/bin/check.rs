@@ -16,8 +16,14 @@
 //!     obstacle's ink (a disc and the cut-out bust, several gaps), with a control that ignores the gap.
 //!  9. Every showcase scene at rest is calm: no instance outside its declared live area is loose,
 //!     still condensing, or under a front.
+//! 10. Every component page under every material but `near`, at rest (dark theme; light too for print
+//!     and lino): the glyph pixels of the preview and the variants equal plain's, except by as much as
+//!     the backing under them differs (an xray fill, a collage edge, the dot ground; print within its
+//!     grain). The glyph pixels are found by drawing the same frame with the glyphs hidden.
+//! 11. Selected and unselected states of the switch, the tabs and the choice (both kinds) differ by a
+//!     visible amount under every material.
 //!
-//! usage: check
+//! usage: check [components]     (`components` runs only 10 and 11)
 use lab::demo::{BUST, PICTURE_SIZES, SKY, SPHERE, TERRAIN};
 use lab::el::{El, Font, Paint, col, picture, row, space, text_lh};
 use lab::morph::MorphSpec;
@@ -47,6 +53,12 @@ fn main() {
     let mut failed = 0;
     let mut o = Offscreen::new(W, H);
     let fonts = || load_bundled("assets").expect("fonts");
+    if std::env::args().nth(1).is_some_and(|a| a == "components") {
+        let f = components(&fonts);
+        if f > 0 { eprintln!("{f} checks failed"); std::process::exit(1); }
+        eprintln!("all checks passed");
+        return;
+    }
 
     // ── 1. The page's ground never shows inside a loosened picture ──────────────────────────────────
     let ground = rgb8(LIGHT.ground);
@@ -353,6 +365,8 @@ fn main() {
     }
     eprintln!("9. scenes at rest: {} failing", failed - before);
 
+    failed += components(&fonts);
+
     if failed > 0 { eprintln!("{failed} checks failed"); std::process::exit(1); }
     eprintln!("all checks passed");
 }
@@ -446,3 +460,128 @@ fn wrapped(s: &Wr) -> El<()> {
         .child(text_lh(WRAP_TEXT.repeat(4), 16.0, 26.0, Paint::INK.alpha(alpha)).fill_width().around(Around::new(vec![sil], s.gap)))
         .child(ob.hidden_until_morphed(s.show == 2).absolute(Some(s.x), Some(s.y), None, None)))
 }
+
+/// Checks 10 and 11, on the gallery's component pages.
+fn components(fonts: &dyn Fn() -> Vec<lab::text::Face>) -> usize {
+    use lab::gallery::{self, COMPONENTS, GalleryUi, Msg, Page, comp};
+    use lab::style::MATERIALS;
+    let (w, h) = (1280u32, 1100u32);
+    let mut o = Offscreen::new(w, h);
+    let settle = |ui: &mut GalleryUi, secs: f32| { let to = ui.now() + secs; let mut t = ui.now(); while t < to { t = (t + 1.0 / 30.0).min(to); ui.tick(t); } };
+    let send = |ui: &mut GalleryUi, m: Msg| { gallery::update(&mut ui.state, m); ui.relayout(); };
+    let page = |c: usize, theme: usize, mat: usize| {
+        let mut ui = gallery::new_ui(fonts(), w, h, 1.0);
+        ui.pointer_leave();
+        send(&mut ui, Msg::Go(Page::Comp(c)));
+        send(&mut ui, Msg::Theme(theme));
+        send(&mut ui, Msg::Material(mat));
+        settle(&mut ui, 1.0);
+        // The input focused (its caret shows), the dialog open.
+        if c == comp::INPUT || c == comp::DIALOG {
+            let key = if c == comp::INPUT { "input/live" } else { "dialog/open" };
+            let (x, y) = ui.node(key).expect("control").rect.center();
+            ui.press(x, y); ui.release(x, y); ui.pointer_leave();
+        }
+        settle(&mut ui, 3.0);
+        ui
+    };
+    let mut failed = 0;
+
+    // ── 10. Control labels at rest ──────────────────────────────────────────────────────────────────
+    let before = failed;
+    let mut worst = 0;
+    for (c, cp) in COMPONENTS.iter().enumerate() {
+        let hash = cp.hash;
+        for theme in [0usize, 1] {
+            let mut ui = page(c, theme, 0);
+            // Where the controls are: the preview and the variants; for the dialog, its card (the page
+            // beneath it is held partly loose on purpose).
+            let rects: Vec<lab::ui::Rect> = if c == comp::DIALOG { vec![ui.node("dialog/dialog/card").expect("card").rect] }
+                else { [format!("{hash}/preview"), format!("{hash}/variants")].iter().map(|k| ui.node(k).expect("region").rect).collect() };
+            let look = ui.state.look();
+            let full_p = o.render(&mut ui, &look);
+            o.r.hide_glyphs = true;
+            let bare_p = o.render(&mut ui, &look);
+            o.r.hide_glyphs = false;
+            let mut mask = vec![];
+            for r in &rects {
+                let (x0, y0, x1, y1) = device_rect(*r, 1.0);
+                for y in y0..y1.min(h) { for x in x0..x1.min(w) {
+                    let (a, b) = (px(&full_p, w, x, y), px(&bare_p, w, x, y));
+                    if (0..3).map(|i| (a[i] as i32 - b[i] as i32).abs()).sum::<i32>() > 24 { mask.push((x, y)); }
+                } }
+            }
+            if mask.len() < 200 { eprintln!("FAIL control: only {} glyph pixels on {hash}", mask.len()); failed += 1; }
+            for (mi, (mat, mname)) in MATERIALS.iter().enumerate() {
+                if matches!(mat, Material::Plain | Material::Near) { continue; }
+                if theme == 1 && !matches!(mat, Material::Print | Material::Lino) { continue; }
+                let mut ui = page(c, theme, mi);
+                let look = ui.state.look();
+                let full = o.render(&mut ui, &look);
+                o.r.hide_glyphs = true;
+                let bare = o.render(&mut ui, &look);
+                o.r.hide_glyphs = false;
+                let allowed = if *mat == Material::Print { 8 } else { 1 };
+                let (mut bad, mut d_max) = (0, 0);
+                for &(x, y) in &mask {
+                    let (a, b, ba, bb) = (px(&full_p, w, x, y), px(&full, w, x, y), px(&bare_p, w, x, y), px(&bare, w, x, y));
+                    let mut over = 0;
+                    for i in 0..3 { over = over.max((a[i] as i32 - b[i] as i32).abs() - (ba[i] as i32 - bb[i] as i32).abs() - allowed); }
+                    if over > 0 { bad += 1; d_max = d_max.max(over); }
+                }
+                worst = worst.max(d_max);
+                if bad > 0 && let Ok(dir) = std::env::var("CHECK_DUMP") {
+                    let mut m = full.clone();
+                    for &(x, y) in &mask {
+                        let (a, b, ba, bb) = (px(&full_p, w, x, y), px(&full, w, x, y), px(&bare_p, w, x, y), px(&bare, w, x, y));
+                        if (0..3).any(|i| (a[i] as i32 - b[i] as i32).abs() - (ba[i] as i32 - bb[i] as i32).abs() - allowed > 0) { let o = ((y * w + x) * 4) as usize; m[o..o + 3].copy_from_slice(&[0, 255, 0]); }
+                    }
+                    lab::offscreen::save_png(&format!("{dir}/{hash}-{mname}-{theme}.png"), w, h, &m);
+                    lab::offscreen::save_png(&format!("{dir}/{hash}-{mname}-{theme}-raw.png"), w, h, &full);
+                    lab::offscreen::save_png(&format!("{dir}/{hash}-plain-{theme}.png"), w, h, &full_p);
+                }
+                if bad > 0 { eprintln!("FAIL rest: {hash} under {mname} ({}): {bad} of {} glyph pixels off by up to {d_max}/255 beyond their backing", THEME_NAMES[theme], mask.len()); failed += 1; }
+            }
+        }
+        eprintln!("   labels at rest: {hash}");
+    }
+    eprintln!("10. component labels at rest: largest excess {worst}/255, {} failing", failed - before);
+
+    // ── 11. Selected and unselected look different ──────────────────────────────────────────────────
+    let before = failed;
+    let mut least = usize::MAX;
+    for (mi, (mat, mname)) in MATERIALS.iter().enumerate() {
+        if *mat == Material::Near { continue; }
+        for (c, key, set) in [
+            (comp::SWITCH, "switch/live", (|s: &mut gallery::Gallery, k: usize| s.on = k == 1) as fn(&mut gallery::Gallery, usize)),
+            (comp::TABS, "tabs/live/head", |s, k| s.tab = k),
+            (comp::CHOICE, "choice/live", |s, k| s.pick = k),
+            (comp::CHOICE, "choice/live-seg", |s, k| s.pick = k),
+        ] {
+            let mut shots = vec![];
+            let mut rect = None;
+            for k in [0usize, 1, 1] {
+                let mut ui = page(c, 0, mi);
+                set(&mut ui.state, k);
+                ui.relayout();
+                settle(&mut ui, 3.0);
+                let r = ui.node(key).expect("control").rect;
+                rect = Some(r);
+                let look = ui.state.look();
+                shots.push(o.render(&mut ui, &look));
+            }
+            let (x0, y0, x1, y1) = device_rect(rect.expect("rect"), 1.0);
+            let count = |a: &[u8], b: &[u8]| (y0..y1).flat_map(|y| (x0..x1).map(move |x| (x, y)))
+                .filter(|&(x, y)| { let (p, q) = (px(a, w, x, y), px(b, w, x, y)); (0..3).any(|i| (p[i] as i32 - q[i] as i32).abs() >= 40) }).count();
+            let n = count(&shots[0], &shots[1]);
+            least = least.min(n);
+            if n < 60 { eprintln!("FAIL states: {key} under {mname}: selected and unselected differ in only {n} px"); failed += 1; }
+            // Control: the same state twice is the same.
+            let same = count(&shots[1], &shots[2]);
+            if same > 0 { eprintln!("FAIL control: {key} under {mname} differs from itself in {same} px"); failed += 1; }
+        }
+    }
+    eprintln!("11. selected states: fewest differing pixels {least}, {} failing", failed - before);
+    failed
+}
+const THEME_NAMES: [&str; 2] = ["dark", "light"];

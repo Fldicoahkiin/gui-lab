@@ -67,6 +67,8 @@ struct Tiles {
 }
 
 pub struct Renderer {
+    /// Draw every glyph transparent (for acceptance checks that need to know which pixels are text).
+    pub hide_glyphs: bool,
     device: wgpu::Device,
     queue: wgpu::Queue,
     out_format: wgpu::TextureFormat,
@@ -94,7 +96,7 @@ pub struct Renderer {
     pictures: HashMap<u32, wgpu::BindGroup>,
     instances: wgpu::Buffer,
     capacity: usize,
-    pipes: [wgpu::RenderPipeline; 6], // ink, near, near for the modal layer, material, liquid field, annotations
+    pipes: [wgpu::RenderPipeline; 7], // ink, near, near for the modal layer, material, liquid field, annotations, ink for the modal layer
     ink: wgpu::TextureView,
     near: wgpu::TextureView,
     soft: wgpu::TextureView,
@@ -150,6 +152,7 @@ impl Renderer {
             // The liquid's field adds up, so outlines that come close join.
             pipe("vs_soft", "fs_soft", INK, Some(wgpu::BlendState { color: add, alpha: add }), true),
             pipe("vs_annot", "fs_annot", out_format, Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING), true),
+            pipe("vs_inst", "fs_ink_top", INK, Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING), true),
         ];
         let tiles = Self::tiles(&device);
         let ubuf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: std::mem::size_of::<Uniforms>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
@@ -181,7 +184,7 @@ impl Renderer {
         let annots = Self::instance_buffer(&device, 256);
         let mut r = Self {
             device, queue, out_format, layout, ubuf, sampler, atlas, atlas_view, marks, marks_view, palette_view, chars, chars_view,
-            before: blank.clone(), blank: blank.clone(), split_seen: 0, split: [0.0; 4], last_look: None, marks_ready: false,
+            before: blank.clone(), blank: blank.clone(), split_seen: 0, split: [0.0; 4], last_look: None, marks_ready: false, hide_glyphs: false,
             pictures: HashMap::new(), instances, capacity, pipes, annots, annot_capacity: 256,
             ink: blank.clone(), soft: blank.clone(), near: blank, material_first: material.clone(), material, size: (0, 0), tiles,
         };
@@ -384,14 +387,20 @@ impl Renderer {
             self.capacity = scene.instances.len().next_power_of_two();
             self.instances = Self::instance_buffer(&self.device, self.capacity);
         }
-        self.queue.write_buffer(&self.instances, 0, bytemuck::cast_slice(&scene.instances));
+        if self.hide_glyphs {
+            // For acceptance checks: the same scene with every glyph transparent (nothing else moves).
+            let v: Vec<_> = scene.instances.iter().map(|i| { let mut i = *i; if i.paint[3] < 0.5 { i.paint[2] = 0.0; } i }).collect();
+            self.queue.write_buffer(&self.instances, 0, bytemuck::cast_slice(&v));
+        } else {
+            self.queue.write_buffer(&self.instances, 0, bytemuck::cast_slice(&scene.instances));
+        }
     }
 
     /// Stage 1: every instance into ink and near. The page first, then `tiles` morph tiles (if any),
     /// then the modal layer.
     fn stage1(&self, enc: &mut wgpu::CommandEncoder, scene: &Scene, ink: &wgpu::TextureView, near: &wgpu::TextureView, soft: Option<&wgpu::TextureView>, tiles: u32) {
         let layer = scene.layer.unwrap_or(u32::MAX);
-        for (k, (view, pipe, top)) in [(ink, &self.pipes[0], &self.pipes[0]), (near, &self.pipes[1], &self.pipes[2])].into_iter().enumerate() {
+        for (k, (view, pipe, top)) in [(ink, &self.pipes[0], &self.pipes[6]), (near, &self.pipes[1], &self.pipes[2])].into_iter().enumerate() {
             let mut pass = clear(enc, view, wgpu::Color::TRANSPARENT);
             let mut pending = tiles > 0;
             let draw_tiles = |pass: &mut wgpu::RenderPass<'_>| {
@@ -416,7 +425,8 @@ impl Renderer {
             let mut pass = clear(enc, view, wgpu::Color::TRANSPARENT);
             pass.set_vertex_buffer(0, self.instances.slice(..));
             pass.set_pipeline(&self.pipes[4]);
-            for b in &scene.batches {
+            // The modal layer is not liquid (see `fs_ink_top`).
+            for b in scene.batches.iter().filter(|b| b.start < layer) {
                 let group = self.pictures.get(&b.picture).or_else(|| self.pictures.get(&u32::MAX)).expect("blank picture");
                 pass.set_bind_group(0, group, &[]);
                 pass.draw(0..4, b.start..b.end);

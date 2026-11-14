@@ -1,8 +1,11 @@
 // Two stages.
 //   Stage 1 draws every instance exactly, into two intermediate images (same geometry, drawn twice):
-//     ink  (rgba8): what is there. Glyphs and shapes: r = tone, g = accent, a = coverage (premultiplied).
+//     ink  (rgba8): what is there. Glyphs and shapes: r = tone × (1 − accent), g = accent, a = coverage
+//                   (premultiplied); the colour is ground × (1 − r − g) + ink × r + hue × g, linear, so
+//                   an anti-aliased edge over another paint decodes to the blend of the two colours.
 //                   Pictures: rgb = their colour, a = coverage.
-//                   b = a code (straight, b / a): below 0.45 it is (hue + 3 × is-shape) / 14; from 0.5
+//                   b = a code (straight, b / a): below 0.45 it is hue × 0.15 + is-shape × 0.05 (so a glyph's
+//                   anti-aliased edge over a shape of the same hue keeps its hue); from 0.5
 //                   up the instance is one the height materials (chrome, liquid) shade, and b is
 //                   0.5 + 0.49 × its height coordinate (0 at the top of its line or shape, 1 at the bottom).
 //     near (rgba8, max-blended): r = signed nearness to the outline, by true outline: 0.5 on it, 1 at
@@ -150,13 +153,14 @@ fn is_big(i: VOut) -> bool {
   return i.paint.w < 1.5 && min(i.size.x, i.size.y) >= min_px && (i.extra.x == 0.0 || i.extra.x >= min_px * 0.25);
 }
 /// The ink code in b (see the top of this file).
-fn ink_code(i: VOut) -> f32 {
-  if (is_big(i)) {
+fn ink_code(i: VOut) -> f32 { return ink_code_as(i, is_big(i)); }
+fn ink_code_as(i: VOut, big: bool) -> f32 {
+  if (big) {
     var ly = (i.pos.y - i.look.z) / max(i.look.w, 1.0);
     if (i.paint.w < 0.5) { ly = fract(ly); }
     return 0.5 + 0.49 * clamp(ly, 0.0, 1.0);
   }
-  return (round(i.look.y) + select(0.0, 3.0, i.paint.w > 0.5)) / 14.0;
+  return round(i.look.y) * 0.15 + select(0.0, 0.05, i.paint.w > 0.5);
 }
 /// How loose an instance is here: its own looseness and the fronts passing.
 fn loose1(i: VOut) -> f32 {
@@ -164,7 +168,11 @@ fn loose1(i: VOut) -> f32 {
   return clamp((max(i.extra.z, 1.0 - born) + wave(i.pos.xy, 0.6)) * loose_scale(), 0.0, 1.0);
 }
 
-@fragment fn fs_ink(i: VOut) -> @location(0) vec4f {
+@fragment fn fs_ink(i: VOut) -> @location(0) vec4f { return ink_of(i, false); }
+// The modal layer: the same, but an outline-drawn (xray) panel still covers what is beneath it, with
+// the ground inside its outline, so a dialog stays readable over the page.
+@fragment fn fs_ink_top(i: VOut) -> @location(0) vec4f { return ink_of(i, true); }
+fn ink_of(i: VOut, solid: bool) -> vec4f {
   let s = inst(i);
   var a = s.x * i.paint.z;
   if (i.paint.w > 1.5) { return vec4f(textureSampleLevel(tex1, samp, clamp(i.uv, vec2f(0.0), vec2f(1.0)), 0.0).rgb * a, a); }
@@ -172,7 +180,9 @@ fn loose1(i: VOut) -> f32 {
   // inside, so what is under them shows through. Loosened, the outlines break into moving dashes.
   if (i.paint.w < 1.5 && i.paint.w > 0.5 && i.extra.x == 0.0 && eff_mat(i.look.x) == XRAY) {
     let line = max(mp(XRAY, 0).x * u.res.z, 0.5);
-    let fill = mp(XRAY, 0).y;
+    // An accent fill carries a label in the ground colour (an accent button, a selected segment): it
+    // keeps most of its fill, so the label reads and the selection shows.
+    let fill = select(mp(XRAY, 0).y, max(mp(XRAY, 0).y, 0.72), i.paint.y > 0.5);
     let cpitch = max(mp(XRAY, 0).z * u.res.z, 2.0);
     let d = s.w;
     let k = loose1(i);
@@ -190,8 +200,10 @@ fn loose1(i: VOut) -> f32 {
       contour = clamp(line * 0.5 + 0.5 - f, 0.0, 1.0) * 0.7 * (1.0 - smoothstep(0.0, 0.6, k));
     }
     a = max(max(stroke, contour), s.x * fill * (1.0 - 0.5 * k)) * i.paint.z;
+    if (solid) { return vec4f(i.paint.x * (1.0 - i.paint.y) * a, i.paint.y * a, ink_code_as(i, false) * s.x * i.paint.z, s.x * i.paint.z); }
   }
-  return vec4f(i.paint.x * a, i.paint.y * a, ink_code(i) * a, a);
+  // The modal layer is not metal or liquid: a dialog's panel and its labels stay what they are.
+  return vec4f(i.paint.x * (1.0 - i.paint.y) * a, i.paint.y * a, ink_code_as(i, is_big(i) && !solid) * a, a);
 }
 fn near_of(i: VOut) -> vec4f {
   let s = inst(i);
@@ -247,6 +259,9 @@ fn near_of(i: VOut) -> vec4f {
 @fragment fn fs_near_top(i: VOut) -> @location(0) vec4f {
   let s = inst(i);
   if (s.x < 0.02 || i.paint.z < 0.01) { discard; }
+  // A glyph's faint outer edge leaves the panel's nearness under it, so the materials that read the
+  // nearness (collage's torn edge, lino's cut) do not take a label's rim for the panel's outline.
+  if (i.paint.w < 0.5 && s.y < 0.5) { discard; }
   return near_of(i);
 }
 
@@ -460,17 +475,24 @@ fn gnd(p: vec2f) -> vec3f { return mix(u.bg.rgb, u.ground2.rgb, clamp(p.y / u.re
 
 /// Text and shape ink, decoded: straight colour and coverage, whether it is a shape, and for what the
 /// height materials shade, its height coordinate (`ly` ≥ 0; −1 for everything else).
-struct Ink { rgb: vec3f, a: f32, shape: bool, ly: f32, acc: f32, tone: f32 };
+struct Ink { rgb: vec3f, a: f32, shape: bool, ly: f32, acc: f32, tone: f32, txt: bool, hue: f32 };
 fn dec_at(c: vec4f, p: vec2f) -> Ink {
   var o: Ink;
-  o.a = c.a; o.shape = false; o.ly = -1.0; o.rgb = gnd(p); o.acc = 0.0; o.tone = 0.0;
+  o.a = c.a; o.shape = false; o.ly = -1.0; o.rgb = gnd(p); o.acc = 0.0; o.tone = 0.0; o.txt = false; o.hue = 0.0;
   if (c.a < 1e-3) { return o; }
   let t = c.r / c.a; let g = c.g / c.a; let b = c.b / c.a;
   var hue = 0.0;
   if (b >= 0.45) { o.ly = clamp((b - 0.5) / 0.49, 0.0, 1.0); }
-  else { let v = round(b * 14.0); hue = v % 3.0; o.shape = v >= 2.5; }
+  else {
+    hue = clamp(round(b / 0.15), 0.0, 2.0);
+    let rest = b - hue * 0.15;
+    o.shape = rest > 0.025;
+    // Any glyph in the pixel, even a faint edge over a shape: a pure shape's rest is 0.05.
+    o.txt = rest < 0.049;
+  }
   o.acc = g; o.tone = t;
-  o.rgb = mix(mix(gnd(p), u.fg.rgb, t), hue_col(hue), g);
+  o.rgb = gnd(p) * max(1.0 - t - g, 0.0) + u.fg.rgb * t + hue_col(hue) * g;
+  o.hue = hue;
   return o;
 }
 fn dec(p: vec2f) -> Ink { return dec_at(ink_t(p), p); }
@@ -639,9 +661,13 @@ fn m_print(p: vec2f) -> vec3f {
   var dk = dec(p);
   var cov_k = dk.a * (1.0 - dk.acc);
   let off = vec2f(mis, mis * 0.6);
-  let da = dec(p - off);
+  var da = dec(p - off);
+  // Text keeps its register: where a glyph is (here or where the accent plate is read from), the
+  // accent comes from here, so a label knocked out of an accent fill is not doubled or shifted.
+  if (dk.txt || da.txt) { da = dk; }
   var cov_a = da.a * da.acc;
-  var acc_rgb = da.rgb;
+  // Accent ink is the hue itself.
+  var acc_rgb = hue_col(da.hue);
   if (k > 0.0) {
     // Ink spreads out past its outline, raggedly, and thresholds like a photocopy.
     let n = vnoise(p * 0.18 / s);
@@ -663,7 +689,9 @@ fn m_print(p: vec2f) -> vec3f {
     if (hh > 1.0 - speckle * k * 0.07 * (0.4 + vnoise(p * 0.05 / s))) { cov_k = 1.0; dk.tone = 1.0; }
     if (h1(cs + 5.1) < speckle * k * 0.22) { cov_k *= 0.15; cov_a *= 0.15; }
   }
-  var col = mix(g, mix(g, u.fg.rgb, dk.tone), cov_k);
+  // The key plate's tone (the ink stores it without the accent part).
+  let key_tone = clamp(dk.tone / max(1.0 - dk.acc, 1e-3), 0.0, 1.0);
+  var col = mix(g, mix(g, u.fg.rgb, key_tone), cov_k);
   if (paper) { col = col * mix(vec3f(1.0), acc_rgb / max(g, vec3f(0.05)), cov_a); }
   else { col = mix(col, acc_rgb, cov_a); }
   return clamp(col, vec3f(0.0), vec3f(1.0));
@@ -859,6 +887,9 @@ fn m_liquid(p: vec2f) -> vec3f {
   let f = lfield_drip(p, k);
   let base = exact(p);
   if (f < 0.42) { return base; }
+  // Small things (a control, a label, the modal layer) are not swallowed by a body next to them.
+  let own = dec(p);
+  if (own.a > 0.5 && own.ly < 0.0) { return base; }
   let e = 1.5;
   let gx = lfield_drip(p + vec2f(e, 0.0), k) - lfield_drip(p - vec2f(e, 0.0), k);
   let gy = lfield_drip(p + vec2f(0.0, e), k) - lfield_drip(p - vec2f(0.0, e), k);
@@ -894,8 +925,11 @@ fn m_collage(p: vec2f) -> vec3f {
   let sd = sdist(p);
   let w = ink_inward(p);
   let d = dec(p);
-  if (!w.shape || (d.a > 0.5 && !d.shape)) { return exact(p); }
-  let nsd = sd + (vnoise(p / (22.0 * s)) - 0.5) * 2.0 * tear + (vnoise(p / (4.0 * s)) - 0.5) * tear * 0.35 - tear * 0.2;
+  // Text is pasted on whole: any glyph in the pixel (a label's edge over a torn panel too) is exact.
+  if (!w.shape || (d.a > 0.02 && d.txt)) { return exact(p); }
+  // The torn edge grows out of the shape and bites into it by less than a pixel, so a thin track or a
+  // hairline outline stays whole.
+  let nsd = sd + max((vnoise(p / (22.0 * s)) - 0.5) * 2.0 * tear + (vnoise(p / (4.0 * s)) - 0.5) * tear * 0.35 - tear * 0.2, -0.4 * s);
   // Shadow, from the same edge a little up and to the left.
   let ps = p - vec2f(2.0, 3.0) * s;
   let sh = sdist(ps) + (vnoise(ps / (22.0 * s)) - 0.5) * 2.0 * tear - tear * 0.2;

@@ -3,8 +3,12 @@
 //! into an input. Step 5: every material's specimen at looseness 0, 0.5 and 1, the annotation page in
 //! each mode, every style page at rest and with a front mid-flight, and two contact sheets
 //! (`styles.png`, `materials.png`).
-//! usage: pages <out_dir> [width] [height] [scale] [step5|perf]     (device px; `step5` only does step 5;
-//! `perf` times a frame of every material page, fully loosened)
+//! Components: every component page under every material (but the debug `near`), at rest and with a
+//! front mid-way across the preview, dark theme (and light for print and lino), with one contact sheet
+//! per material (`components-<material>[-light].png`: a row per page, at rest | front).
+//! usage: pages <out_dir> [width] [height] [scale] [step5|perf|components]     (device px; `step5` only
+//! does step 5; `perf` times a frame of every material page, fully loosened; `components` only does the
+//! component sheets)
 use lab::el::Key;
 use lab::gallery::{self, GalleryUi, Msg, Page};
 use lab::offscreen::{Offscreen, save_png};
@@ -38,6 +42,7 @@ fn main() {
     let only5 = a.get(5).is_some_and(|s| s == "step5");
     if a.get(5).is_some_and(|s| s == "perf") { perf(w, h, scale); return; }
     std::fs::create_dir_all(&out).expect("out dir");
+    if a.get(5).is_some_and(|s| s == "components") { components(&out, scale); return; }
     let faces = || lab::text::load_bundled("assets").expect("fonts");
     step5(&out, scale);
     if only5 { return; }
@@ -239,6 +244,73 @@ fn step5(out: &str, scale: f32) {
     }
     let (px, sw, sh) = sheet(&rest, 3);
     save_png(&format!("{out}/styles.png"), sw, sh, &px);
+}
+
+/// Put a component page in the state that shows the most of it: the input focused (its caret), the
+/// dialog open.
+fn stage_component(ui: &mut GalleryUi, c: usize) {
+    use lab::gallery::comp::{DIALOG, INPUT};
+    let h = lab::gallery::COMPONENTS[c].hash;
+    if c == INPUT || c == DIALOG {
+        let key = if c == INPUT { format!("{h}/live") } else { format!("{h}/open") };
+        let (x, y) = ui.node(&key).expect("control").rect.center();
+        ui.press(x, y);
+        ui.release(x, y);
+        ui.pointer_leave();
+    }
+}
+
+/// The page without the rail and the source: header, preview, variants, numbers; at half size.
+fn tile(px: &[u8], w: u32, scale: f32) -> (Vec<u8>, u32, u32) {
+    let (x0, y0, cw, ch) = ((228.0 * scale) as u32, (44.0 * scale) as u32, (1040.0 * scale) as u32, (720.0 * scale) as u32);
+    let mut c = Vec::with_capacity((cw * ch * 4) as usize);
+    for y in y0..y0 + ch { let o = ((y * w + x0) * 4) as usize; c.extend_from_slice(&px[o..o + (cw * 4) as usize]); }
+    shrink(&c, cw, ch, 2)
+}
+
+fn components(out: &str, scale: f32) {
+    let (w, h) = ((1280.0 * scale) as u32, (1100.0 * scale) as u32);
+    let faces = || lab::text::load_bundled("assets").expect("fonts");
+    let mut o = Offscreen::new(w, h);
+    for (mi, (mat, mname)) in MATERIALS.iter().enumerate() {
+        if *mat == Material::Near { continue; }
+        let themes: &[usize] = if matches!(mat, Material::Print | Material::Lino) { &[0, 1] } else { &[0] };
+        for &ti in themes {
+            let tname = THEME_FILE[ti];
+            let mut tiles = vec![];
+            for c in 0..lab::gallery::COMPONENTS.len() {
+                let hash = lab::gallery::COMPONENTS[c].hash;
+                let mut ui = gallery::new_ui(faces(), w, h, scale);
+                ui.pointer_leave();
+                send(&mut ui, Msg::Go(Page::Comp(c)));
+                send(&mut ui, Msg::Theme(ti));
+                send(&mut ui, Msg::Material(mi));
+                settle(&mut ui, 1.0);
+                stage_component(&mut ui, c);
+                settle(&mut ui, 3.0);
+                let look = ui.state.look();
+                let px = o.render(&mut ui, &look);
+                save_png(&format!("{out}/{hash}-{mname}-{tname}-rest.png"), w, h, &px);
+                tiles.push(tile(&px, w, scale));
+                // A front from the preview's left edge, half-way across it.
+                let r = ui.node(&format!("{hash}/preview")).expect("preview").rect;
+                let (x, y) = (r.x + 6.0, r.y + r.h * 0.5);
+                ui.press(x, y);
+                ui.release(x, y);
+                ui.pointer_leave();
+                let dt = r.w * 0.5 / ui.state.look().fx.wave_speed;
+                settle(&mut ui, dt);
+                let look = ui.state.look();
+                let px = o.render(&mut ui, &look);
+                save_png(&format!("{out}/{hash}-{mname}-{tname}-ripple.png"), w, h, &px);
+                tiles.push(tile(&px, w, scale));
+            }
+            let (px, sw, sh) = sheet(&tiles, 4);
+            let suffix = if ti == 0 { String::new() } else { format!("-{tname}") };
+            save_png(&format!("{out}/components-{mname}{suffix}.png"), sw, sh, &px);
+            eprintln!("components {mname} {tname}");
+        }
+    }
 }
 
 fn perf(w: u32, h: u32, scale: f32) {

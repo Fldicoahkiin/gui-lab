@@ -131,7 +131,7 @@ fn tile_px(f: POut) -> Px {
     // ends of the flight stay exact.
     if (pu.m.z > 0.0 && pu.res.w > 0.03 && pu.res.w < pu.m.w - 0.03 && ink.a > 0.0) {
       let t = ink.r / ink.a; let g = ink.g / ink.a;
-      let c = mix(mix(pu.bg.rgb, pu.fg.rgb, t), pu.accent.rgb, g);
+      let c = pu.bg.rgb * max(1.0 - t - g, 0.0) + pu.fg.rgb * t + pu.accent.rgb * g;
       ink = vec4f(c * ink.a, ink.a);
       nr.g = pu.m.z;
     }

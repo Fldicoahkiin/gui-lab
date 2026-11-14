@@ -17,6 +17,8 @@ use std::rc::Rc;
 use taffy::AlignItems;
 
 pub use scenes::{SCENES, SMsg, Scenes};
+/// The component indices in `COMPONENTS`.
+pub mod comp { pub use super::pages::{BUTTON, CARD, CHOICE, DIALOG, DIVIDER, IMAGE, INPUT, LIST, NUMBER, SCROLL, SLIDER, SWITCH, TABS}; }
 pub use pages::{COMPONENTS, Comp, FLOW_PARAMS, MORPH_NAMES, MORPH_PARAMS, ParamDef, flow_slot, morph_slot};
 
 /// Below this width (logical px) the rail becomes a row of tabs under the top bar.
