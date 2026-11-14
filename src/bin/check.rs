@@ -1,4 +1,4 @@
-//! GPU acceptance for DESIGN.md §1.6.1 and §1.6.2, by reading pixels back. Exits non-zero on failure.
+//! GPU acceptance for DESIGN.md §1.6.1, §1.6.2, §1.6.3, §1.7 and §1.10, by reading pixels back. Exits non-zero on failure.
 //!  1. Light theme, a fully loosened picture: no pixel inside the picture equals the page ground.
 //!  2. Pitch 1 at any looseness: the picture is the original, within 1/255.
 //!  3. Pixel faces at 1× and 2×: inside their text, only the ink colour and the ground colour.

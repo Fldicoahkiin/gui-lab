@@ -683,7 +683,7 @@ fn m_lino(p: vec2f) -> vec3f {
       // Gouges: white wedges cut in from the edge, each of its own length.
       let len = band * (0.35 + 0.65 * h1(vec2f(lane, 4.0)));
       let width = 0.42 * clamp(1.0 - sd / max(len, 1e-3), 0.0, 1.0);
-      let g1 = smoothstep(width + 0.06, width - 0.06, abs(fract(along) - 0.5)) * step(0.25, h1(vec2f(lane, 9.0)));
+      let g1 = smoothstep(width + 0.06, width - 0.06, abs(fract(along) - 0.5)) * step(0.4, h1(vec2f(lane, 9.0)));
       inked = min(inked, 1.0 - g1);
     } else {
       // Ridges of ink left standing outside, echoing the edge, in long broken lines.

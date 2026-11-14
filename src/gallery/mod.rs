@@ -274,7 +274,10 @@ impl Gallery {
     pub fn draft(&self, t: Target) -> Option<&str> { self.edit.as_ref().filter(|(k, _)| *k == t).map(|(_, d)| d.as_str()) }
     /// Go to the page a hash names; returns whether it names one.
     pub fn route(&mut self, hash: &str) -> bool {
-        match Page::from_hash(hash) { Some(p) => { self.page = p; self.edit = None; true } None => false }
+        match Page::from_hash(hash) {
+            Some(p) => { self.page = p; self.edit = None; if let Page::Style(i) = p { self.apply_style(i as usize); } true }
+            None => false,
+        }
     }
 }
 
