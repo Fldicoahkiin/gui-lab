@@ -32,3 +32,10 @@ console_error_panic_hook = "0.1"
 [profile.release]
 opt-level = "s"
 lto = true
+
+# For iterating on the tools: optimised, but without the slow link-time step.
+[profile.quick]
+inherits = "release"
+lto = false
+incremental = true
+codegen-units = 16

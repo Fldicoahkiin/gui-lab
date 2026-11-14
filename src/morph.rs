@@ -245,7 +245,12 @@ fn cover_at(i: &Instance, x: f32, y: f32, atlas: &[u8]) -> f32 {
             if i.paint[0].max(i.paint[1]) < 0.1 { return 0.0; }
             let (tx, ty) = ((i.uv[0] * ATLAS as f32).round() as i64 + (x - r[0]).floor() as i64, (i.uv[1] * ATLAS as f32).round() as i64 + (y - r[1]).floor() as i64);
             if tx < 0 || ty < 0 || tx >= ATLAS as i64 || ty >= ATLAS as i64 { return 0.0; }
-            atlas.get(((ty * ATLAS as i64 + tx) * 2) as usize).map_or(0.0, |&c| c as f32 / 255.0) * a
+            let o = ((ty * ATLAS as i64 + tx) * 2) as usize;
+            // A weighted glyph moves its outline by `extra[0]` device px, as stage 1 draws it.
+            let c = if i.extra[0] != 0.0 {
+                atlas.get(o + 1).map_or(0.0, |&n| (0.5 + (n as f32 / 255.0 - 0.5) * 2.0 * SPREAD as f32 + i.extra[0]).clamp(0.0, 1.0))
+            } else { atlas.get(o).map_or(0.0, |&c| c as f32 / 255.0) };
+            c * a
         }
         k if k == PICTURE => a,
         _ => {

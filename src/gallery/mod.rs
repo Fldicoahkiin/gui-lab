@@ -168,6 +168,7 @@ pub struct Gallery {
     pub demo: Demo,
     /// The window's logical width, kept up to date by the runtime (`Ui::on_resize`).
     pub width: f32,
+    pub height: f32,
     /// The morph page: what the stage shows, what it showed before, how morphs go.
     pub shape: usize,
     pub shape_before: Option<usize>,
@@ -206,12 +207,12 @@ impl Default for Gallery {
             params: COMPONENTS.iter().map(|c| c.params.iter().map(|p| p.default).collect()).collect(),
             edit: None, presses: 0, value: 42.0, text: TextEdit::default(), dialog_text: TextEdit::default(), on: true, level: 40.0,
             tab: 0, pick: 1, row: Some(2), dialog: 0, marks: std::array::from_fn(|s| mark_defaults(s as u8)), shown: demo::BUST, wipe: 0.3,
-            demo: Demo::default(), width: 1280.0,
+            demo: Demo::default(), width: 1280.0, height: 800.0,
             shape: 0, shape_before: None, morph: MorphSpec::default(), opened: None, flow: FlowSpec::default(), cmds: vec![],
             menu: 0, mats: MaterialParams::all(), loose: 0.0, style: None, gaze: Gaze::default(), loose_scale: 1.0, style_pic: PicFx::default(),
             gaze_page: Gaze { mode: GazeMode::All, kinds: gaze::FRAME | gaze::INDEX | gaze::SIZE, density: 12.0, ..Gaze::default() },
             hovered: None, clock: 0.0, choices: [0, 0, 0, 0, 0, 0, 0, 0], toggles: [true, false, true, false, true, false, false, false],
-            slides: [0.35, 0.4, 0.6, 14.0, 0.5, 0.5, 0.5, 0.5], query: TextEdit::new("lay"),
+            slides: [0.35, 0.4, 0.6, 14.0, 0.5, 2.0, 0.0, 0.5], query: TextEdit::new("lay"),
         }
     }
 }
@@ -439,8 +440,8 @@ fn rail_row(s: &Gallery) -> El<Msg> {
 pub type GalleryUi = crate::ui::Ui<Gallery, Msg>;
 
 pub fn new_ui(faces: Vec<Face>, w: u32, h: u32, scale: f32) -> GalleryUi {
-    let state = Gallery { width: w as f32 / scale, ..Gallery::default() };
-    crate::ui::Ui::new(state, view, update, faces, w, h, scale).on_resize(|s, w, _| s.width = w).on_commands(|s| std::mem::take(&mut s.cmds))
+    let state = Gallery { width: w as f32 / scale, height: h as f32 / scale, ..Gallery::default() };
+    crate::ui::Ui::new(state, view, update, faces, w, h, scale).on_resize(|s, w, h| { s.width = w; s.height = h; }).on_commands(|s| std::mem::take(&mut s.cmds))
         .on_gaze(|s| s.look().gaze)
         .on_hover(|s, k| {
             let k = k.map(str::to_owned);

@@ -109,10 +109,37 @@ fn dotmatrix(s: &Gallery, h: &str) -> El<Msg> {
             .child(text_lh(if arrive { "到达" } else { "出发" }, 72.0, 80.0, Paint::ACCENT).font(Font::Display).key(format!("{h}/title-{arrive}")))
             .child(text(clock, 48.0, Paint::ACCENT).font(Font::Mono).print(4.0).key(format!("{h}/clock"))))
         .child(board)
-        .child(row().key(format!("{h}/controls")).gap(12.0).align(AlignItems::CENTER)
+        .child(led_panel(s, h, t))
+        .child(row().key(format!("{h}/controls")).gap(12.0).align(AlignItems::CENTER).wrap()
             .child(segmented(&format!("{h}/mode"), &["出发", "到达"], s.choices[1].min(1), 30.0, |i| Msg::Choose(1, i)))
             .child(button_as(format!("{h}/refresh"), "刷新", Variant::Default, Msg::Press))
-            .child(text("每秒更新一次；按下刷新时文字散成点再合拢。", 12.0, Paint::DIM)))
+            .child(text("站台", 12.0, Paint::DIM))
+            .child(number(&format!("{h}/platform"), "", s.slides[5], Spec { min: 1.0, max: 9.0, step: 1.0, decimals: 0, unit: "" }, s.draft(Target::StyleNum(5)), |e| Msg::Num(Target::StyleNum(5), e)).width(130.0))
+            .child(text("时差", 12.0, Paint::DIM))
+            .child(number(&format!("{h}/offset"), "", s.slides[6], Spec { min: -720.0, max: 720.0, step: 1.0, decimals: 0, unit: "分" }, s.draft(Target::StyleNum(6)), |e| Msg::Num(Target::StyleNum(6), e)).width(150.0)))
+}
+
+/// The second panel: a big clock printed in dots, and a ticker that runs along under it.
+fn led_panel(s: &Gallery, h: &str, t: f32) -> El<Msg> {
+    let t = t + s.slides[6] * 60.0;
+    let big = format!("{:02}:{:02}", (t / 3600.0).rem_euclid(24.0) as u32, (t / 60.0).rem_euclid(60.0) as u32);
+    let secs = format!("{:02}", t.rem_euclid(60.0) as u32);
+    let plat = s.slides[5].round().clamp(1.0, 9.0) as u32;
+    let msg = format!("{plat} 站台　·　请站在黄线以内候车　·　列车即将进站，请注意安全　·　下一班 08:47 北京 南　·　");
+    // The ticker moves a character's width every second: the text is the view, the clock moves it.
+    let step = (s.clock.floor() as usize) % 40;
+    let shown: String = msg.chars().chain(msg.chars()).skip(step).take(60).collect();
+    col().key(format!("{h}/panel2")).width(760.0).gap(10.0).pad(22.0, 18.0).radius(4.0).border(2.0, Paint::FAINT)
+        .child(row().fill_width().justify(JustifyContent::SPACE_BETWEEN)
+            .child(text(format!("{plat} 站台　·　本站时间"), 12.0, Paint::DIM))
+            .child(text("NEXT 08:47", 12.0, Paint::DIM).font(Font::Mono)))
+        .child(row().gap(10.0).align(AlignItems::END)
+            .child(text_lh(big, 150.0, 156.0, Paint::ACCENT).font(Font::Mono).print(7.0).key(format!("{h}/bigclock")))
+            .child(text_lh(secs, 56.0, 64.0, Paint::hue(1)).font(Font::Mono).print(4.0).key(format!("{h}/secs"))))
+        .child(space(1.0, 2.0).fill_width().fill(Paint::FAINT))
+        // The ticker: one long line, clipped to the panel, moved one character a second.
+        .child(col().key(format!("{h}/ticker")).fill_width().height(40.0).clip()
+            .child(text_lh(shown, 24.0, 36.0, Paint::ACCENT).width(3000.0).key(format!("{h}/ticker-text")).absolute(Some(0.0), Some(2.0), None, None)))
 }
 
 // ── 3 Lo-Fi Print: a zine page ───────────────────────────────────────────────────────────────────────
@@ -126,7 +153,7 @@ fn print_zine(s: &Gallery, h: &str) -> El<Msg> {
             .child(text(issues[issue], 15.0, Paint::GROUND)))
         .child(row().key(format!("{h}/spread")).fill_width().gap(36.0).pad(0.0, 30.0).align(AlignItems::START)
             .child(col().key(format!("{h}/left")).width(470.0).gap(18.0)
-                .child(text_lh("复印机里的春天", 64.0, 72.0, Paint::ACCENT).font(Font::Display).key(format!("{h}/headline")))
+                .child(text_lh("复印机里的春天", 64.0, 72.0, Paint::ACCENT).font(Font::Display).weight(1.5).key(format!("{h}/headline")))
                 .child(text("文 / 编辑部　图 / 读者来稿", 13.0, Paint::DIM))
                 .child(para("p1", "这一期收的是读者寄来的照片和短文。我们把它们放大、复印、再复印，直到颗粒和墨点都成了画面的一部分。"))
                 .child(para("p2", "纸张偏黄，粉色的专色和黑色分两次印，所以总有一点对不准。那一点错位，是手工的证明。"))
@@ -147,7 +174,7 @@ fn glitch(s: &Gallery, h: &str) -> El<Msg> {
         .child(col().key(format!("{h}/card")).gap(10.0)
             .child(text("ERR 0x3F　连接已中断", 14.0, Paint::hue(1)).font(Font::Mono))
             // Pressable, so the pointer coming onto it fires a burst over it.
-            .child(text_lh("信号中断", 120.0, 132.0, Paint::INK).font(Font::Display).key(format!("{h}/title")).on_press(Msg::Press).focusable(false))
+            .child(text_lh("信号中断", 120.0, 132.0, Paint::INK).font(Font::Display).weight(3.0).key(format!("{h}/title")).on_press(Msg::Press).focusable(false))
             .child(text_lh("画面会在你经过时短暂地错位。静止时，它就是一张干净的页面。", 16.0, 28.0, Paint::DIM)))
         .child(row().key(format!("{h}/bar")).fill_width().height(2.0).fill(Paint::ACCENT))
         .child(row().key(format!("{h}/controls")).gap(12.0).align(AlignItems::CENTER).wrap()
@@ -156,6 +183,28 @@ fn glitch(s: &Gallery, h: &str) -> El<Msg> {
             .child(button_as(format!("{h}/report"), "发送报告", Variant::Quiet, Msg::Press))
             .child(switch(format!("{h}/auto"), "自动重试", s.toggles[3], None, Msg::Toggle(3)).width(200.0))
             .child(text(format!("已重试 {} 次", s.presses), 13.0, Paint::DIM).font(Font::Mono).key(format!("{h}/count"))))
+        .child(glitch_monitor(s, h))
+}
+
+/// Below the card: three channels, each a picture and a signal level, that tear when the pointer
+/// comes onto them.
+fn glitch_monitor(s: &Gallery, h: &str) -> El<Msg> {
+    let chans = [(SKY, "CH 01", 0.82), (TERRAIN, "CH 02", 0.41), (BUST, "CH 03", 0.0)];
+    let mut r = row().key(format!("{h}/monitor")).gap(20.0).wrap();
+    for (i, (id, name, level)) in chans.iter().enumerate() {
+        let lost = *level == 0.0 && s.presses == 0;
+        let bars = (0..12).fold(row().gap(3.0).align(AlignItems::END).height(22.0), |r, b| {
+            let on = (b as f32) < level * 12.0 || (!lost && *level == 0.0 && b < 9);
+            r.child(space(6.0, 6.0 + b as f32 * 1.4).fill(if on { Paint::ACCENT } else { Paint::FAINT }))
+        });
+        r = r.child(col().key(format!("{h}/ch{i}")).width(260.0).gap(8.0).on_press(Msg::Press).focusable(false)
+            .child(pic(h, &format!("ch{i}-pic"), *id, 260.0))
+            .child(row().fill_width().justify(JustifyContent::SPACE_BETWEEN).align(AlignItems::CENTER)
+                .child(text(*name, 12.0, Paint::TEXT).font(Font::Mono))
+                .child(text(if lost { "无信号" } else { "已连接" }, 12.0, if lost { Paint::hue(0) } else { Paint::hue(1) }))
+                .child(bars)));
+    }
+    r
 }
 
 // ── 5 Metamorphosis Linocut: a poster ────────────────────────────────────────────────────────────────
@@ -165,7 +214,7 @@ fn linocut(s: &Gallery, h: &str) -> El<Msg> {
         .child(col().key(format!("{h}/left")).width(520.0).gap(20.0)
             .child(col().key(format!("{h}/hero")).width(520.0).height(300.0)
                 .child(space(190.0, 190.0).radius(95.0).fill(Paint::ACCENT).loose(0.6).key(format!("{h}/sun")).absolute(Some(320.0), Some(0.0), None, None))
-                .child(text_lh("刀与木", 140.0, 150.0, Paint::INK).font(Font::Display).loose(0.45).key(format!("{h}/headline")).absolute(Some(0.0), Some(130.0), None, None)))
+                .child(text_lh("刀与木", 140.0, 150.0, Paint::INK).font(Font::Display).weight(3.0).loose(0.45).key(format!("{h}/headline")).absolute(Some(0.0), Some(130.0), None, None)))
             .child(text_lh("每一道线都是从板上挖掉的。留下的才是墨。", 18.0, 30.0, Paint::INK))
             .child(text_lh("版画展　十一月二十日至十二月十日　每天九点至五点", 14.0, 24.0, Paint::DIM))
             .child(row().gap(12.0).align(AlignItems::CENTER)
@@ -196,6 +245,22 @@ fn electronics(s: &Gallery, h: &str) -> El<Msg> {
             .child(switch(format!("{h}/explode"), "展开", open, None, Msg::Toggle(0)).width(160.0))
             .child(text("屏幕位置", 13.0, Paint::DIM))
             .child(slider(&format!("{h}/slide"), s.slides[2] * 100.0, Spec { min: 0.0, max: 100.0, step: 1.0, decimals: 0, unit: "" }, 260.0, |v| Msg::Slide(2, v / 100.0))))
+        .child(readouts(s, h))
+}
+
+/// A row of readouts under the device, each a see-through gauge.
+fn readouts(s: &Gallery, h: &str) -> El<Msg> {
+    let vals = [("电压", 3.7 + s.slides[2] * 0.5, "V", 0.62 + s.slides[2] * 0.3), ("温度", 31.0 + s.slides[2] * 9.0, "°C", 0.38 + s.slides[2] * 0.2), ("频率", 2.4, "GHz", 0.8)];
+    let mut r = row().key(format!("{h}/readouts")).gap(18.0).wrap();
+    for (i, (name, v, unit, f)) in vals.iter().enumerate() {
+        r = r.child(col().key(format!("{h}/gauge{i}")).width(250.0).height(120.0).pad(18.0, 16.0).radius(14.0).fill(Paint::INK).gap(10.0)
+            .child(row().fill_width().justify(JustifyContent::SPACE_BETWEEN)
+                .child(text(*name, 13.0, Paint::DIM))
+                .child(text(format!("{v:.1} {unit}"), 18.0, Paint::INK).font(Font::Mono)))
+            .child(col().width(214.0).height(18.0).radius(9.0).fill(Paint::hue(2))
+                .child(space(214.0 * f.min(1.0), 18.0).radius(9.0).fill(Paint::ACCENT))));
+    }
+    r
 }
 
 // ── 7 Tech-Manual: an exploded diagram and its parts list ───────────────────────────────────────────
@@ -261,25 +326,33 @@ const COMMANDS: [(&str, &str); 8] = [
 fn cyber(s: &Gallery, h: &str) -> El<Msg> {
     let q = s.query.text.to_lowercase();
     let hits: Vec<&(&str, &str)> = COMMANDS.iter().filter(|(c, d)| q.is_empty() || c.contains(&q) || d.contains(&q)).collect();
-    let mut results = col().key(format!("{h}/results")).width(560.0).gap(0.0);
+    let w = (s.width - if s.width < super::NARROW { 40.0 } else { super::RAIL + 100.0 }).clamp(280.0, 560.0);
+    let mut results = col().key(format!("{h}/results")).width(w).gap(0.0);
+    let sel = s.row.unwrap_or(0).min(hits.len().saturating_sub(1));
     for (i, (c, d)) in hits.iter().enumerate() {
-        let on = s.row.unwrap_or(0).min(hits.len().saturating_sub(1)) == i;
+        let on = sel == i;
         results = results.child(row().key(format!("{h}/hit{i}")).fill_width().height(34.0).pad(12.0, 0.0).gap(16.0).align(AlignItems::CENTER).on_press(Msg::Row(i)).focusable(false)
             .child(text(if on { "›" } else { " " }, 13.0, Paint::ACCENT).font(Font::Mono).width(10.0))
             .child(text(*c, 13.0, if on { Paint::ACCENT } else { Paint::INK }).font(Font::Mono).width(150.0))
             .child(text(*d, 13.0, Paint::DIM).grow(1.0)));
     }
-    col().key(format!("{h}/comp")).fill_width().height(560.0).align(AlignItems::CENTER).justify(JustifyContent::CENTER).gap(0.0).gaze_scope()
+    if hits.is_empty() { results = results.child(row().fill_width().height(34.0).pad(34.0, 0.0).align(AlignItems::CENTER).child(text("没有匹配的命令", 13.0, Paint::DIM))); }
+    // Fixed height for the list, so the line above stays put while results come and go.
+    let list = col().key(format!("{h}/list")).width(w).height(8.0 * 34.0).child(results);
+    let picked = hits.get(sel).map_or("—".to_owned(), |(c, _)| (*c).to_owned());
+    let height = (s.height - 210.0).max(560.0);
+    col().key(format!("{h}/comp")).fill_width().height(height).align(AlignItems::CENTER).justify(JustifyContent::CENTER).gap(0.0).gaze_scope()
         .child(text("SESSION 2A · 本地", 11.0, Paint::DIM).font(Font::Mono).absolute(Some(0.0), Some(0.0), None, None))
-        .child(text("23:58", 11.0, Paint::DIM).font(Font::Mono).absolute(None, None, Some(0.0), Some(0.0)))
-        .child(row().key(format!("{h}/line")).width(560.0).gap(12.0).align(AlignItems::CENTER)
+        .child(text("23:58", 11.0, Paint::DIM).font(Font::Mono).absolute(None, Some(0.0), Some(0.0), None))
+        .child(row().key(format!("{h}/line")).width(w).gap(12.0).align(AlignItems::CENTER)
             .child(text("›", 18.0, Paint::ACCENT).font(Font::Mono))
-            .child(input(&format!("{h}/query"), &s.query, "输入命令", 530.0, 40, Msg::Query).border(0.0, Paint::GROUND)))
-        .child(space(560.0, 1.0).fill(Paint::ACCENT).key(format!("{h}/rule")))
+            .child(input(&format!("{h}/query"), &s.query, "输入命令", w - 30.0, 40, Msg::Query).border(0.0, Paint::GROUND)))
+        .child(space(w, 1.0).fill(Paint::ACCENT).key(format!("{h}/rule")))
         .child(space(1.0, 10.0))
-        .child(results)
-        .child(space(1.0, 40.0))
-        .child(text(format!("{} 条结果　·　↑↓ 选择　·　回车执行", hits.len()), 11.0, Paint::DIM).font(Font::Mono).key(format!("{h}/status")))
+        .child(list)
+        .child(row().key(format!("{h}/status")).fill_width().justify(JustifyContent::SPACE_BETWEEN).absolute(Some(0.0), None, Some(0.0), Some(0.0))
+            .child(text(format!("{} 条结果　·　↑↓ 选择　·　回车执行", hits.len()), 11.0, Paint::DIM).font(Font::Mono))
+            .child(text(format!("已选 {picked}"), 11.0, Paint::ACCENT).font(Font::Mono).key(format!("{h}/picked"))))
 }
 
 // ── 10 Bauhaus: a geometric poster with a control group ─────────────────────────────────────────────
@@ -292,7 +365,7 @@ fn bauhaus(s: &Gallery, h: &str) -> El<Msg> {
         .child(space(300.0 * big(0), 300.0 * big(0)).radius(150.0 * big(0)).fill(Paint::ACCENT).key(format!("{h}/circle")).absolute(Some(60.0), Some(190.0), None, None))
         .child(space(200.0 * big(1), 200.0 * big(1)).fill(Paint::hue(1)).key(format!("{h}/square")).absolute(Some(410.0), Some(150.0), None, None))
         .child(space(210.0, 110.0 * big(2)).radius(55.0 * big(2)).fill(Paint::hue(2)).key(format!("{h}/bar")).absolute(Some(408.0), Some(470.0), None, None))
-        .child(text_lh("形·色·线", 96.0, 110.0, Paint::INK).font(Font::Display).key(format!("{h}/headline")).absolute(Some(20.0), Some(16.0), None, None))
+        .child(text_lh("形·色·线", 96.0, 110.0, Paint::INK).font(Font::Display).weight(2.5).key(format!("{h}/headline")).absolute(Some(20.0), Some(16.0), None, None))
         .child(text_lh("包豪斯 1919 — 1933", 15.0, 22.0, Paint::INK).font(Font::Mono).absolute(Some(20.0), Some(580.0), None, None));
     row().key(format!("{h}/comp")).gap(32.0).align(AlignItems::START).wrap()
         .child(poster)
@@ -308,26 +381,40 @@ fn bauhaus(s: &Gallery, h: &str) -> El<Msg> {
 fn y2k(s: &Gallery, h: &str) -> El<Msg> {
     let gap = s.slides[0];
     let liquid = Material::Liquid.id();
-    // Two blobs whose distance follows the slider; close enough, the liquid joins them.
-    let blobs = col().key(format!("{h}/blobs")).width(520.0).height(220.0)
-        .child(space(150.0, 150.0).radius(75.0).fill(Paint::ACCENT).material(liquid).key(format!("{h}/blob-a")).absolute(Some(70.0 + (1.0 - gap) * 90.0), Some(34.0), None, None))
-        .child(space(120.0, 120.0).radius(60.0).fill(Paint::hue(1)).material(liquid).key(format!("{h}/blob-b")).absolute(Some(300.0 - (1.0 - gap) * 90.0), Some(60.0), None, None))
-        .child(space(60.0, 60.0).radius(30.0).fill(Paint::hue(2)).material(liquid).key(format!("{h}/blob-c")).absolute(Some(250.0), Some(150.0 - (1.0 - gap) * 20.0), None, None));
-    let player = col().key(format!("{h}/player")).width(400.0).gap(14.0).pad(22.0, 20.0).radius(22.0).border(1.0, Paint::DIM)
-        .child(row().gap(14.0).align(AlignItems::CENTER)
-            .child(space(56.0, 56.0).radius(12.0).fill(Paint::INK).key(format!("{h}/cover")))
-            .child(col().gap(2.0).child(text("液态时间", 16.0, Paint::INK)).child(text("Y2K MIX · 04:12", 12.0, Paint::DIM).font(Font::Mono))))
-        .child(slider(&format!("{h}/progress"), s.slides[1] * 100.0, Spec { min: 0.0, max: 100.0, step: 1.0, decimals: 0, unit: "" }, 356.0, |v| Msg::Slide(1, v / 100.0)))
+    let pct = Spec { min: 0.0, max: 100.0, step: 1.0, decimals: 0, unit: "" };
+    let near = 1.0 - gap;
+    // Blobs whose distance follows the slider; close enough, the liquid joins them.
+    let blob = |k: &str, d: f32, x: f32, y: f32, p: Paint| space(d, d).radius(d * 0.5).fill(p).material(liquid).key(format!("{h}/{k}")).absolute(Some(x), Some(y), None, None);
+    let blobs = col().key(format!("{h}/blobs")).width(500.0).height(300.0)
+        .child(blob("blob-a", 170.0, 10.0 + near * 110.0, 50.0, Paint::ACCENT))
+        .child(blob("blob-b", 130.0, 330.0 - near * 110.0, 70.0, Paint::hue(1)))
+        .child(blob("blob-c", 70.0, 220.0, 210.0 - near * 50.0, Paint::hue(2)))
+        .child(blob("blob-d", 54.0, 420.0 - near * 60.0, 200.0 - near * 40.0, Paint::ACCENT));
+    // A slider whose thumb is a drop of the liquid on a chrome-edged track.
+    let v = s.slides[4];
+    let liquid_slider = col().key(format!("{h}/drop")).width(300.0).height(60.0).on_drag(|x, _| Msg::Slide(4, x))
+        .on_key(move |k, _| match k { crate::el::Key::Left => Some(Msg::Slide(4, v - 0.05)), crate::el::Key::Right => Some(Msg::Slide(4, v + 0.05)), _ => None })
+        .child(space(300.0, 8.0).radius(4.0).fill(Paint::DIM).absolute(Some(0.0), Some(26.0), None, None))
+        .child(space(52.0, 52.0).radius(26.0).fill(Paint::hue(2)).material(liquid).key(format!("{h}/drop-thumb")).absolute(Some(v * 248.0), Some(4.0), None, None));
+    let pill = |k: &str, label: &str, m: Msg| row().key(format!("{h}/{k}")).height(52.0).pad(26.0, 0.0).radius(26.0).fill(Paint::INK).align(AlignItems::CENTER).on_press(m)
+        .child(text(label, 16.0, Paint::INK).weight(0.6));
+    let player = col().key(format!("{h}/player")).width(400.0).gap(16.0).pad(22.0, 22.0).radius(24.0).border(1.0, Paint::DIM)
+        .child(row().gap(16.0).align(AlignItems::CENTER)
+            // A chrome ring: a band wide enough to carry a bevel.
+            .child(space(84.0, 84.0).radius(42.0).border(20.0, Paint::INK).key(format!("{h}/ring")))
+            .child(col().gap(2.0).child(text("液态时间", 17.0, Paint::INK)).child(text("Y2K MIX · 04:12", 12.0, Paint::DIM).font(Font::Mono))))
+        .child(slider(&format!("{h}/progress"), s.slides[1] * 100.0, pct, 356.0, |v| Msg::Slide(1, v / 100.0)))
         .child(row().gap(10.0).justify(JustifyContent::CENTER).fill_width()
-            .child(button_as(format!("{h}/prev"), "上一首", Variant::Default, Msg::Press))
-            .child(button_as(format!("{h}/play"), if s.toggles[1] { "暂停" } else { "播放" }, Variant::Accent, Msg::Toggle(1)))
-            .child(button_as(format!("{h}/next"), "下一首", Variant::Default, Msg::Press)));
-    col().key(format!("{h}/comp")).gap(10.0)
-        .child(text_lh("液态金属", 132.0, 150.0, Paint::INK).font(Font::Display).key(format!("{h}/headline")))
-        .child(row().key(format!("{h}/lower")).gap(36.0).align(AlignItems::START).wrap()
+            .child(pill("prev", "上一首", Msg::Press))
+            .child(pill("play", if s.toggles[1] { "暂停" } else { "播放" }, Msg::Toggle(1)))
+            .child(pill("next", "下一首", Msg::Press)))
+        .child(row().gap(12.0).align(AlignItems::CENTER).child(text("音量", 13.0, Paint::DIM)).child(liquid_slider));
+    col().key(format!("{h}/comp")).gap(14.0)
+        .child(text_lh("液态金属", 150.0, 170.0, Paint::INK).font(Font::Display).weight(3.0).key(format!("{h}/headline")))
+        .child(row().key(format!("{h}/lower")).gap(40.0).align(AlignItems::START).wrap()
             .child(col().gap(10.0).child(blobs)
                 .child(row().gap(12.0).align(AlignItems::CENTER).child(text("距离", 13.0, Paint::DIM))
-                    .child(slider(&format!("{h}/gap"), gap * 100.0, Spec { min: 0.0, max: 100.0, step: 1.0, decimals: 0, unit: "" }, 300.0, |v| Msg::Slide(0, v / 100.0)))))
+                    .child(slider(&format!("{h}/gap"), gap * 100.0, pct, 320.0, |v| Msg::Slide(0, v / 100.0)))))
             .child(player))
 }
 
@@ -338,7 +425,7 @@ fn mixed(s: &Gallery, h: &str) -> El<Msg> {
     let note = |k: &str, t: &str, p: Paint, w: f32| col().key(format!("{h}/{k}")).width(w).pad(18.0, 16.0).fill(p).child(text_lh(t, 14.0, 23.0, Paint::INK));
     row().key(format!("{h}/comp")).gap(30.0).align(AlignItems::START).wrap()
         .child(col().key(format!("{h}/left")).width(460.0).gap(22.0)
-            .child(col().key(format!("{h}/title-box")).pad(22.0, 14.0).fill(Paint::hue(2)).child(text_lh("剪贴簿", 88.0, 100.0, Paint::ACCENT).font(Font::Display).key(format!("{h}/headline")).material(Material::Lino.id())))
+            .child(col().key(format!("{h}/title-box")).pad(22.0, 14.0).fill(Paint::hue(2)).child(text_lh("剪贴簿", 88.0, 100.0, Paint::ACCENT).font(Font::Display).weight(2.0).key(format!("{h}/headline")).material(Material::Lino.id())))
             .child(note("note1", "十一月　旧报纸、照片和一张车票。", Paint::hue(2), 300.0))
             .child(tabs(&format!("{h}/tabs"), &["收集", "材质", "规矩"], tab, 18.0, 2.0, Msg::Tab, text_lh(panels[tab], 14.0, 24.0, Paint::TEXT).key(format!("{h}/panel{tab}"))).width(420.0)))
         .child(col().key(format!("{h}/right")).width(420.0).gap(22.0)

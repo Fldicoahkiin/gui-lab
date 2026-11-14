@@ -75,6 +75,7 @@ pub struct Node<M> {
     pub annotate: Option<String>,
     pub scope: bool,
     anchor: Option<String>,
+    clips: bool,
     tid: NodeId,
 }
 impl<M> Node<M> {
@@ -656,7 +657,7 @@ impl<S, M: Clone> Ui<S, M> {
             let (b, p) = (l.border, l.padding);
             let inner_border = n.rect.inset(b.left, b.top, b.right, b.bottom);
             n.inner = inner_border.inset(p.left, p.top, p.right, p.bottom);
-            inside[i] = if n.scroll { clip.intersect(&inner_border) } else { clip };
+            inside[i] = if n.scroll { clip.intersect(&inner_border) } else if n.clips { clip.intersect(&n.rect) } else { clip };
         }
         self.nodes = nodes;
         self.modal_at = self.nodes.iter().rposition(|n| n.modal.is_some());
@@ -750,11 +751,13 @@ impl<S, M: Clone> Ui<S, M> {
             if let Some(p) = n.fill { put(&mut sink, shape(p, 0.0), ident(&n.key, u32::MAX, 0), None); }
             if let Some((w, p)) = n.border { put(&mut sink, shape(p, w), ident(&n.key, u32::MAX - 1, 0), None); }
             match &n.content {
-                Content::Text { s: str, size, line, paint, font, print, caret } => {
+                Content::Text { s: str, size, line, paint, font, print, caret, weight } => {
                     let proto = Instance { paint: [paint.tone, paint.accent, paint.alpha, 0.0], look: [mat, paint.hue as f32, (n.inner.y * s).round(), (line * s).round().max(1.0)], ..Default::default() };
                     let para = Para { s: str, face: font.resolve([0; 3]), size: *size, line: *line, width: n.inner.w + 1.0, print: *print };
                     let mut seq = 0;
-                    self.text.emit(para, (n.inner.x, n.inner.y), proto, s, |inst, glyph| {
+                    let wpx = weight * s;
+                    self.text.emit(para, (n.inner.x, n.inner.y), proto, s, |mut inst, glyph| {
+                        inst.extra[0] = wpx;
                         put(&mut sink, inst, ident(&n.key, seq, glyph), Some(glyph));
                         seq += 1;
                     });
@@ -1177,7 +1180,7 @@ fn hoist<M>(el: &mut El<M>, out: &mut Vec<El<M>>) {
 /// `off` is (disabled, hidden), both inherited; `flow` is the nearest flow id above and its node.
 #[allow(clippy::too_many_arguments)]
 fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], off: (bool, bool), flow: Option<(Rc<str>, usize)>, inh: Inherit, tree: &mut TaffyTree<usize>, nodes: &mut Vec<Node<M>>) -> NodeId {
-    let El { key, style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, annotate, gaze_scope, material, loosen, anchor, children } = el;
+    let El { key, style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, annotate, gaze_scope, material, loosen, anchor, clips, children } = el;
     let key = if key.is_empty() { path } else { key };
     let roles = fonts.unwrap_or(roles);
     let (off, hidden) = (off.0 || disabled, off.1 || hidden);
@@ -1192,7 +1195,7 @@ fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], of
     nodes.push(Node {
         key, parent, rect: Rect::default(), clip: Rect::default(), inner: Rect::default(), scroll, horizontal, focusable, disabled: off, extent: 0.0,
         content, fill, border, radius, on_press, on_key, on_drag, on_blur, loose, wipe, bar, reveal, commit, modal, hidden, flow: flow.clone(),
-        mat: inh.code(), loosen: inh.loosen, annotate, scope: gaze_scope, anchor, tid: placeholder,
+        mat: inh.code(), loosen: inh.loosen, annotate, scope: gaze_scope, anchor, clips, tid: placeholder,
     });
     let kids: Vec<NodeId> = children.into_iter().enumerate().map(|(n, c)| {
         let p = format!("{}/{n}", nodes[i].key);

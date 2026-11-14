@@ -58,7 +58,9 @@ pub enum Content {
     /// when the glyph covers more than half of it.
     /// `caret` is a byte index into `s`: a caret is drawn there while the nearest focusable ancestor
     /// has focus.
-    Text { s: String, size: f32, line: f32, paint: Paint, font: Font, print: f32, caret: Option<usize> },
+    /// `weight` moves the outline threshold out by that many logical px (bolder) or in (lighter), so a
+    /// heading can be heavy without a bold face.
+    Text { s: String, size: f32, line: f32, paint: Paint, font: Font, print: f32, caret: Option<usize>, weight: f32 },
     /// A picture by id, with its height as a fraction of its width, and the `PicFx` slot it uses.
     Picture { id: u32, ratio: f32, fx: u8 },
 }
@@ -141,6 +143,8 @@ pub struct El<M> {
     /// Placed just below the element with this key (as laid out in the same pass) instead of where
     /// the layout puts it: for menus in a modal layer.
     pub anchor: Option<String>,
+    /// Clips its children to its border box (without scrolling).
+    pub clips: bool,
     pub children: Vec<El<M>>,
 }
 
@@ -148,7 +152,7 @@ impl<M> El<M> {
     fn new(style: Style, content: Content) -> Self {
         // Nothing shrinks unless asked: fixed sizes stay fixed inside columns and scroll areas.
         let style = Style { flex_shrink: 0.0, ..style };
-        Self { key: String::new(), style, content, fill: None, border: None, radius: 0.0, on_press: None, on_key: None, on_drag: None, on_blur: None, focusable: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, modal: None, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, children: vec![] }
+        Self { key: String::new(), style, content, fill: None, border: None, radius: 0.0, on_press: None, on_key: None, on_drag: None, on_blur: None, focusable: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, modal: None, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, clips: false, children: vec![] }
     }
     pub fn key(mut self, k: impl Into<String>) -> Self { self.key = k.into(); self }
     pub fn gap(mut self, g: f32) -> Self { self.style.gap = Size { width: length(g), height: length(g) }; self }
@@ -204,6 +208,8 @@ impl<M> El<M> {
     pub fn loosen(mut self, k: f32) -> Self { self.loosen = k; self }
     /// Place this element just below the element `key` (see `anchor`).
     pub fn anchor(mut self, key: impl Into<String>) -> Self { self.anchor = Some(key.into()); self }
+    /// Clip the children to this element's box: what lies outside is not drawn and cannot be hit.
+    pub fn clip(mut self) -> Self { self.clips = true; self.style.overflow = taffy::Point { x: taffy::Overflow::Clip, y: taffy::Overflow::Clip }; self }
     /// Take this element out of the flow and pin it to its parent's edges (logical px; `None` is auto).
     pub fn absolute(mut self, left: Option<f32>, top: Option<f32>, right: Option<f32>, bottom: Option<f32>) -> Self {
         let v = |o: Option<f32>| o.map_or(auto(), length);
@@ -215,6 +221,8 @@ impl<M> El<M> {
     pub fn font(mut self, f: Font) -> Self { if let Content::Text { font, .. } = &mut self.content { *font = f; } self }
     /// Print a text element through a lattice of this pitch (logical px).
     pub fn print(mut self, pitch: f32) -> Self { if let Content::Text { print, .. } = &mut self.content { *print = pitch; } self }
+    /// Make a text element bolder (px > 0) or lighter (px < 0) by moving its outline (logical px).
+    pub fn weight(mut self, px: f32) -> Self { if let Content::Text { weight, .. } = &mut self.content { *weight = px; } self }
     /// Choose the `PicFx` slot of a picture.
     pub fn pic_fx(mut self, slot: u8) -> Self { if let Content::Picture { fx, .. } = &mut self.content { *fx = slot; } self }
     pub fn scroll(mut self) -> Self { self.scroll = true; self.style.overflow.y = taffy::Overflow::Scroll; self.style.scrollbar_width = 0.0; self }
@@ -227,13 +235,13 @@ impl<M> El<M> {
 
     /// The same tree sending other messages: lets one application embed another's view.
     pub fn map<N: 'static>(self, f: Rc<dyn Fn(M) -> N>) -> El<N> where M: 'static {
-        let El { key, style, content, fill, border, radius, on_press, on_key, on_drag, on_blur, focusable, scroll, horizontal, bar, reveal, disabled, commit, modal, fonts, loose, wipe, flow, hidden, annotate, gaze_scope, material, loosen, anchor, children } = self;
+        let El { key, style, content, fill, border, radius, on_press, on_key, on_drag, on_blur, focusable, scroll, horizontal, bar, reveal, disabled, commit, modal, fonts, loose, wipe, flow, hidden, annotate, gaze_scope, material, loosen, anchor, clips, children } = self;
         let on_key = on_key.map(|k| { let f = f.clone(); Rc::new(move |key: Key, shift: bool| k(key, shift).map(|m| f(m))) as OnKey<N> });
         let on_drag = on_drag.map(|d| { let f = f.clone(); Rc::new(move |g: Drag| d(g).map(|m| f(m))) as OnDrag<N> });
         El {
             key, style, content, fill, border, radius, on_press: on_press.map(|m| f(m)), on_key, on_drag, on_blur: on_blur.map(|m| f(m)),
             focusable, scroll, horizontal, bar, reveal, disabled, commit, modal: modal.map(|m| Modal { dismiss: f(m.dismiss), beneath: m.beneath }),
-            fonts, loose, wipe, flow, hidden, annotate, gaze_scope, material, loosen, anchor, children: children.into_iter().map(|c| c.map(f.clone())).collect(),
+            fonts, loose, wipe, flow, hidden, annotate, gaze_scope, material, loosen, anchor, clips, children: children.into_iter().map(|c| c.map(f.clone())).collect(),
         }
     }
 }
@@ -242,11 +250,11 @@ pub fn row<M>() -> El<M> { El::new(Style { display: Display::Flex, flex_directio
 pub fn col<M>() -> El<M> { El::new(Style { display: Display::Flex, flex_direction: FlexDirection::Column, ..Default::default() }, Content::None) }
 pub fn space<M>(w: f32, h: f32) -> El<M> { El::new(Style { size: Size { width: length(w), height: length(h) }, ..Default::default() }, Content::None) }
 pub fn text<M>(s: impl Into<String>, size: f32, paint: Paint) -> El<M> {
-    El::new(Style::default(), Content::Text { s: s.into(), size, line: (size * 1.6).round(), paint, font: Font::Body, print: 0.0, caret: None })
+    El::new(Style::default(), Content::Text { s: s.into(), size, line: (size * 1.6).round(), paint, font: Font::Body, print: 0.0, caret: None, weight: 0.0 })
 }
 /// A text leaf with an explicit line height.
 pub fn text_lh<M>(s: impl Into<String>, size: f32, line: f32, paint: Paint) -> El<M> {
-    El::new(Style::default(), Content::Text { s: s.into(), size, line, paint, font: Font::Body, print: 0.0, caret: None })
+    El::new(Style::default(), Content::Text { s: s.into(), size, line, paint, font: Font::Body, print: 0.0, caret: None, weight: 0.0 })
 }
 pub fn picture<M>(id: u32, ratio: f32) -> El<M> { El::new(Style { size: Size { width: percent(1.0), height: auto() }, ..Default::default() }, Content::Picture { id, ratio, fx: 0 }) }
 /// Every child in the same place, centred in the stack (a one-cell grid): for things that replace one

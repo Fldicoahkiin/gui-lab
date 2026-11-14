@@ -118,6 +118,11 @@ fn inst(i: VOut) -> vec4f {
   let kind = i.paint.w;
   if (kind < 0.5) {
     let g = textureSampleLevel(tex0, samp, i.uv, 0.0);
+    // A weight (device px in extra.x) moves the outline: the coverage comes from the signed distance.
+    if (i.extra.x != 0.0) {
+      let sd = (g.g - 0.5) * 2.0 * u.fd.z + i.extra.x;
+      return vec4f(clamp(sd + 0.5, 0.0, 1.0), clamp(0.5 + sd / (2.0 * u.fd.z), 0.0, 1.0), 0.0, -sd);
+    }
     return vec4f(g.r, g.g, 0.0, (0.5 - g.g) * 2.0 * u.fd.z);
   }
   var d = box_d(i.local, i.size, select(i.radius, 0.0, kind > 1.5));
@@ -133,7 +138,8 @@ fn is_big(i: VOut) -> bool {
   if (m != CHROME && m != LIQUID) { return false; }
   let min_px = mp(CHROME, 0).w * u.res.z;
   if (i.paint.w < 0.5) { return i.look.w >= min_px * 1.25; }
-  return i.paint.w < 1.5 && i.extra.x == 0.0 && min(i.size.x, i.size.y) >= min_px;
+  // Filled shapes, and rings whose band is wide enough to carry a bevel.
+  return i.paint.w < 1.5 && min(i.size.x, i.size.y) >= min_px && (i.extra.x == 0.0 || i.extra.x >= min_px * 0.25);
 }
 /// The ink code in b (see the top of this file).
 fn ink_code(i: VOut) -> f32 {
@@ -173,7 +179,7 @@ fn loose1(i: VOut) -> f32 {
     var contour = 0.0;
     if (-d > cpitch * 0.75 && -d < cpitch * 3.5) {
       let f = abs(fract(-d / cpitch + 0.5) - 0.5) * cpitch;
-      contour = clamp(line * 0.5 + 0.5 - f, 0.0, 1.0) * 0.45 * (1.0 - smoothstep(0.0, 0.6, k));
+      contour = clamp(line * 0.5 + 0.5 - f, 0.0, 1.0) * 0.7 * (1.0 - smoothstep(0.0, 0.6, k));
     }
     a = max(max(stroke, contour), s.x * fill * (1.0 - 0.5 * k)) * i.paint.z;
   }
@@ -736,46 +742,62 @@ fn m_xray(p: vec2f) -> vec3f {
   return mix(gnd(p), d.rgb, d.a * mix(1.0, hollow, smoothstep(0.1, 0.6, k)));
 }
 
-/// Classic chrome: the reflected direction looks up a sky, a dark horizon line and a lit ground; `e`
-/// is where on that band it lands.
+/// Classic chrome: the reflected direction looks up a band of sky over a hard horizon: deep blue-black
+/// overhead, bright white-cyan just above the horizon, a dark horizon line, warm brown and orange
+/// just below, a pale ground further down. `e` is where on that band it lands (negative = sky).
 fn chrome_env(e: f32, x: f32) -> vec3f {
-  let sky = mix(vec3f(0.10, 0.22, 0.52), vec3f(0.93, 0.97, 1.0), smoothstep(-0.6, -0.02, e));
-  let ground = mix(vec3f(0.16, 0.10, 0.09), vec3f(1.0, 0.86, 0.66), smoothstep(0.05, 0.55, e));
+  let sky = mix(mix(vec3f(0.02, 0.04, 0.16), vec3f(0.30, 0.52, 0.92), smoothstep(-0.75, -0.28, e)), vec3f(0.92, 1.0, 1.0), smoothstep(-0.30, -0.03, e));
+  let ground = mix(mix(vec3f(0.30, 0.14, 0.05), vec3f(0.95, 0.52, 0.18), smoothstep(0.02, 0.18, e)), vec3f(1.0, 0.94, 0.84), smoothstep(0.22, 0.6, e));
   var c = select(ground, sky, e < 0.0);
-  c = mix(c, vec3f(0.03, 0.03, 0.06), smoothstep(0.035, 0.0, abs(e - 0.012)));
-  return c + vec3f(0.06) * sin(x * 0.02);
+  c = mix(c, vec3f(0.02, 0.02, 0.05), smoothstep(0.028, 0.012, abs(e - 0.004)));
+  return c + vec3f(0.04) * sin(x * 0.02);
 }
 /// The height field of the height materials: 0 at the outline, 1 at `bevel` px inside.
 fn chrome_h(q: vec2f, bevel: f32) -> f32 { return smoothstep(0.0, bevel, sdist(q)); }
-fn chrome_shade(p: vec2f, ly: f32) -> vec3f {
+/// Metal at a point, at looseness `k` (0..0.6 the bevel softens and dulls before anything breaks up).
+fn chrome_shade(p: vec2f, ly: f32, k: f32) -> vec3f {
   let a0 = mp(CHROME, 0); let a1 = mp(CHROME, 1);
-  let bevel = clamp(a0.x * u.res.z, 1.0, u.fd.z - 0.5);
+  let soft = smoothstep(0.0, 0.6, k);
+  let bevel = clamp(a0.x * u.res.z * (1.0 + soft), 1.0, u.fd.z - 0.5);
   let hx = chrome_h(p + vec2f(1.0, 0.0), bevel) - chrome_h(p - vec2f(1.0, 0.0), bevel);
   let hy = chrome_h(p + vec2f(0.0, 1.0), bevel) - chrome_h(p - vec2f(0.0, 1.0), bevel);
-  let n = normalize(vec3f(-hx * bevel * 0.7, -hy * bevel * 0.7, 1.0));
-  let r = vec3f(2.0 * n.z * n.x, 2.0 * n.z * n.y, 2.0 * n.z * n.z - 1.0);
-  let e = (ly - 0.56) * a0.y + r.y * 0.55;
-  var c = chrome_env(e, p.x + r.x * 40.0);
+  let n = normalize(vec3f(-hx * bevel * 0.8, -hy * bevel * 0.8, 1.0));
+  // The band is read by the height in the line and by the normal's y: bevels facing up see the sky,
+  // facing down the ground.
+  let e = (ly - 0.5) * a0.y * 1.15 - n.y * 0.85 * (1.0 - 0.5 * soft);
+  var c = chrome_env(e, p.x + n.x * 60.0);
+  // A sharp white rim on the bevels that face the light (upper left), and a soft sheen.
+  let facing = dot(normalize(n.xy + vec2f(1e-4)), normalize(vec2f(-0.7, -0.75))) * length(n.xy) / 0.62;
+  let rim = smoothstep(0.55, 0.8, facing) * a0.z * (1.0 - soft);
   let hv = normalize(vec3f(-0.45, -0.6, 0.66) + vec3f(0.0, 0.0, 1.0));
-  let sp = pow(max(dot(n, hv), 0.0), 48.0) * a0.z * 1.4;
-  c += vec3f(sp);
+  let sp = pow(max(dot(n, hv), 0.0), 60.0) * a0.z * 0.9;
+  c = mix(c, vec3f(1.0), clamp(rim + sp, 0.0, 1.0));
   // A dark rim right at the outline keeps the letterform crisp.
-  c *= mix(0.4, 1.0, smoothstep(0.0, 1.4 * u.res.z, sdist(p)));
+  c *= mix(0.25, 1.0, smoothstep(0.0, 1.2 * u.res.z, sdist(p)));
   c = mix(c, c * (u.accent.rgb * 1.6 + 0.2), a1.x);
   return clamp(c, vec3f(0.0), vec3f(1.0));
 }
-// chrome: large shapes and type become bevelled metal at rest (its one rest treatment); small text
-// stays flat. Loosened, the bevel melts into dots of the same metal.
+/// Whether a point just outside the ink belongs to a big chrome element: a thin dark outline there.
+fn chrome_outline(p: vec2f) -> f32 {
+  let sd = sdist(p);
+  if (sd >= 0.0 || sd < -1.6 * u.res.z - 0.5) { return 0.0; }
+  let w = ink_inward(p);
+  if (w.a < 0.02 || w.ly < 0.0) { return 0.0; }
+  return smoothstep(-1.6 * u.res.z - 0.5, -0.8 * u.res.z, sd);
+}
+// chrome: large shapes and type become bevelled metal at rest (its one rest treatment), with a thin
+// dark outline; small text stays flat. Loosened, the bevel softens first; past 0.6 it melts into
+// dots of the same metal.
 fn m_chrome(p: vec2f) -> vec3f {
   let d = dec(p);
   let k = kt(p);
   let s = u.res.z;
-  if (k > 0.0) {
+  if (k > 0.6) {
     let pitch = max(1.5, u.fa.x * s * 1.4);
     let cell = floor(p / pitch);
     let centre = (cell + 0.5) * pitch;
     let kc = kt(centre);
-    if (kc > 0.15 + 0.5 * h1(cell + 2.2)) {
+    if (kc > 0.62 + 0.35 * h1(cell + 2.2)) {
       let e = pitch * 0.25;
       let avg = (ink_t(centre + vec2f(-e, -e)) + ink_t(centre + vec2f(e, -e)) + ink_t(centre + vec2f(-e, e)) + ink_t(centre + vec2f(e, e))) * 0.25;
       let dc = dec_at(avg, centre);
@@ -786,13 +808,16 @@ fn m_chrome(p: vec2f) -> vec3f {
         // A little sphere of chrome per dot.
         let l = (p - centre) / max(r, 1.0);
         let nz = sqrt(max(1.0 - dot(l, l), 0.0));
-        col = chrome_env((dc.ly - 0.56) * mp(CHROME, 0).y + l.y * 0.8, p.x) + vec3f(pow(max(dot(normalize(vec3f(l, nz)), normalize(vec3f(-0.3, -0.5, 1.0))), 0.0), 30.0)) * 0.8;
+        col = chrome_env((dc.ly - 0.5) * mp(CHROME, 0).y + l.y * 0.8, p.x) + vec3f(pow(max(dot(normalize(vec3f(l, nz)), normalize(vec3f(-0.3, -0.5, 1.0))), 0.0), 30.0)) * 0.8;
       }
       return mix(gnd(p), col, m);
     }
   }
-  if (d.ly < 0.0) { return exact(p); }
-  return mix(gnd(p), chrome_shade(p, d.ly), d.a);
+  if (d.ly < 0.0) {
+    let o = chrome_outline(p);
+    return mix(exact(p), vec3f(0.03, 0.03, 0.08), o * (1.0 - smoothstep(0.3, 0.6, k)));
+  }
+  return mix(gnd(p), chrome_shade(p, d.ly, k), d.a);
 }
 
 // liquid: the large shapes join where they come closer than `fuse` (a metaball field from stage 1),
