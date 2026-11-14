@@ -1,7 +1,7 @@
 //! Tabs: a row of labels over the panel of the current one. The row is one focus stop; Left / Right
 //! move between tabs. Tabs are keyed `key:i`.
 use super::{LABEL, LINE};
-use crate::el::{El, Key, Paint, col, row, space, text};
+use crate::el::{El, Key, Paint, Role, col, row, space, text};
 use std::rc::Rc;
 
 /// `gap` is the space between labels and `mark` the thickness of the line under the current one.
@@ -21,11 +21,11 @@ pub fn tabs<M: Clone + 'static>(key: &str, labels: &[&str], current: usize, gap:
             (to != current).then(|| msg(to))
         }
     };
-    let mut head = row().key(format!("{key}/head")).gap(gap).on_key(keys);
+    let mut head = row().key(format!("{key}/head")).gap(gap).on_key(keys).role(Role::TabList);
     for (i, l) in labels.iter().enumerate() {
         let on = i == current;
         let line = space(0.0, mark).fill_width();
-        head = head.child(col().key(format!("{key}:{i}")).gap(6.0).pad(2.0, 6.0).on_press(msg(i)).focusable(false)
+        head = head.child(col().key(format!("{key}:{i}")).gap(6.0).pad(2.0, 6.0).on_press(msg(i)).focusable(false).role(Role::Tab).selected(on)
             .child(text(*l, LABEL + 1.0, if on { Paint::INK } else { Paint::DIM }))
             .child(if on { line.fill(Paint::ACCENT) } else { line }));
     }

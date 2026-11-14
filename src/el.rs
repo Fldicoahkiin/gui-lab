@@ -194,12 +194,41 @@ pub struct El<M> {
     pub cursor: Option<Cursor>,
     /// A virtual list (DESIGN.md §1.13): the runtime builds only the rows it can see (and a few around).
     pub virt: Option<Virtual<M>>,
+    /// What this element is to assistive technology (DESIGN.md §1.14): role, name, state.
+    pub access: Option<Access>,
     pub children: Vec<El<M>>,
 }
 
 /// Rows of a virtual list: how many, how tall each (logical px), how many beyond the visible ones to
 /// build on each side, what row `i` is, and which row is selected (it is scrolled into view after a key).
 pub struct Virtual<M> { pub count: usize, pub row_h: f32, pub overscan: usize, pub build: Rc<dyn Fn(usize) -> El<M>>, pub selected: Option<usize> }
+
+/// Roles of the accessibility mirror (the WAI-ARIA roles of the same name).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Role { Button, Switch, Slider, SpinButton, TabList, Tab, TextBox, Dialog, List, ListItem, Img, Heading, Group, Text }
+impl Role {
+    pub fn aria(self) -> &'static str {
+        match self {
+            Role::Button => "button", Role::Switch => "switch", Role::Slider => "slider", Role::SpinButton => "spinbutton",
+            Role::TabList => "tablist", Role::Tab => "tab", Role::TextBox => "textbox", Role::Dialog => "dialog", Role::List => "list",
+            Role::ListItem => "listitem", Role::Img => "img", Role::Heading => "heading", Role::Group => "group", Role::Text => "text",
+        }
+    }
+}
+/// An element's accessible role, name and state. Unset parts are derived (the name from the text inside).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Access {
+    pub role: Option<Role>,
+    pub label: Option<String>,
+    /// A slider's or spin button's value, minimum and maximum.
+    pub value: Option<(f32, f32, f32)>,
+    /// A text box's text.
+    pub text: Option<String>,
+    pub checked: Option<bool>,
+    pub selected: Option<bool>,
+    /// A heading's level.
+    pub level: u8,
+}
 
 /// Pointer shapes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -215,7 +244,7 @@ impl<M> El<M> {
     fn new(style: Style, content: Content) -> Self {
         // Nothing shrinks unless asked: fixed sizes stay fixed inside columns and scroll areas.
         let style = Style { flex_shrink: 0.0, ..style };
-        Self { key: String::new(), style, content, fill: None, border: None, radius: 0.0, on_press: None, on_key: None, on_drag: None, on_blur: None, focusable: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, modal: None, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, clips: false, calm: false, on_text: None, multiline: false, selectable: false, cursor: None, virt: None, children: vec![] }
+        Self { key: String::new(), style, content, fill: None, border: None, radius: 0.0, on_press: None, on_key: None, on_drag: None, on_blur: None, focusable: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, modal: None, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, clips: false, calm: false, on_text: None, multiline: false, selectable: false, cursor: None, virt: None, access: None, children: vec![] }
     }
     pub fn key(mut self, k: impl Into<String>) -> Self { self.key = k.into(); self }
     pub fn gap(mut self, g: f32) -> Self { self.style.gap = Size { width: length(g), height: length(g) }; self }
@@ -251,6 +280,18 @@ impl<M> El<M> {
     pub fn selectable(mut self) -> Self { self.selectable = true; self }
     /// The pointer's shape over this element.
     pub fn cursor(mut self, c: Cursor) -> Self { self.cursor = Some(c); self }
+    fn access_mut(&mut self) -> &mut Access { self.access.get_or_insert_with(Access::default) }
+    /// Its accessible name (what a screen reader says), when the text inside does not say it.
+    pub fn label(mut self, name: impl Into<String>) -> Self { self.access_mut().label = Some(name.into()); self }
+    /// Its role in the accessibility mirror.
+    pub fn role(mut self, r: Role) -> Self { self.access_mut().role = Some(r); self }
+    /// A switch's state; a tab's or list item's selection; a slider's value and range; a text box's text;
+    /// a heading's level.
+    pub fn checked(mut self, on: bool) -> Self { self.access_mut().checked = Some(on); self }
+    pub fn selected(mut self, on: bool) -> Self { self.access_mut().selected = Some(on); self }
+    pub fn value_range(mut self, v: f32, min: f32, max: f32) -> Self { self.access_mut().value = Some((v, min, max)); self }
+    pub fn text_value(mut self, t: impl Into<String>) -> Self { self.access_mut().text = Some(t.into()); self }
+    pub fn heading(mut self, level: u8) -> Self { let a = self.access_mut(); a.role = Some(Role::Heading); a.level = level; self }
     /// Make this (a scroll node) a virtual list of `count` rows `row_h` tall: only the visible rows and
     /// `overscan` more on each side exist in the tree; row `i` is `build(i)` (keyed `key/row{i}` unless it
     /// has a key). Its children are replaced by the rows.
@@ -325,7 +366,7 @@ impl<M> El<M> {
 
     /// The same tree sending other messages: lets one application embed another's view.
     pub fn map<N: 'static>(self, f: Rc<dyn Fn(M) -> N>) -> El<N> where M: 'static {
-        let El { key, style, content, fill, border, radius, on_press, on_key, on_drag, on_blur, focusable, scroll, horizontal, bar, reveal, disabled, commit, modal, fonts, loose, wipe, flow, hidden, annotate, gaze_scope, material, loosen, anchor, clips, calm, on_text, multiline, selectable, cursor, virt, children } = self;
+        let El { key, style, content, fill, border, radius, on_press, on_key, on_drag, on_blur, focusable, scroll, horizontal, bar, reveal, disabled, commit, modal, fonts, loose, wipe, flow, hidden, annotate, gaze_scope, material, loosen, anchor, clips, calm, on_text, multiline, selectable, cursor, virt, access, children } = self;
         let virt = virt.map(|v| { let f = f.clone(); let b = v.build; Virtual { count: v.count, row_h: v.row_h, overscan: v.overscan, selected: v.selected, build: Rc::new(move |i: usize| b(i).map(f.clone())) as Rc<dyn Fn(usize) -> El<N>> } });
         let on_key = on_key.map(|k| { let f = f.clone(); Rc::new(move |key: Key, shift: bool| k(key, shift).map(|m| f(m))) as OnKey<N> });
         let on_text = on_text.map(|t| { let f = f.clone(); Rc::new(move |i: TextInput| t(i).map(|m| f(m))) as OnText<N> });
@@ -333,7 +374,7 @@ impl<M> El<M> {
         El {
             key, style, content, fill, border, radius, on_press: on_press.map(|m| f(m)), on_key, on_drag, on_blur: on_blur.map(|m| f(m)),
             focusable, scroll, horizontal, bar, reveal, disabled, commit, modal: modal.map(|m| Modal { dismiss: f(m.dismiss), beneath: m.beneath }),
-            fonts, loose, wipe, flow, hidden, annotate, gaze_scope, material, loosen, anchor, clips, calm, on_text, multiline, selectable, cursor, virt, children: children.into_iter().map(|c| c.map(f.clone())).collect(),
+            fonts, loose, wipe, flow, hidden, annotate, gaze_scope, material, loosen, anchor, clips, calm, on_text, multiline, selectable, cursor, virt, access, children: children.into_iter().map(|c| c.map(f.clone())).collect(),
         }
     }
 }

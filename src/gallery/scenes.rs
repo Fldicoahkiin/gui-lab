@@ -4,7 +4,7 @@
 use super::pages::ratio;
 use super::{Gallery, Msg, Page, Target};
 use crate::demo::{BUST, CUTOUT, SKY, SPHERE, TERRAIN, cutout_alpha};
-use crate::el::{Drag, El, Font, Key, Paint, Phase, col, picture, row, space, stack, text, text_lh};
+use crate::el::{Cursor, Drag, El, Font, Key, Paint, Phase, col, picture, row, space, stack, text, text_lh};
 use crate::morph::{Cmd, FlowSpec, MorphSpec};
 use crate::style::{Gaze, GazeMode, Look, Material, PicFx, colour, gaze, set, styles};
 use crate::widgets::{Edit, Spec, TextEdit, Variant, button_as, input, number, segmented, switch, tabs};
@@ -609,7 +609,7 @@ fn printing(g: &Gallery, w: f32, h: f32) -> El<Msg> {
                 .child(picture(id, r_).key("pr/one-pic").pic_fx(PR_ONE).loose(loose).width(pw).absolute(Some(ox), Some(oy), None, None)
                     .wipe(((sc.cmp * w - ox) / pw).clamp(0.0, 1.0)).on_drag(move |x, _| Msg::Scene(SMsg::Compare(((x * pw + ox) / w).clamp(0.0, 1.0))))))
             .child(col().key("pr/compare").width(28.0).height(24.0).absolute(Some(x - 14.0), Some(top + wh), None, None).align(AlignItems::CENTER)
-                .on_drag_with(move |d| Some(Msg::Scene(SMsg::Compare((x + d.dx) / w))))
+                .on_drag_with(move |d| Some(Msg::Scene(SMsg::Compare((x + d.dx) / w)))).cursor(Cursor::ColResize)
                 .on_key(move |k, shift| { let s = if shift { 0.1 } else { 0.02 }; let f = x / w; match k { Key::Left => Some(Msg::Scene(SMsg::Compare(f - s))), Key::Right => Some(Msg::Scene(SMsg::Compare(f + s))), _ => None } })
                 .child(space(2.0, 8.0).fill(Paint::ACCENT))
                 .child(space(14.0, 14.0).radius(7.0).fill(Paint::ACCENT)));
@@ -630,6 +630,7 @@ fn printing(g: &Gallery, w: f32, h: f32) -> El<Msg> {
             let x = (sc.seams[i] * w).round();
             let f0 = sc.seams[i];
             let seam = col().key(format!("pr/seam{i}")).width(24.0).height(wh + 24.0).absolute(Some(x - 12.0), Some(top), None, None).align(AlignItems::CENTER)
+                .cursor(Cursor::ColResize)
                 .on_drag_with(move |d| Some(Msg::Scene(SMsg::Seam(i, f0 + d.dx / w))))
                 .on_key(move |k, shift| { let s = if shift { 0.1 } else { 0.02 }; match k { Key::Left => Some(Msg::Scene(SMsg::Seam(i, f0 - s))), Key::Right => Some(Msg::Scene(SMsg::Seam(i, f0 + s))), _ => None } })
                 .child(space(1.0, wh).fill(Paint::ACCENT.alpha(0.7)))

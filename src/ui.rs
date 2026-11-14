@@ -1,6 +1,6 @@
 //! Runtime: state, view, layout, hit-testing, focus, scrolling and instance birth times. No GPU here,
 //! so all of it can be tested headless.
-use crate::el::{Content, Cursor, Drag, El, Font, Key, Modal, Mods, OnDrag, OnKey, OnText, Paint, Phase, TextInput};
+use crate::el::{Content, Cursor, Drag, El, Font, Key, Modal, Mods, OnDrag, OnKey, OnText, Paint, Phase, Role, TextInput};
 use crate::morph::{self, Cmd, Ease, FlowSpec, MorphSpec, Particle};
 use crate::scene::{Field, Instance, PICTURE, SHAPE, Scene};
 use crate::gaze;
@@ -84,6 +84,8 @@ pub struct Node<M> {
     pub cursor: Option<Cursor>,
     /// A virtual list: its row count, row height and selected row.
     pub virt: Option<(usize, f32, Option<usize>)>,
+    /// What it is to assistive technology, as the view said.
+    pub access: Option<crate::el::Access>,
     /// The box layout gave it, relative to its parent (scrolling does not change it).
     local: taffy::Layout,
     tid: NodeId,
@@ -290,6 +292,9 @@ pub struct Ui<S, M> {
     sel_drag: bool,
     /// The last press: when, where, and how many presses in a row it made (a double click is 2).
     clicks: (f32, f32, f32, u8),
+    /// The accessibility mirror as last sent to the host, and the focus it was told.
+    a11y_sent: HashMap<String, A11yNode>,
+    a11y_focus: Option<String>,
     // ── Incremental layout (DESIGN.md §1.13) ──
     /// The taffy tree, kept across layouts: each key's taffy node, and what its measured content was.
     tree: TaffyTree<usize>,
@@ -298,7 +303,81 @@ pub struct Ui<S, M> {
     /// Virtual lists: each one's viewport height as last placed, and the rows it has built.
     virt_views: HashMap<String, f32>,
     virt_made: HashMap<String, (usize, usize)>,
+    // ── Touch (DESIGN.md §1.8.2) ──
+    pub scrolling: Scrolling,
+    touch: Option<Touch>,
+    touches: HashSet<u64>,
+    /// A finger is down: no hover, no lens.
+    touching: bool,
+    fling: Option<(String, f32)>,
+    /// How far each scroll node is pulled past its end (negative: past the start), logical px.
+    over: HashMap<String, f32>,
+    /// When the pointer event being handled happened (the host's timestamp), if it says: a finger's
+    /// speed is measured by these, not by when the events were handled.
+    event_t: Option<f32>,
 }
+
+/// One element of the accessibility mirror (DESIGN.md §1.14): what a screen reader is told about it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct A11yNode {
+    pub key: String,
+    /// The nearest ancestor that is in the mirror.
+    pub parent: Option<String>,
+    pub role: Role,
+    pub name: String,
+    pub value: Option<(f32, f32, f32)>,
+    pub text: Option<String>,
+    pub checked: Option<bool>,
+    pub selected: Option<bool>,
+    pub level: u8,
+    pub modal: bool,
+    pub disabled: bool,
+    pub focusable: bool,
+    /// Where it is (logical px).
+    pub rect: Rect,
+}
+/// A change to the mirror since it was last sent.
+#[derive(Clone, Debug, PartialEq)]
+pub enum A11yOp { Set(A11yNode), Remove(String), Focus(Option<String>) }
+
+/// The kind of pointer: a mouse and a pen hover; a finger does not, and drags scroll.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PointerKind { Mouse, Touch, Pen }
+
+/// How touch scrolling behaves (logical px, seconds).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Scrolling {
+    /// After the finger lifts the content keeps going and slows: velocity × e^(−friction · t).
+    pub friction: f32,
+    pub max_velocity: f32,
+    /// A finger must move this far before a press becomes a scroll.
+    pub slop: f32,
+    /// Past the end the content does not move; the pull (`rubber` of the finger's movement, less as it
+    /// grows, at most `max_over`) shows as looseness at that edge and springs back at `spring` per second.
+    pub rubber: f32,
+    pub max_over: f32,
+    pub spring: f32,
+}
+impl Default for Scrolling {
+    fn default() -> Self { Self { friction: 3.5, max_velocity: 5000.0, slop: 8.0, rubber: 0.55, max_over: 140.0, spring: 9.0 } }
+}
+/// One step of a fling: how far it goes in `dt` and its velocity after (exact for exponential decay).
+pub fn fling_step(v: f32, dt: f32, friction: f32) -> (f32, f32) {
+    let k = (-friction.max(1e-3) * dt).exp();
+    (v * (1.0 - k) / friction.max(1e-3), v * k)
+}
+/// The pull past an end after the finger moves `d` more: it resists more the further it is pulled.
+pub fn rubber_band(over: f32, d: f32, rubber: f32, max: f32) -> f32 {
+    let r = rubber * (1.0 - (over.abs() / max.max(1.0)).min(1.0));
+    (over + d * r).clamp(-max, max)
+}
+
+/// The finger that is down: where it started, its last positions (for the velocity), and what it is
+/// doing: not yet decided (a press shown but not sent), scrolling node `key`, handled as a mouse press
+/// (a drag, a text field, nothing to scroll), or cancelled (a second finger).
+struct Touch { id: u64, start: (f32, f32), last: (f32, f32), samples: std::collections::VecDeque<(f32, f32, f32)>, mode: TouchMode }
+#[derive(Clone, PartialEq)]
+enum TouchMode { Pending, Scroll(String), Direct, Cancelled }
 
 /// What the runtime needs from the look to know whether anything is still moving: how long fronts live
 /// and how fast they travel, how long new instances condense, and whether the material (global, or
@@ -316,6 +395,10 @@ impl Timing {
 pub const BLINK: f32 = 0.53;
 /// How far a selected glyph's halo reaches past its outline, logical px.
 pub const SELECT_HALO: f32 = 3.0;
+/// How far from a pulled edge (logical px) things loosen.
+const PULL_REACH: f32 = 160.0;
+/// The smallest box (logical px) a control can be hit in: smaller ones are hit as if they were this big.
+pub const MIN_HIT: f32 = 28.0;
 /// Presses closer than this in time (s) and space (px) count as a double (triple) click.
 const CLICK_GAP: (f32, f32) = (0.45, 5.0);
 
@@ -372,8 +455,9 @@ impl<S, M: Clone> Ui<S, M> {
             dirty: true, look_of: None, timing: Timing::default(), wake_of: None, latest_birth: f32::NEG_INFINITY, gaze_until: f32::NEG_INFINITY,
             marks_moving: false, caret: None, caret_on: true, static_loose: false, mclock: 0.0, moving: false,
             perf: crate::perf::Perf { quality: 1.0, ..Default::default() }, span: 0, painting: false, overlay: false, overlay_at: 0.0,
-            text_capture: None, sel: None, sel_drag: false, clicks: (f32::NEG_INFINITY, 0.0, 0.0, 0),
+            text_capture: None, sel: None, sel_drag: false, clicks: (f32::NEG_INFINITY, 0.0, 0.0, 0), a11y_sent: HashMap::new(), a11y_focus: None,
             tree: TaffyTree::new(), tids: HashMap::new(), mkeys: HashMap::new(), virt_views: HashMap::new(), virt_made: HashMap::new(),
+            scrolling: Scrolling::default(), touch: None, touches: HashSet::new(), touching: false, fling: None, over: HashMap::new(), event_t: None,
         };
         ui.resize(w, h, scale);
         ui
@@ -453,7 +537,7 @@ impl<S, M: Clone> Ui<S, M> {
         });
         fronts || split || self.field.burst_at(now) > 0.0 || now < self.latest_birth + tm.enter
             || self.run.is_some() || !self.flows.is_empty() || !self.ghosts.is_empty() || self.animating
-            || self.marks_moving || now < self.gaze_until
+            || self.marks_moving || now < self.gaze_until || self.fling.is_some() || !self.over.is_empty()
             || self.static_loose
     }
     /// About how much of the window (0..1) can be loose at `now`: all of it while a front lives, things
@@ -533,10 +617,169 @@ impl<S, M: Clone> Ui<S, M> {
             None => false,
         };
         self.flows.retain(|_, f| t < f.start + f.dur);
-        if repaint { self.paint(); } else { self.finish(); }
+        let scrolled = self.step_scrolling(dt);
+        if repaint || scrolled { self.paint(); } else { self.finish(); }
         if self.marks_moving { self.dirty = true; }
         self.moving = self.moving_at(t);
     }
+
+    /// A fling going on and pulls springing back (it paints what moved; the result is whether the caller
+    /// still has to).
+    fn step_scrolling(&mut self, dt: f32) -> bool {
+        let mut moved = false;
+        if let Some((key, v)) = self.fling.clone() {
+            let (d, v2) = fling_step(v, dt, self.scrolling.friction);
+            match self.nodes.iter().position(|n| n.key == key) {
+                Some(i) if v2.abs() >= 20.0 => {
+                    if self.scroll_by(i, d) { self.fling = Some((key, v2)); }
+                    else {
+                        // It reached the end: what is left of its speed pulls a little past it.
+                        let o = self.over.get(&key).copied().unwrap_or(0.0);
+                        self.over.insert(key, rubber_band(o, v2 * 0.04, self.scrolling.rubber, self.scrolling.max_over));
+                        self.fling = None;
+                    }
+                    moved = true;
+                }
+                _ => self.fling = None,
+            }
+        }
+        let held = match &self.touch { Some(Touch { mode: TouchMode::Scroll(k), .. }) => Some(k.clone()), _ => None };
+        let k = (-self.scrolling.spring * dt).exp();
+        let before = self.over.len();
+        self.over.retain(|key, o| { if held.as_deref() != Some(key.as_str()) { *o *= k; } o.abs() >= 0.5 });
+        moved |= !self.over.is_empty() || before != self.over.len();
+        // Moved: placed again (a virtual list builds the rows a fling brings into view) and painted.
+        if moved { self.scrolled(); }
+        false
+    }
+
+    // ── Pointers of every kind (DESIGN.md §1.8.2) ──────────────────────────────────────────────────
+    /// A pointer pressed: a mouse or a pen presses at once; a finger shows the press (a front, the
+    /// control held) but only sends it when it lifts without having scrolled — unless what it is on is
+    /// dragged (a slider) or is a text field, or there is nothing to scroll, which it presses at once.
+    pub fn pointer_down(&mut self, id: u64, kind: PointerKind, x: f32, y: f32, shift: bool) {
+        if kind != PointerKind::Touch { self.touching = false; self.press_with(x, y, shift); return; }
+        self.dirty = true;
+        self.touches.insert(id);
+        self.fling = None;
+        if self.touches.len() > 1 {
+            // A second finger (a pinch): what the first was doing is dropped, and nothing is sent.
+            let direct = self.touch.as_mut().map(|t| (std::mem::replace(&mut t.mode, TouchMode::Cancelled) == TouchMode::Direct, t.last));
+            if let Some((true, (lx, ly))) = direct { self.release(lx, ly); }
+            if let Some(k) = self.pressed.take() { self.rebirth(&k); }
+            return;
+        }
+        self.touching = true;
+        self.hover = None;
+        let hit = self.hit_target(x, y);
+        let direct = hit.and_then(|i| self.up(i, |n| n.on_drag.is_some() || n.on_text.is_some())).is_some() || hit.and_then(|i| self.up(i, |n| n.scroll)).is_none();
+        let mode = if direct { self.press_with(x, y, shift); TouchMode::Direct } else {
+            self.heard();
+            let s = self.scale;
+            self.field.front(x * s, y * s, self.now, 1.0);
+            self.pressed = hit.and_then(|i| self.up(i, |n| n.on_press.is_some())).map(|i| self.nodes[i].key.clone());
+            if let Some(i) = hit.and_then(|i| self.up(i, |n| n.on_press.is_some())) { let r = self.nodes[i].rect; self.burst(r, 1.0, 0.35); }
+            self.paint();
+            TouchMode::Pending
+        };
+        let at = self.event_t.take().unwrap_or(self.now);
+        self.touch = Some(Touch { id, start: (x, y), last: (x, y), samples: [(at, x, y)].into(), mode });
+    }
+    /// The time (on the runtime's clock) the next pointer event happened, when the host knows it; a
+    /// finger's speed is measured from these.
+    pub fn event_time(&mut self, t: f32) { self.event_t = Some(t); }
+    /// A pointer moved (a mouse or pen also hovers).
+    pub fn pointer_moved(&mut self, id: u64, kind: PointerKind, x: f32, y: f32) {
+        if kind != PointerKind::Touch { self.touching = false; self.pointer_move(x, y); return; }
+        let now = self.event_t.take().unwrap_or(self.now);
+        let Some(t) = &mut self.touch else { return };
+        if t.id != id || t.mode == TouchMode::Cancelled { return; }
+        t.samples.push_back((now, x, y));
+        while t.samples.len() > 2 && t.samples.front().is_some_and(|s| now - s.0 > 0.1) { t.samples.pop_front(); }
+        let (last, start) = (t.last, t.start);
+        t.last = (x, y);
+        match t.mode.clone() {
+            TouchMode::Direct => self.pointer_move(x, y),
+            TouchMode::Pending => {
+                let (dx, dy) = (x - start.0, y - start.1);
+                if dx.hypot(dy) < self.scrolling.slop { return; }
+                // Now it is a scroll: of the nearest scroll ancestor along the way the finger went.
+                let vertical = dy.abs() >= dx.abs();
+                let at = self.hit(start.0, start.1);
+                let node = at.and_then(|i| self.up(i, |n| n.scroll && n.horizontal != vertical)).or_else(|| at.and_then(|i| self.up(i, |n| n.scroll)));
+                if let Some(k) = self.pressed.take() { self.rebirth(&k); }
+                let Some(i) = node else { if let Some(t) = &mut self.touch { t.mode = TouchMode::Cancelled; } return };
+                let key = self.nodes[i].key.clone();
+                if let Some(t) = &mut self.touch { t.mode = TouchMode::Scroll(key.clone()); }
+                let d = if self.nodes[i].horizontal { -(x - last.0) } else { -(y - last.1) };
+                self.drag_scroll(i, d);
+            }
+            TouchMode::Scroll(key) => {
+                let Some(i) = self.nodes.iter().position(|n| n.key == key) else { return };
+                let d = if self.nodes[i].horizontal { -(x - last.0) } else { -(y - last.1) };
+                self.drag_scroll(i, d);
+            }
+            TouchMode::Cancelled => {}
+        }
+    }
+    /// Move scroll node `i` with the finger by `d`; past an end, pull instead.
+    fn drag_scroll(&mut self, i: usize, d: f32) {
+        self.dirty = true;
+        let key = self.nodes[i].key.clone();
+        let o = self.over.get(&key).copied().unwrap_or(0.0);
+        // A pull is given back first, then the content moves.
+        let back = if o != 0.0 && o.signum() != d.signum() { d.abs().min(o.abs()) * d.signum() } else { 0.0 };
+        if back != 0.0 { self.over.insert(key.clone(), o + back); }
+        let rest = d - back;
+        if rest != 0.0 && !self.scroll_by(i, rest) {
+            let o = self.over.get(&key).copied().unwrap_or(0.0);
+            self.over.insert(key, rubber_band(o, rest, self.scrolling.rubber, self.scrolling.max_over));
+        }
+        self.scrolled();
+    }
+    /// A pointer let go. A finger that scrolled flings on at its speed (at most `max_velocity`); one that
+    /// did not is a tap: the press is sent now.
+    pub fn pointer_up(&mut self, id: u64, kind: PointerKind, x: f32, y: f32) {
+        if kind != PointerKind::Touch { self.release(x, y); return; }
+        self.dirty = true;
+        self.touches.remove(&id);
+        let Some(t) = self.touch.take_if(|t| t.id == id) else { return };
+        self.touching = false;
+        match t.mode {
+            TouchMode::Direct => { self.touching = true; self.release(x, y); self.touching = false; }
+            TouchMode::Pending => {
+                if let Some(k) = self.pressed.take() { self.rebirth(&k); }
+                self.touching = true;
+                self.press_with(x, y, false);
+                self.release(x, y);
+                self.touching = false;
+            }
+            TouchMode::Scroll(key) => {
+                let (a, b) = (t.samples.front().copied(), t.samples.back().copied());
+                if let (Some(a), Some(b)) = (a, b) && b.0 - a.0 > 1e-3 {
+                    let horizontal = self.nodes.iter().find(|n| n.key == key).is_some_and(|n| n.horizontal);
+                    let v = -if horizontal { b.1 - a.1 } else { b.2 - a.2 } / (b.0 - a.0);
+                    let v = v.clamp(-self.scrolling.max_velocity, self.scrolling.max_velocity);
+                    if v.abs() > 50.0 && !self.over.contains_key(&key) { self.fling = Some((key, v)); }
+                }
+            }
+            TouchMode::Cancelled => {}
+        }
+        self.hover = None;
+    }
+    /// A pointer the system took away (a gesture of its own): nothing is sent.
+    pub fn pointer_cancel(&mut self, id: u64) {
+        self.dirty = true;
+        self.touches.remove(&id);
+        let Some(t) = self.touch.take_if(|t| t.id == id) else { return };
+        if let Some(k) = self.pressed.take() { self.rebirth(&k); }
+        if t.mode == TouchMode::Direct { self.release(t.last.0, t.last.1); }
+        self.touching = false;
+    }
+    /// How far a scroll node is pulled past its end right now (negative: past its start).
+    pub fn overscroll(&self, key: &str) -> f32 { self.over.get(key).copied().unwrap_or(0.0) }
+    /// Whether a fling is going on.
+    pub fn flinging(&self) -> bool { self.fling.is_some() }
 
     /// Start again at `t`: everything on the page condenses in from loose.
     pub fn restart(&mut self, t: f32) {
@@ -549,9 +792,12 @@ impl<S, M: Clone> Ui<S, M> {
     pub fn pointer_move(&mut self, x: f32, y: f32) {
         self.dirty = true;
         let s = self.scale;
-        self.field.pointer = [x * s, y * s, 1.0, 0.0];
         self.keyboard = false;
-        let hover = self.hit(x, y).and_then(|i| self.up(i, Node::active)).map(|i| self.nodes[i].key.clone());
+        // A finger has no hover: it moves what it holds, and the lens does not follow it.
+        let hover = if self.touching { None } else {
+            self.field.pointer = [x * s, y * s, 1.0, 0.0];
+            self.hit_target(x, y).and_then(|i| self.up(i, Node::active)).map(|i| self.nodes[i].key.clone())
+        };
         if hover != self.hover {
             // A control the pointer comes onto gets a short burst over it (the glitch material reads it).
             if let Some(n) = hover.as_deref().and_then(|k| self.node(k)) { self.burst(n.rect, 0.75, 0.22); }
@@ -603,10 +849,10 @@ impl<S, M: Clone> Ui<S, M> {
         self.clicks = (self.now, x, y, clicks);
         let s = self.scale;
         self.field.front(x * s, y * s, self.now, 1.0);
-        let target = self.hit(x, y).and_then(|i| self.up(i, |n| n.focusable)).map(|i| self.nodes[i].key.clone());
+        let target = self.hit_target(x, y).and_then(|i| self.up(i, |n| n.focusable)).map(|i| self.nodes[i].key.clone());
         self.set_focus(target);
         // Losing focus may have changed the page, so look again.
-        let hit = self.hit(x, y);
+        let hit = self.hit_target(x, y);
         // In a text field the press places the caret (two select a word, three everything) and the drag
         // that follows selects.
         if let Some(fi) = hit.and_then(|i| self.up(i, |n| n.on_text.is_some())) {
@@ -741,6 +987,90 @@ impl<S, M: Clone> Ui<S, M> {
         }
     }
 
+    // ── Accessibility mirror (DESIGN.md §1.14) ───────────────────────────────────────────────────
+    /// The mirror of the current tree: every element with a role (set by the widget or `El::role`), every
+    /// other pressable control (a button), and text that is not part of a control's name. While a modal
+    /// layer is open, only what is in it.
+    pub fn a11y(&self) -> Vec<A11yNode> {
+        let leafy = |r: Role| !matches!(r, Role::Dialog | Role::List | Role::TabList | Role::Group);
+        let lo = self.modal_at.unwrap_or(0);
+        let mut out: Vec<A11yNode> = vec![];
+        let mut index: Vec<Option<usize>> = vec![None; self.nodes.len()];
+        // The nearest ancestor in the mirror, and whether a control above already speaks for this text.
+        let mut above: Vec<(Option<usize>, bool)> = vec![(None, false); self.nodes.len()];
+        for i in 0..self.nodes.len() {
+            let n = &self.nodes[i];
+            let (up, spoken) = match n.parent { Some(p) => (index[p].or(above[p].0), above[p].1 || index[p].is_some_and(|k| leafy(out[k].role))), None => (None, false) };
+            above[i] = (up, spoken);
+            if n.hidden || i < lo && self.modal_at.is_some() { continue; }
+            let a = n.access.clone().unwrap_or_default();
+            let role = a.role.or_else(|| match &n.content {
+                Content::Text { .. } if !spoken => Some(Role::Text),
+                Content::Picture { .. } => Some(Role::Img),
+                Content::None if n.on_press.is_some() && n.focusable && !spoken => Some(Role::Button),
+                _ => None,
+            });
+            let Some(role) = role else { continue };
+            if spoken && role == Role::Text { continue; }
+            let name = a.label.clone().unwrap_or_else(|| self.name_within(i));
+            if role == Role::Text && name.trim().is_empty() { continue; }
+            index[i] = Some(out.len());
+            out.push(A11yNode {
+                key: n.key.clone(), parent: up.map(|k| out[k].key.clone()), role, name, value: a.value, text: a.text, checked: a.checked, selected: a.selected,
+                level: a.level, modal: n.modal.is_some() || (role == Role::Dialog && self.modal_at.is_some()), disabled: n.disabled, focusable: n.focusable, rect: n.rect,
+            });
+        }
+        out
+    }
+    /// The text inside node `i`, joined: a control's name when it has no label.
+    fn name_within(&self, i: usize) -> String {
+        let mut s = String::new();
+        for j in i..self.nodes.len() {
+            if !within(&self.nodes, j, i) { if j > i { break; } continue; }
+            if let Some(t) = self.nodes[j].text() { if !s.is_empty() { s.push(' '); } s.push_str(t.trim()); }
+            if s.len() > 160 { break; }
+        }
+        s
+    }
+    /// What changed in the mirror since the last call (the same keyed comparison as layout's): elements
+    /// added or changed, elements gone, and where focus is now if it moved.
+    pub fn a11y_diff(&mut self) -> Vec<A11yOp> {
+        let now = self.a11y();
+        let mut ops = vec![];
+        let keys: HashSet<&str> = now.iter().map(|n| n.key.as_str()).collect();
+        for k in self.a11y_sent.keys() { if !keys.contains(k.as_str()) { ops.push(A11yOp::Remove(k.clone())); } }
+        let mut sent = HashMap::with_capacity(now.len());
+        for n in now {
+            if self.a11y_sent.get(&n.key) != Some(&n) { ops.push(A11yOp::Set(n.clone())); }
+            sent.insert(n.key.clone(), n);
+        }
+        self.a11y_sent = sent;
+        if self.a11y_focus != self.focus { self.a11y_focus = self.focus.clone(); ops.push(A11yOp::Focus(self.focus.clone())); }
+        ops
+    }
+    /// Assistive technology moved focus to the element `key`.
+    pub fn focus_key(&mut self, key: &str) {
+        self.dirty = true;
+        if self.node(key).is_some_and(|n| n.focusable) { self.keyboard = true; self.set_focus(Some(key.to_owned())); }
+    }
+    /// Assistive technology activated the element `key` (a click on its mirror): the same message as a
+    /// press or Enter, with the same front and commit. Returns whether it did anything.
+    pub fn activate(&mut self, key: &str) -> bool {
+        self.dirty = true;
+        self.heard();
+        let Some(i) = self.nodes.iter().position(|n| n.key == key) else { return false };
+        if self.nodes[i].focusable { self.set_focus(Some(key.to_owned())); }
+        let Some(i) = self.nodes.iter().position(|n| n.key == key) else { return false };
+        let Some(m) = self.nodes[i].on_press.clone() else { return false };
+        let (cx, cy) = self.nodes[i].rect.center();
+        if self.up(i, |n| n.commit).is_some() { self.snapshot(cx, cy); }
+        let s = self.scale;
+        self.field.front(cx * s, cy * s, self.now, 1.0);
+        self.send(m);
+        self.rebirth(key);
+        true
+    }
+
     // ── Text (DESIGN.md §1.8.1) ──────────────────────────────────────────────────────────────────
     /// The focused text field's node, if focus is on one.
     fn field_at(&self) -> Option<usize> {
@@ -822,7 +1152,7 @@ impl<S, M: Clone> Ui<S, M> {
         }
         if self.field.pointer[2] <= 0.0 { return Cursor::Default; }
         let (x, y) = (self.field.pointer[0] / self.scale, self.field.pointer[1] / self.scale);
-        let mut at = self.hit(x, y);
+        let mut at = self.hit_target(x, y);
         while let Some(i) = at {
             let n = &self.nodes[i];
             if let Some(c) = n.cursor { return c; }
@@ -902,6 +1232,20 @@ impl<S, M: Clone> Ui<S, M> {
         (self.update)(&mut self.state, m);
         self.relayout();
         self.span_end(sp);
+    }
+
+    /// What a press at (x, y) acts on: the topmost node there when it (or an ancestor) can be acted on;
+    /// otherwise the control whose box, grown to at least `MIN_HIT` each way about its centre, holds the
+    /// point (the nearest one), so small controls are easy to hit without looking bigger.
+    fn hit_target(&self, x: f32, y: f32) -> Option<usize> {
+        let h = self.hit(x, y);
+        if h.and_then(|i| self.up(i, Node::active)).is_some() { return h; }
+        let grown = |r: Rect| { let (gw, gh) = ((MIN_HIT - r.w).max(0.0) * 0.5, (MIN_HIT - r.h).max(0.0) * 0.5); r.inset(-gw, -gh, -gw, -gh) };
+        let d = |r: Rect| { let (cx, cy) = r.center(); (cx - x).powi(2) + (cy - y).powi(2) };
+        (self.modal_at.unwrap_or(0)..self.nodes.len()).rev()
+            .filter(|&i| { let n = &self.nodes[i]; n.active() && !n.hidden && (n.rect.w < MIN_HIT || n.rect.h < MIN_HIT) && n.clip.contains(x, y) && grown(n.rect).contains(x, y) })
+            .min_by(|&a, &b| d(self.nodes[a].rect).total_cmp(&d(self.nodes[b].rect)))
+            .or(h)
     }
 
     /// Topmost node under a point, honouring clips. While a modal layer is open only it can be hit.
@@ -1275,6 +1619,23 @@ impl<S, M: Clone> Ui<S, M> {
         let global = self.timing.material;
         let mut caret_found: Option<(usize, [f32; 4])> = None;
         let ro = self.sel_ranges();
+        // A scroll node pulled past its end: what is near that edge loosens, the more the further it is
+        // pulled (no box moves past the end).
+        let mut pull_of: Vec<Option<(usize, f32)>> = vec![None; self.nodes.len()];
+        for i in 0..self.nodes.len() {
+            if let Some(p) = self.nodes[i].parent {
+                pull_of[i] = match self.over.get(&self.nodes[p].key) { Some(&o) if self.nodes[p].scroll => Some((p, o)), _ => pull_of[p] };
+            }
+        }
+        let max_over = self.scrolling.max_over;
+        let pulled = |nodes: &[Node<M>], i: usize| pull_of[i].map_or(0.0, |(p, o)| {
+            let (r, inner, h) = (nodes[i].rect, nodes[p].inner, nodes[p].horizontal);
+            let dist = match (h, o < 0.0) {
+                (false, true) => r.y - inner.y, (false, false) => inner.bottom() - r.bottom(),
+                (true, true) => r.x - inner.x, (true, false) => inner.right() - r.right(),
+            };
+            0.85 * (o.abs() / max_over).min(1.0).sqrt() * (1.0 - dist.max(0.0) / PULL_REACH).max(0.0)
+        });
         for i in 0..self.nodes.len() {
             let n = &self.nodes[i];
             if Some(i) == self.modal_at { self.scene.begin_layer(); }
@@ -1293,6 +1654,7 @@ impl<S, M: Clone> Ui<S, M> {
             }
             let under = self.modal_at.is_some_and(|m| i < m);
             let loose = if held[i] { 1.0 } else if under { n.loose.max(n.loosen).max(beneath) } else { n.loose.max(n.loosen) };
+            let loose = loose.max(pulled(&self.nodes, i));
             let mat = n.mat;
             let dim = if n.disabled { 0.4 } else { 1.0 };
             let mut sink = Sink { scene: &mut self.scene, owners: &mut self.owners, tags: &mut self.tags, unseen: &mut self.unseen, counters: &mut counters, latest: &mut latest, loose: &mut any_loose };
@@ -1870,7 +2232,7 @@ fn measure_key(c: &Content) -> u64 {
 /// A virtual list's rows are built here, for what its viewport shows.
 #[allow(clippy::too_many_arguments)]
 fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], off: (bool, bool), flow: Option<(Rc<str>, usize)>, inh: Inherit, vx: &mut VirtCtx, built: &mut Built, nodes: &mut Vec<Node<M>>) -> usize {
-    let El { key, style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, annotate, gaze_scope, material, loosen, anchor, clips, calm, mut on_text, multiline, selectable, cursor, virt, mut children } = el;
+    let El { key, style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, annotate, gaze_scope, material, loosen, anchor, clips, calm, mut on_text, multiline, selectable, cursor, virt, access, mut children } = el;
     let key = if key.is_empty() { path } else { key };
     let roles = fonts.unwrap_or(roles);
     let (off, hidden) = (off.0 || disabled, off.1 || hidden);
@@ -1907,7 +2269,7 @@ fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], of
         key, parent, rect: Rect::default(), clip: Rect::default(), inner: Rect::default(), scroll, horizontal, focusable, disabled: off, extent: 0.0,
         content, fill, border, radius, on_press, on_key, on_drag, on_blur, loose, wipe, bar, reveal, commit, modal, hidden, flow: flow.clone(),
         mat: inh.code(), loosen: inh.loosen, annotate, scope: gaze_scope, anchor, clips, calm, on_text, multiline, selectable: inh.select, cursor,
-        virt: virt_info, local: taffy::Layout::new(), tid: placeholder,
+        virt: virt_info, access, local: taffy::Layout::new(), tid: placeholder,
     });
     built.styles.push(style);
     built.kids.push(vec![]);

@@ -1,7 +1,7 @@
 //! A button: a label that sends a message when pressed (pointer, Enter or Space). To make it
 //! unavailable, call `.disabled(true)` on what this returns: it then takes no input and is drawn faint.
 use super::{CONTROL_H, LABEL, LINE, RADIUS};
-use crate::el::{El, Paint, row, text};
+use crate::el::{El, Paint, Role, row, text};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Variant {
@@ -16,7 +16,7 @@ pub enum Variant {
 pub fn button<M: Clone>(key: impl Into<String>, label: &str, msg: M) -> El<M> { button_as(key, label, Variant::Default, msg) }
 
 pub fn button_as<M: Clone>(key: impl Into<String>, label: &str, v: Variant, msg: M) -> El<M> {
-    let b = row().key(key).center().height(CONTROL_H).pad(14.0, 0.0).radius(RADIUS).on_press(msg);
+    let b = row().key(key).center().height(CONTROL_H).pad(14.0, 0.0).radius(RADIUS).on_press(msg).role(Role::Button);
     match v {
         Variant::Default => b.fill(Paint::GROUND).border(LINE, Paint::DIM).child(text(label, LABEL, Paint::TEXT)),
         Variant::Quiet => b.child(text(label, LABEL, Paint::TEXT)),

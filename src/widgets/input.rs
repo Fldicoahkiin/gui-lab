@@ -13,7 +13,7 @@
 //! A single-line field scrolls sideways when its text is longer than it; the runtime keeps the caret in
 //! view. In a `textarea` Enter breaks the line and the runtime moves the caret by lines.
 use super::{CONTROL_H, LABEL, LINE, RADIUS};
-use crate::el::{Cursor, El, Key, Mods, Paint, Phase, TextInput, col, row, text, text_lh};
+use crate::el::{Cursor, El, Key, Mods, Paint, Phase, Role, TextInput, col, row, text, text_lh};
 use crate::text::{next_grapheme, next_word, prev_grapheme, prev_word, word_range};
 use taffy::AlignItems;
 
@@ -232,7 +232,7 @@ fn shown<M>(edit: &TextEdit, placeholder: &str, size: f32, line: Option<f32>) ->
 pub fn input<M: Clone + 'static>(key: &str, edit: &TextEdit, placeholder: &str, width: f32, max: usize, msg: impl Fn(TextEdit) -> M + 'static) -> El<M> {
     let now = edit.clone();
     row().key(key).width(width).height(CONTROL_H).pad(10.0, 0.0).radius(RADIUS).align(AlignItems::CENTER)
-        .fill(Paint::GROUND).border(LINE, Paint::DIM).scroll_x().cursor(Cursor::Text)
+        .fill(Paint::GROUND).border(LINE, Paint::DIM).scroll_x().cursor(Cursor::Text).role(Role::TextBox).label(placeholder).text_value(edit.text.clone())
         .on_text(move |ev| now.handle(&ev, max, false).map(&msg))
         .child(shown(edit, placeholder, LABEL, None).nowrap().key(format!("{key}/text")))
 }
@@ -244,7 +244,7 @@ pub fn textarea<M: Clone + 'static>(key: &str, edit: &TextEdit, placeholder: &st
     // Outlined, not filled: a filled box this tall is one of the "big" shapes chrome and liquid shade,
     // and the text in it would sit on metal.
     col().key(key).width(width).height(rows as f32 * line + 16.0).pad(10.0, 8.0).radius(RADIUS)
-        .border(LINE, Paint::DIM).scroll().bar().multiline().cursor(Cursor::Text)
+        .border(LINE, Paint::DIM).scroll().bar().multiline().cursor(Cursor::Text).role(Role::TextBox).label(placeholder).text_value(edit.text.clone())
         .on_text(move |ev| now.handle(&ev, max, true).map(&msg))
         .child(shown(edit, placeholder, LABEL, Some(line)).fill_width().key(format!("{key}/text")))
 }

@@ -60,10 +60,47 @@ mod web {
     }
     // Every input first brings the clock to its time: frames are drawn on demand, so the last tick may
     // be long ago, and what the input starts (a burst, a front) starts now.
-    #[wasm_bindgen] pub fn pointer_move(x: f32, y: f32, t: f32) { with(|s| { s.ui.tick(t); s.ui.pointer_move(x, y) }); }
+    // Pointers of every kind: `kind` is 0 mouse, 1 touch, 2 pen (DESIGN.md §1.8.2).
+    fn kind(k: u32) -> crate::ui::PointerKind { match k { 1 => crate::ui::PointerKind::Touch, 2 => crate::ui::PointerKind::Pen, _ => crate::ui::PointerKind::Mouse } }
+    /// `te` is when the event happened (its timestamp), `t` when it is handled.
+    #[wasm_bindgen] pub fn pointer_move(id: u32, k: u32, x: f32, y: f32, t: f32, te: f32) { with(|s| { s.ui.tick(t); s.ui.event_time(te.min(t)); s.ui.pointer_moved(id as u64, kind(k), x, y) }); }
     #[wasm_bindgen] pub fn pointer_leave(t: f32) { with(|s| { s.ui.tick(t); s.ui.pointer_leave() }); }
-    #[wasm_bindgen] pub fn pointer_down(x: f32, y: f32, shift: bool, t: f32) { with(|s| { s.ui.tick(t); s.ui.press_with(x, y, shift); }); }
-    #[wasm_bindgen] pub fn pointer_up(x: f32, y: f32, t: f32) { with(|s| { s.ui.tick(t); s.ui.release(x, y) }); }
+    #[wasm_bindgen] pub fn pointer_down(id: u32, k: u32, x: f32, y: f32, shift: bool, t: f32, te: f32) { with(|s| { s.ui.tick(t); s.ui.event_time(te.min(t)); s.ui.pointer_down(id as u64, kind(k), x, y, shift); }); }
+    #[wasm_bindgen] pub fn pointer_up(id: u32, k: u32, x: f32, y: f32, t: f32) { with(|s| { s.ui.tick(t); s.ui.pointer_up(id as u64, kind(k), x, y) }); }
+    #[wasm_bindgen] pub fn pointer_cancel(id: u32, t: f32) { with(|s| { s.ui.tick(t); s.ui.pointer_cancel(id as u64) }); }
+    // The accessibility mirror (DESIGN.md §1.14): the page keeps a hidden DOM tree of these.
+    /// What changed in the mirror since the last call, as JSON: `[{"set": {...}}, {"remove": key}, {"focus": key}]`.
+    #[wasm_bindgen] pub fn a11y_update() -> String { with(|s| a11y_json(&s.ui.a11y_diff())).unwrap_or_else(|| "[]".into()) }
+    /// Assistive technology focused or activated a mirrored element.
+    #[wasm_bindgen] pub fn a11y_focus(key: &str, t: f32) { with(|s| { s.ui.tick(t); s.ui.focus_key(key) }); }
+    #[wasm_bindgen] pub fn a11y_activate(key: &str, t: f32) -> bool { with(|s| { s.ui.tick(t); s.ui.activate(key) }).unwrap_or(false) }
+    fn a11y_json(ops: &[crate::ui::A11yOp]) -> String {
+        use crate::ui::A11yOp;
+        let q = |s: &str| { let mut o = String::from("\""); for c in s.chars() { match c { '"' => o.push_str("\\\""), '\\' => o.push_str("\\\\"), c if (c as u32) < 0x20 => o.push_str(&format!("\\u{:04x}", c as u32)), c => o.push(c) } } o.push('"'); o };
+        let parts: Vec<String> = ops.iter().map(|op| match op {
+            A11yOp::Remove(k) => format!("{{\"remove\":{}}}", q(k)),
+            A11yOp::Focus(k) => format!("{{\"focus\":{}}}", k.as_deref().map_or("null".into(), q)),
+            A11yOp::Set(n) => {
+                let mut f = vec![format!("\"key\":{}", q(&n.key)), format!("\"role\":\"{}\"", n.role.aria()), format!("\"name\":{}", q(&n.name)),
+                    format!("\"rect\":[{},{},{},{}]", n.rect.x, n.rect.y, n.rect.w, n.rect.h)];
+                if let Some(p) = &n.parent { f.push(format!("\"parent\":{}", q(p))); }
+                if let Some((v, lo, hi)) = n.value { f.push(format!("\"value\":[{v},{lo},{hi}]")); }
+                if let Some(t) = &n.text { f.push(format!("\"text\":{}", q(t))); }
+                if let Some(c) = n.checked { f.push(format!("\"checked\":{c}")); }
+                if let Some(c) = n.selected { f.push(format!("\"selected\":{c}")); }
+                if n.level > 0 { f.push(format!("\"level\":{}", n.level)); }
+                if n.modal { f.push("\"modal\":true".into()); }
+                if n.disabled { f.push("\"disabled\":true".into()); }
+                if n.focusable { f.push("\"focusable\":true".into()); }
+                format!("{{\"set\":{{{}}}}}", f.join(","))
+            }
+        }).collect();
+        format!("[{}]", parts.join(","))
+    }
+    /// Whether a fling is going on, for automation and tests.
+    #[wasm_bindgen] pub fn flinging() -> bool { with(|s| s.ui.flinging()).unwrap_or(false) }
+    /// A scroll node's offset (CSS px), for automation and tests.
+    #[wasm_bindgen] pub fn scroll_offset(key: &str) -> f32 { with(|s| s.ui.scroll_offset(key)).unwrap_or(0.0) }
     #[wasm_bindgen] pub fn wheel(x: f32, y: f32, dx: f32, dy: f32, t: f32) { with(|s| { s.ui.tick(t); s.ui.wheel_xy(x, y, dx, dy) }); }
     /// The page's hash changed (a link, Back): show that page. Returns whether it names one.
     #[wasm_bindgen] pub fn route(hash: &str) -> bool {

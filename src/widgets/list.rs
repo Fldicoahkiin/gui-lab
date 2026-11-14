@@ -2,7 +2,7 @@
 //! is one focus stop: Up / Down / Home / End move the selection, and the selected row is scrolled into
 //! view. Rows are pressed with the pointer.
 use super::{LABEL, LINE, SELECTED};
-use crate::el::{El, Font, Key, Paint, col, row, text};
+use crate::el::{El, Font, Key, Paint, Role, col, row, text};
 use std::rc::Rc;
 use taffy::AlignItems;
 
@@ -24,11 +24,11 @@ pub fn list<M: Clone + 'static>(key: &str, rows: &[(&str, &str)], selected: Opti
             (Some(to) != selected).then(|| msg(to))
         }
     };
-    let mut l = col().key(key).scroll().bar().height(height).radius(6.0).border(LINE, Paint::FAINT).pad(0.0, 4.0).on_key(keys);
+    let mut l = col().key(key).scroll().bar().height(height).radius(6.0).border(LINE, Paint::FAINT).pad(0.0, 4.0).on_key(keys).role(Role::List);
     for (i, (label, note)) in rows.iter().enumerate() {
         let on = selected == Some(i);
         let mut r = row().key(format!("{key}:{i}")).height(row_h).pad(14.0, 0.0).gap(12.0).align(AlignItems::CENTER)
-            .on_press(msg(i)).focusable(false).reveal(on)
+            .on_press(msg(i)).focusable(false).reveal(on).role(Role::ListItem).selected(on)
             .child(text(*label, LABEL + 1.0, if on { Paint::ACCENT } else { Paint::TEXT }).grow(1.0))
             .child(text(*note, LABEL - 1.0, Paint::DIM).font(Font::Mono));
         if on { r = r.fill(SELECTED); }
@@ -61,10 +61,10 @@ pub fn list_virtual<M: Clone + 'static>(key: &str, count: usize, row_h: f32, hei
         }
     };
     let k = key.to_owned();
-    col().key(key).scroll().bar().height(height).radius(6.0).border(LINE, Paint::FAINT).on_key(keys)
+    col().key(key).scroll().bar().height(height).radius(6.0).border(LINE, Paint::FAINT).on_key(keys).role(Role::List)
         .virtual_rows(count, row_h, 6, selected, move |i| {
             let on = selected == Some(i);
-            let r = row().key(format!("{k}:{i}")).pad(14.0, 0.0).gap(12.0).align(AlignItems::CENTER).on_press(select(i)).focusable(false).child(row_of(i));
+            let r = row().key(format!("{k}:{i}")).pad(14.0, 0.0).gap(12.0).align(AlignItems::CENTER).on_press(select(i)).focusable(false).role(Role::ListItem).selected(on).child(row_of(i));
             if on { r.fill(SELECTED) } else { r }
         })
 }

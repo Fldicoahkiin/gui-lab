@@ -11,7 +11,8 @@ use std::sync::Arc;
 use std::time::Instant;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
-use winit::event::{ElementState, Ime, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, Ime, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
+use lab::ui::PointerKind;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, OwnedDisplayHandle};
 use winit::keyboard::{Key as WKey, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
@@ -127,6 +128,18 @@ impl ApplicationHandler for App {
                 let (x, y) = self.cursor;
                 s.ui.tick(now);
                 if state == ElementState::Pressed { s.ui.press_with(x, y, self.mods.shift_key()) } else { s.ui.release(x, y) }
+            }
+            // Touch screens: fingers scroll and tap (DESIGN.md §1.8.2). Pinch and other gestures are not
+            // handled (their events fall through below).
+            WindowEvent::Touch(t) => {
+                let (x, y) = (t.location.x as f32 / scale, t.location.y as f32 / scale);
+                s.ui.tick(now);
+                match t.phase {
+                    TouchPhase::Started => s.ui.pointer_down(t.id, PointerKind::Touch, x, y, false),
+                    TouchPhase::Moved => s.ui.pointer_moved(t.id, PointerKind::Touch, x, y),
+                    TouchPhase::Ended => s.ui.pointer_up(t.id, PointerKind::Touch, x, y),
+                    TouchPhase::Cancelled => s.ui.pointer_cancel(t.id),
+                }
             }
             // The input method: its composition is shown in the field, its commit inserted.
             WindowEvent::Ime(ime) => {

@@ -1,7 +1,7 @@
 //! A two-state switch with a label and, optionally, the name of the current state. The whole row is
 //! pressable.
 use super::{CONTROL_H, LABEL, LINE};
-use crate::el::{El, Paint, row, space, text};
+use crate::el::{El, Paint, Role, row, space, text};
 use taffy::prelude::JustifyContent;
 
 pub fn switch<M: Clone>(key: impl Into<String>, label: &str, on: bool, states: Option<(&str, &str)>, msg: M) -> El<M> {
@@ -15,7 +15,7 @@ pub fn switch_sized<M: Clone>(key: impl Into<String>, label: &str, on: bool, sta
         .fill(if on { crate::widgets::SELECTED } else { Paint::GROUND })
         .justify(if on { JustifyContent::END } else { JustifyContent::START })
         .child(space(knob, knob).radius(knob * 0.5).fill(if on { Paint::ACCENT } else { Paint::TEXT }));
-    let mut r = row().key(key).height(CONTROL_H.max(track + 8.0)).gap(10.0).align(taffy::AlignItems::CENTER).on_press(msg)
+    let mut r = row().key(key).height(CONTROL_H.max(track + 8.0)).gap(10.0).align(taffy::AlignItems::CENTER).on_press(msg).role(Role::Switch).checked(on)
         .child(text(label, LABEL, Paint::DIM).grow(1.0));
     if let Some(s) = states { r = r.child(text(if on { s.1 } else { s.0 }, LABEL, Paint::TEXT)); }
     r.child(t)

@@ -3,7 +3,7 @@
 //! (`beneath`, about 0.35). Declare it anywhere in the view, next to what opens it; the runtime lays
 //! it over the whole window. When `open` is false it is nothing.
 use super::{LABEL, LINE, Variant, button_as};
-use crate::el::{El, Font, Paint, col, row, space, text};
+use crate::el::{El, Font, Paint, Role, col, row, space, text};
 use taffy::AlignItems;
 
 pub fn dialog<M: Clone>(key: &str, open: bool, title: &str, width: f32, beneath: f32, close: M, body: El<M>) -> El<M> {
@@ -15,5 +15,5 @@ pub fn dialog<M: Clone>(key: &str, open: bool, title: &str, width: f32, beneath:
     let card = col().key(format!("{key}/card")).width(width).gap(14.0).pad(22.0, 18.0).radius(8.0)
         .fill(Paint::GROUND).border(LINE, Paint::DIM)
         .child(head).child(body);
-    col().key(key).center().modal(close, beneath).child(card)
+    col().key(key).center().modal(close, beneath).child(card.role(Role::Dialog).label(title))
 }

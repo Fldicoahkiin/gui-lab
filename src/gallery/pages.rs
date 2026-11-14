@@ -103,14 +103,14 @@ pub(super) fn header(s: &Gallery, h: &str, title: &str, ident: &str, desc: &str)
     col().key(format!("{h}/header")).gap(10.0)
         .child(row().key(format!("{h}/title-row")).wrap().gap(16.0).align(AlignItems::BASELINE)
             // The title is the same thing on every page: it flows when the page changes.
-            .child(text_lh(title, sz.display, (sz.display * 1.3).round(), Paint::INK).font(Font::Display).key(format!("{h}/title")).flow("page-title"))
+            .child(text_lh(title, sz.display, (sz.display * 1.3).round(), Paint::INK).font(Font::Display).key(format!("{h}/title")).flow("page-title").heading(1))
             .child(text(ident, 13.0, Paint::DIM).font(Font::Mono)))
         .child(text_lh(desc, sz.body, (sz.body * 1.7).round(), Paint::DIM).key(format!("{h}/desc")))
 }
 
 pub(super) fn section(h: &str, name: &str, body: El<Msg>) -> El<Msg> {
     col().key(format!("{h}/{name}")).gap(12.0).fill_width()
-        .child(text(name, 13.0, Paint::DIM))
+        .child(text(name, 13.0, Paint::DIM).heading(2))
         .child(body)
 }
 
@@ -243,7 +243,7 @@ fn component(s: &Gallery, c: usize) -> (El<Msg>, Vec<(&'static str, El<Msg>)>) {
         SLIDER => {
             let spec = slider_spec(s);
             let live = row().gap(16.0).align(AlignItems::CENTER)
-                .child(slider(&k("live"), s.level, spec, pr(3), Msg::Level))
+                .child(slider(&k("live"), s.level, spec, pr(3), Msg::Level).label("数值"))
                 .child(text(spec.show(s.level), sz.body, Paint::TEXT).font(Font::Mono).key(k("value")));
             let v = Spec { min: 0.0, max: 100.0, step: 1.0, decimals: 0, unit: "" };
             (live, vec![
