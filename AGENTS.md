@@ -125,6 +125,19 @@ let clock: El<()> = text("09:41", 14.0, Paint::DIM).key("clock").recompose(false
 let _ = (count, clock);
 ```
 
+## Meshes, particles, presets
+
+A 3D object is one more element: `el::mesh(MeshId::TORUS)` or `el::scene3d(Scene3d { items, camera, light, spec, picture })`,
+sized like any element. Meshes are generated in code (`MeshId::CUBE`, `ICO[0..4]`, `TORUS`…; `Ui::add_mesh`,
+`mesh::load_gltf`); `MeshInstances { mesh, transforms, paint, id }` draws many copies in one call. The global
+material draws it (its outline and creases are edges in the nearness). Hear the pointer with
+`.on_pick(|Pick| ..)` (`Pick::Hover` / `Pick::Press` carry `MeshHit { object, instance }`); turn it with
+`widgets::orbit(key, scene, &state.orbit, Msg::Orbit)` and call `Orbit::update` / `Orbit::step` (see
+`docs/recipes/mesh.md`). Morphs with many tiles run on the GPU by themselves (`Look::particles.gpu_above`).
+A style preset is data: `preset::presets()`, change a number (`Preset::set_number("transition.steps.0.a", 3.0)`)
+or read JSON (`Preset::from_json`), then `preset.apply(&look)`; a commit (`El::commit`) that applies it
+plays its transition (`docs/recipes/preset.md`).
+
 ## The rules
 
 - One way to do each thing: state in the state, changes in `update`, motion through the field and `Cmd`.
