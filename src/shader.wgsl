@@ -34,7 +34,7 @@ struct U {
   third: vec4f,
   burst: vec4f,    // a burst's rect, device px (x0, y0, x1, y1)
   burst_t: vec4f,  // its start time, strength, length (s)
-  mats: array<vec4f, 22>, // every material's numbers, two vec4s each (style.rs MAT_PARAMS)
+  mats: array<vec4f, 24>, // every material's numbers, two vec4s each (style.rs MAT_PARAMS)
 };
 @group(0) @binding(0) var<uniform> u: U;
 @group(0) @binding(1) var samp: sampler;
@@ -47,7 +47,7 @@ struct U {
 @group(0) @binding(8) var soft: texture_2d<f32>;     // the liquid's field
 
 const PLAIN: i32 = 0; const DOT: i32 = 1; const HALFTONE: i32 = 2; const ASCII: i32 = 3; const PRINT: i32 = 4;
-const LINO: i32 = 5; const GLITCH: i32 = 6; const XRAY: i32 = 7; const CHROME: i32 = 8; const LIQUID: i32 = 9; const COLLAGE: i32 = 10;
+const LINO: i32 = 5; const GLITCH: i32 = 6; const XRAY: i32 = 7; const CHROME: i32 = 8; const LIQUID: i32 = 9; const COLLAGE: i32 = 10; const NEAR: i32 = 11;
 fn mp(m: i32, i: i32) -> vec4f { return u.mats[m * 2 + i]; }
 /// The material an instance (or a pixel) is drawn with: its override, or the global one.
 fn eff_mat(code: f32) -> i32 { if (code >= 127.5) { return i32(round(code)) % 16; } return i32(u.fd.x); }
@@ -907,6 +907,28 @@ fn m_collage(p: vec2f) -> vec3f {
   return mix(g, top, inside * max(w.a, d.a));
 }
 
+// near: the intermediate images made visible. The signed nearness in bands every `pitch` px, warm
+// inside the ink and cool outside, fading toward the edge of its reach; the outline in the ink colour;
+// the ink itself as a faint fill; the looseness of each instance as a tint over it.
+fn m_near(p: vec2f) -> vec3f {
+  let s = u.res.z;
+  let a0 = mp(NEAR, 0);
+  let n = near_t(p);
+  let g = gnd(p);
+  let d = dec(p);
+  var col = mix(g, d.rgb, d.a * a0.y);
+  if (n.r <= 0.001) { return col; }
+  let sd = sdist(p);
+  let band = max(a0.x * s, 1.0);
+  let f = abs(fract(sd / band + 0.5) - 0.5) * band;
+  let line = clamp(1.0 - f / (0.6 * s + 0.2), 0.0, 1.0) * (1.0 - smoothstep(0.3, 1.0, abs(sd) / u.fd.z));
+  let tint = select(u.second.rgb, u.accent.rgb, sd > 0.0);
+  col = mix(col, tint, line * 0.85);
+  col = mix(col, u.fg.rgb, clamp(1.0 - abs(sd) / (0.8 * s), 0.0, 1.0));
+  col = mix(col, u.third.rgb, clamp(n.b + field(p, 0.6), 0.0, 1.0) * 0.35 * step(0.5, n.r));
+  return col;
+}
+
 @fragment fn fs_material(@builtin(position) frag: vec4f) -> @location(0) vec4f {
   let s = u.res.z; let t = u.res.w;
   let p = frag.xy;
@@ -943,6 +965,7 @@ fn m_collage(p: vec2f) -> vec3f {
       case 8: { col = m_chrome(p); }
       case 9: { col = m_liquid(p); }
       case 10: { col = m_collage(p); }
+      case 11: { col = m_near(p); }
       default: { col = m_plain(p); }
     }
   }

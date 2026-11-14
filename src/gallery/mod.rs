@@ -4,6 +4,7 @@
 //! committed from the control that was pressed. The old skeleton demo is one of the pages.
 mod looks;
 mod pages;
+mod scenes;
 mod styles;
 
 use crate::demo::{self, Demo};
@@ -15,6 +16,7 @@ use crate::widgets::{Edit, SELECTED, Spec, TextEdit, Variant, button_as, divider
 use std::rc::Rc;
 use taffy::AlignItems;
 
+pub use scenes::{SCENES, SMsg, Scenes};
 pub use pages::{COMPONENTS, Comp, FLOW_PARAMS, MORPH_NAMES, MORPH_PARAMS, ParamDef, flow_slot, morph_slot};
 
 /// Below this width (logical px) the rail becomes a row of tabs under the top bar.
@@ -22,7 +24,7 @@ pub const NARROW: f32 = 720.0;
 pub const RAIL: f32 = 220.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Page { Comp(usize), Marks(u8), Material(u8), Gaze, Style(u8), Morph, Flow, Type, Demo }
+pub enum Page { Comp(usize), Marks(u8), Material(u8), Gaze, Style(u8), Morph, Flow, Type, Demo, Scenes, Scene(u8) }
 
 pub const MARK_HASH: [&str; set::COUNT] = ["chars", "dither", "pixel", "mosaic", "brick", "dots", "cross", "diagonal", "diamond", "lines", "glow", "stroke"];
 
@@ -37,6 +39,8 @@ impl Page {
         v.extend([Page::Morph, Page::Flow]);
         v.push(Page::Type);
         v.push(Page::Demo);
+        v.push(Page::Scenes);
+        v.extend((0..scenes::COUNT as u8).map(Page::Scene));
         v
     }
     /// The page's address on the web: plain ASCII words, so a page can be linked.
@@ -51,6 +55,8 @@ impl Page {
             Page::Flow => "flow".into(),
             Page::Type => "type".into(),
             Page::Demo => "demo".into(),
+            Page::Scenes => "scenes".into(),
+            Page::Scene(i) => scenes::hash(i as usize),
         }
     }
     /// From `#name` or `name`; an empty hash is the first page.
@@ -70,6 +76,8 @@ impl Page {
             Page::Flow => "换页",
             Page::Type => "字号与字体",
             Page::Demo => "骨架演示",
+            Page::Scenes => "全部场景",
+            Page::Scene(i) => SCENES[i as usize].1,
         }
     }
 }
@@ -96,6 +104,9 @@ pub enum Target {
     DrawMs,
     /// A number on a style page (its own meaning per page).
     StyleNum(usize),
+    /// Number `i` of scene `s` (see `scenes::PARAMS`), and the number on the opening scene's page.
+    Scene(usize, usize),
+    OpValue,
     /// A variant: shown, but its value does not change.
     Shown,
 }
@@ -141,6 +152,8 @@ pub enum Msg {
     Query(TextEdit),
     /// A slider on a style page.
     Slide(usize, f32),
+    /// Something on a scene page.
+    Scene(SMsg),
 }
 
 pub struct Gallery {
@@ -198,6 +211,8 @@ pub struct Gallery {
     pub toggles: [bool; 8],
     pub slides: [f32; 8],
     pub query: TextEdit,
+    /// The showcase scenes' state.
+    pub sc: Scenes,
 }
 
 impl Default for Gallery {
@@ -212,7 +227,7 @@ impl Default for Gallery {
             menu: 0, mats: MaterialParams::all(), loose: 0.0, style: None, gaze: Gaze::default(), loose_scale: 1.0, style_pic: PicFx::default(),
             gaze_page: Gaze { mode: GazeMode::All, kinds: gaze::FRAME | gaze::INDEX | gaze::SIZE, density: 12.0, ..Gaze::default() },
             hovered: None, clock: 0.0, choices: [0, 0, 0, 0, 0, 0, 0, 0], toggles: [true, false, true, false, true, false, false, false],
-            slides: [0.35, 0.4, 0.6, 14.0, 0.5, 2.0, 0.0, 0.5], query: TextEdit::new("lay"),
+            slides: [0.35, 0.4, 0.6, 14.0, 0.5, 2.0, 0.0, 0.5], query: TextEdit::new("lay"), sc: Scenes::default(),
         }
     }
 }
@@ -247,7 +262,9 @@ impl Gallery {
         if let Page::Marks(s) = self.page { pics[MARK_SLOT as usize] = self.marks[s as usize]; }
         pics[STYLE_SLOT as usize] = self.style_pic;
         let gaze = if self.page == Page::Gaze { self.gaze_page } else { self.gaze };
-        Look { fx: self.demo.fx, theme: self.theme(), material: self.material, pics, params: self.mats, gaze, loose_scale: self.loose_scale }
+        let mut l = Look { fx: self.demo.fx, theme: self.theme(), material: self.material, pics, params: self.mats, gaze, loose_scale: self.loose_scale };
+        scenes::look(self, &mut l);
+        l
     }
     /// Apply style preset `i`: everything at once; the theme and material switches still work after.
     pub fn apply_style(&mut self, i: usize) {
@@ -261,6 +278,15 @@ impl Gallery {
         self.loose_scale = st.loose_scale;
         self.demo.fx.pitch = st.pitch;
         self.style_pic = st.pic;
+    }
+    /// Opening a page that has a style of its own applies it: a style page its preset, a scene its
+    /// default.
+    fn enter(&mut self, p: Page) {
+        match p {
+            Page::Style(i) => self.apply_style(i as usize),
+            Page::Scene(i) => { let st = SCENES[i as usize].3; self.sc.look = st; self.apply_style(st); }
+            _ => {}
+        }
     }
     /// The key of morph candidate `i` on the morph page.
     pub fn shape_key(i: usize) -> String { format!("morph/c{i}") }
@@ -276,7 +302,7 @@ impl Gallery {
     /// Go to the page a hash names; returns whether it names one.
     pub fn route(&mut self, hash: &str) -> bool {
         match Page::from_hash(hash) {
-            Some(p) => { self.page = p; self.edit = None; if let Page::Style(i) = p { self.apply_style(i as usize); } true }
+            Some(p) => { self.page = p; self.edit = None; self.enter(p); true }
             None => false,
         }
     }
@@ -288,8 +314,8 @@ pub fn update(s: &mut Gallery, m: Msg) {
             // Parts the two pages share (the page title, the rail's selection) move rather than vanish.
             if p != s.page { s.cmds.push(Cmd::Flow(s.flow)); }
             s.page = p; s.edit = None; s.dialog = 0;
-            // A style page shows its style.
-            if let Page::Style(i) = p { s.apply_style(i as usize); }
+            // A style page shows its style, a scene its own.
+            s.enter(p);
         }
         Msg::Menu(k) => s.menu = k,
         Msg::Style(i) => { s.apply_style(i); s.menu = 0; }
@@ -298,6 +324,7 @@ pub fn update(s: &mut Gallery, m: Msg) {
         Msg::Choose(slot, i) => s.choices[slot.min(7)] = i,
         Msg::Toggle(slot) => s.toggles[slot.min(7)] = !s.toggles[slot.min(7)],
         Msg::Query(t) => s.query = t,
+        Msg::Scene(m) => scenes::update(s, m),
         Msg::Slide(slot, v) => s.slides[slot.min(7)] = v.clamp(0.0, 1.0),
         Msg::MorphTo(i) => s.morph_to(i),
         Msg::MorphBack => if let Some(b) = s.shape_before { s.morph_to(b); },
@@ -312,6 +339,7 @@ pub fn update(s: &mut Gallery, m: Msg) {
             s.value = d.value; s.level = d.level;
             s.demo = Demo { theme: s.theme, material: s.material, ..Demo::default() };
             s.morph = d.morph; s.flow = d.flow;
+            s.sc = Scenes::default();
         }
         // Variants are shown as they are: typing into one does not change it.
         Msg::Num(Target::Shown, _) => {}
@@ -329,6 +357,8 @@ pub fn update(s: &mut Gallery, m: Msg) {
                 Target::Density => s.gaze_page.density = v,
                 Target::DrawMs => s.gaze_page.draw_ms = v,
                 Target::StyleNum(i) => s.slides[i.min(7)] = v,
+                Target::Scene(k, i) => scenes::set(s, k, i, v),
+                Target::OpValue => s.sc.op_value = v,
                 Target::Shown => {}
             }
             s.edit = None;
@@ -361,12 +391,18 @@ pub fn update(s: &mut Gallery, m: Msg) {
 pub fn view(s: &Gallery) -> El<Msg> {
     let narrow = s.width < NARROW;
     let th = s.theme();
+    // A scene has the whole window under the top bar.
+    if let Page::Scene(i) = s.page {
+        return col().key("gallery").fonts(th.roles()).fill_width().fill_height().child(top_bar(s)).child(divider(th.hairline).key("top-rule"))
+            .child(col().key(format!("main/{}", s.page.hash())).grow(1.0).fill_width().child(scenes::page(s, i as usize)));
+    }
     let mut root = col().key("gallery").fonts(th.roles()).fill_width().fill_height().child(top_bar(s)).child(divider(th.hairline).key("top-rule"));
     let main = col().key(format!("main/{}", s.page.hash())).scroll().bar().grow(1.0).fill_width();
     let main = match s.page {
         Page::Demo => main.child(demo::view(&s.demo).map(Rc::new(Msg::Demo))),
         Page::Material(_) | Page::Gaze => main.pad(if narrow { 18.0 } else { 40.0 }, 32.0).child(looks::page(s)),
         Page::Style(i) => main.child(styles::page(s, i as usize)),
+        Page::Scenes | Page::Scene(_) => main.pad(if narrow { 18.0 } else { 40.0 }, 32.0).child(scenes::list(s)),
         _ => main.pad(if narrow { 18.0 } else { 40.0 }, 32.0).child(pages::page(s)),
     };
     if narrow {
@@ -383,10 +419,14 @@ fn top_bar(s: &Gallery) -> El<Msg> {
     let material_names: Vec<&str> = MATERIALS.iter().map(|m| m.1).collect();
     let style_names: Vec<&str> = styles().iter().map(|t| t.name).collect();
     let material_now = MATERIALS.iter().position(|m| m.0 == s.material);
+    let name = if matches!(s.page, Page::Scene(_)) {
+        button_as("top/back", "‹ 场景", Variant::Quiet, Msg::Go(Page::Scenes))
+    } else { text("gui-lab", 17.0, Paint::INK).font(Font::Mono).key("top/name") };
     row().key("top").fill_width().wrap().gap(12.0).pad(20.0, 10.0).align(AlignItems::CENTER)
-        .child(text("gui-lab", 17.0, Paint::INK).font(Font::Mono).key("top/name"))
+        .child(name)
         .child(space(0.0, 0.0).grow(1.0))
         .child(row().key("top/controls").gap(16.0).wrap().align(AlignItems::CENTER)
+            .child(button_as("top/scenes", "场景", Variant::Quiet, Msg::Go(Page::Scenes)))
             .child(menu("theme", "主题", &theme_names, Some(s.theme), s.menu == 1, true, Msg::Menu(if s.menu == 1 { 0 } else { 1 }), Msg::Menu(0), Msg::Theme))
             .child(menu("material", "材质", &material_names, material_now, s.menu == 2, true, Msg::Menu(if s.menu == 2 { 0 } else { 2 }), Msg::Menu(0), Msg::Material))
             .child(menu("style", "风格", &style_names, s.style, s.menu == 3, true, Msg::Menu(if s.menu == 3 { 0 } else { 3 }), Msg::Menu(0), Msg::Style))
@@ -394,7 +434,7 @@ fn top_bar(s: &Gallery) -> El<Msg> {
 }
 
 /// The groups and their pages.
-fn groups() -> [(&'static str, Vec<Page>); 7] {
+fn groups() -> [(&'static str, Vec<Page>); 8] {
     [
         ("组件", (0..COMPONENTS.len()).map(Page::Comp).collect()),
         ("记号", (0..set::COUNT as u8).map(Page::Marks).collect()),
@@ -403,6 +443,7 @@ fn groups() -> [(&'static str, Vec<Page>); 7] {
         ("风格", (0..12u8).map(Page::Style).collect()),
         ("变换", vec![Page::Morph, Page::Flow]),
         ("排版", vec![Page::Type, Page::Demo]),
+        ("场景", std::iter::once(Page::Scenes).chain((0..scenes::COUNT as u8).map(Page::Scene)).collect()),
     ]
 }
 
@@ -411,7 +452,7 @@ fn rail_item(s: &Gallery, p: Page, h: f32) -> El<Msg> {
     let mut item = row().key(format!("nav/{}", p.hash())).height(h).pad(12.0, 0.0).radius(4.0).align(AlignItems::CENTER).on_press(Msg::Go(p))
         .child(text(p.name(), 14.0, if on { Paint::ACCENT } else { Paint::TEXT }));
     // A style page changes the whole look: the change spreads from the item pressed.
-    if matches!(p, Page::Style(_)) { item = item.commit(); }
+    if matches!(p, Page::Style(_) | Page::Scene(_)) { item = item.commit(); }
     // The selection is one thing that moves from item to item when the page changes.
     if on { item = item.fill(SELECTED).flow("rail-selection"); }
     item
@@ -452,9 +493,11 @@ pub fn new_ui(faces: Vec<Face>, w: u32, h: u32, scale: f32) -> GalleryUi {
             shows
         })
         .on_tick(|s, t| {
-            // The departure board ticks once a second.
+            // The departure board ticks once a second; scenes have their own clocks.
             let changed = s.page == Page::Style(1) && t.floor() != s.clock.floor();
             s.clock = t;
-            changed
+            scenes::tick(s, t) || changed
         })
+        .on_unused_key(scenes::key)
+        .on_key_up(scenes::key_up)
 }

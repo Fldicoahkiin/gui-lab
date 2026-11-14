@@ -131,12 +131,16 @@ pub enum Material {
     Chrome = 8,
     Liquid = 9,
     Collage = 10,
+    /// The intermediate images made visible: the signed nearness as contour bands (warm inside the
+    /// ink, cool outside), the outline itself, and the looseness as a tint. A view of the machinery,
+    /// so like chrome it has its own look at rest.
+    Near = 11,
 }
-pub const MATERIAL_COUNT: usize = 11;
+pub const MATERIAL_COUNT: usize = 12;
 pub const MATERIALS: [(Material, &str); MATERIAL_COUNT] = [
     (Material::Plain, "plain"), (Material::Dot, "dot"), (Material::Halftone, "halftone"), (Material::Ascii, "ascii"), (Material::Print, "print"),
     (Material::Lino, "lino"), (Material::Glitch, "glitch"), (Material::Xray, "xray"), (Material::Chrome, "chrome"), (Material::Liquid, "liquid"),
-    (Material::Collage, "collage"),
+    (Material::Collage, "collage"), (Material::Near, "near"),
 ];
 impl Material {
     pub fn id(self) -> u8 { self as u8 }
@@ -168,6 +172,7 @@ pub const MAT_PARAMS: [&[MatParam]; MATERIAL_COUNT] = [
     &[mp("倒角", 1.0, 32.0, 0.5, 1, "px", 9.0), mp("环境", 0.2, 3.0, 0.05, 2, "", 1.0), mp("高光", 0.0, 2.0, 0.05, 2, "", 0.9), mp("最小尺寸", 8.0, 120.0, 1.0, 0, "px", 44.0), mp("着色", 0.0, 1.0, 0.05, 2, "", 0.15)],
     &[mp("融合", 2.0, 40.0, 1.0, 0, "px", 14.0), mp("折射", 0.0, 30.0, 0.5, 1, "px", 7.0), mp("光泽", 0.0, 2.0, 0.05, 2, "", 0.9), mp("下垂", 0.0, 120.0, 2.0, 0, "px", 40.0)],
     &[mp("撕边", 0.0, 20.0, 0.5, 1, "px", 5.0), mp("纸边", 0.0, 4.0, 0.25, 2, "px", 1.5)],
+    &[mp("间距", 1.5, 12.0, 0.5, 1, "px", 3.0), mp("填充", 0.0, 1.0, 0.05, 2, "", 0.25)],
 ];
 
 /// A material's numbers, in the order of `MAT_PARAMS` (unused places are 0).

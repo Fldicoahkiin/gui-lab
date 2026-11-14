@@ -6,7 +6,7 @@
 //!     landing frame the target at looseness 1, within 2/255 over each element; mid-flight, under the
 //!     light theme, tiles are drawn outside and between the two elements.
 //!
-//!  5. Rest (step 5): for every material but chrome and liquid, body text at looseness 0 is drawn
+//!  5. Rest (step 5): for every material but chrome, liquid and near, body text at looseness 0 is drawn
 //!     exactly as `plain` draws it (print: within its paper grain; dot: the glyphs' own pixels, since
 //!     its ground has units at rest); with a control that loosened text
 //!     does differ.
@@ -221,7 +221,7 @@ fn main() {
         let plain = o.render(&mut ui, &Look { theme, material: Material::Plain, ..Look::default() });
         for m in 0..MATERIAL_COUNT as u8 {
             let mat = Material::from_id(m);
-            if matches!(mat, Material::Chrome | Material::Liquid | Material::Plain) { continue; }
+            if matches!(mat, Material::Chrome | Material::Liquid | Material::Near | Material::Plain) { continue; }
             let look = Look { theme, material: mat, ..Look::default() };
             let img = o.render(&mut ui, &look);
             // The dot material's ground has its units at rest (§1.6): there only the glyphs' own
