@@ -182,8 +182,16 @@ pub enum Cmd {
     /// A front from the centre of the element `key` as laid out by this update.
     FrontAt { key: String, strength: f32 },
     /// Press the element `key` as a person would (its message, its front, its condensing): for scripted
-    /// demonstrations and tests.
+    /// demonstrations and tests. It does not count as a person's input (`Ui::on_input` is not told).
     Press { key: String },
+    /// Keep the frame as it is now and play the new look's transition from (x, y), logical px: a commit
+    /// that no press made (a key, a timer). Taken before the layout, like a flow.
+    Commit { x: f32, y: f32 },
+    /// Give the element `key` the focus (as the keyboard would), after this layout.
+    Focus { key: String },
+    /// Hold the morph in progress at this point of its flight (0 = the source's tiles, 1 = the target's),
+    /// or let it run on from where it is held (`None`).
+    Scrub(Option<f32>),
 }
 
 /// What a tile is in the pairing.
