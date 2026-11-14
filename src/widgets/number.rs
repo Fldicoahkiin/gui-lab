@@ -76,7 +76,8 @@ pub fn number<M: Clone + 'static>(key: &str, label: &str, value: f32, spec: Spec
         .border(LINE, if editing { Paint::ACCENT } else { Paint::DIM })
         .on_key(handler)
         .on_drag_with(scrub)
-        .child(text(shown, LABEL, if editing { Paint::ACCENT } else { Paint::INK }));
+        // A new value recomposes the changed digits (DESIGN.md §1.16); digits being typed appear at once.
+        .child(text(shown, LABEL, if editing { Paint::ACCENT } else { Paint::INK }).key(format!("{key}/shown")).recompose(!editing));
     if editing {
         field = field.child(space(1.5, 16.0).fill(Paint::ACCENT)).on_blur(msg(Edit::Cancel));
     }

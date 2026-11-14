@@ -71,9 +71,15 @@ fn a_ripple_asks_for_frames_until_it_is_spent() {
     assert!(!ui.needs_frame(3.0), "idle on #button");
     // Three idle seconds: nothing drawn.
     assert_eq!(run(&mut ui, 6.0), 0);
-    // A press on the page's ground: a front.
+    // Plain ground sends no front (DESIGN.md §1.15).
     ui.press(900.0, 700.0);
     ui.release(900.0, 700.0);
+    assert!(!ui.field().fronts.iter().any(|f| f[3] > 0.0), "a press on the ground sent a front");
+    // A press on a button: a front over the button.
+    let k = ui.nodes().iter().find(|n| n.pressable() && n.key.ends_with("live")).map(|n| n.key.clone()).expect("the live button");
+    let (x, y) = ui.node(&k).unwrap().rect.center();
+    ui.press(x, y);
+    ui.release(x, y);
     let life = ui.state.look().fx.wave_life;
     let n = run(&mut ui, 6.0 + life * 0.5);
     assert!(n >= 25, "frames during the ripple: {n}");

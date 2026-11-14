@@ -89,7 +89,9 @@ fn a_tap_presses_and_shows_at_once() {
     let before = fronts(&ui);
     ui.pointer_down(7, T, x, y, false);
     assert_eq!(fronts(&ui), before + 1, "the front starts with the finger down");
-    assert!(ui.instances_of("long:3").iter().all(|i| i.extra[2] >= 1.0), "the row is held loose at once");
+    // Held as loose as a legible control may be (DESIGN.md §1.15), at once.
+    let cap = ui.state.look().legible_cap;
+    assert!(ui.instances_of("long:3").iter().all(|i| (i.extra[2] - cap).abs() < 1e-4), "the row is held loose at once");
     assert_eq!(ui.state.long_pick, None, "not sent yet");
     ui.pointer_up(7, T, x, y);
     assert_eq!(ui.state.long_pick, Some(3), "sent on lift");
@@ -112,7 +114,9 @@ fn pulling_past_the_top_loosens_the_edge_and_springs_back() {
     // Rows near the top edge loosen; rows far from it do not.
     let top = ui.instances_of("long:0").iter().map(|i| i.extra[2]).fold(0.0f32, f32::max);
     let far = ui.instances_of("long:8").iter().map(|i| i.extra[2]).fold(0.0f32, f32::max);
-    assert!(top > 0.3 && far == 0.0, "top {top}, far {far}");
+    // The rows are text to read: the pull loosens them only up to the legibility cap (DESIGN.md §1.15).
+    let cap = ui.state.look().legible_cap;
+    assert!(top > cap * 0.9 && top <= cap + 1e-4 && far == 0.0, "top {top}, far {far}");
     ui.pointer_up(1, T, x, r.y + 300.0);
     assert!(!ui.flinging(), "a pull does not fling");
     wait(&mut ui, 1.5);

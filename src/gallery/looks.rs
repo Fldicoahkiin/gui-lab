@@ -3,7 +3,7 @@
 use super::pages::{header, ratio, section};
 use super::{Gallery, IMAGE_SLOT, Msg, Page, Target};
 use crate::demo::{SKY, TERRAIN};
-use crate::el::{El, Font, Paint, col, picture, row, space, text, text_lh};
+use crate::el::{El, Font, Paint, Response, Scope, col, picture, row, space, text, text_lh};
 use crate::style::{GAZE_MODES, MAT_PARAMS, Material, gaze};
 use crate::widgets::{SELECTED, Spec, Variant, button_as, card, number, segmented, switch};
 use taffy::{AlignItems, JustifyContent};
@@ -53,7 +53,8 @@ pub fn specimen(s: &Gallery, m: u8, h: &str) -> El<Msg> {
             .child(over(space(84.0, 84.0).radius(42.0).fill(Paint::ACCENT).key(format!("{h}/disc")), Material::Liquid))
             .child(over(space(84.0, 84.0).radius(42.0).fill(Paint::hue(1)).key(format!("{h}/disc2")), Material::Liquid))
             .child(over(space(110.0, 64.0).radius(8.0).fill(Paint::INK).key(format!("{h}/slab")), Material::Chrome)));
-    row().key(format!("{h}/specimen")).material(m).loosen(s.loose).fill_width().wrap().gap(40.0).pad(36.0, 32.0).radius(6.0).border(1.0, Paint::FAINT)
+    // The specimen shows how the material loosens everything, text included: it answers fronts fully.
+    row().key(format!("{h}/specimen")).respond(Response::Loosen).legible(false).material(m).loosen(s.loose).fill_width().wrap().gap(40.0).pad(36.0, 32.0).radius(6.0).border(1.0, Paint::FAINT)
         .align(AlignItems::START).child(left).child(right)
 }
 
@@ -70,7 +71,7 @@ fn material_page(s: &Gallery, m: u8) -> El<Msg> {
     if MAT_PARAMS[m as usize].is_empty() { nums = nums.child(text("这个材质没有自己的参数；点阵的点距在骨架演示页里设置。", 13.0, Paint::DIM)); }
     let live = row().key(format!("{h}/live")).gap(12.0).wrap().align(AlignItems::CENTER)
         .child(number(&format!("{h}/loose"), "松开度", s.loose, LOOSE_SPEC, s.draft(Target::Loose), |e| Msg::Num(Target::Loose, e)).width(330.0))
-        .child(button_as(format!("{h}/ripple"), "涟漪", Variant::Default, Msg::Nothing))
+        .child(button_as(format!("{h}/ripple"), "涟漪", Variant::Default, Msg::Nothing).ripple(Scope::Container(Some(format!("{h}/specimen")))))
         .child(text("按“涟漪”从按钮处放出一道波前；松开度把整个样张固定在一个松开的程度。", 13.0, Paint::DIM));
     col().key(format!("{h}/page")).fill_width().max_width(1000.0).gap(34.0)
         .child(header(s, h, mat.name(), &format!("Material::{:?}", mat), MATERIAL_DESC[m as usize]))

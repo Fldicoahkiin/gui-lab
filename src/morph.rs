@@ -69,6 +69,23 @@ impl Default for FlowSpec {
     fn default() -> Self { Self { flow_ms: 420.0, flow_loose: 0.25, out_ms: 180.0 } }
 }
 
+/// How the changed glyphs of a text whose string changed recompose (DESIGN.md §1.16): the old glyphs'
+/// tiles travel to the new glyphs' shape. Times in milliseconds.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Recompose {
+    /// From the first tile leaving to the last one landing.
+    pub duration_ms: f32,
+    /// Fraction of the flight over which departures are spread.
+    pub stagger: f32,
+    /// At most this many flying tiles per changed glyph; past it the tiles grow by whole device px.
+    pub count_max: f32,
+    /// Unchanged glyphs that moved (the text got longer or shorter) slide to their new place over this.
+    pub slide_ms: f32,
+}
+impl Default for Recompose {
+    fn default() -> Self { Self { duration_ms: 160.0, stagger: 0.2, count_max: 600.0, slide_ms: 120.0 } }
+}
+
 /// What `update` asks the runtime to do; the application keeps a list in its state and the runtime
 /// takes it after every update (`Ui::on_commands`).
 #[derive(Clone, Debug, PartialEq)]
@@ -83,6 +100,9 @@ pub enum Cmd {
     Front { x: f32, y: f32, strength: f32 },
     /// A front from the centre of the element `key` as laid out by this update.
     FrontAt { key: String, strength: f32 },
+    /// Press the element `key` as a person would (its message, its front, its condensing): for scripted
+    /// demonstrations and tests.
+    Press { key: String },
 }
 
 /// What a tile is in the pairing.
@@ -452,7 +472,7 @@ mod tests {
     #[test]
     fn cap_raises_the_tile_to_a_multiple() {
         // A 400 × 400 opaque picture at pitch 2: 40 000 cells and more, so the tile doubles or more.
-        let pic = Instance { rect: [0.0, 0.0, 400.0, 400.0], uv: [0.0, 0.0, 1.0, 1.0], paint: [1.0, 0.0, 1.0, PICTURE], clip: [-1e5, -1e5, 1e5, 1e5], extra: [0.0; 4], look: [0.0; 4] };
+        let pic = Instance { rect: [0.0, 0.0, 400.0, 400.0], uv: [0.0, 0.0, 1.0, 1.0], paint: [1.0, 0.0, 1.0, PICTURE], clip: [-1e5, -1e5, 1e5, 1e5], extra: [0.0; 4], look: [0.0; 4], resp: [0.0; 4] };
         let spec = MorphSpec { count_max: 10000.0, ..MorphSpec::default() };
         let t = tiles(&[pic], &[pic], 2.0, &spec, &[]);
         assert!(t.particles.len() <= 10000, "{}", t.particles.len());

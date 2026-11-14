@@ -855,7 +855,8 @@ fn sound(g: &Gallery, w: f32, h: f32) -> El<Msg> {
             .child(row().gap(18.0).align(AlignItems::CENTER)
                 .child(space(pulse * 0.25, pulse * 0.25).radius(pulse * 0.125).fill(Paint::ACCENT).key("snd/pulse"))
                 .child(text(format!("{bpm:.0} BPM · {mm:02}:{ss:02}"), 14.0, Paint::DIM).font(Font::Mono).key("snd/time")))
-            .child(text_lh("夜行", size, size * 1.2, Paint::INK).font(Font::Display).weight(2.0).key("snd/title"))
+            // The headline is decoration that the beat loosens; the lyrics are read, so they stay legible.
+            .child(text_lh("夜行", size, size * 1.2, Paint::INK).font(Font::Display).weight(2.0).key("snd/title").respond(crate::el::Response::Loosen).legible(false))
             .child(LYRICS.iter().enumerate().fold(col().key("snd/lyrics").gap(6.0).align(AlignItems::CENTER).pad(0.0, 10.0), |c, (k, l)| {
                 let on = k == bars % LYRICS.len() && (sc.playing || st > 0.0);
                 c.child(text_lh(*l, if on { 22.0 } else { 16.0 }, if on { 32.0 } else { 26.0 }, if on { Paint::INK } else { Paint::DIM }).key(format!("snd/lyric{k}-{on}")))

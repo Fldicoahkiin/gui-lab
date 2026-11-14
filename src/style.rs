@@ -337,10 +337,19 @@ pub struct Look {
     pub quality: f32,
     /// Show the frame-time readout (drawn by the annotation layer).
     pub overlay: bool,
+    /// The most looseness field effects (fronts, the lens, a pull past a scroll end, a press held) may
+    /// give text to read and controls (DESIGN.md §1.15). Morphs, flows and recomposition are exempt.
+    pub legible_cap: f32,
+    /// Looseness per pixel is clamped to this after every source is summed.
+    pub loose_max: f32,
+    /// How changed glyphs recompose (DESIGN.md §1.16).
+    pub recompose: crate::morph::Recompose,
 }
 impl Default for Look {
-    fn default() -> Self { Self { fx: Fx::default(), theme: DARK, material: Material::Dot, pics: [PicFx::default(); 8], params: MaterialParams::all(), gaze: Gaze::default(), loose_scale: 1.0, quality: 1.0, overlay: false } }
+    fn default() -> Self { Self { fx: Fx::default(), theme: DARK, material: Material::Dot, pics: [PicFx::default(); 8], params: MaterialParams::all(), gaze: Gaze::default(), loose_scale: 1.0, quality: 1.0, overlay: false, legible_cap: LEGIBLE_CAP, loose_max: 1.0, recompose: crate::morph::Recompose::default() } }
 }
+/// The default `Look::legible_cap`.
+pub const LEGIBLE_CAP: f32 = 0.15;
 
 /// A style preset (DESIGN.md §4): theme × material × its numbers × annotation × the type the theme
 /// chooses, and how pictures turn into marks. Plain data.

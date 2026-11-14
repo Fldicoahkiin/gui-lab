@@ -27,6 +27,10 @@
 //!     material at rest equals its quality-1 frame exactly, and body text equals plain's as in 5; with
 //!     a control that loosened text does differ between the two resolutions.
 //!
+//! 13. Recomposition (§1.16), plain and dot: when a keyed number changes, the first frame equals a plain
+//!     render of the old text and the last frame of the flight a plain render of the new one, exactly
+//!     (the hand-over to the real glyphs is invisible); mid-flight the frame differs from both.
+//!
 //! usage: check [components]     (`components` runs only 10 and 11)
 use lab::demo::{BUST, PICTURE_SIZES, SKY, SPHERE, TERRAIN};
 use lab::el::{El, Font, Paint, col, picture, row, space, text_lh};
@@ -405,9 +409,45 @@ fn main() {
     }
     eprintln!("12. quality 0.5 at rest: largest difference {worst}/255, {} failing", failed - before);
 
+    // ── 13. Recomposition hands over without a visible change ──────────────────────────────────────
+    let before = failed;
+    let mut worst = 0;
+    let spec = lab::morph::Recompose::default();
+    let (t0, flight) = (50.0f32, spec.duration_ms / 1000.0);
+    // Every tile has landed by (1 − 0.05 × stagger) of the flight; the run ends at the flight's end.
+    let landed = t0 + flight * (1.0 - 0.025 * spec.stagger);
+    for (from, to) in [("19", "20"), ("计数 9", "计数 10"), ("3.5 px", "3.6 px")] {
+        for material in [Material::Plain, Material::Dot] {
+            let look = Look { theme: DARK, material, ..Look::default() };
+            let plain = |s: &str, t: f32| { let mut ui = Ui::new(Num(s.into()), num, |_, _| {}, fonts(), W, H, 1.0); ui.pointer_leave(); ui.tick(t); ui };
+            let mut moving = plain(from, t0);
+            moving.state.0 = to.into();
+            moving.relayout();
+            let whole = lab::ui::Rect::new(0.0, 0.0, W as f32, H as f32);
+            let d = diff(&o.render(&mut plain(from, t0), &look), &o.render(&mut moving, &look), whole);
+            let mid = o.render(&mut { moving.tick(t0 + flight * 0.5); moving }, &look);
+            let mut moving = plain(from, t0);
+            moving.state.0 = to.into();
+            moving.relayout();
+            moving.tick(landed);
+            let tiles = moving.scene().instances.len() > moving.instances_of("n").len();
+            let e = diff(&o.render(&mut plain(to, landed), &look), &o.render(&mut moving, &look), whole);
+            let m = diff(&o.render(&mut plain(to, landed), &look), &mid, whole).min(diff(&o.render(&mut plain(from, t0), &look), &mid, whole));
+            eprintln!("   recompose {from:?} → {to:?} {material:?}: start {d}/255, landing {e}/255, mid-flight differs by {m}/255");
+            worst = worst.max(d).max(e);
+            if d != 0 || e != 0 { eprintln!("FAIL recompose {from:?} → {to:?} {material:?}: the hand-over is visible"); failed += 1; }
+            if !tiles { eprintln!("FAIL recompose {from:?} → {to:?}: no tiles in flight just before landing"); failed += 1; }
+            if m == 0 { eprintln!("FAIL control: recompose {from:?} → {to:?} {material:?} mid-flight equals an end"); failed += 1; }
+        }
+    }
+    eprintln!("13. recomposition hand-over: largest difference {worst}/255, {} failing", failed - before);
+
     if failed > 0 { eprintln!("{failed} checks failed"); std::process::exit(1); }
     eprintln!("all checks passed");
 }
+
+struct Num(String);
+fn num(n: &Num) -> El<()> { col().pad(60.0, 60.0).child(row().child(text_lh(n.0.clone(), 56.0, 72.0, Paint::INK).key("n"))) }
 
 const ZH: &str = "像素字体按整数倍显示，边缘只有两种颜色。";
 fn type_page(_: &Theme) -> El<()> {

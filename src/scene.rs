@@ -24,6 +24,10 @@ pub struct Instance {
     /// `style::override_code`), accent hue (0, 1, 2), and the box the material's height treatments
     /// measure against: top and height, device px (a text line, or the shape itself).
     pub look: [f32; 4],
+    /// How the field may move it (DESIGN.md §1.15): the most looseness fronts may add (0 for `Ignore`
+    /// and `Nudge`, `Look::legible_cap` for legible `Loosen`, else 1), whether fronts push it (0 / 1),
+    /// and two spare numbers.
+    pub resp: [f32; 4],
 }
 
 /// A run of instances drawn with one picture bound. Glyphs and shapes do not care which.
@@ -81,15 +85,52 @@ pub struct Field {
     pub burst_t: [f32; 4],
     /// Up to four boxes (x0, y0, x1, y1, device px) that fronts pass by (`El::calm`).
     pub calm: [[f32; 4]; 4],
+    /// Each front's scope (DESIGN.md §1.15): the box (x0, y0, x1, y1, device px) whose instances it
+    /// reaches, by their centre; and the element that sent it (0: none), so a new press from the same
+    /// element restarts its front instead of adding one.
+    pub scopes: [[f32; 4]; 8],
+    pub sources: [u64; 8],
     pub next: usize,
 }
+/// The scope box of a global front: everything.
+pub const EVERYWHERE: [f32; 4] = [-1e6, -1e6, 1e6, 1e6];
 impl Default for Field {
-    fn default() -> Self { Self { fronts: [[0.0; 4]; 8], pointer: [-1e5, -1e5, 0.0, 0.0], wipe: [0.0; 4], wipe_rect: [0.0; 4], burst: [0.0; 4], burst_t: [0.0, 0.0, 0.0, 0.0], calm: [[0.0; 4]; 4], next: 0 } }
+    fn default() -> Self { Self { fronts: [[0.0; 4]; 8], pointer: [-1e5, -1e5, 0.0, 0.0], wipe: [0.0; 4], wipe_rect: [0.0; 4], burst: [0.0; 4], burst_t: [0.0, 0.0, 0.0, 0.0], calm: [[0.0; 4]; 4], scopes: [EVERYWHERE; 8], sources: [0; 8], next: 0 } }
 }
 impl Field {
-    pub fn front(&mut self, x: f32, y: f32, t: f32, strength: f32) {
-        self.fronts[self.next] = [x, y, t, strength];
-        self.next = (self.next + 1) % self.fronts.len();
+    /// A front over the whole window, from no element in particular.
+    pub fn front(&mut self, x: f32, y: f32, t: f32, strength: f32) { self.front_in(x, y, t, strength, EVERYWHERE, 0, f32::INFINITY); }
+    /// A front that reaches only instances whose centre is inside `scope` (device px box), sent by
+    /// `source` (0: none). While a front from the same source is still alive (younger than `life`
+    /// seconds) it is restarted from here, not added to: fronts from one element never stack.
+    pub fn front_in(&mut self, x: f32, y: f32, t: f32, strength: f32, scope: [f32; 4], source: u64, life: f32) {
+        let alive = (0..self.fronts.len()).find(|&j| source != 0 && self.sources[j] == source && self.fronts[j][3] > 0.0 && t - self.fronts[j][2] < life);
+        let j = match alive { Some(j) => j, None => { let j = self.next; self.next = (self.next + 1) % self.fronts.len(); j } };
+        self.fronts[j] = [x, y, t, strength];
+        self.scopes[j] = scope;
+        self.sources[j] = source;
+    }
+    /// How strongly the fronts disturb device point `p` at time `t`, for an instance centred at `c`
+    /// (only fronts whose scope holds `c` count): the shader's `wave`, on the CPU, for tests and the tree
+    /// export. `tail_gain` as in the shader (0.6 for text and shapes).
+    pub fn wave_at(&self, p: [f32; 2], c: [f32; 2], t: f32, fx: &Fx, scale: f32, tail_gain: f32) -> f32 {
+        if self.calm.iter().any(|r| r[2] > r[0] && p[0] >= r[0] && p[1] >= r[1] && p[0] < r[2] && p[1] < r[3]) { return 0.0; }
+        let (w, tail) = (fx.wave_width.max(1e-3) * scale, fx.wave_tail.max(1e-3) * scale);
+        let mut k: f32 = 0.0;
+        for (j, f) in self.fronts.iter().enumerate() {
+            let age = t - f[2];
+            if f[3] <= 0.0 || age < 0.0 { continue; }
+            let sc = self.scopes[j];
+            if c[0] < sc[0] || c[1] < sc[1] || c[0] >= sc[2] || c[1] >= sc[3] { continue; }
+            let d = ((p[0] - f[0]).powi(2) + (p[1] - f[1]).powi(2)).sqrt() - age * fx.wave_speed * scale;
+            let life = fx.wave_life.max(1e-3);
+            let x = (age / life).clamp(0.0, 1.0);
+            let strength = (1.0 - x * x * (3.0 - 2.0 * x)) * f[3];
+            let front = (-(d * d) / (w * w)).exp();
+            let behind = if d < 0.0 { (d / tail).exp() * tail_gain } else { 0.0 };
+            k = k.max(front.max(behind) * strength);
+        }
+        k
     }
     /// A burst over `rect` (device px, x0 y0 x1 y1, or the whole window when `None`) from time `t`,
     /// `strength` 0..1, lasting `secs`.

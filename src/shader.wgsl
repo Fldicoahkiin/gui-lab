@@ -40,6 +40,8 @@ struct U {
   mats: array<vec4f, 24>, // every material's numbers, two vec4s each (style.rs MAT_PARAMS)
   calm: array<vec4f, 4>,  // boxes fronts pass by (x0, y0, x1, y1, device px)
   qual: vec4f,     // the material resolution: 1 / q for the reduced pass (1 otherwise), q, its size w, h
+  scopes: array<vec4f, 8>, // each front's scope box (x0, y0, x1, y1, device px): it reaches instances centred inside
+  rip: vec4f,      // looseness per pixel is clamped to x (Look::loose_max) after summing; y, z, w spare
 };
 @group(0) @binding(0) var<uniform> u: U;
 @group(0) @binding(1) var samp: sampler;
@@ -67,11 +69,17 @@ fn front_at(p: vec2f, r: vec4f) -> vec2f {
   let d = distance(p, r.xy) - age * u.fb.x * u.res.z;
   return vec2f((1.0 - smoothstep(0.0, max(u.fb.y, 1e-3), age)) * r.w, d);
 }
+/// Whether front `j` reaches a point (an instance's centre, or a pixel of the ground).
+fn in_scope(c: vec2f, j: i32) -> bool {
+  let r = u.scopes[j];
+  return c.x >= r.x && c.y >= r.y && c.x < r.z && c.y < r.w;
+}
 
 // ── Stage 1 ───────────────────────────────────────────────────────────────────────────────────────
 struct VIn {
   @builtin(vertex_index) vi: u32,
   @location(0) rect: vec4f, @location(1) uv: vec4f, @location(2) paint: vec4f, @location(3) clip: vec4f, @location(4) extra: vec4f, @location(5) look: vec4f,
+  @location(6) resp: vec4f,
 };
 struct VOut {
   @builtin(position) pos: vec4f,
@@ -83,6 +91,8 @@ struct VOut {
   @location(5) @interpolate(flat) extra: vec4f,
   @location(6) @interpolate(flat) radius: f32,
   @location(7) @interpolate(flat) look: vec4f,
+  // How the field may move it (scene.rs Instance::resp): looseness cap, push gain; and its centre.
+  @location(8) @interpolate(flat) resp: vec4f,
 };
 
 @vertex fn vs_inst(i: VIn) -> VOut { return vs_pad(i, u.fd.z); }
@@ -97,9 +107,10 @@ fn vs_pad(i: VIn, spad: f32) -> VOut {
   // Each instance rides the wave: it is pushed outward a little as a front passes under it.
   let centre = i.rect.xy + i.rect.zw * 0.5;
   let w = u.fb.z * 1.3 * u.res.z;
-  let still = calm_at(centre);
+  let still = calm_at(centre) || i.resp.y < 0.5;
   for (var k = 0; k < 8; k++) {
     if (still) { break; }
+    if (!in_scope(centre, k)) { continue; }
     let f = front_at(centre, u.fronts[k]);
     let dir = normalize(centre - u.fronts[k].xy + vec2f(1e-4));
     p += dir * exp(-(f.y * f.y) / (w * w)) * f.x * u.fc.x * u.res.z;
@@ -110,6 +121,7 @@ fn vs_pad(i: VIn, spad: f32) -> VOut {
   o.size = i.rect.zw;
   o.uv = select(i.uv.xy + o.local / i.rect.zw * (i.uv.zw - i.uv.xy), mix(i.uv.xy, i.uv.zw, c), i.paint.w < 0.5);
   o.paint = i.paint; o.clip = i.clip; o.extra = i.extra; o.radius = i.uv.x; o.look = i.look;
+  o.resp = vec4f(i.resp.x, i.resp.y, centre);
   return o;
 }
 
@@ -168,9 +180,14 @@ fn ink_code_as(i: VOut, big: bool) -> f32 {
   return round(i.look.y) * 0.15 + select(0.0, 0.05, i.paint.w > 0.5);
 }
 /// How loose an instance is here: its own looseness and the fronts passing.
-fn loose1(i: VOut) -> f32 {
+fn loose1(i: VOut) -> f32 { return clamp(own_loose(i) * loose_scale(), 0.0, u.rip.x); }
+/// An instance's own looseness here (held, born, set at rest) plus what the fronts that reach it add,
+/// which only fills up to its cap: text to read never passes `legible_cap` by the field.
+fn own_loose(i: VOut) -> f32 {
   let born = clamp((u.res.w - i.extra.w) / max(u.fc.z, 1e-3), 0.0, 1.0);
-  return clamp((max(i.extra.z, 1.0 - born) + wave(i.pos.xy, 0.6)) * loose_scale(), 0.0, 1.0);
+  let k = max(i.extra.z, 1.0 - born);
+  if (i.resp.x <= 0.0) { return k; }
+  return k + clamp(wave_in(i.pos.xy, i.resp.zw, 0.6), 0.0, max(i.resp.x - k, 0.0));
 }
 
 @fragment fn fs_ink(i: VOut) -> @location(0) vec4f { return ink_of(i, false); }
@@ -213,7 +230,7 @@ fn ink_of(i: VOut, solid: bool) -> vec4f {
 fn near_of(i: VOut) -> vec4f {
   let s = inst(i);
   let born = clamp((u.res.w - i.extra.w) / max(u.fc.z, 1e-3), 0.0, 1.0);
-  let loose = max(i.extra.z, 1.0 - born) * step(0.02, s.y) * step(0.01, i.paint.z);
+  let loose = min(own_loose(i), 1.0) * step(0.02, s.y) * step(0.01, i.paint.z);
   let slot = select(0.0, (i.paint.y + 1.0) / 8.0, s.z > 0.5);
   var code = select(0.0, round(i.extra.y * 2.0) / 255.0, i.paint.w < 0.5 && s.y > 0.02);
   // A material override reaches through the nearness of shapes and pictures, but only just around
@@ -285,13 +302,17 @@ fn calm_at(p: vec2f) -> bool {
   }
   return false;
 }
-fn wave(p: vec2f, tail_gain: f32) -> f32 {
+/// The fronts at a pixel of the ground (no instance): a front reaches it when the pixel is in its scope.
+fn wave(p: vec2f, tail_gain: f32) -> f32 { return wave_in(p, p, tail_gain); }
+/// The fronts at pixel `p` of an instance centred at `c`: only fronts whose scope holds `c`.
+fn wave_in(p: vec2f, c: vec2f, tail_gain: f32) -> f32 {
   if (calm_at(p)) { return 0.0; }
   var k = 0.0;
   let s = u.res.z;
   let w = max(u.fb.z, 1e-3) * s;
   let tail = max(u.fb.w, 1e-3) * s;
   for (var j = 0; j < 8; j++) {
+    if (!in_scope(c, j)) { continue; }
     let f = front_at(p, u.fronts[j]);
     let front = exp(-(f.y * f.y) / (w * w));
     let behind = select(0.0, exp(f.y / tail) * tail_gain, f.y < 0.0);
@@ -305,8 +326,6 @@ fn half_plane(p: vec2f) -> f32 {
   let inside = p.x >= r.x && p.y >= r.y && p.x < r.z && p.y < r.w && p.x >= u.wipe.x;
   return select(0.0, u.wipe.y, inside && u.wipe.y > 0.0);
 }
-/// Everything in the field that disturbs a point: fronts and their tails, and the half-plane.
-fn field(p: vec2f, tail_gain: f32) -> f32 { return max(wave(p, tail_gain), half_plane(p)); }
 fn lens(p: vec2f) -> f32 {
   let d = (p - u.pointer.xy) / (max(u.fc.y, 1e-3) * u.res.z);
   let bell = exp(-dot(d, d));
@@ -373,7 +392,7 @@ fn mark(s: f32, col: f32, uv: vec2f, lod: f32) -> vec2f {
 }
 /// The picture's own looseness at a point: the field (fronts, half-plane), the lens, and the
 /// instance's own (held, born, set at rest).
-fn pic_k(q: vec2f) -> f32 { return clamp(field(q, 0.6) + lens(q) + near_t(q).b, 0.0, 1.0); }
+fn pic_k(q: vec2f) -> f32 { return clamp(half_plane(q) + lens(q) + near_t(q).b, 0.0, u.rip.x); }
 /// Step 2: the pitch grows from 1 to `pitch` over the first half of loosening.
 fn pic_p(k: f32, pitch: f32) -> f32 {
   return max(1.0, round(mix(1.0, max(1.0, round(pitch * u.res.z)), smoothstep(0.0, 0.5, k))));
@@ -538,7 +557,7 @@ fn burst_k(p: vec2f) -> f32 {
 }
 /// How loose text and shapes are here: fronts and their tails, the half-plane, and each instance's
 /// own looseness, scaled by the style.
-fn kt(p: vec2f) -> f32 { return clamp((field(p, 0.6) + near_t(p).b) * loose_scale(), 0.0, 1.0); }
+fn kt(p: vec2f) -> f32 { return clamp((half_plane(p) + near_t(p).b) * loose_scale(), 0.0, u.rip.x); }
 /// Whatever is drawn at a point, pictures as their marks: for materials that move the picture around.
 fn scene_at(q: vec2f) -> vec3f {
   let n = near_t(q);
@@ -562,13 +581,14 @@ fn m_dot(frag: vec2f) -> vec3f {
   let bh = 5.0 * s; let band = floor(p.y / bh);
   let w0 = wave(vec2f(p.x, (band + 0.5) * bh), 0.6);
   let pick = step(0.55, h1(vec2f(band, floor(t * 9.0))));
-  p.x += (h1(vec2f(band, floor(t * 17.0))) - 0.5) * 70.0 * s * u.fa.w * pick * smoothstep(0.2, 0.9, w0);
+  // Only what the fronts loosen slips: text that is only nudged stays where it is.
+  p.x += (h1(vec2f(band, floor(t * 17.0))) - 0.5) * 70.0 * s * u.fa.w * pick * smoothstep(0.2, 0.9, w0) * clamp(near_t(frag).b * 4.0, 0.0, 1.0);
   let here = near_t(frag);
   let pitch = max(1.5, u.fa.x * s);
   let cell = floor(p / pitch);
   let block = (cell + 0.5) * pitch;
   let centre = block + (h2(cell) - 0.5) * u.fa.z * pitch;
-  let loose = (field(centre, 0.6) + near(centre).b + (h1(cell + 7.0) - 0.5) * 0.22) * loose_scale();
+  let loose = min((half_plane(centre) + near(centre).b + (h1(cell + 7.0) - 0.5) * 0.22) * loose_scale(), u.rip.x);
   let printed = select(0.0, here.a * 255.0 * 0.5, here.a < 0.5);
   let printed_b = select(0.0, near_t(block).a * 255.0 * 0.5, near_t(block).a < 0.5);
   var col: vec3f; var alpha: f32;
@@ -975,7 +995,7 @@ fn m_near(p: vec2f) -> vec3f {
   let tint = select(u.second.rgb, u.accent.rgb, sd > 0.0);
   col = mix(col, tint, line * 0.85);
   col = mix(col, u.fg.rgb, clamp(1.0 - abs(sd) / (0.8 * s), 0.0, 1.0));
-  col = mix(col, u.third.rgb, clamp(n.b + field(p, 0.6), 0.0, 1.0) * 0.35 * step(0.5, n.r));
+  col = mix(col, u.third.rgb, clamp(n.b + half_plane(p), 0.0, 1.0) * 0.35 * step(0.5, n.r));
   return col;
 }
 

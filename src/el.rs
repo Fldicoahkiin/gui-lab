@@ -125,6 +125,50 @@ impl Drag {
     pub fn fy(&self) -> f32 { (self.y / self.h.max(1.0)).clamp(0.0, 1.0) }
 }
 
+/// How an element answers the field's fronts, lens and pulls (DESIGN.md §1.15). Inherited down the tree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Response {
+    /// Fronts pass it by: no push, no looseness (the caret, a selection, the focus marks).
+    Ignore,
+    /// Pushed a little and offset by a burst as a front passes, but its looseness stays 0 (text to read,
+    /// controls).
+    Nudge,
+    /// Pushed and loosened (decoration, pictures, a scene's headline).
+    Loosen,
+}
+impl Response {
+    pub const ALL: [Response; 3] = [Response::Ignore, Response::Nudge, Response::Loosen];
+    pub fn name(self) -> &'static str { match self { Response::Ignore => "ignore", Response::Nudge => "nudge", Response::Loosen => "loosen" } }
+}
+
+/// What a front reaches (DESIGN.md §1.15).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Scope {
+    /// Only the pressed element's own subtree (the default for presses on controls).
+    Own,
+    /// The nearest ancestor marked `El::ripple_scope()` (`None`), or the element with this key.
+    Container(Option<String>),
+    /// The whole window (theme, material, page and scene changes; an explicit global front).
+    Global,
+    /// No front at all.
+    Off,
+}
+
+/// Ripple and recomposition settings of an element (DESIGN.md §1.15, §1.16). `None` means inherited
+/// (or the default for what the element is).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Ripple {
+    pub respond: Option<Response>,
+    /// Text to read or a control: field effects loosen it at most `Look::legible_cap`.
+    pub legible: Option<bool>,
+    /// What a press here sends a front to.
+    pub scope: Option<Scope>,
+    /// Fronts from presses inside with `Scope::Container(None)` stop at this element's box.
+    pub container: bool,
+    /// Text whose string changes recomposes glyph by glyph (on by default for keyed text).
+    pub recompose: Option<bool>,
+}
+
 /// An element that opens a layer over everything else (a dialog). While it is there, only it can be
 /// hit or focused, everything beneath it is held at `beneath` looseness, and Esc sends `dismiss`.
 pub struct Modal<M> { pub dismiss: M, pub beneath: f32 }
@@ -196,6 +240,8 @@ pub struct El<M> {
     pub virt: Option<Virtual<M>>,
     /// What this element is to assistive technology (DESIGN.md §1.14): role, name, state.
     pub access: Option<Access>,
+    /// Ripple scope, response, legibility and recomposition (DESIGN.md §1.15, §1.16).
+    pub ripple: Ripple,
     pub children: Vec<El<M>>,
 }
 
@@ -244,7 +290,7 @@ impl<M> El<M> {
     fn new(style: Style, content: Content) -> Self {
         // Nothing shrinks unless asked: fixed sizes stay fixed inside columns and scroll areas.
         let style = Style { flex_shrink: 0.0, ..style };
-        Self { key: String::new(), style, content, fill: None, border: None, radius: 0.0, on_press: None, on_key: None, on_drag: None, on_blur: None, focusable: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, modal: None, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, clips: false, calm: false, on_text: None, multiline: false, selectable: false, cursor: None, virt: None, access: None, children: vec![] }
+        Self { key: String::new(), style, content, fill: None, border: None, radius: 0.0, on_press: None, on_key: None, on_drag: None, on_blur: None, focusable: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, modal: None, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, clips: false, calm: false, on_text: None, multiline: false, selectable: false, cursor: None, virt: None, access: None, ripple: Ripple::default(), children: vec![] }
     }
     pub fn key(mut self, k: impl Into<String>) -> Self { self.key = k.into(); self }
     pub fn gap(mut self, g: f32) -> Self { self.style.gap = Size { width: length(g), height: length(g) }; self }
@@ -354,6 +400,19 @@ impl<M> El<M> {
     /// Let a text element flow around the true outlines in `a` (coordinates relative to its own
     /// content box), keeping `a.gap` px from their ink.
     pub fn around(mut self, a: Around) -> Self { if let Content::Text { around, .. } = &mut self.content { *around = Some(Rc::new(a)); } self }
+    /// How this subtree answers fronts, the lens and pulls (inherited).
+    pub fn respond(mut self, r: Response) -> Self { self.ripple.respond = Some(r); self }
+    /// Mark this subtree as text to read / a control (`true`), so field effects loosen it at most
+    /// `Look::legible_cap`, or as decoration (`false`). Inherited; text and controls are legible by default.
+    pub fn legible(mut self, on: bool) -> Self { self.ripple.legible = Some(on); self }
+    /// What a press in this subtree sends a front to (inherited). Controls default to `Scope::Own`;
+    /// pressing plain ground sends nothing unless a scope is set here.
+    pub fn ripple(mut self, s: Scope) -> Self { self.ripple.scope = Some(s); self }
+    /// Fronts sent with `Scope::Container(None)` from inside stop at this element's box.
+    pub fn ripple_scope(mut self) -> Self { self.ripple.container = true; self }
+    /// Whether a change of this text's string recomposes the changed glyphs (inherited; on by default
+    /// for text with an explicit key, off inside text fields).
+    pub fn recompose(mut self, on: bool) -> Self { self.ripple.recompose = Some(on); self }
     /// Choose the `PicFx` slot of a picture.
     pub fn pic_fx(mut self, slot: u8) -> Self { if let Content::Picture { fx, .. } = &mut self.content { *fx = slot; } self }
     pub fn scroll(mut self) -> Self { self.scroll = true; self.style.overflow.y = taffy::Overflow::Scroll; self.style.scrollbar_width = 0.0; self }
@@ -366,7 +425,7 @@ impl<M> El<M> {
 
     /// The same tree sending other messages: lets one application embed another's view.
     pub fn map<N: 'static>(self, f: Rc<dyn Fn(M) -> N>) -> El<N> where M: 'static {
-        let El { key, style, content, fill, border, radius, on_press, on_key, on_drag, on_blur, focusable, scroll, horizontal, bar, reveal, disabled, commit, modal, fonts, loose, wipe, flow, hidden, annotate, gaze_scope, material, loosen, anchor, clips, calm, on_text, multiline, selectable, cursor, virt, access, children } = self;
+        let El { key, style, content, fill, border, radius, on_press, on_key, on_drag, on_blur, focusable, scroll, horizontal, bar, reveal, disabled, commit, modal, fonts, loose, wipe, flow, hidden, annotate, gaze_scope, material, loosen, anchor, clips, calm, on_text, multiline, selectable, cursor, virt, access, ripple, children } = self;
         let virt = virt.map(|v| { let f = f.clone(); let b = v.build; Virtual { count: v.count, row_h: v.row_h, overscan: v.overscan, selected: v.selected, build: Rc::new(move |i: usize| b(i).map(f.clone())) as Rc<dyn Fn(usize) -> El<N>> } });
         let on_key = on_key.map(|k| { let f = f.clone(); Rc::new(move |key: Key, shift: bool| k(key, shift).map(|m| f(m))) as OnKey<N> });
         let on_text = on_text.map(|t| { let f = f.clone(); Rc::new(move |i: TextInput| t(i).map(|m| f(m))) as OnText<N> });
@@ -374,7 +433,7 @@ impl<M> El<M> {
         El {
             key, style, content, fill, border, radius, on_press: on_press.map(|m| f(m)), on_key, on_drag, on_blur: on_blur.map(|m| f(m)),
             focusable, scroll, horizontal, bar, reveal, disabled, commit, modal: modal.map(|m| Modal { dismiss: f(m.dismiss), beneath: m.beneath }),
-            fonts, loose, wipe, flow, hidden, annotate, gaze_scope, material, loosen, anchor, clips, calm, on_text, multiline, selectable, cursor, virt, access, children: children.into_iter().map(|c| c.map(f.clone())).collect(),
+            fonts, loose, wipe, flow, hidden, annotate, gaze_scope, material, loosen, anchor, clips, calm, on_text, multiline, selectable, cursor, virt, access, ripple, children: children.into_iter().map(|c| c.map(f.clone())).collect(),
         }
     }
 }

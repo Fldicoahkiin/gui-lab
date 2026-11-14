@@ -40,6 +40,10 @@ struct Uniforms {
     calm: [[f32; 4]; 4],
     /// The material resolution: 1 / q for the reduced pass (1 otherwise), q, and its size.
     qual: [f32; 4],
+    /// Each front's scope box (device px).
+    scopes: [[f32; 4]; 8],
+    /// `Look::loose_max`, and three spare numbers.
+    rip: [f32; 4],
 }
 
 const INK: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -148,7 +152,7 @@ impl Renderer {
         let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
         let inst_layout = wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<Instance>() as u64, step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4],
+            attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4],
         };
         let maxb = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Max };
         let add = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add };
@@ -576,7 +580,7 @@ impl Renderer {
             fd: [look.material.id() as f32, flag(self.out_format.is_srgb()), SPREAD as f32, marks::PALETTES.len() as f32],
             bg, fg, accent, pointer: [field.pointer[0], field.pointer[1], field.pointer[2], fx.lens_hard], wipe: field.wipe, wipe_rect: field.wipe_rect, split, fronts: field.fronts, pics,
             ground2: [th.ground2[0], th.ground2[1], th.ground2[2], look.loose_scale], second: c(th.second), third: c(th.third),
-            burst: field.burst, burst_t: field.burst_t, mats, calm: field.calm, qual,
+            burst: field.burst, burst_t: field.burst_t, mats, calm: field.calm, qual, scopes: field.scopes, rip: [look.loose_max, 0.0, 0.0, 0.0],
         };
         self.queue.write_buffer(&self.ubuf, 0, bytemuck::bytes_of(&u));
     }

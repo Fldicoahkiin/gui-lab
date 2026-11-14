@@ -2,7 +2,7 @@
 //! has the same parts, top to bottom: title, one sentence, 预览, 变体, 参数, 源码.
 use super::{Gallery, IMAGE_SLOT, MARK_SLOT, Msg, Page, Target, WIPE_SPEC};
 use crate::demo::{self, BUST, PICTURE_NAMES, PICTURE_SIZES, SKY, SPHERE, TERRAIN};
-use crate::el::{El, Font, Paint, col, picture, row, space, stack, text, text_lh};
+use crate::el::{El, Font, Paint, Response, Scope, col, picture, row, space, stack, text, text_lh};
 use crate::morph::{Ease, FlowSpec, MorphSpec};
 use crate::style::set;
 use crate::text::{MONO, PIXEL, SANS};
@@ -180,6 +180,7 @@ fn comp_page(s: &Gallery, c: usize) -> El<Msg> {
     col().key(format!("{h}/page")).fill_width().max_width(980.0).gap(34.0)
         .child(header(s, h, comp.title, comp.func, comp.desc))
         .child(section(h, "预览", preview(h, live)))
+        .children((c == BUTTON).then(|| section(h, "涟漪", ripple(s))))
         .child(section(h, "变体", variants(h, vars)))
         .child(section(h, "参数", params(s, c)))
         .child(section(h, "源码", source(h, comp.file, comp.source)))
@@ -187,6 +188,52 @@ fn comp_page(s: &Gallery, c: usize) -> El<Msg> {
 }
 
 fn shown(e: Edit) -> Msg { Msg::Num(Target::Shown, e) }
+
+/// The ripple section's numbers (DESIGN.md §1.15, §1.16): name, spec, and where each lives in the state.
+pub const RIPPLE_PARAMS: [(&str, Spec); 6] = [
+    ("可读上限", Spec { min: 0.0, max: 1.0, step: 0.01, decimals: 2, unit: "" }),
+    ("松开上限", Spec { min: 0.0, max: 1.0, step: 0.05, decimals: 2, unit: "" }),
+    ("重组时长", Spec { min: 0.0, max: 3000.0, step: 10.0, decimals: 0, unit: "ms" }),
+    ("重组错开", Spec { min: 0.0, max: 0.9, step: 0.05, decimals: 2, unit: "" }),
+    ("每字粒子", Spec { min: 1.0, max: 20000.0, step: 50.0, decimals: 0, unit: "" }),
+    ("滑动时长", Spec { min: 0.0, max: 3000.0, step: 10.0, decimals: 0, unit: "ms" }),
+];
+/// The scope choices of the counter: its own subtree, the row it is in, the whole window.
+pub const RIPPLE_SCOPES: [&str; 3] = ["自身", "这一块", "整个窗口"];
+pub fn ripple_scope(i: usize) -> Scope { match i { 0 => Scope::Own, 1 => Scope::Container(None), _ => Scope::Global } }
+pub fn ripple_value(s: &Gallery, i: usize) -> f32 {
+    let r = &s.recompose;
+    [s.legible_cap, s.loose_max, r.duration_ms, r.stagger, r.count_max, r.slide_ms][i.min(5)]
+}
+
+/// The ripple section of the button page: a counter whose presses reach what the scope says, three
+/// neighbours that answer fronts each in their own way, and the numbers that govern both; "连点 10 次"
+/// presses the counter ten times in 300 ms.
+fn ripple(s: &Gallery) -> El<Msg> {
+    let h = "ripple";
+    let neighbour = |i: usize, r: Response, name: &str| col().key(format!("{h}/n{i}")).gap(8.0).align(AlignItems::CENTER).respond(r)
+        .child(row().key(format!("{h}/n{i}/shape")).width(64.0).height(40.0).radius(6.0).fill(Paint::hue((i % 3) as u8)))
+        .child(text(name, 13.0, Paint::TEXT).key(format!("{h}/n{i}/label")));
+    let area = row().key(format!("{h}/area")).ripple_scope().fill_width().wrap().gap(28.0).pad(28.0, 24.0).radius(6.0).border(1.0, Paint::FAINT).align(AlignItems::CENTER)
+        .child(button_as(format!("{h}/counter"), "计数", Variant::Default, Msg::RipCount).ripple(ripple_scope(s.rip_scope)))
+        .child(text(s.rip_count.to_string(), 28.0, Paint::INK).font(Font::Display).key(format!("{h}/count")).width(80.0))
+        .child(neighbour(0, Response::Ignore, "忽略"))
+        .child(neighbour(1, Response::Nudge, "轻推"))
+        .child(neighbour(2, Response::Loosen, "松开"));
+    let mut nums = row().key(format!("{h}/params")).fill_width().wrap().gap(10.0);
+    for (i, (name, spec)) in RIPPLE_PARAMS.iter().enumerate() {
+        let t = Target::Rip(i);
+        nums = nums.child(number(&format!("{h}/p{i}"), name, ripple_value(s, i), *spec, s.draft(t), move |e| Msg::Num(t, e)).width(330.0));
+    }
+    col().key(format!("{h}/body")).fill_width().gap(14.0)
+        .child(area)
+        .child(row().key(format!("{h}/controls")).wrap().gap(14.0).align(AlignItems::CENTER)
+            .child(text("范围", 13.0, Paint::DIM))
+            .child(segmented(&format!("{h}/scope"), &RIPPLE_SCOPES, s.rip_scope, 30.0, Msg::RipScope))
+            .child(button_as(format!("{h}/burst"), "连点 10 次", Variant::Default, Msg::RipBurst)))
+        .child(nums)
+        .child(text("按“计数”：数字的像素重新组合成新的数字；波前只到范围里的东西。“忽略”不动，“轻推”只被推一下，“松开”散开；正文和控件最多松开到可读上限。", 13.0, Paint::DIM))
+}
 
 /// The live preview of a component and its variants.
 fn component(s: &Gallery, c: usize) -> (El<Msg>, Vec<(&'static str, El<Msg>)>) {

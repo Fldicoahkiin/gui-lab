@@ -3,7 +3,7 @@
 use super::pages::ratio;
 use super::{Gallery, Msg, STYLE_SLOT, Target};
 use crate::demo::{BUST, SKY, SPHERE, TERRAIN};
-use crate::el::{El, Font, Paint, col, picture, row, space, text, text_lh};
+use crate::el::{El, Font, Paint, Scope, col, picture, row, space, text, text_lh};
 use crate::style::{Material, styles};
 use crate::widgets::{Spec, Variant, button_as, card, choice, input, number, segmented, slider, switch, tabs};
 use taffy::{AlignItems, JustifyContent};
@@ -40,7 +40,9 @@ pub fn page(s: &Gallery, i: usize) -> El<Msg> {
         10 => y2k(s, &h),
         _ => mixed(s, &h),
     };
-    col().key(format!("{h}/page")).fill_width().gap(26.0).pad(48.0, 36.0)
+    // A press anywhere on the composition sends its front over the whole composition (DESIGN.md §1.15):
+    // pictures and shapes loosen, text and controls only as far as the legibility cap.
+    col().key(format!("{h}/page")).fill_width().gap(26.0).pad(48.0, 36.0).ripple_scope().ripple(Scope::Container(None))
         .child(row().key(format!("{h}/caption")).fill_width().gap(14.0).align(AlignItems::BASELINE).wrap()
             .child(text(st.name, 13.0, Paint::DIM).font(Font::Mono).key(format!("{h}/name")))
             .child(text(STYLE_DESC[i], 13.0, Paint::DIM).key(format!("{h}/desc")).grow(1.0)))

@@ -111,6 +111,8 @@ pub enum Target {
     /// Number `i` of scene `s` (see `scenes::PARAMS`), and the number on the opening scene's page.
     Scene(usize, usize),
     OpValue,
+    /// Number `i` of the button page's ripple section (`pages::RIPPLE_PARAMS`).
+    Rip(usize),
     /// A variant: shown, but its value does not change.
     Shown,
 }
@@ -166,6 +168,10 @@ pub enum Msg {
     Slide(usize, f32),
     /// Something on a scene page.
     Scene(SMsg),
+    /// The ripple section: the counter, its scope, and ten fast presses of it.
+    RipCount,
+    RipScope(usize),
+    RipBurst,
 }
 
 pub struct Gallery {
@@ -233,6 +239,16 @@ pub struct Gallery {
     /// The ten thousand rows: the selected one, and which switches were flipped from where they start.
     pub long_pick: Option<usize>,
     pub long_on: Vec<bool>,
+    /// The ripple section of the button page (DESIGN.md §1.15, §1.16): what the counter's presses reach
+    /// (0 own, 1 the row, 2 the window), the legibility cap, the looseness clamp, how glyphs recompose,
+    /// and the second counter's value.
+    pub rip_scope: usize,
+    pub legible_cap: f32,
+    pub loose_max: f32,
+    pub recompose: crate::morph::Recompose,
+    pub rip_count: u32,
+    /// Ten fast presses of the counter in progress: when they started (state clock) and how many are done.
+    pub rip_burst: Option<(f32, u32)>,
 }
 
 impl Default for Gallery {
@@ -247,7 +263,8 @@ impl Default for Gallery {
             menu: 0, mats: MaterialParams::all(), loose: 0.0, style: None, gaze: Gaze::default(), loose_scale: 1.0, style_pic: PicFx::default(),
             gaze_page: Gaze { mode: GazeMode::All, kinds: gaze::FRAME | gaze::INDEX | gaze::SIZE, density: 12.0, ..Gaze::default() },
             hovered: None, clock: 0.0, choices: [0, 0, 0, 0, 0, 0, 0, 0], toggles: [true, false, true, false, true, false, false, false],
-            slides: [0.35, 0.4, 0.6, 14.0, 0.5, 2.0, 0.0, 0.5], query: TextEdit::new("lay"), sc: Scenes::default(), overlay: false, quality: 1.0, long_pick: None, long_on: vec![], notes: TextEdit::new("第一行\n第二行，长一些的一行会在框的宽度里折行。"),
+            slides: [0.35, 0.4, 0.6, 14.0, 0.5, 2.0, 0.0, 0.5], query: TextEdit::new("lay"), sc: Scenes::default(), overlay: false, quality: 1.0, long_pick: None, long_on: vec![],
+            rip_scope: 1, legible_cap: crate::style::LEGIBLE_CAP, loose_max: 1.0, recompose: crate::morph::Recompose::default(), rip_count: 1, rip_burst: None, notes: TextEdit::new("第一行\n第二行，长一些的一行会在框的宽度里折行。"),
         }
     }
 }
@@ -282,7 +299,8 @@ impl Gallery {
         if let Page::Marks(s) = self.page { pics[MARK_SLOT as usize] = self.marks[s as usize]; }
         pics[STYLE_SLOT as usize] = self.style_pic;
         let gaze = if self.page == Page::Gaze { self.gaze_page } else { self.gaze };
-        let mut l = Look { fx: self.demo.fx, theme: self.theme(), material: self.material, pics, params: self.mats, gaze, loose_scale: self.loose_scale, quality: self.quality, overlay: self.overlay };
+        let mut l = Look { fx: self.demo.fx, theme: self.theme(), material: self.material, pics, params: self.mats, gaze, loose_scale: self.loose_scale, quality: self.quality, overlay: self.overlay,
+                          legible_cap: self.legible_cap, loose_max: self.loose_max, recompose: self.recompose };
         scenes::look(self, &mut l);
         l
     }
@@ -381,6 +399,10 @@ pub fn update(s: &mut Gallery, m: Msg) {
                 Target::StyleNum(i) => s.slides[i.min(7)] = v,
                 Target::Scene(k, i) => scenes::set(s, k, i, v),
                 Target::OpValue => s.sc.op_value = v,
+                Target::Rip(i) => match i {
+                    0 => s.legible_cap = v, 1 => s.loose_max = v, 2 => s.recompose.duration_ms = v,
+                    3 => s.recompose.stagger = v, 4 => s.recompose.count_max = v, _ => s.recompose.slide_ms = v,
+                },
                 Target::Shown => {}
             }
             s.edit = None;
@@ -388,6 +410,9 @@ pub fn update(s: &mut Gallery, m: Msg) {
         Msg::Num(_, Edit::Cancel) => s.edit = None,
         Msg::Nothing => {}
         Msg::Press => s.presses += 1,
+        Msg::RipCount => s.rip_count += 1,
+        Msg::RipScope(i) => s.rip_scope = i.min(2),
+        Msg::RipBurst => { s.rip_burst = Some((s.clock, 0)); burst_step(s, s.clock); }
         Msg::Text(t) => s.text = t,
         Msg::Notes(t) => s.notes = t,
         Msg::LongPick(i) => s.long_pick = Some(i),
@@ -493,7 +518,7 @@ fn groups() -> [(&'static str, Vec<Page>); 8] {
 
 fn rail_item(s: &Gallery, p: Page, h: f32) -> El<Msg> {
     let on = s.page == p;
-    let mut item = row().key(format!("nav/{}", p.hash())).height(h).pad(12.0, 0.0).radius(4.0).align(AlignItems::CENTER).on_press(Msg::Go(p))
+    let mut item = row().key(format!("nav/{}", p.hash())).height(h).pad(12.0, 0.0).radius(4.0).align(AlignItems::CENTER).on_press(Msg::Go(p)).ripple(crate::el::Scope::Global)
         .child(text(p.name(), 14.0, if on { Paint::ACCENT } else { Paint::TEXT }));
     // A style page changes the whole look: the change spreads from the item pressed.
     if matches!(p, Page::Style(_) | Page::Scene(_)) { item = item.commit(); }
@@ -524,6 +549,17 @@ fn rail_row(s: &Gallery) -> El<Msg> {
 
 pub type GalleryUi = crate::ui::Ui<Gallery, Msg>;
 
+/// Ten presses of the ripple counter in 300 ms: the gap between two.
+pub const BURST_GAP: f32 = 0.3 / 9.0;
+/// Press the ripple counter for every press of the burst that is due at `t`; returns whether any was.
+fn burst_step(s: &mut Gallery, t: f32) -> bool {
+    let Some((start, done)) = s.rip_burst else { return false };
+    let mut n = done;
+    while n < 10 && t >= start + n as f32 * BURST_GAP - 1e-4 { s.cmds.push(Cmd::Press { key: "ripple/counter".into() }); n += 1; }
+    s.rip_burst = (n < 10).then_some((start, n));
+    n > done
+}
+
 pub fn new_ui(faces: Vec<Face>, w: u32, h: u32, scale: f32) -> GalleryUi {
     let state = Gallery { width: w as f32 / scale, height: h as f32 / scale, ..Gallery::default() };
     crate::ui::Ui::new(state, view, update, faces, w, h, scale).on_resize(|s, w, h| { s.width = w; s.height = h; }).on_commands(|s| std::mem::take(&mut s.cmds))
@@ -540,12 +576,15 @@ pub fn new_ui(faces: Vec<Face>, w: u32, h: u32, scale: f32) -> GalleryUi {
             // The departure board ticks once a second; scenes have their own clocks.
             let changed = s.page == Page::Style(1) && t.floor() != s.clock.floor();
             s.clock = t;
-            scenes::tick(s, t) || changed
+            let burst = burst_step(s, t);
+            scenes::tick(s, t) || changed || burst
         })
         .on_look(|s| s.look())
         .on_wake(|s, t| {
             // The departure board wants the next whole second; scenes say for themselves.
             let board = (s.page == Page::Style(1)).then(|| t.floor() + 1.0);
+            let burst = s.rip_burst.map(|(start, n)| start + n as f32 * BURST_GAP);
+            let board = match (board, burst) { (Some(a), Some(b)) => Some(a.min(b)), (a, b) => a.or(b) };
             match (board, scenes::wake(s, t)) { (Some(a), Some(b)) => Some(a.min(b)), (a, b) => a.or(b) }
         })
         .on_unused_key(|s, k, shift| {
