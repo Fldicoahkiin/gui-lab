@@ -121,6 +121,11 @@ pub struct El<M> {
     /// A compare wipe over this element: the line's position as a fraction of its width. Right of it
     /// the element is fully loosened, left of it untouched.
     pub wipe: Option<f32>,
+    /// Identity across pages: on a page change (`Cmd::Flow`) the instances of a subtree with the same
+    /// flow id on both pages move from their old place to the new one instead of being replaced.
+    pub flow: Option<String>,
+    /// Laid out but not drawn and takes no input, unless a morph is showing it (DESIGN.md §1.10).
+    pub hidden: bool,
     pub children: Vec<El<M>>,
 }
 
@@ -128,7 +133,7 @@ impl<M> El<M> {
     fn new(style: Style, content: Content) -> Self {
         // Nothing shrinks unless asked: fixed sizes stay fixed inside columns and scroll areas.
         let style = Style { flex_shrink: 0.0, ..style };
-        Self { key: String::new(), style, content, fill: None, border: None, radius: 0.0, on_press: None, on_key: None, on_drag: None, on_blur: None, focusable: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, modal: None, fonts: None, loose: 0.0, wipe: None, children: vec![] }
+        Self { key: String::new(), style, content, fill: None, border: None, radius: 0.0, on_press: None, on_key: None, on_drag: None, on_blur: None, focusable: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, modal: None, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, children: vec![] }
     }
     pub fn key(mut self, k: impl Into<String>) -> Self { self.key = k.into(); self }
     pub fn gap(mut self, g: f32) -> Self { self.style.gap = Size { width: length(g), height: length(g) }; self }
@@ -170,6 +175,10 @@ impl<M> El<M> {
     pub fn fonts(mut self, roles: [u8; 3]) -> Self { self.fonts = Some(roles); self }
     pub fn loose(mut self, k: f32) -> Self { self.loose = k; self }
     pub fn wipe(mut self, x: f32) -> Self { self.wipe = Some(x); self }
+    /// Give this subtree an identity across pages (see `flow`).
+    pub fn flow(mut self, id: impl Into<String>) -> Self { self.flow = Some(id.into()); self }
+    /// Lay this out but do not draw it until a morph shows it.
+    pub fn hidden_until_morphed(mut self, h: bool) -> Self { self.hidden = h; self }
     /// Set a text element in another face or role.
     pub fn font(mut self, f: Font) -> Self { if let Content::Text { font, .. } = &mut self.content { *font = f; } self }
     /// Print a text element through a lattice of this pitch (logical px).
@@ -186,13 +195,13 @@ impl<M> El<M> {
 
     /// The same tree sending other messages: lets one application embed another's view.
     pub fn map<N: 'static>(self, f: Rc<dyn Fn(M) -> N>) -> El<N> where M: 'static {
-        let El { key, style, content, fill, border, radius, on_press, on_key, on_drag, on_blur, focusable, scroll, horizontal, bar, reveal, disabled, commit, modal, fonts, loose, wipe, children } = self;
+        let El { key, style, content, fill, border, radius, on_press, on_key, on_drag, on_blur, focusable, scroll, horizontal, bar, reveal, disabled, commit, modal, fonts, loose, wipe, flow, hidden, children } = self;
         let on_key = on_key.map(|k| { let f = f.clone(); Rc::new(move |key: Key, shift: bool| k(key, shift).map(|m| f(m))) as OnKey<N> });
         let on_drag = on_drag.map(|d| { let f = f.clone(); Rc::new(move |g: Drag| d(g).map(|m| f(m))) as OnDrag<N> });
         El {
             key, style, content, fill, border, radius, on_press: on_press.map(|m| f(m)), on_key, on_drag, on_blur: on_blur.map(|m| f(m)),
             focusable, scroll, horizontal, bar, reveal, disabled, commit, modal: modal.map(|m| Modal { dismiss: f(m.dismiss), beneath: m.beneath }),
-            fonts, loose, wipe, children: children.into_iter().map(|c| c.map(f.clone())).collect(),
+            fonts, loose, wipe, flow, hidden, children: children.into_iter().map(|c| c.map(f.clone())).collect(),
         }
     }
 }
@@ -208,3 +217,17 @@ pub fn text_lh<M>(s: impl Into<String>, size: f32, line: f32, paint: Paint) -> E
     El::new(Style::default(), Content::Text { s: s.into(), size, line, paint, font: Font::Body, print: 0.0, caret: None })
 }
 pub fn picture<M>(id: u32, ratio: f32) -> El<M> { El::new(Style { size: Size { width: percent(1.0), height: auto() }, ..Default::default() }, Content::Picture { id, ratio, fx: 0 }) }
+/// Every child in the same place, centred in the stack (a one-cell grid): for things that replace one
+/// another where they stand, like the candidates of a morph.
+pub fn stack<M>(children: impl IntoIterator<Item = El<M>>) -> El<M> {
+    let mut s = El::new(Style {
+        display: Display::Grid, grid_template_columns: vec![fr(1.0)], grid_template_rows: vec![fr(1.0)],
+        justify_items: AlignItems::CENTER, align_items: AlignItems::CENTER, ..Default::default()
+    }, Content::None);
+    for mut c in children {
+        c.style.grid_row = Line { start: line(1), end: span(1) };
+        c.style.grid_column = Line { start: line(1), end: span(1) };
+        s.children.push(c);
+    }
+    s
+}

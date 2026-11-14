@@ -116,11 +116,11 @@ fn near_of(i: VOut) -> vec4f {
 }
 @fragment fn fs_near(i: VOut) -> @location(0) vec4f { return near_of(i); }
 
-// The modal layer, drawn without blending: where it has ink it replaces what is beneath, so beneath's
+// The modal layer (and parts in flight), drawn without blending: wherever it has any ink it replaces what is beneath, so beneath's
 // looseness and picture flag stop at its outline.
 @fragment fn fs_near_top(i: VOut) -> @location(0) vec4f {
   let s = inst(i);
-  if (s.x < 0.5 || i.paint.z < 0.01) { discard; }
+  if (s.x < 0.02 || i.paint.z < 0.01) { discard; }
   return near_of(i);
 }
 

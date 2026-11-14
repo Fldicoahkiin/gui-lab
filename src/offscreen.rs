@@ -25,6 +25,13 @@ impl Offscreen {
         Self { r, target, buf, w, h, row }
     }
 
+    /// Draw and wait for the GPU, without reading back (for timing).
+    pub fn draw<S, M: Clone>(&mut self, ui: &mut Ui<S, M>, look: &Look) {
+        let view = self.target.create_view(&Default::default());
+        self.r.draw(&view, ui, look);
+        self.r.device().poll(wgpu::PollType::wait_indefinitely()).expect("poll");
+    }
+
     /// Draw and read back: RGBA8 rows, `w` × `h`.
     pub fn render<S, M: Clone>(&mut self, ui: &mut Ui<S, M>, look: &Look) -> Vec<u8> {
         let view = self.target.create_view(&Default::default());
