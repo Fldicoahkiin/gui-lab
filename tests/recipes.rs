@@ -39,6 +39,7 @@ fn every_recipe_lays_out_and_answers() {
             "morph" => ("swap", Box::new(|t| t.find("b").is_some())),
             "material" => ("ripple", Box::new(|t| t.find("card").is_some_and(|n| n.material == "halftone"))),
             "annotate" => ("", Box::new(|t| t.find("panel").is_some())),
+            "preset" => ("switch", Box::new(|t| t.find("title").and_then(|n| n.text.as_deref()) == Some("自己的风格"))),
             "mesh" => ("turn", Box::new(|t| t.find("turns").and_then(|n| n.text.as_deref()) == Some("转过 1 次") && t.find("ring").is_some_and(|n| n.kind == "mesh"))),
             _ => ("inc", Box::new(|t| t.find("count").and_then(|n| n.text.as_deref()) == Some("10"))),
         };

@@ -8,6 +8,7 @@ mod scenes;
 mod styles;
 pub mod three;
 pub mod particles;
+pub mod presets;
 
 use crate::demo::{self, Demo};
 use crate::el::{El, Font, Paint, col, row, space, text};
@@ -28,7 +29,7 @@ pub const NARROW: f32 = 720.0;
 pub const RAIL: f32 = 220.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Page { Comp(usize), LongList, Marks(u8), Material(u8), Gaze, Style(u8), Morph, Particles, Flow, Three, Type, Demo, Scenes, Scene(u8) }
+pub enum Page { Comp(usize), LongList, Marks(u8), Material(u8), Gaze, Style(u8), Morph, Particles, Flow, Three, Presets, Type, Demo, Scenes, Scene(u8) }
 
 pub const MARK_HASH: [&str; set::COUNT] = ["chars", "dither", "pixel", "mosaic", "brick", "dots", "cross", "diagonal", "diamond", "lines", "glow", "stroke"];
 
@@ -40,6 +41,7 @@ impl Page {
         v.extend((0..MATERIAL_COUNT as u8).map(Page::Material));
         v.push(Page::Gaze);
         v.extend((0..12u8).map(Page::Style));
+        v.push(Page::Presets);
         v.extend([Page::Morph, Page::Particles, Page::Flow, Page::Three]);
         v.push(Page::Type);
         v.push(Page::Demo);
@@ -60,6 +62,7 @@ impl Page {
             Page::Particles => "particles".into(),
             Page::Flow => "flow".into(),
             Page::Three => "three".into(),
+            Page::Presets => "styles".into(),
             Page::Type => "type".into(),
             Page::Demo => "demo".into(),
             Page::Scenes => "scenes".into(),
@@ -84,6 +87,7 @@ impl Page {
             Page::Particles => "粒子",
             Page::Flow => "换页",
             Page::Three => "三维",
+            Page::Presets => "风格切换",
             Page::Type => "字号与字体",
             Page::Demo => "骨架演示",
             Page::Scenes => "全部场景",
@@ -108,6 +112,8 @@ pub enum Target {
     /// Number `i` of the 3D page (`three::PARAMS`), of the particle page (`particles::PARAMS`).
     Three(usize),
     Parts(usize),
+    /// Number `i` of the target preset on the 风格 page (`presets::editable`).
+    Preset(usize),
     /// Number `i` of material `m` (see `style::MAT_PARAMS`), and the looseness the material pages hold
     /// their specimen at.
     Mat(u8, usize),
@@ -184,6 +190,8 @@ pub enum Msg {
     /// Something on the 3D page, on the particle page.
     Three(three::TMsg),
     Parts(particles::PMsg),
+    /// Something on the 风格 page.
+    Preset(presets::PreMsg),
 }
 
 pub struct Gallery {
@@ -267,6 +275,18 @@ pub struct Gallery {
     pub particles: crate::morph::Particles,
     /// The particle page.
     pub parts: particles::Parts,
+    /// The presets as data (DESIGN.md §4.1), and what the one applied last set beyond the look's choices:
+    /// its faces, press burst, default responses and its transition.
+    pub presets: Vec<crate::preset::Preset>,
+    pub faces: Option<[u8; 3]>,
+    pub press_ms: f32,
+    pub roles: [crate::el::Response; 2],
+    pub transition: crate::preset::Transition,
+    /// The 风格 page: from and to, the JSON field, and what reading it said.
+    pub pre_from: usize,
+    pub pre_to: usize,
+    pub pre_json: TextEdit,
+    pub pre_note: String,
 }
 
 impl Default for Gallery {
@@ -282,7 +302,7 @@ impl Default for Gallery {
             gaze_page: Gaze { mode: GazeMode::All, kinds: gaze::FRAME | gaze::INDEX | gaze::SIZE, density: 12.0, ..Gaze::default() },
             hovered: None, clock: 0.0, choices: [0, 0, 0, 0, 0, 0, 0, 0], toggles: [true, false, true, false, true, false, false, false],
             slides: [0.35, 0.4, 0.6, 14.0, 0.5, 2.0, 0.0, 0.5], query: TextEdit::new("lay"), sc: Scenes::default(), overlay: false, quality: 1.0, long_pick: None, long_on: vec![],
-            rip_scope: 1, legible_cap: crate::style::LEGIBLE_CAP, loose_max: 1.0, recompose: crate::morph::Recompose::default(), rip_count: 1, rip_burst: None, three: three::Three::default(), particles: crate::morph::Particles::default(), parts: particles::Parts::default(), notes: TextEdit::new("第一行\n第二行，长一些的一行会在框的宽度里折行。"),
+            rip_scope: 1, legible_cap: crate::style::LEGIBLE_CAP, loose_max: 1.0, recompose: crate::morph::Recompose::default(), rip_count: 1, rip_burst: None, three: three::Three::default(), particles: crate::morph::Particles::default(), parts: particles::Parts::default(), presets: crate::preset::presets(), faces: None, press_ms: 350.0, roles: [crate::el::Response::Nudge, crate::el::Response::Loosen], transition: Look::default().transition, pre_from: 7, pre_to: 1, pre_json: TextEdit::default(), pre_note: String::new(), notes: TextEdit::new("第一行\n第二行，长一些的一行会在框的宽度里折行。"),
         }
     }
 }
@@ -318,22 +338,33 @@ impl Gallery {
         pics[STYLE_SLOT as usize] = self.style_pic;
         let gaze = if self.page == Page::Gaze { self.gaze_page } else { self.gaze };
         let mut l = Look { fx: self.demo.fx, theme: self.theme(), material: self.material, pics, params: self.mats, gaze, loose_scale: self.loose_scale, quality: self.quality, overlay: self.overlay,
-                          legible_cap: self.legible_cap, loose_max: self.loose_max, recompose: self.recompose, particles: self.particles };
+                          legible_cap: self.legible_cap, loose_max: self.loose_max, recompose: self.recompose, particles: self.particles,
+                          press_ms: self.press_ms, roles: self.roles, transition: self.transition };
+        if let Some(f) = self.faces { l.theme = Theme { display: f[0], body: f[1], mono: f[2], ..l.theme }; }
         scenes::look(self, &mut l);
         l
     }
     /// Apply style preset `i`: everything at once; the theme and material switches still work after.
     pub fn apply_style(&mut self, i: usize) {
-        let st = styles()[i.min(11)];
-        self.style = Some(i.min(11));
-        self.theme = st.theme; self.demo.theme = st.theme;
+        let i = i.min(self.presets.len().saturating_sub(1));
+        let Some(st) = self.presets.get(i).cloned() else { return };
+        self.style = Some(i);
+        let th = crate::style::theme_index(&st.theme);
+        self.theme = th; self.demo.theme = th;
+        self.faces = Some(st.faces);
         self.material = st.material; self.demo.material = st.material;
         self.mats = MaterialParams::all();
-        self.mats[st.material as usize] = st.params;
+        self.mats[st.material as usize] = MaterialParams(st.params);
         self.gaze = st.gaze;
         self.loose_scale = st.loose_scale;
         self.demo.fx.pitch = st.pitch;
         self.style_pic = st.pic;
+        let it = st.interaction;
+        (self.demo.fx.wave_speed, self.demo.fx.wave_width, self.demo.fx.wave_life) = (it.front_speed, it.front_width, it.front_life);
+        self.recompose = it.recompose;
+        self.press_ms = it.press_ms;
+        self.roles = [it.text, it.decoration];
+        self.transition = st.transition;
     }
     /// Opening a page that has a style of its own applies it: a style page its preset, a scene its
     /// default.
@@ -341,6 +372,8 @@ impl Gallery {
         match p {
             Page::Style(i) => self.apply_style(i as usize),
             Page::Scene(i) => { let st = SCENES[i as usize].3; self.sc.look = st; self.apply_style(st); }
+            // The 风格 page starts from its "from".
+            Page::Presets => self.apply_style(self.pre_from),
             _ => {}
         }
     }
@@ -388,7 +421,7 @@ pub fn update(s: &mut Gallery, m: Msg) {
         Msg::MorphBack => if let Some(b) = s.shape_before { s.morph_to(b); },
         Msg::Ease(i) => s.morph.ease = Ease::from_index(i),
         Msg::Open(o) => { if o != s.opened { s.cmds.push(Cmd::Flow(s.flow)); } s.opened = o; }
-        Msg::Theme(i) => { s.theme = i.min(THEMES.len() - 1); s.demo.theme = s.theme; s.menu = 0; }
+        Msg::Theme(i) => { s.theme = i.min(THEMES.len() - 1); s.demo.theme = s.theme; s.faces = None; s.menu = 0; }
         Msg::Material(i) => { s.material = MATERIALS[i.min(MATERIALS.len() - 1)].0; s.demo.material = s.material; s.menu = 0; }
         Msg::Reset => {
             let d = Gallery::default();
@@ -396,7 +429,7 @@ pub fn update(s: &mut Gallery, m: Msg) {
             s.params = d.params; s.marks = d.marks; s.wipe = d.wipe; s.edit = None;
             s.value = d.value; s.level = d.level;
             s.demo = Demo { theme: s.theme, material: s.material, ..Demo::default() };
-            s.morph = d.morph; s.flow = d.flow; s.three = d.three; s.parts = d.parts; s.particles = d.particles;
+            s.morph = d.morph; s.flow = d.flow; s.three = d.three; s.presets = d.presets; s.faces = None; s.press_ms = d.press_ms; s.roles = d.roles; s.transition = d.transition; s.parts = d.parts; s.particles = d.particles;
             s.sc = Scenes::default();
         }
         // Variants are shown as they are: typing into one does not change it.
@@ -412,6 +445,7 @@ pub fn update(s: &mut Gallery, m: Msg) {
                 Target::Flow(i) => *flow_slot(&mut s.flow, i) = v,
                 Target::Three(i) => *three::slot(&mut s.three, i) = v,
                 Target::Parts(i) => *particles::slot(&mut s.parts, &mut s.particles, i) = v,
+                Target::Preset(i) => presets::set(s, i, v),
                 Target::Mat(m, i) => s.mats[m as usize].0[i] = v,
                 Target::Loose => s.loose = v,
                 Target::Density => s.gaze_page.density = v,
@@ -434,6 +468,7 @@ pub fn update(s: &mut Gallery, m: Msg) {
         Msg::RipScope(i) => s.rip_scope = i.min(2),
         Msg::Three(m) => three::update(s, m),
         Msg::Parts(m) => particles::update(s, m),
+        Msg::Preset(m) => presets::update(s, m),
         Msg::RipBurst => { s.rip_burst = Some((s.clock, 0)); burst_step(s, s.clock); }
         Msg::Text(t) => s.text = t,
         Msg::Notes(t) => s.notes = t,
@@ -477,6 +512,7 @@ pub fn view(s: &Gallery) -> El<Msg> {
         Page::Style(i) => main.child(styles::page(s, i as usize)),
         Page::Three => main.pad(if narrow { 18.0 } else { 40.0 }, 32.0).child(three::page(s)),
         Page::Particles => main.pad(if narrow { 18.0 } else { 40.0 }, 32.0).child(particles::page(s)),
+        Page::Presets => main.pad(if narrow { 18.0 } else { 40.0 }, 32.0).child(presets::page(s)),
         Page::Scenes | Page::Scene(_) => main.pad(if narrow { 18.0 } else { 40.0 }, 32.0).child(scenes::list(s)),
         _ => main.pad(if narrow { 18.0 } else { 40.0 }, 32.0).child(pages::page(s)),
     };
@@ -533,7 +569,7 @@ fn groups() -> [(&'static str, Vec<Page>); 8] {
         ("记号", (0..set::COUNT as u8).map(Page::Marks).collect()),
         ("材质", (0..MATERIAL_COUNT as u8).map(Page::Material).collect()),
         ("标注", vec![Page::Gaze]),
-        ("风格", (0..12u8).map(Page::Style).collect()),
+        ("风格", std::iter::once(Page::Presets).chain((0..12u8).map(Page::Style)).collect()),
         ("变换", vec![Page::Morph, Page::Particles, Page::Flow, Page::Three]),
         ("排版", vec![Page::Type, Page::Demo]),
         ("场景", std::iter::once(Page::Scenes).chain((0..scenes::COUNT as u8).map(Page::Scene)).collect()),

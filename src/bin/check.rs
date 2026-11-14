@@ -40,7 +40,11 @@
 //!     and the counter recomposing, under every material, each frame drawn with dirty boxes equals the
 //!     same frame drawn whole, byte for byte (with a control: the boxes were smaller than the window).
 //!
-//! usage: check [components | recompose | mesh | dirty]     (`components` runs only 10 and 11, `recompose` only 13, `mesh` only 14, `dirty` only 15)
+//! 16. Presets (§4.1): for all twelve, the frame after the target's transition equals a fresh render of
+//!     the page in the target preset, byte for byte; mid-transition it differs from both ends (but for
+//!     Normcore, which has none).
+//!
+//! usage: check [components | recompose | mesh | dirty | presets]     (`components` runs only 10 and 11, `recompose` only 13, `mesh` only 14, `dirty` only 15)
 use lab::demo::{BUST, PICTURE_SIZES, SKY, SPHERE, TERRAIN};
 use lab::el::{El, Font, Paint, col, picture, row, space, text_lh};
 use lab::morph::MorphSpec;
@@ -72,6 +76,11 @@ fn main() {
     let fonts = || load_bundled("assets").expect("fonts");
     if std::env::args().nth(1).is_some_and(|a| a == "recompose") {
         let f = recompose(&mut o, &fonts);
+        if f > 0 { eprintln!("{f} checks failed"); std::process::exit(1); }
+        return eprintln!("all checks passed");
+    }
+    if std::env::args().nth(1).is_some_and(|a| a == "presets") {
+        let f = presets(&fonts);
         if f > 0 { eprintln!("{f} checks failed"); std::process::exit(1); }
         return eprintln!("all checks passed");
     }
@@ -461,6 +470,7 @@ fn main() {
     failed += recompose(&mut o, &fonts);
     failed += meshes(&mut o, &fonts);
     failed += dirty(&fonts);
+    failed += presets(&fonts);
 
     if failed > 0 { eprintln!("{failed} checks failed"); std::process::exit(1); }
     eprintln!("all checks passed");
@@ -869,5 +879,70 @@ fn dirty(fonts: &dyn Fn() -> Vec<lab::text::Face>) -> usize {
     // Control: most frames really were drawn in part.
     if small * 2 < frames { eprintln!("FAIL control: only {small} of {frames} frames were drawn in boxes under half the window"); failed += 1; }
     eprintln!("15. dirty boxes: {frames} frames compared, {small} drawn in part, {failed} failing");
+    failed
+}
+
+// ── 16. Presets end exactly ──────────────────────────────────────────────────────────────────────
+fn presets(fonts: &dyn Fn() -> Vec<lab::text::Face>) -> usize {
+    use lab::gallery::{self, GalleryUi, Msg, Page, presets::PreMsg};
+    let (w, h) = (900u32, 600u32);
+    let mut o = Offscreen::new(w, h);
+    let mut failed = 0;
+    let open = |from: usize, to: usize| -> GalleryUi {
+        let mut ui = gallery::new_ui(fonts(), w, h, 1.0);
+        gallery::update(&mut ui.state, Msg::Preset(PreMsg::From(from)));
+        gallery::update(&mut ui.state, Msg::Preset(PreMsg::To(to)));
+        gallery::update(&mut ui.state, Msg::Go(Page::Presets));
+        ui.relayout();
+        ui.pointer_leave();
+        ui
+    };
+    let run = |ui: &mut GalleryUi, t: &mut f32, to: f32| { while *t < to - 1e-4 { *t += 1.0 / 60.0; ui.tick(*t); } };
+    let n = lab::preset::presets().len();
+    for to in 0..n {
+        let from = if to == 7 { 3 } else { 7 };
+        let mut ui = open(from, to);
+        let mut t = 0.0;
+        run(&mut ui, &mut t, 2.0);
+        let look = ui.state.look();
+        let start = o.render(&mut ui, &look);
+        let (x, y) = ui.node("presets/play").expect("play").rect.center();
+        ui.press(x, y);
+        ui.release(x, y);
+        ui.pointer_leave();
+        let dur = ui.state.presets[to].transition.duration_ms / 1000.0;
+        let t0 = t;
+        run(&mut ui, &mut t, t0 + dur * 0.5);
+        let look = ui.state.look();
+        let mid = o.render(&mut ui, &look);
+        // Past the end, and past the press's burst and condensing; focus off the button (a press on the
+        // top bar's empty middle), as on the fresh page.
+        run(&mut ui, &mut t, t0 + dur + 1.5);
+        ui.press(160.0, 25.0);
+        ui.release(160.0, 25.0);
+        ui.pointer_leave();
+        run(&mut ui, &mut t, t0 + dur + 3.0);
+        let look = ui.state.look();
+        let end = o.render(&mut ui, &look);
+        // A fresh page in the target preset, with focus where the press left it.
+        let mut fresh = open(to, to);
+        let mut tf = 0.0;
+        run(&mut fresh, &mut tf, 2.0);
+        gallery::update(&mut fresh.state, Msg::Preset(PreMsg::From(from)));
+        fresh.state.apply_style(to);
+        fresh.relayout();
+        run(&mut fresh, &mut tf, 4.0);
+        // The material clock is history (it ran while the transition's page moved); the frames compared are of now.
+        fresh.set_material_clock(ui.material_clock());
+        let look = fresh.state.look();
+        let want = o.render(&mut fresh, &look);
+        let name = &ui.state.presets[to].name;
+        let differ = end.chunks(4).zip(want.chunks(4)).filter(|(a, b)| a != b).count();
+        if differ > 0 && std::env::var_os("LAB_DEBUG").is_some() { lab::offscreen::save_png(&format!("/tmp/pre-{to}-end.png"), w, h, &end); lab::offscreen::save_png(&format!("/tmp/pre-{to}-want.png"), w, h, &want); }
+        if differ > 0 { eprintln!("FAIL preset {name}: the frame after its transition differs from a fresh render in {differ} pixels"); failed += 1; }
+        if dur > 0.0 && (mid == start || mid == end) { eprintln!("FAIL control: {name}'s transition shows nothing mid-way"); failed += 1; }
+        eprintln!("   preset {name}: {dur:.2} s, end vs fresh {differ} px");
+    }
+    eprintln!("16. presets: {failed} failing");
     failed
 }

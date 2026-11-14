@@ -10,6 +10,7 @@ pub mod marks;
 pub mod mesh;
 pub mod morph;
 pub mod perf;
+pub mod preset;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod offscreen;
 #[cfg(not(target_arch = "wasm32"))]

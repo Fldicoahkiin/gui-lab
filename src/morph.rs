@@ -71,7 +71,7 @@ impl Default for FlowSpec {
 
 /// How the changed glyphs of a text whose string changed recompose (DESIGN.md §1.16): the old glyphs'
 /// tiles travel to the new glyphs' shape. Times in milliseconds.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Recompose {
     /// From the first tile leaving to the last one landing.
     pub duration_ms: f32,

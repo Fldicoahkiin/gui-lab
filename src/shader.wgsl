@@ -41,7 +41,9 @@ struct U {
   calm: array<vec4f, 4>,  // boxes fronts pass by (x0, y0, x1, y1, device px)
   qual: vec4f,     // the material resolution: 1 / q for the reduced pass (1 otherwise), q, its size w, h
   scopes: array<vec4f, 8>, // each front's scope box (x0, y0, x1, y1, device px): it reaches instances centred inside
-  rip: vec4f,      // looseness per pixel is clamped to x (Look::loose_max) after summing; y, z, w spare
+  rip: vec4f,      // looseness per pixel is clamped to x (Look::loose_max) after summing; y: everything loosened by a transition; z, w spare
+  tr: array<vec4f, 9>,     // a transition (preset.rs Transition::pack): duration (s), origin, start; two vec4s per step
+  boxes: array<vec4f, 16>, // the elements a transition's boxes find (x0, y0, x1, y1, device px)
 };
 @group(0) @binding(0) var<uniform> u: U;
 @group(0) @binding(1) var samp: sampler;
@@ -444,7 +446,7 @@ fn mark(s: f32, col: f32, uv: vec2f, lod: f32) -> vec2f {
 }
 /// The picture's own looseness at a point: the field (fronts, half-plane), the lens, and the
 /// instance's own (held, born, set at rest).
-fn pic_k(q: vec2f) -> f32 { return clamp(half_plane(q) + lens(q) + near_t(q).b, 0.0, u.rip.x); }
+fn pic_k(q: vec2f) -> f32 { return clamp(half_plane(q) + lens(q) + near_t(q).b + u.rip.y, 0.0, u.rip.x); }
 /// Step 2: the pitch grows from 1 to `pitch` over the first half of loosening.
 fn pic_p(k: f32, pitch: f32) -> f32 {
   return max(1.0, round(mix(1.0, max(1.0, round(pitch * u.res.z)), smoothstep(0.0, 0.5, k))));
@@ -609,7 +611,7 @@ fn burst_k(p: vec2f) -> f32 {
 }
 /// How loose text and shapes are here: fronts and their tails, the half-plane, and each instance's
 /// own looseness, scaled by the style.
-fn kt(p: vec2f) -> f32 { return clamp((half_plane(p) + near_t(p).b) * loose_scale(), 0.0, u.rip.x); }
+fn kt(p: vec2f) -> f32 { return clamp((half_plane(p) + near_t(p).b + u.rip.y) * loose_scale(), 0.0, u.rip.x); }
 /// Whatever is drawn at a point, pictures as their marks: for materials that move the picture around.
 fn scene_at(q: vec2f) -> vec3f {
   let n = near_t(q);
@@ -1080,7 +1082,7 @@ fn m_near(p: vec2f) -> vec3f {
 }
 
 /// The final colour of the pixel centred at `p` (device px of the full-resolution frame).
-fn shade(p: vec2f) -> vec3f {
+fn shade_new(p: vec2f) -> vec3f {
   let s = u.res.z; let t = u.res.w;
   let here = near_t(p);
   let is_pic = here.g > 0.05;
@@ -1120,15 +1122,198 @@ fn shade(p: vec2f) -> vec3f {
     }
   }
   if (u.fd.y > 0.5) { col = pow(col, vec3f(2.2)); }
-  // A commit: beyond the front travelling out from where it was pressed, the frame is still the old
-  // one (already encoded for the surface).
+  return col;
+}
+
+/// The final colour: the new frame, or during a commit the old one beyond the front travelling out from
+/// the press, or the preset's transition program between them (DESIGN.md §4.1).
+// `shade_new` is called from one place only: it holds every material, and each call site is compiled in
+// full (several made the material pipeline too big to build on a CPU rasteriser).
+fn shade(p: vec2f) -> vec3f {
+  var s: TS;
+  s.m = 1.0; s.offn = vec2f(0.0); s.offo = vec2f(0.0); s.tint = vec4f(0.0); s.fade = 0.0; s.split = 0.0; s.toner = 0.0;
   if (u.split.w > 0.5) {
-    let r = (t - u.split.z) * u.fb.x * s;
-    if (distance(p, u.split.xy) > r) {
-      col = textureLoad(before, vec2i(clamp(floor(p), vec2f(0.0), u.res.xy - 1.0)), 0).rgb;
+    if (u.tr[0].x <= 0.0) {
+      let r = (u.res.w - u.split.z) * u.fb.x * u.res.z;
+      if (distance(p, u.split.xy) > r) { return old_at(p); }
+    } else {
+      let x = clamp((u.res.w - u.tr[0].w) / max(u.tr[0].x, 1e-4), 0.0, 1.0);
+      // The last frame of a transition is the new frame, exactly.
+      if (x < 1.0) { s = tr_eval(p, x); }
     }
   }
-  return col;
+  if (s.m <= 0.0 && s.tint.a <= 0.0 && s.fade <= 0.0 && s.split <= 0.0) { return old_at(p + s.offo); }
+  // Only where the new frame shows is it shaded.
+  var nw = vec3f(0.0);
+  if (s.m > 0.0) { nw = clamp(shade_new(p + s.offn) + s.toner, vec3f(0.0), vec3f(1.0)); }
+  if (s.m >= 1.0 && s.tint.a <= 0.0) { return nw; }
+  let qo = p + s.offo;
+  var od = old_at(qo);
+  if (s.split > 0.0) { let d = vec2f(s.split, 0.0); od = vec3f(old_at(qo + d).r, od.g, old_at(qo - d).b); }
+  od = mix(od, enc(gnd(p)), clamp(s.fade, 0.0, 1.0));
+  var col = mix(od, nw, clamp(s.m, 0.0, 1.0));
+  return mix(col, enc(s.tint.rgb), clamp(s.tint.a, 0.0, 1.0));
+}
+/// The frame before the commit (already encoded for the surface).
+fn old_at(p: vec2f) -> vec3f { return textureLoad(before, vec2i(clamp(floor(p), vec2f(0.0), u.res.xy - 1.0)), 0).rgb; }
+fn enc(c: vec3f) -> vec3f { return select(c, pow(c, vec3f(2.2)), u.fd.y > 0.5); }
+
+// ── Transitions (DESIGN.md §4.1) ──────────────────────────────────────────────────────────────────
+// A program of up to four steps, each a kind and five numbers over a window of the transition's time.
+// What they build: how much of the new frame shows here (m), where each frame is sampled from, a tint
+// laid over (planes, a light bar, box lines), how far the old frame has faded to the ground, and a
+// channel split. Kinds: 1 reveal, 2 bands, 3 fade, 4 bar, 5 planes, 6 loosen (in kt, CPU), 7 layers,
+// 8 melt, 9 boxes, 10 carve, 11 outline, 12 peel (preset.rs StepKind).
+struct TS { m: f32, offn: vec2f, offo: vec2f, tint: vec4f, fade: f32, split: f32, toner: f32 };
+fn dir_of(deg: f32) -> vec2f { let a = radians(deg); return vec2f(cos(a), sin(a)); }
+/// How far along a line at `deg` the point is, 0 at the window's first corner to 1 at its last.
+fn along(p: vec2f, deg: f32) -> f32 {
+  let d = dir_of(deg);
+  let w = u.res.xy;
+  let lo = min(0.0, d.x * w.x) + min(0.0, d.y * w.y);
+  let hi = max(0.0, d.x * w.x) + max(0.0, d.y * w.y);
+  return (dot(p, d) - lo) / max(hi - lo, 1.0);
+}
+fn diag() -> f32 { return length(u.res.xy); }
+fn tr_step(p: vec2f, x: f32, k: i32, s: ptr<function, TS>) {
+  let h = u.tr[1 + k * 2]; let q = u.tr[2 + k * 2];
+  let kind = i32(round(h.x));
+  if (kind == 0) { return; }
+  let e = clamp((x - h.y) / max(h.z - h.y, 1e-4), 0.0, 1.0);
+  let a = h.w; let b = q.x; let c = q.y; let d = q.z; let ee = q.w;
+  let sc = u.res.z;
+  if (kind == 1) {
+    // Reveal by a shape.
+    var o = 0.0;
+    let shape = i32(round(a));
+    if (shape == 0) { o = distance(p, u.tr[0].yz) / diag(); }
+    else if (shape == 1) { o = along(p, b); }
+    else if (shape == 2) { let rh = max(c * sc, 1.0); o = floor(p.y / rh) * rh / u.res.y; }
+    else if (shape == 3) { let cs = max(c * sc, 2.0); o = h1(floor(p / cs) + 0.37); }
+    else { o = clamp(along(p, b) + (vnoise(p / (40.0 * sc)) - 0.5) * c * sc / diag() * 4.0, 0.0, 1.0); }
+    let soft = max(d * sc / diag(), 1e-4);
+    var m = 1.0 - smoothstep(e * (1.0 + soft) - soft, e * (1.0 + soft), o);
+    // Rows just reached show only the lattice's dots, as if they latch on one by one.
+    if (ee > 0.0 && o < e && o > e - ee) {
+      let pitch = max(1.5, u.fa.x * sc);
+      let cell = (floor(p / pitch) + 0.5) * pitch;
+      m = unit(p - cell, pitch * 0.42);
+    }
+    (*s).m = max((*s).m, m);
+  } else if (kind == 2) {
+    // Bands tear sideways, the channels part, a few hard cuts; locked from `ee` on.
+    let bh = max(a * sc, 1.0);
+    let band = floor(p.y / bh);
+    let lock = clamp(ee, 0.05, 1.0);
+    let env = 1.0 - smoothstep(lock - 0.08, lock, e);
+    let cut = floor(e * max(d, 1.0));
+    let off = (h1(vec2f(band, cut + 0.5)) - 0.5) * 2.0 * b * sc * env * step(0.45, h1(vec2f(band * 0.7, cut + 3.0)));
+    (*s).offn = (*s).offn + vec2f(off, 0.0);
+    (*s).offo = (*s).offo + vec2f(off, 0.0);
+    (*s).split = max((*s).split, c * sc * env);
+    // Before the lock each cut shows one frame or the other; some bands run ahead.
+    var m = select(0.0, 1.0, h1(vec2f(cut, 9.1)) > 0.5 || h1(vec2f(band, cut + 5.0)) < e);
+    if (e >= lock) { m = 1.0; }
+    (*s).m = max((*s).m, m);
+  } else if (kind == 3) {
+    let m = smoothstep(0.0, 1.0, e);
+    (*s).offn = (*s).offn + dir_of(b) * a * sc * (1.0 - m);
+    (*s).m = max((*s).m, m);
+  } else if (kind == 4) {
+    // A photocopier: the new page behind a light bar, toner noise settling.
+    let o = along(p, a);
+    let span = diag();
+    let edge = e * 1.1;
+    let dist = (edge - o) * span;
+    let bar = exp(-(dist * dist) / max(b * b * sc * sc * 0.25, 1.0));
+    (*s).tint = max((*s).tint, vec4f(1.0, 1.0, 0.98, bar * 0.85 * (1.0 - smoothstep(0.92, 1.0, e))));
+    if (dist > 0.0) {
+      (*s).m = max((*s).m, 1.0);
+      let n = (h1(floor(p / max(sc, 1.0)) + floor(e * 30.0)) - 0.5) * c * exp(-dist / max(d * sc, 1.0));
+      (*s).toner = (*s).toner + n; // brightness noise on the new side, settling behind the bar
+    }
+  } else if (kind == 5) {
+    // Flat colour planes on a grid slide across and uncover the new page.
+    let rows = max(round(a), 1.0);
+    let rh = u.res.y / rows;
+    let j = floor(p.y / rh);
+    let w = u.res.x;
+    let lead = (e * 1.8 - (j / rows) * 0.5) * w * 1.25;
+    let tail = lead - w * 0.55;
+    if (p.x < tail) { (*s).m = max((*s).m, 1.0); }
+    else if (p.x < lead) {
+      let hue = j % max(round(b), 1.0);
+      let col = select(select(u.accent.rgb, u.second.rgb, hue > 0.5), u.third.rgb, hue > 1.5);
+      (*s).tint = vec4f(col, 1.0);
+    }
+  } else if (kind == 7) {
+    // Layers part in depth (the brighter the nearer), swap at the middle, close again.
+    let dv = dir_of(b) * a * sc;
+    let lo = lum(old_at(p));
+    (*s).offo = (*s).offo + dv * sin(3.14159 * min(e * 2.0, 1.0)) * (0.4 + lo) * step(e, 0.5);
+    (*s).offn = (*s).offn - dv * sin(3.14159 * max(e * 2.0 - 1.0, 0.0)) * 0.7;
+    (*s).m = max((*s).m, smoothstep(0.45, 0.55, e));
+  } else if (kind == 8) {
+    // Melt: the old frame runs down in blobs; a chrome highlight sweeps the new one.
+    let n = vnoise(vec2f(p.x / (34.0 * sc), 0.0) + 2.3);
+    (*s).offo = (*s).offo + vec2f(0.0, -a * sc * e * e * (0.4 + 1.2 * n));
+    let blob = vnoise(p / (26.0 * sc) + vec2f(0.0, -e * 6.0));
+    (*s).m = max((*s).m, smoothstep(-0.05, 0.05, e * 1.25 - 0.15 - blob));
+    let hx = (p.x + p.y) / (u.res.x + u.res.y);
+    let hp = e * 1.6 - 0.3;
+    let hl = exp(-((hx - hp) * (hx - hp)) * (u.res.x + u.res.y) * (u.res.x + u.res.y) / max(b * b * sc * sc, 1.0));
+    (*s).tint = max((*s).tint, vec4f(1.0, 1.0, 1.0, hl * c * smoothstep(0.3, 0.5, e) * (1.0 - smoothstep(0.9, 1.0, e))));
+  } else if (kind == 9) {
+    // Boxes find elements one after another, then what is in them is the new page.
+    let n = i32(clamp(round(a), 0.0, 16.0));
+    let lw = max(b * sc, 1.0);
+    for (var i = 0; i < n; i++) {
+      let r = u.boxes[i];
+      if (r.z <= r.x) { continue; }
+      let st = f32(i) / f32(max(n, 1)) * 0.5;
+      let dp = clamp((e - st) / 0.25, 0.0, 1.0);
+      if (dp <= 0.0) { continue; }
+      let inside = p.x >= r.x && p.y >= r.y && p.x < r.z && p.y < r.w;
+      let edge = inside && (p.x < r.x + lw || p.y < r.y + lw || p.x >= r.z - lw || p.y >= r.w - lw);
+      // The frame is drawn on around its edge.
+      let per = 2.0 * ((r.z - r.x) + (r.w - r.y));
+      var pos = 0.0;
+      if (p.y < r.y + lw) { pos = p.x - r.x; } else if (p.x >= r.z - lw) { pos = (r.z - r.x) + (p.y - r.y); }
+      else if (p.y >= r.w - lw) { pos = (r.z - r.x) + (r.w - r.y) + (r.z - p.x); } else { pos = per - (p.y - r.y); }
+      if (edge && pos <= dp * per) { (*s).tint = vec4f(u.accent.rgb, 1.0 - smoothstep(0.85, 1.0, e)); }
+      if (inside && e > st + 0.25) { (*s).m = max((*s).m, 1.0); }
+    }
+    (*s).m = max((*s).m, smoothstep(0.8, 1.0, e));
+  } else if (kind == 10) {
+    // Carved in: the old fades to the ground, strokes grow along the new outlines, the ink floods.
+    let sd = sdist(p);
+    let reach = a * sc * smoothstep(0.1, b, e);
+    (*s).fade = max((*s).fade, smoothstep(0.0, 0.3, e));
+    if (abs(sd) < reach && near_t(p).r > 0.02) { (*s).m = max((*s).m, 1.0); }
+    (*s).m = max((*s).m, smoothstep(b, 1.0, e));
+  } else if (kind == 11) {
+    // Outlines first, in reading order, then the content fills.
+    let sd = sdist(p);
+    let o = along(p, 30.0);
+    (*s).fade = max((*s).fade, smoothstep(0.0, 0.25, e));
+    if (abs(sd) < max(a * sc, 0.8) && near_t(p).r > 0.02 && o < (e - 0.05) / 0.45) { (*s).m = max((*s).m, 1.0); }
+    (*s).m = max((*s).m, smoothstep(b, 1.0, e));
+  } else if (kind == 12) {
+    // Paper tears along a noisy line; the old layer slides off as it peels.
+    let o = clamp(along(p, a) + ((vnoise(p / (70.0 * sc)) - 0.5) * 1.6 + (vnoise(p / (9.0 * sc)) - 0.5) * 0.5) * b * sc / diag(), 0.0, 1.0);
+    let edge = e * 1.15;
+    if (o < edge) { (*s).m = max((*s).m, 1.0); }
+    (*s).offo = (*s).offo - dir_of(a) * c * sc * e;
+  }
+}
+/// The state the steps build at `x` (0–1 of the transition). The loop's bound is a uniform, so it is
+/// compiled once, not once per step.
+fn tr_eval(p: vec2f, x: f32) -> TS {
+  var s: TS;
+  s.m = 0.0; s.offn = vec2f(0.0); s.offo = vec2f(0.0); s.tint = vec4f(0.0); s.fade = 0.0; s.split = 0.0; s.toner = 0.0;
+  let n = i32(clamp(u.rip.z, 0.0, 4.0));
+  for (var k = 0; k < n; k++) { tr_step(p, x, k, &s); }
+  return s;
 }
 
 /// Zero a box of an image (stage 1 drawn again only where things changed, DESIGN.md §1.19).

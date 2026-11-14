@@ -136,7 +136,7 @@ struct Capture<M> { key: String, handler: OnDrag<M>, start: (f32, f32), rect: Re
 
 /// The frame as it was when a commit (theme, material) was pressed, and where: the renderer shows it
 /// beyond a front travelling out from `at` (device px) from time `t`.
-pub struct Split { pub id: u32, pub scene: Scene, pub field: Field, pub at: [f32; 2], pub t: f32 }
+pub struct Split { pub id: u32, pub scene: Scene, pub field: Field, pub at: [f32; 2], pub t: f32, /** The look it was drawn in. */ pub look: Look }
 
 /// The four accent corners that frame the hovered or focused element and glide between targets.
 #[derive(Default)]
@@ -430,6 +430,9 @@ pub struct Timing {
     pub wave_life: f32, pub wave_speed: f32, pub enter: f32, pub material: u8, pub overlay: bool,
     /// The field numbers the CPU's model of looseness needs, and the ripple and recomposition settings.
     pub fx: crate::scene::Fx, pub legible_cap: f32, pub loose_max: f32, pub recompose: crate::morph::Recompose,
+    /// The preset's interaction character (DESIGN.md §4.1): a press's burst (s), the default responses of
+    /// text and controls and of everything else, and how long a commit's transition lasts (s; 0: the front).
+    pub press: f32, pub roles: [Response; 2], pub transition: f32,
 }
 impl Default for Timing {
     fn default() -> Self { Self::of(&Look::default()) }
@@ -437,7 +440,8 @@ impl Default for Timing {
 impl Timing {
     pub fn of(l: &Look) -> Self {
         Self { wave_life: l.fx.wave_life, wave_speed: l.fx.wave_speed, enter: l.fx.enter, material: l.material.id(), overlay: l.overlay,
-               fx: l.fx, legible_cap: l.legible_cap, loose_max: l.loose_max, recompose: l.recompose }
+               fx: l.fx, legible_cap: l.legible_cap, loose_max: l.loose_max, recompose: l.recompose,
+               press: l.press_ms / 1000.0, roles: l.roles, transition: l.transition.duration_ms / 1000.0 }
     }
 }
 
@@ -692,18 +696,25 @@ impl<S, M: Clone> Ui<S, M> {
     }
     /// The clock that materials' time terms read: it runs only while something moves.
     pub fn material_clock(&self) -> f32 { self.mclock }
+    /// Set the material clock (for tools that compare two runtimes whose pasts differ, such as `check`).
+    pub fn set_material_clock(&mut self, t: f32) { self.mclock = t; self.dirty = true; }
     /// Is anything animating at `now`? (Not counting input or timed wakes.)
     pub fn moving_at(&self, now: f32) -> bool {
         let tm = &self.timing;
         let fronts = self.field.fronts.iter().any(|f| f[3] > 0.0 && now - f[2] < tm.wave_life);
-        let split = self.split.as_ref().is_some_and(|sp| {
-            let (w, h) = (self.size.0 * self.scale, self.size.1 * self.scale);
-            (now - sp.t) * tm.wave_speed * self.scale < (w * w + h * h).sqrt() + 1.0
-        });
+        let split = self.split.as_ref().is_some_and(|sp| self.split_alive(sp, now));
         fronts || split || self.field.burst_at(now) > 0.0 || now < self.latest_birth + tm.enter
             || self.run.is_some() || !self.flows.is_empty() || !self.ghosts.is_empty() || self.animating
             || self.marks_moving || now < self.gaze_until || self.fling.is_some() || !self.over.is_empty()
             || self.static_loose || !self.recomps.is_empty() || !self.slides.is_empty()
+    }
+    /// Whether a commit is still showing: its transition is running, or (without one) its front is still
+    /// crossing the window.
+    fn split_alive(&self, sp: &Split, now: f32) -> bool {
+        let tm = &self.timing;
+        if tm.transition > 0.0 { return now - sp.t < tm.transition + 1.0 / 60.0; }
+        let (w, h) = (self.size.0 * self.scale, self.size.1 * self.scale);
+        (now - sp.t) * tm.wave_speed * self.scale < (w * w + h * h).sqrt() + 1.0
     }
     /// What moves the material clock: the field and what loosens (fronts, a commit, condensing, morphs,
     /// flows, recomposition, a fling or a pull, loose things under a time material). Not the hover's
@@ -712,10 +723,7 @@ impl<S, M: Clone> Ui<S, M> {
     fn field_moving_at(&self, now: f32) -> bool {
         let tm = &self.timing;
         let fronts = self.field.fronts.iter().any(|f| f[3] > 0.0 && now - f[2] < tm.wave_life);
-        let split = self.split.as_ref().is_some_and(|sp| {
-            let (w, h) = (self.size.0 * self.scale, self.size.1 * self.scale);
-            (now - sp.t) * tm.wave_speed * self.scale < (w * w + h * h).sqrt() + 1.0
-        });
+        let split = self.split.as_ref().is_some_and(|sp| self.split_alive(sp, now));
         fronts || split || now < self.latest_birth + tm.enter || self.run.is_some() || !self.flows.is_empty() || !self.ghosts.is_empty()
             || self.fling.is_some() || !self.over.is_empty() || self.static_loose || !self.recomps.is_empty() || !self.slides.is_empty()
     }
@@ -859,7 +867,7 @@ impl<S, M: Clone> Ui<S, M> {
             let ctl = hit.and_then(|i| self.up(i, Node::active));
             self.front_from(ctl.or(hit), x, y, ctl.is_some(), 1.0);
             self.pressed = hit.and_then(|i| self.up(i, |n| n.on_press.is_some())).map(|i| self.nodes[i].key.clone());
-            if let Some(i) = hit.and_then(|i| self.up(i, |n| n.on_press.is_some())) { let r = self.nodes[i].rect; self.burst(r, 1.0, 0.35); }
+            if let Some(i) = hit.and_then(|i| self.up(i, |n| n.on_press.is_some())) { let r = self.nodes[i].rect; self.burst(r, 1.0, self.timing.press); }
             self.paint();
             TouchMode::Pending
         };
@@ -1093,7 +1101,7 @@ impl<S, M: Clone> Ui<S, M> {
         if let Some(i) = pressed {
             self.pressed = Some(self.nodes[i].key.clone());
             let r = self.nodes[i].rect;
-            self.burst(r, 1.0, 0.35);
+            self.burst(r, 1.0, self.timing.press);
             if self.up(i, |n| n.commit).is_some() { self.snapshot(x, y); }
             let m = self.nodes[i].on_press.clone();
             if let Some(m) = m { self.send(m); } else { self.paint(); }
@@ -1462,9 +1470,11 @@ impl<S, M: Clone> Ui<S, M> {
 
     /// Keep the frame as it is now for the renderer, with the commit's origin (logical px).
     fn snapshot(&mut self, x: f32, y: f32) {
-        self.splits += 1;
+        // Unique across runtimes: a renderer that draws several runtimes (tools, checks) tells commits apart.
+        self.splits = next_run();
         let s = self.scale;
-        self.split = Some(Split { id: self.splits, scene: self.scene.clone(), field: self.field, at: [x * s, y * s], t: self.now });
+        let look = self.look();
+        self.split = Some(Split { id: self.splits, scene: self.scene.clone(), field: self.field, at: [x * s, y * s], t: self.now, look });
     }
 
     /// The node itself or its nearest ancestor that satisfies `f`.
@@ -1659,7 +1669,7 @@ impl<S, M: Clone> Ui<S, M> {
         // was last laid out; the window's height the first time).
         let mut vx = VirtCtx { scroll: &self.scroll, views: &self.virt_views, window: self.size.1, made: HashMap::new() };
         let mut built = Built::default();
-        flatten(el, None, "root".into(), [0; 3], (false, false), None, Inherit::default(), &mut vx, &mut built, &mut nodes);
+        flatten(el, None, "root".into(), [0; 3], (false, false), None, Inherit { roles: self.timing.roles, ..Inherit::default() }, &mut vx, &mut built, &mut nodes);
         self.virt_made = vx.made;
 
         // The taffy tree: a node whose key was there last time keeps its taffy node; its style, children
@@ -2568,11 +2578,18 @@ struct Sink<'a> {
 
 /// What a subtree passes down besides fonts: its material override (nesting level and id) and the
 /// looseness it holds.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct Inherit {
     level: u8, mat: Option<u8>, loosen: f32, select: bool,
     /// Ripple settings written above (DESIGN.md §1.15), and whether this is inside a control or a text field.
     respond: Option<Response>, legible: Option<bool>, scope: Option<Scope>, recompose: Option<bool>, control: bool, field: bool,
+    /// What text and controls, and what everything else, do when nothing above says (the look's roles).
+    roles: [Response; 2],
+}
+impl Default for Inherit {
+    fn default() -> Self {
+        Self { level: 0, mat: None, loosen: 0.0, select: false, respond: None, legible: None, scope: None, recompose: None, control: false, field: false, roles: [Response::Nudge, Response::Loosen] }
+    }
 }
 impl Inherit {
     fn with(self, mat: Option<u8>, loosen: f32) -> Self {
@@ -2727,7 +2744,7 @@ fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], of
     if ripple.recompose.is_some() { inh.recompose = ripple.recompose; }
     // A 3D element is decoration (like a picture) even when it can be turned: fronts loosen it.
     let plain = is_text || (inh.control && !matches!(content, Content::Scene3d(_)));
-    let respond = inh.respond.unwrap_or(if plain { Response::Nudge } else { Response::Loosen });
+    let respond = inh.respond.unwrap_or(if plain { inh.roles[0] } else { inh.roles[1] });
     let legible = inh.legible.unwrap_or(plain);
     let recompose = is_text && !inh.field && inh.recompose.unwrap_or(keyed);
     let virt_info = virt.as_ref().map(|v| (v.count, v.row_h, v.selected));
