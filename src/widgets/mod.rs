@@ -21,7 +21,7 @@ pub use choice::{choice, segmented};
 pub use dialog::dialog;
 pub use divider::{divider, vdivider};
 pub use image::image;
-pub use input::{TextEdit, input};
+pub use input::{TextEdit, input, textarea};
 pub use list::list;
 pub use menu::menu;
 pub use number::{Edit, SCRUB, Spec, number};

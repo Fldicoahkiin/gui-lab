@@ -6,9 +6,14 @@
   #stage { position: relative; width: 100%; height: 100%; }
   canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; outline: none; }
   #msg { position: absolute; inset: 0; display: grid; place-items: center; padding: 16px; text-align: center; }
+  /* The text agent: an invisible text field at the caret while a text field has focus. It takes the
+     keyboard, the input method (its candidate window opens here) and the clipboard. */
+  #ta { position: absolute; left: 0; top: 0; width: 2px; height: 20px; padding: 0; border: 0; margin: 0; resize: none; overflow: hidden;
+        opacity: 0; color: transparent; background: transparent; caret-color: transparent; outline: none; white-space: pre; pointer-events: none; }
 </style>
 <div id="stage">
   <canvas id="c" tabindex="0"></canvas>
+  <textarea id="ta" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" tabindex="-1" aria-label="文本输入"></textarea>
   <div id="msg">正在载入…</div>
 </div>
 <script>__GLUE__</script>
@@ -41,21 +46,59 @@
       else if (d > 0) timer = setTimeout(kick, d * 1000);
     };
     const kick = () => { if (!raf) raf = requestAnimationFrame(loop); };
-    canvas.addEventListener('pointermove', e => { w.pointer_move(...at(e), now()); kick(); });
+    // Text: while a text field has focus the hidden text element sits at its caret and has the keyboard.
+    const ta = document.getElementById('ta');
+    const syncText = () => {
+      const r = w.ime_rect();
+      if (r.length) {
+        ta.style.left = r[0] + 'px'; ta.style.top = r[1] + 'px'; ta.style.height = Math.max(r[3], 10) + 'px'; ta.style.fontSize = Math.max(r[3] * 0.8, 10) + 'px';
+        if (document.activeElement !== ta) ta.focus({ preventScroll: true });
+      } else if (document.activeElement === ta) canvas.focus({ preventScroll: true });
+      canvas.style.cursor = w.cursor();
+    };
+    const after = () => { sync(); syncText(); kick(); };
+    canvas.addEventListener('pointermove', e => { w.pointer_move(...at(e), now()); canvas.style.cursor = w.cursor(); kick(); });
     canvas.addEventListener('pointerleave', () => { w.pointer_leave(now()); kick(); });
-    canvas.addEventListener('pointerdown', e => { canvas.focus(); canvas.setPointerCapture(e.pointerId); const [x, y] = at(e); w.pointer_move(x, y, now()); w.pointer_down(x, y, now()); sync(); kick(); });
-    canvas.addEventListener('pointerup', e => { w.pointer_up(...at(e), now()); sync(); kick(); });
+    // The page decides where focus goes (the canvas, or the text element when a field is pressed), so the
+    // browser's own focus change on press is suppressed.
+    canvas.addEventListener('pointerdown', e => { e.preventDefault(); canvas.focus({ preventScroll: true }); canvas.setPointerCapture(e.pointerId); const [x, y] = at(e); w.pointer_move(x, y, now()); w.pointer_down(x, y, e.shiftKey, now()); after(); });
+    canvas.addEventListener('pointerup', e => { w.pointer_up(...at(e), now()); after(); });
     canvas.addEventListener('wheel', e => {
       e.preventDefault();
       const k = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? canvas.clientHeight : 1;
       w.wheel(...at(e), e.deltaX * k, e.deltaY * k, now()); kick();
     }, { passive: false });
     window.addEventListener('keydown', e => {
-      if (e.ctrlKey || e.metaKey || e.altKey) return;
-      if (w.key(e.key, e.shiftKey, now()) || e.key === 'Tab') e.preventDefault();
-      sync(); kick();
+      // Keys the input method is composing with are its own.
+      if (e.isComposing || e.keyCode === 229) return;
+      const cmd = e.ctrlKey || e.metaKey;
+      if (cmd) {
+        const k = e.key.toLowerCase();
+        // Copy, cut and paste arrive as clipboard events; other shortcuts belong to the browser.
+        if (!['a', 'z', 'y'].includes(k)) return;
+        if (w.key_mods(e.key, e.shiftKey, true, e.altKey, now())) e.preventDefault();
+        after(); return;
+      }
+      const text = w.text_focused();
+      if (e.altKey && !text) return;
+      // In a text field characters arrive as input events (so the input method can take them).
+      if (text && e.key.length === 1) return;
+      if (w.key_mods(e.key, e.shiftKey, false, e.altKey, now()) || e.key === 'Tab') e.preventDefault();
+      after();
     });
-    window.addEventListener('keyup', e => { w.key_up(e.key, now()); sync(); kick(); });
+    ta.addEventListener('input', e => {
+      if (e.isComposing) return;
+      if (e.inputType === 'insertLineBreak') w.key_mods('Enter', false, false, false, now());
+      // A composition's text comes through the composition events.
+      else if (e.data && e.inputType !== 'insertCompositionText') w.text_input(e.data, now());
+      ta.value = ''; after();
+    });
+    ta.addEventListener('compositionupdate', e => { w.ime_preedit(e.data || '', now()); after(); });
+    ta.addEventListener('compositionend', e => { w.ime_commit(e.data || '', now()); ta.value = ''; after(); });
+    document.addEventListener('copy', e => { const t = w.copy(); if (t != null) { e.clipboardData.setData('text/plain', t); e.preventDefault(); } });
+    document.addEventListener('cut', e => { const t = w.cut(now()); if (t != null) { e.clipboardData.setData('text/plain', t); e.preventDefault(); after(); } });
+    document.addEventListener('paste', e => { const t = e.clipboardData.getData('text/plain'); if (t && w.paste(t, now())) { e.preventDefault(); after(); } });
+    window.addEventListener('keyup', e => { w.key_up(e.key, now()); after(); });
     window.addEventListener('hashchange', kick);
     new ResizeObserver(() => { fit(); w.resize(canvas.width, canvas.height, dpr); kick(); }).observe(stage);
     kick();

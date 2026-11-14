@@ -63,13 +63,46 @@ pub enum Content {
     /// `weight` moves the outline threshold out by that many logical px (bolder) or in (lighter), so a
     /// heading can be heavy without a bold face.
     /// `around` makes the paragraph flow around obstacles (see `wrap`).
-    Text { s: String, size: f32, line: f32, paint: Paint, font: Font, print: f32, caret: Option<usize>, weight: f32, around: Option<Rc<Around>> },
+    /// `select` is a byte range of `s` drawn as selected (by nearness to the glyphs, not as a box) while
+    /// the field it belongs to has focus; `mark` a byte range underlined (text being composed by an input
+    /// method). `nowrap` keeps it on one line whatever its width (a single-line field that scrolls).
+    Text { s: String, size: f32, line: f32, paint: Paint, font: Font, print: f32, caret: Option<usize>, weight: f32, around: Option<Rc<Around>>,
+           select: Option<(usize, usize)>, mark: Option<(usize, usize)>, nowrap: bool },
     /// A picture by id, with its height as a fraction of its width, and the `PicFx` slot it uses.
     Picture { id: u32, ratio: f32, fx: u8 },
 }
 
 /// Handles a key while the element has focus; the flag is Shift.
 pub type OnKey<M> = Rc<dyn Fn(Key, bool) -> Option<M>>;
+/// Handles text input while the element has focus (a text field, DESIGN.md §1.8.1).
+pub type OnText<M> = Rc<dyn Fn(TextInput) -> Option<M>>;
+
+/// Modifier keys with a key press: Shift, the command key (Ctrl, or ⌘ on macOS), Alt.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Mods { pub shift: bool, pub cmd: bool, pub alt: bool }
+
+/// What a text field is told. Byte indices are into the text the field showed (its text leaf's string,
+/// which includes text being composed).
+#[derive(Clone, Debug, PartialEq)]
+pub enum TextInput {
+    /// A key that is not text: arrows, Home / End, Backspace, Delete, Enter; with Cmd: A, Z, Y.
+    Key { key: Key, mods: Mods },
+    /// Text typed, committed by an input method, or dropped in: inserted at the caret over the selection.
+    Insert(String),
+    /// Text being composed by an input method, shown at the caret and underlined; `cursor` is a byte
+    /// range in it. Empty text ends the composition without inserting anything (cancelled).
+    Compose { text: String, cursor: Option<(usize, usize)> },
+    /// The clipboard's text, to insert.
+    Paste(String),
+    /// The selection was copied to the clipboard by the runtime and is to be removed.
+    Cut,
+    /// The pointer: pressed (with the click count: 2 selects a word, 3 everything), dragged, let go, at a
+    /// byte index found from the laid-out text; Shift extends the selection.
+    Pointer { at: usize, phase: Phase, clicks: u8, shift: bool },
+    /// Put the caret at `at` (the runtime moved it by the layout: a line up or down, a line's start or
+    /// end in a multi-line field), extending the selection if asked.
+    Goto { at: usize, extend: bool },
+}
 /// Handles a press and the drag that follows. The handler is captured when the press starts and the
 /// pointer stays captured until release, wherever it goes.
 pub type OnDrag<M> = Rc<dyn Fn(Drag) -> Option<M>>;
@@ -151,14 +184,32 @@ pub struct El<M> {
     /// Fronts pass this subtree by: nothing in its box is pushed or loosened by them (a scene's
     /// controls while the page is shaken).
     pub calm: bool,
+    /// A text field: takes text input while focused (see `TextInput`); `multiline` lets the runtime move
+    /// the caret by lines and Enter insert a line break.
+    pub on_text: Option<OnText<M>>,
+    pub multiline: bool,
+    /// The text in this subtree can be selected with the pointer and copied (read-only).
+    pub selectable: bool,
+    /// The pointer's shape over this element (else derived: text, pointer, grab).
+    pub cursor: Option<Cursor>,
     pub children: Vec<El<M>>,
+}
+
+/// Pointer shapes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Cursor { #[default] Default, Pointer, Text, Grab, Grabbing, ColResize, RowResize }
+impl Cursor {
+    /// The CSS name.
+    pub fn css(self) -> &'static str {
+        match self { Cursor::Default => "default", Cursor::Pointer => "pointer", Cursor::Text => "text", Cursor::Grab => "grab", Cursor::Grabbing => "grabbing", Cursor::ColResize => "col-resize", Cursor::RowResize => "row-resize" }
+    }
 }
 
 impl<M> El<M> {
     fn new(style: Style, content: Content) -> Self {
         // Nothing shrinks unless asked: fixed sizes stay fixed inside columns and scroll areas.
         let style = Style { flex_shrink: 0.0, ..style };
-        Self { key: String::new(), style, content, fill: None, border: None, radius: 0.0, on_press: None, on_key: None, on_drag: None, on_blur: None, focusable: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, modal: None, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, clips: false, calm: false, children: vec![] }
+        Self { key: String::new(), style, content, fill: None, border: None, radius: 0.0, on_press: None, on_key: None, on_drag: None, on_blur: None, focusable: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, modal: None, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, clips: false, calm: false, on_text: None, multiline: false, selectable: false, cursor: None, children: vec![] }
     }
     pub fn key(mut self, k: impl Into<String>) -> Self { self.key = k.into(); self }
     pub fn gap(mut self, g: f32) -> Self { self.style.gap = Size { width: length(g), height: length(g) }; self }
@@ -185,6 +236,20 @@ impl<M> El<M> {
     pub fn on_press(mut self, m: M) -> Self { self.on_press = Some(m); self.focusable = true; self }
     pub fn on_key(mut self, f: impl Fn(Key, bool) -> Option<M> + 'static) -> Self { self.on_key = Some(Rc::new(f)); self.focusable = true; self }
     pub fn on_blur(mut self, m: M) -> Self { self.on_blur = Some(m); self }
+    /// Make this a text field (see `TextInput`); it can take focus.
+    pub fn on_text(mut self, f: impl Fn(TextInput) -> Option<M> + 'static) -> Self { self.on_text = Some(Rc::new(f)); self.focusable = true; self }
+    /// A text field of several lines: Enter breaks the line, Up / Down and Home / End move by lines.
+    pub fn multiline(mut self) -> Self { self.multiline = true; self }
+    /// Let the pointer select the text in this subtree (read-only), to copy it.
+    pub fn selectable(mut self) -> Self { self.selectable = true; self }
+    /// The pointer's shape over this element.
+    pub fn cursor(mut self, c: Cursor) -> Self { self.cursor = Some(c); self }
+    /// Show bytes `a..b` of a text element as selected (while its field has focus).
+    pub fn select(mut self, a: usize, b: usize) -> Self { if let Content::Text { select, .. } = &mut self.content { *select = (a != b).then_some((a.min(b), a.max(b))); } self }
+    /// Underline bytes `a..b` of a text element (text being composed).
+    pub fn mark(mut self, a: usize, b: usize) -> Self { if let Content::Text { mark, .. } = &mut self.content { *mark = (a < b).then_some((a, b)); } self }
+    /// Keep a text element on one line.
+    pub fn nowrap(mut self) -> Self { if let Content::Text { nowrap, .. } = &mut self.content { *nowrap = true; } self }
     /// A drag reported as the pointer's fraction of the element (0..1), from the press on.
     pub fn on_drag(self, f: impl Fn(f32, f32) -> M + 'static) -> Self { self.on_drag_with(move |d| Some(f(d.fx(), d.fy()))) }
     pub fn on_drag_with(mut self, f: impl Fn(Drag) -> Option<M> + 'static) -> Self { self.on_drag = Some(Rc::new(f)); self }
@@ -246,13 +311,14 @@ impl<M> El<M> {
 
     /// The same tree sending other messages: lets one application embed another's view.
     pub fn map<N: 'static>(self, f: Rc<dyn Fn(M) -> N>) -> El<N> where M: 'static {
-        let El { key, style, content, fill, border, radius, on_press, on_key, on_drag, on_blur, focusable, scroll, horizontal, bar, reveal, disabled, commit, modal, fonts, loose, wipe, flow, hidden, annotate, gaze_scope, material, loosen, anchor, clips, calm, children } = self;
+        let El { key, style, content, fill, border, radius, on_press, on_key, on_drag, on_blur, focusable, scroll, horizontal, bar, reveal, disabled, commit, modal, fonts, loose, wipe, flow, hidden, annotate, gaze_scope, material, loosen, anchor, clips, calm, on_text, multiline, selectable, cursor, children } = self;
         let on_key = on_key.map(|k| { let f = f.clone(); Rc::new(move |key: Key, shift: bool| k(key, shift).map(|m| f(m))) as OnKey<N> });
+        let on_text = on_text.map(|t| { let f = f.clone(); Rc::new(move |i: TextInput| t(i).map(|m| f(m))) as OnText<N> });
         let on_drag = on_drag.map(|d| { let f = f.clone(); Rc::new(move |g: Drag| d(g).map(|m| f(m))) as OnDrag<N> });
         El {
             key, style, content, fill, border, radius, on_press: on_press.map(|m| f(m)), on_key, on_drag, on_blur: on_blur.map(|m| f(m)),
             focusable, scroll, horizontal, bar, reveal, disabled, commit, modal: modal.map(|m| Modal { dismiss: f(m.dismiss), beneath: m.beneath }),
-            fonts, loose, wipe, flow, hidden, annotate, gaze_scope, material, loosen, anchor, clips, calm, children: children.into_iter().map(|c| c.map(f.clone())).collect(),
+            fonts, loose, wipe, flow, hidden, annotate, gaze_scope, material, loosen, anchor, clips, calm, on_text, multiline, selectable, cursor, children: children.into_iter().map(|c| c.map(f.clone())).collect(),
         }
     }
 }
@@ -261,11 +327,11 @@ pub fn row<M>() -> El<M> { El::new(Style { display: Display::Flex, flex_directio
 pub fn col<M>() -> El<M> { El::new(Style { display: Display::Flex, flex_direction: FlexDirection::Column, ..Default::default() }, Content::None) }
 pub fn space<M>(w: f32, h: f32) -> El<M> { El::new(Style { size: Size { width: length(w), height: length(h) }, ..Default::default() }, Content::None) }
 pub fn text<M>(s: impl Into<String>, size: f32, paint: Paint) -> El<M> {
-    El::new(Style::default(), Content::Text { s: s.into(), size, line: (size * 1.6).round(), paint, font: Font::Body, print: 0.0, caret: None, weight: 0.0, around: None })
+    El::new(Style::default(), Content::Text { s: s.into(), size, line: (size * 1.6).round(), paint, font: Font::Body, print: 0.0, caret: None, weight: 0.0, around: None, select: None, mark: None, nowrap: false })
 }
 /// A text leaf with an explicit line height.
 pub fn text_lh<M>(s: impl Into<String>, size: f32, line: f32, paint: Paint) -> El<M> {
-    El::new(Style::default(), Content::Text { s: s.into(), size, line, paint, font: Font::Body, print: 0.0, caret: None, weight: 0.0, around: None })
+    El::new(Style::default(), Content::Text { s: s.into(), size, line, paint, font: Font::Body, print: 0.0, caret: None, weight: 0.0, around: None, select: None, mark: None, nowrap: false })
 }
 pub fn picture<M>(id: u32, ratio: f32) -> El<M> { El::new(Style { size: Size { width: percent(1.0), height: auto() }, ..Default::default() }, Content::Picture { id, ratio, fx: 0 }) }
 /// Every child in the same place, centred in the stack (a one-cell grid): for things that replace one

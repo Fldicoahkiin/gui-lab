@@ -62,7 +62,7 @@ mod web {
     // be long ago, and what the input starts (a burst, a front) starts now.
     #[wasm_bindgen] pub fn pointer_move(x: f32, y: f32, t: f32) { with(|s| { s.ui.tick(t); s.ui.pointer_move(x, y) }); }
     #[wasm_bindgen] pub fn pointer_leave(t: f32) { with(|s| { s.ui.tick(t); s.ui.pointer_leave() }); }
-    #[wasm_bindgen] pub fn pointer_down(x: f32, y: f32, t: f32) { with(|s| { s.ui.tick(t); s.ui.press(x, y); }); }
+    #[wasm_bindgen] pub fn pointer_down(x: f32, y: f32, shift: bool, t: f32) { with(|s| { s.ui.tick(t); s.ui.press_with(x, y, shift); }); }
     #[wasm_bindgen] pub fn pointer_up(x: f32, y: f32, t: f32) { with(|s| { s.ui.tick(t); s.ui.release(x, y) }); }
     #[wasm_bindgen] pub fn wheel(x: f32, y: f32, dx: f32, dy: f32, t: f32) { with(|s| { s.ui.tick(t); s.ui.wheel_xy(x, y, dx, dy) }); }
     /// The page's hash changed (a link, Back): show that page. Returns whether it names one.
@@ -76,6 +76,25 @@ mod web {
         let Some(k) = Key::from_name(name) else { return false };
         with(|s| { s.ui.tick(t); s.ui.key(k, shift) }).unwrap_or(false)
     }
+    /// A DOM key name with its modifiers (`cmd` is Ctrl or ⌘). Returns whether the page should not act
+    /// on it itself.
+    #[wasm_bindgen] pub fn key_mods(name: &str, shift: bool, cmd: bool, alt: bool, t: f32) -> bool {
+        let Some(k) = Key::from_name(name) else { return false };
+        with(|s| { s.ui.tick(t); s.ui.key_mods(k, crate::el::Mods { shift, cmd, alt }) }).unwrap_or(false)
+    }
+    // Text (DESIGN.md §1.8.1): the page's hidden text element forwards typed text, the input method's
+    // composition and the clipboard here while a text field has focus.
+    #[wasm_bindgen] pub fn text_focused() -> bool { with(|s| s.ui.text_focused()).unwrap_or(false) }
+    #[wasm_bindgen] pub fn text_input(text: &str, t: f32) -> bool { with(|s| { s.ui.tick(t); s.ui.text_input(text) }).unwrap_or(false) }
+    #[wasm_bindgen] pub fn ime_preedit(text: &str, t: f32) -> bool { with(|s| { s.ui.tick(t); s.ui.ime_preedit(text, None) }).unwrap_or(false) }
+    #[wasm_bindgen] pub fn ime_commit(text: &str, t: f32) -> bool { with(|s| { s.ui.tick(t); s.ui.ime_commit(text) }).unwrap_or(false) }
+    #[wasm_bindgen] pub fn paste(text: &str, t: f32) -> bool { with(|s| { s.ui.tick(t); s.ui.paste(text) }).unwrap_or(false) }
+    #[wasm_bindgen] pub fn copy() -> Option<String> { with(|s| s.ui.copy()).flatten() }
+    #[wasm_bindgen] pub fn cut(t: f32) -> Option<String> { with(|s| { s.ui.tick(t); s.ui.cut() }).flatten() }
+    /// Where the focused field's caret is (x, y, w, h, CSS px), or nothing when focus is not on one.
+    #[wasm_bindgen] pub fn ime_rect() -> Vec<f32> { with(|s| s.ui.ime_rect().map(|r| vec![r.x, r.y, r.w, r.h]).unwrap_or_default()).unwrap_or_default() }
+    /// The CSS cursor for where the pointer is.
+    #[wasm_bindgen] pub fn cursor() -> String { with(|s| s.ui.cursor().css().to_owned()).unwrap_or_else(|| "default".into()) }
     /// A DOM key name let go.
     #[wasm_bindgen] pub fn key_up(name: &str, t: f32) {
         let Some(k) = Key::from_name(name) else { return };

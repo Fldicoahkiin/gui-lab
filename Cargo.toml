@@ -12,6 +12,7 @@ wgpu = { version = "30", default-features = false, features = ["wgsl", "webgl", 
 parley = { version = "0.13", default-features = false, features = ["std"] }
 swash = "0.2"
 taffy = "0.15"
+unicode-segmentation = "1"
 bytemuck = { version = "1", features = ["derive", "min_const_generics"] }
 pollster = "0.4"
 

@@ -2,6 +2,7 @@
 //!  1. the gallery's button page, pressing the button (each press is a message and a new view);
 //!  2. a list of 10,000 rows (text and a small switch), scrolled by the wheel;
 //!  3. a 5,000-character article flowing around a disc that moves (every step reflows).
+//!
 //! Each line is the mean over the runs, ms. Numbers are only comparable on one machine.
 //!
 //! usage: bench [runs]

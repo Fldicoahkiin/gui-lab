@@ -123,6 +123,8 @@ pub enum Msg {
     Nothing,
     Press,
     Text(TextEdit),
+    /// The multi-line field on the input page.
+    Notes(TextEdit),
     DialogText(TextEdit),
     Switch,
     Level(f32),
@@ -221,6 +223,8 @@ pub struct Gallery {
     /// The frame-time readout (F2, or the 性能 menu) and the material resolution (0 = automatic).
     pub overlay: bool,
     pub quality: f32,
+    /// The input page's multi-line field.
+    pub notes: TextEdit,
 }
 
 impl Default for Gallery {
@@ -235,7 +239,7 @@ impl Default for Gallery {
             menu: 0, mats: MaterialParams::all(), loose: 0.0, style: None, gaze: Gaze::default(), loose_scale: 1.0, style_pic: PicFx::default(),
             gaze_page: Gaze { mode: GazeMode::All, kinds: gaze::FRAME | gaze::INDEX | gaze::SIZE, density: 12.0, ..Gaze::default() },
             hovered: None, clock: 0.0, choices: [0, 0, 0, 0, 0, 0, 0, 0], toggles: [true, false, true, false, true, false, false, false],
-            slides: [0.35, 0.4, 0.6, 14.0, 0.5, 2.0, 0.0, 0.5], query: TextEdit::new("lay"), sc: Scenes::default(), overlay: false, quality: 1.0,
+            slides: [0.35, 0.4, 0.6, 14.0, 0.5, 2.0, 0.0, 0.5], query: TextEdit::new("lay"), sc: Scenes::default(), overlay: false, quality: 1.0, notes: TextEdit::new("第一行\n第二行，长一些的一行会在框的宽度里折行。"),
         }
     }
 }
@@ -377,6 +381,7 @@ pub fn update(s: &mut Gallery, m: Msg) {
         Msg::Nothing => {}
         Msg::Press => s.presses += 1,
         Msg::Text(t) => s.text = t,
+        Msg::Notes(t) => s.notes = t,
         Msg::DialogText(t) => s.dialog_text = t,
         Msg::Switch => s.on = !s.on,
         Msg::Level(v) => s.level = v,

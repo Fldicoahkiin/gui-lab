@@ -8,7 +8,7 @@ use crate::style::set;
 use crate::text::{MONO, PIXEL, SANS};
 use crate::widgets::{
     Edit, Spec, TextEdit, Variant, button_as, card, choice, dialog, divider, image, input, list, number, scroll_area, segmented,
-    slider, switch, switch_sized, tabs, vdivider,
+    slider, switch, switch_sized, tabs, textarea, vdivider,
 };
 use taffy::{AlignItems, JustifyContent};
 
@@ -146,7 +146,7 @@ pub(super) fn source(h: &str, file: &str, src: &str) -> El<Msg> {
     for (i, l) in src.lines().enumerate() {
         lines = lines.child(row().gap(14.0).align(AlignItems::START)
             .child(row().width(30.0).justify(JustifyContent::END).child(text_lh((i + 1).to_string(), 12.0, 18.0, Paint::DIM).font(Font::Mono)))
-            .child(text_lh(if l.is_empty() { " " } else { l }, 12.0, 18.0, Paint::TEXT).font(Font::Mono).grow(1.0)));
+            .child(text_lh(if l.is_empty() { " " } else { l }, 12.0, 18.0, Paint::TEXT).font(Font::Mono).grow(1.0).selectable().key(format!("{h}/src{i}"))));
     }
     col().key(format!("{h}/source")).fill_width().gap(8.0)
         .child(text(file, 12.0, Paint::DIM).font(Font::Mono))
@@ -203,7 +203,8 @@ fn component(s: &Gallery, c: usize) -> (El<Msg>, Vec<(&'static str, El<Msg>)>) {
         INPUT => {
             let live = col().gap(10.0)
                 .child(input(&k("live"), &s.text, "输入一些文字", pr(0), pr(1) as usize, Msg::Text))
-                .child(text(format!("{} 个字", s.text.text.chars().count()), sz.small, Paint::DIM).key(k("count")));
+                .child(text(format!("{} 个字", s.text.text.chars().count()), sz.small, Paint::DIM).key(k("count")))
+                .child(textarea(&k("notes"), &s.notes, "多行：回车换行，上下方向键按行移动", pr(0), 4, 2000, Msg::Notes));
             (live, vec![
                 ("空，显示占位文字", input(&k("a"), &TextEdit::default(), "名称", 220.0, 40, |_| Msg::Nothing)),
                 ("有内容", input(&k("b"), &TextEdit::new("Studio 4"), "名称", 220.0, 40, |_| Msg::Nothing)),

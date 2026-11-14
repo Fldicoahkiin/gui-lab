@@ -1,11 +1,11 @@
 //! Runtime: state, view, layout, hit-testing, focus, scrolling and instance birth times. No GPU here,
 //! so all of it can be tested headless.
-use crate::el::{Content, Drag, El, Font, Key, Modal, OnDrag, OnKey, Paint, Phase};
+use crate::el::{Content, Cursor, Drag, El, Font, Key, Modal, Mods, OnDrag, OnKey, OnText, Paint, Phase, TextInput};
 use crate::morph::{self, Cmd, Ease, FlowSpec, MorphSpec, Particle};
 use crate::scene::{Field, Instance, PICTURE, SHAPE, Scene};
 use crate::gaze;
 use crate::style::{Gaze, GazeMode, Look, gaze as kinds};
-use crate::text::{Face, MONO, Para, Text};
+use crate::text::{Face, MONO, Nav, Para, Text};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -77,6 +77,11 @@ pub struct Node<M> {
     anchor: Option<String>,
     clips: bool,
     calm: bool,
+    on_text: Option<OnText<M>>,
+    /// A multi-line text field; text that can be selected (read-only); the pointer's shape here.
+    pub multiline: bool,
+    pub selectable: bool,
+    pub cursor: Option<Cursor>,
     tid: NodeId,
 }
 impl<M> Node<M> {
@@ -94,6 +99,15 @@ impl<M> Node<M> {
     }
     /// Something the pointer can act on: hover marks frame it.
     fn active(&self) -> bool { self.focusable || self.on_press.is_some() || self.on_drag.is_some() }
+    /// A text field.
+    pub fn editable(&self) -> bool { self.on_text.is_some() }
+    /// How its text is laid out, when it is text: the same paragraph that is drawn.
+    fn para(&self) -> Option<Para<'_>> {
+        let Content::Text { s, size, line, font, print, around, nowrap, .. } = &self.content else { return None };
+        let width = if *nowrap { f32::INFINITY } else { self.inner.w + if around.is_some() { 0.0 } else { 1.0 } };
+        Some(Para { s, face: font.resolve([0; 3]), size: *size, line: *line, width, print: *print, around: around.as_deref() })
+    }
+    fn origin(&self) -> (f32, f32) { (self.inner.x, self.inner.y) }
 }
 
 /// A drag in progress: the handler and where the press was, captured at the press.
@@ -263,6 +277,15 @@ pub struct Ui<S, M> {
     /// The readout is shown; when it was last drawn (it refreshes twice a second while shown).
     overlay: bool,
     overlay_at: f32,
+    // ── Text (DESIGN.md §1.8.1) ──
+    /// The text field the pointer pressed in, while the press lasts (its drag selects).
+    text_capture: Option<String>,
+    /// Read-only selection over selectable text: anchor and focus (node key, byte), and whether the
+    /// pointer is still dragging it.
+    sel: Option<((String, usize), (String, usize))>,
+    sel_drag: bool,
+    /// The last press: when, where, and how many presses in a row it made (a double click is 2).
+    clicks: (f32, f32, f32, u8),
 }
 
 /// What the runtime needs from the look to know whether anything is still moving: how long fronts live
@@ -279,6 +302,10 @@ impl Timing {
 
 /// Blink half-period of the caret, seconds.
 pub const BLINK: f32 = 0.53;
+/// How far a selected glyph's halo reaches past its outline, logical px.
+pub const SELECT_HALO: f32 = 3.0;
+/// Presses closer than this in time (s) and space (px) count as a double (triple) click.
+const CLICK_GAP: (f32, f32) = (0.45, 5.0);
 
 impl<S, M: Clone> Ui<S, M> {
     /// Let the state know the window's logical size whenever it changes (for views that lay out
@@ -333,6 +360,7 @@ impl<S, M: Clone> Ui<S, M> {
             dirty: true, look_of: None, timing: Timing::default(), wake_of: None, latest_birth: f32::NEG_INFINITY, gaze_until: f32::NEG_INFINITY,
             marks_moving: false, caret: None, caret_on: true, static_loose: false, mclock: 0.0, moving: false,
             perf: crate::perf::Perf { quality: 1.0, ..Default::default() }, span: 0, painting: false, overlay: false, overlay_at: 0.0,
+            text_capture: None, sel: None, sel_drag: false, clicks: (f32::NEG_INFINITY, 0.0, 0.0, 0),
         };
         ui.resize(w, h, scale);
         ui
@@ -518,6 +546,14 @@ impl<S, M: Clone> Ui<S, M> {
             if let Some(f) = self.hovered && f(&mut self.state, self.hover.as_deref()) { self.relayout(); }
         }
         if self.capture.is_some() { self.drag(Phase::Move, x, y); }
+        if let Some(k) = self.text_capture.clone() && let Some(fi) = self.nodes.iter().position(|n| n.key == k) && self.field_at() == Some(fi)
+            && let Some(at) = self.leaf_of(fi).and_then(|l| self.text_hit(l, x, y)) {
+            self.send_text(TextInput::Pointer { at, phase: Phase::Move, clicks: self.clicks.3, shift: false });
+        }
+        if self.sel_drag && let Some(i) = self.sel_target(x, y) && let Some(at) = self.text_hit(i, x, y) {
+            let key = self.nodes[i].key.clone();
+            if let Some((_, focus)) = &mut self.sel && *focus != (key.clone(), at) { *focus = (key, at); self.paint(); }
+        }
     }
 
     /// Give the captured handler the pointer at (x, y), logical px. The element's current rect is
@@ -540,17 +576,34 @@ impl<S, M: Clone> Ui<S, M> {
         self.field.burst(Some([r.x * s, r.y * s, r.right() * s, r.bottom() * s]), self.now, strength, secs);
     }
 
-    pub fn press(&mut self, x: f32, y: f32) {
+    pub fn press(&mut self, x: f32, y: f32) { self.press_with(x, y, false); }
+    /// A press with Shift held or not (Shift extends a text selection).
+    pub fn press_with(&mut self, x: f32, y: f32, shift: bool) {
         // A press without a release before it (a lost pointer-up) ends the old capture.
         self.capture = None;
+        self.text_capture = None;
+        self.sel_drag = false;
         self.heard();
         self.pointer_move(x, y);
+        let (t0, x0, y0, n0) = self.clicks;
+        let clicks = if self.now - t0 < CLICK_GAP.0 && (x - x0).abs() < CLICK_GAP.1 && (y - y0).abs() < CLICK_GAP.1 { n0.saturating_add(1) } else { 1 };
+        self.clicks = (self.now, x, y, clicks);
         let s = self.scale;
         self.field.front(x * s, y * s, self.now, 1.0);
         let target = self.hit(x, y).and_then(|i| self.up(i, |n| n.focusable)).map(|i| self.nodes[i].key.clone());
         self.set_focus(target);
         // Losing focus may have changed the page, so look again.
         let hit = self.hit(x, y);
+        // In a text field the press places the caret (two select a word, three everything) and the drag
+        // that follows selects.
+        if let Some(fi) = hit.and_then(|i| self.up(i, |n| n.on_text.is_some())) {
+            if self.sel.take().is_some() { self.paint(); }
+            self.text_capture = Some(self.nodes[fi].key.clone());
+            if let Some(at) = self.leaf_of(fi).and_then(|l| self.text_hit(l, x, y)) {
+                self.send_text(TextInput::Pointer { at, phase: Phase::Start, clicks, shift });
+            }
+            return;
+        }
         if let Some(i) = hit.and_then(|i| self.up(i, |n| n.on_drag.is_some())) {
             let n = &self.nodes[i];
             let handler = n.on_drag.clone().expect("drag handler");
@@ -559,6 +612,21 @@ impl<S, M: Clone> Ui<S, M> {
             return;
         }
         let pressed = hit.and_then(|i| self.up(i, |n| n.on_press.is_some()));
+        // Nothing to press here: selectable text starts a selection there; anywhere else ends one.
+        if pressed.is_none() {
+            match hit.filter(|&i| self.nodes[i].selectable && self.nodes[i].text().is_some()) {
+                Some(i) => {
+                    let at = self.text_hit(i, x, y).unwrap_or(0);
+                    let s = self.nodes[i].text().unwrap_or_default();
+                    let (a, b) = match clicks { 1 => (at, at), 2 => crate::text::word_range(s, at), _ => (0, s.len()) };
+                    let key = self.nodes[i].key.clone();
+                    self.sel = Some(((key.clone(), a), (key, b)));
+                    self.sel_drag = true;
+                    self.paint();
+                }
+                None => if self.sel.take().is_some() { self.paint(); },
+            }
+        }
         if let Some(i) = pressed {
             self.pressed = Some(self.nodes[i].key.clone());
             let r = self.nodes[i].rect;
@@ -571,6 +639,11 @@ impl<S, M: Clone> Ui<S, M> {
 
     pub fn release(&mut self, x: f32, y: f32) {
         self.dirty = true;
+        if let Some(k) = self.text_capture.take() && self.field_at().is_some_and(|f| self.nodes[f].key == k)
+            && let Some(at) = self.field_at().and_then(|f| self.leaf_of(f)).and_then(|l| self.text_hit(l, x, y)) {
+            self.send_text(TextInput::Pointer { at, phase: Phase::End, clicks: self.clicks.3, shift: false });
+        }
+        self.sel_drag = false;
         if self.capture.is_some() {
             self.drag(Phase::End, x, y);
             self.capture = None;
@@ -596,11 +669,26 @@ impl<S, M: Clone> Ui<S, M> {
     }
 
     /// A key press; the flag is Shift. Returns whether anything used it.
-    pub fn key(&mut self, k: Key, shift: bool) -> bool {
+    pub fn key(&mut self, k: Key, shift: bool) -> bool { self.key_mods(k, Mods { shift, ..Mods::default() }) }
+    /// A key press with its modifiers. A focused text field takes it first: characters as text, Up /
+    /// Down / Home / End in a multi-line field as moves by the layout, anything else as a key (Cmd+A,
+    /// Cmd+Z…). Returns whether anything used it.
+    pub fn key_mods(&mut self, k: Key, mods: Mods) -> bool {
+        let shift = mods.shift;
         self.dirty = true;
         self.heard();
         self.keyboard = true;
         if k == Key::Tab { self.cycle_focus(shift); return true; }
+        if let Some(fi) = self.field_at() && k != Key::Escape {
+            let ev = match k {
+                Key::Char(c) if !mods.cmd && !mods.alt => Some(TextInput::Insert(c.to_string())),
+                Key::Up | Key::Down | Key::Home | Key::End if self.nodes[fi].multiline && !mods.cmd => self.line_nav(fi, k).map(|at| TextInput::Goto { at, extend: shift }),
+                _ => Some(TextInput::Key { key: k, mods }),
+            };
+            if let Some(ev) = ev && self.send_text(ev) { return true; }
+        }
+        // Shortcuts with Cmd are only for text fields; the rest belong to the system.
+        if mods.cmd { return false; }
         let lo = self.modal_at.unwrap_or(0);
         let fi = self.focus.as_deref().and_then(|f| self.nodes.iter().position(|n| n.key == f)).filter(|&i| i >= lo);
         if let Some(fi) = fi && let Some(m) = self.nodes[fi].on_key.clone().and_then(|f| f(k, shift)) {
@@ -637,6 +725,161 @@ impl<S, M: Clone> Ui<S, M> {
         match self.unused_key {
             Some(f) => { let used = f(&mut self.state, k, shift); if used { self.relayout(); } used }
             None => false,
+        }
+    }
+
+    // ── Text (DESIGN.md §1.8.1) ──────────────────────────────────────────────────────────────────
+    /// The focused text field's node, if focus is on one.
+    fn field_at(&self) -> Option<usize> {
+        let f = self.focus.as_deref()?;
+        let i = self.nodes.iter().position(|n| n.key == f)?;
+        self.nodes[i].on_text.is_some().then_some(i)
+    }
+    /// The text a field shows: its first text descendant.
+    fn leaf_of(&self, field: usize) -> Option<usize> {
+        (field..self.nodes.len()).find(|&j| within(&self.nodes, j, field) && matches!(self.nodes[j].content, Content::Text { .. }))
+    }
+    /// Whether focus is on a text field: the host then sends typed text, the input method and the
+    /// clipboard here (and keeps its hidden text element focused, on the web).
+    pub fn text_focused(&self) -> bool { self.field_at().is_some() }
+    /// Give the focused field a text event; returns whether it used it. Afterwards its caret is scrolled
+    /// into view.
+    fn send_text(&mut self, ev: TextInput) -> bool {
+        let Some(fi) = self.field_at() else { return false };
+        let Some(m) = self.nodes[fi].on_text.clone().and_then(|f| f(ev)) else { return false };
+        self.send(m);
+        self.reveal_caret();
+        true
+    }
+    /// Text typed (or committed by an input method, or dropped in), for the focused field.
+    pub fn text_input(&mut self, s: &str) -> bool {
+        self.dirty = true;
+        self.heard();
+        self.keyboard = true;
+        self.send_text(TextInput::Insert(s.into()))
+    }
+    /// An input method's composition so far (`cursor`: a byte range in it); empty text cancels it.
+    pub fn ime_preedit(&mut self, text: &str, cursor: Option<(usize, usize)>) -> bool {
+        self.dirty = true;
+        self.keyboard = true;
+        self.send_text(TextInput::Compose { text: text.into(), cursor })
+    }
+    /// An input method committed `text` (empty: the composition ended with nothing).
+    pub fn ime_commit(&mut self, text: &str) -> bool {
+        self.dirty = true;
+        if text.is_empty() { self.send_text(TextInput::Compose { text: String::new(), cursor: None }) } else { self.text_input(text) }
+    }
+    /// The clipboard's text, pasted into the focused field.
+    pub fn paste(&mut self, s: &str) -> bool { self.dirty = true; self.heard(); self.send_text(TextInput::Paste(s.into())) }
+    /// What a copy takes: the focused field's selection, or else the read-only selection (its pieces in
+    /// separate text elements joined by line breaks).
+    pub fn copy(&self) -> Option<String> {
+        if let Some(fi) = self.field_at() {
+            let leaf = self.leaf_of(fi)?;
+            let Content::Text { s, select: Some((a, b)), .. } = &self.nodes[leaf].content else { return None };
+            return s.get(*a..*b).map(str::to_owned);
+        }
+        let mut pieces: Vec<(usize, (usize, usize))> = self.sel_ranges().into_iter().collect();
+        if pieces.is_empty() { return None; }
+        pieces.sort_by_key(|p| p.0);
+        Some(pieces.iter().filter_map(|(i, (a, b))| self.nodes[*i].text().and_then(|s| s.get(*a..*b))).collect::<Vec<_>>().join("\n"))
+    }
+    /// Copy, and remove the selection from the focused field.
+    pub fn cut(&mut self) -> Option<String> {
+        let c = self.copy()?;
+        if self.field_at().is_some() { self.dirty = true; self.send_text(TextInput::Cut); }
+        Some(c)
+    }
+    /// Where the focused field's caret is (logical px): the host puts its hidden text element, and so an
+    /// input method's candidate window, there.
+    pub fn ime_rect(&mut self) -> Option<Rect> {
+        let leaf = self.field_at().and_then(|f| self.leaf_of(f))?;
+        let n = &self.nodes[leaf];
+        let Content::Text { caret, .. } = &n.content else { return None };
+        let r = self.text.caret(n.para()?, n.origin(), caret.unwrap_or(0))?;
+        Some(Rect::new(r.x, r.y, 2.0, r.h).intersect(&n.clip.inset(-2.0, -2.0, -2.0, -2.0)))
+    }
+    /// The pointer's shape where it is: an element's own (`El::cursor`), else text over a text field
+    /// or selectable text, a pointing hand over what can be pressed, grab over what can be dragged
+    /// (grabbing while it is).
+    pub fn cursor(&self) -> Cursor {
+        if self.text_capture.is_some() || self.sel_drag { return Cursor::Text; }
+        if let Some(c) = &self.capture {
+            return self.nodes.iter().find(|n| n.key == c.key).and_then(|n| n.cursor).filter(|c| *c != Cursor::Grab).unwrap_or(Cursor::Grabbing);
+        }
+        if self.field.pointer[2] <= 0.0 { return Cursor::Default; }
+        let (x, y) = (self.field.pointer[0] / self.scale, self.field.pointer[1] / self.scale);
+        let mut at = self.hit(x, y);
+        while let Some(i) = at {
+            let n = &self.nodes[i];
+            if let Some(c) = n.cursor { return c; }
+            if n.on_text.is_some() { return Cursor::Text; }
+            if n.on_drag.is_some() { return Cursor::Grab; }
+            if n.on_press.is_some() { return Cursor::Pointer; }
+            if n.selectable && n.text().is_some() { return Cursor::Text; }
+            at = n.parent;
+        }
+        Cursor::Default
+    }
+    /// The read-only selection now: the byte range selected in each selectable text node it spans.
+    fn sel_ranges(&self) -> HashMap<usize, (usize, usize)> {
+        let mut out = HashMap::new();
+        let Some(((ka, a), (kb, b))) = &self.sel else { return out };
+        let pos = |k: &str| self.nodes.iter().position(|n| n.key == k);
+        let (Some(ia), Some(ib)) = (pos(ka), pos(kb)) else { return out };
+        let ((i0, b0), (i1, b1)) = if (ia, *a) <= (ib, *b) { ((ia, *a), (ib, *b)) } else { ((ib, *b), (ia, *a)) };
+        for i in i0..=i1 {
+            if !self.nodes[i].selectable { continue; }
+            let Some(s) = self.nodes[i].text() else { continue };
+            let (lo, hi) = (if i == i0 { b0 } else { 0 }, if i == i1 { b1.min(s.len()) } else { s.len() });
+            if lo < hi { out.insert(i, (lo, hi)); }
+        }
+        out
+    }
+    /// The read-only selection's text pieces, for tests.
+    pub fn selection(&self) -> Vec<(String, usize, usize)> {
+        let mut v: Vec<_> = self.sel_ranges().into_iter().map(|(i, (a, b))| (self.nodes[i].key.clone(), a, b)).collect();
+        v.sort();
+        v
+    }
+    /// The selectable text node under (x, y), or the nearest visible one (by line, then along it).
+    fn sel_target(&self, x: f32, y: f32) -> Option<usize> {
+        let seen = |i: usize| { let n = &self.nodes[i]; let r = n.rect.intersect(&n.clip); r.w > 0.0 && r.h > 0.0 };
+        let cands: Vec<usize> = (0..self.nodes.len()).filter(|&i| self.nodes[i].selectable && self.nodes[i].text().is_some() && !self.nodes[i].hidden && seen(i)).collect();
+        if let Some(&i) = cands.iter().find(|&&i| self.nodes[i].rect.contains(x, y)) { return Some(i); }
+        let dist = |i: usize| { let r = self.nodes[i].rect; let dy = (r.y - y).max(y - r.bottom()).max(0.0); let dx = (r.x - x).max(x - r.right()).max(0.0); (dy, dx) };
+        cands.into_iter().min_by(|&a, &b| dist(a).partial_cmp(&dist(b)).unwrap_or(std::cmp::Ordering::Equal))
+    }
+    /// The byte under (x, y) in node `i`'s text.
+    fn text_hit(&mut self, i: usize, x: f32, y: f32) -> Option<usize> {
+        let n = &self.nodes[i];
+        Some(self.text.hit(n.para()?, n.origin(), x, y))
+    }
+    /// The caret of field `fi` moved by a line or to a line's end (multi-line fields).
+    fn line_nav(&mut self, fi: usize, k: Key) -> Option<usize> {
+        let leaf = self.leaf_of(fi)?;
+        let n = &self.nodes[leaf];
+        let Content::Text { caret, .. } = &n.content else { return None };
+        let to = match k { Key::Up => Nav::Up, Key::Down => Nav::Down, Key::Home => Nav::LineStart, _ => Nav::LineEnd };
+        Some(self.text.nav(n.para()?, caret.unwrap_or(0), to))
+    }
+    /// Scroll the focused field (and anything around it) so its caret is visible.
+    fn reveal_caret(&mut self) {
+        for _ in 0..4 {
+            let Some(leaf) = self.field_at().and_then(|f| self.leaf_of(f)) else { return };
+            let n = &self.nodes[leaf];
+            let Some(r) = (match &n.content { Content::Text { caret: Some(c), .. } => n.para().and_then(|p| self.text.caret(p, n.origin(), *c)), _ => None }) else { return };
+            let mut a = self.nodes[leaf].parent;
+            let mut moved = false;
+            while let Some(p) = a.and_then(|p| self.up(p, |n| n.scroll)) {
+                let view = self.nodes[p].clip.intersect(&self.nodes[p].inner);
+                let (lo, hi, vlo, vhi) = if self.nodes[p].horizontal { (r.x - 2.0, r.x + 3.0, view.x, view.right()) } else { (r.y, r.bottom(), view.y, view.bottom()) };
+                let d = if lo < vlo { lo - vlo } else if hi > vhi { hi - vhi } else { 0.0 };
+                if d != 0.0 && self.scroll_by(p, d) { moved = true; break; }
+                a = self.nodes[p].parent;
+            }
+            if !moved { return; }
+            self.relayout();
         }
     }
 
@@ -880,7 +1123,7 @@ impl<S, M: Clone> Ui<S, M> {
             Some(m) => {
                 if self.modal_key.is_none() { self.return_focus = self.focus.clone(); }
                 // The first field that takes keys (a text field), else the first control.
-                let first = (m..self.nodes.len()).find(|&i| self.nodes[i].focusable && self.nodes[i].on_key.is_some())
+                let first = (m..self.nodes.len()).find(|&i| self.nodes[i].focusable && (self.nodes[i].on_key.is_some() || self.nodes[i].on_text.is_some()))
                     .or_else(|| (m..self.nodes.len()).find(|&i| self.nodes[i].focusable));
                 self.focus = first.map(|i| self.nodes[i].key.clone());
             }
@@ -931,6 +1174,7 @@ impl<S, M: Clone> Ui<S, M> {
         let (mut latest, mut any_loose) = (f32::NEG_INFINITY, false);
         let global = self.timing.material;
         let mut caret_found: Option<(usize, [f32; 4])> = None;
+        let ro = self.sel_ranges();
         for i in 0..self.nodes.len() {
             let n = &self.nodes[i];
             if Some(i) == self.modal_at { self.scene.begin_layer(); }
@@ -981,20 +1225,42 @@ impl<S, M: Clone> Ui<S, M> {
             if let Some(p) = n.fill { put(&mut sink, shape(p, 0.0), ident(&n.key, u32::MAX, 0), None); }
             if let Some((w, p)) = n.border { put(&mut sink, shape(p, w), ident(&n.key, u32::MAX - 1, 0), None); }
             match &n.content {
-                Content::Text { s: str, size, line, paint, font, print, caret, weight, around } => {
+                Content::Text { line, paint, caret, weight, select, mark, .. } => {
                     let proto = Instance { paint: [paint.tone, paint.accent, paint.alpha, 0.0], look: [mat, paint.hue as f32, (n.inner.y * s).round(), (line * s).round().max(1.0)], ..Default::default() };
-                    let para = Para { s: str, face: font.resolve([0; 3]), size: *size, line: *line, width: n.inner.w + if around.is_some() { 0.0 } else { 1.0 }, print: *print, around: around.as_deref() };
-                    let mut seq = 0;
+                    let para = n.para().expect("text");
                     let wpx = weight * s;
-                    self.text.emit(para, (n.inner.x, n.inner.y), proto, s, |mut inst, glyph| {
-                        inst.extra[0] = wpx;
-                        put(&mut sink, inst, ident(&n.key, seq, glyph), Some(glyph));
-                        seq += 1;
-                    });
+                    let focused = caret_at.is_some_and(|f| within(&self.nodes, i, f));
+                    // Lines the clip hides are not made into instances at all.
+                    let rows = Some((clip[1], clip[3]));
+                    let mut glyphs: Vec<(Instance, u32)> = vec![];
+                    self.text.emit_in(para, n.origin(), proto, s, rows, |mut inst, glyph| { inst.extra[0] = wpx; glyphs.push((inst, glyph)); });
+                    // A selection (the field's, while it has focus, or the read-only one) is drawn by
+                    // nearness: each selected glyph again, under itself, with its outline moved out, so
+                    // neighbouring glyphs' halos run together and follow the letters, not a box.
+                    let range = select.filter(|_| focused).or_else(|| ro.get(&i).copied());
+                    if let Some((a, b)) = range {
+                        let boxes = self.text.boxes(para, n.origin(), a, b);
+                        for (k, (g, gid)) in glyphs.iter().enumerate() {
+                            let (cx, cy) = ((g.rect[0] + g.rect[2] * 0.5) / s, (g.rect[1] + g.rect[3] * 0.5) / s);
+                            if !boxes.iter().any(|r| r.inset(-1.0, -1.0, -1.0, -1.0).contains(cx, cy)) { continue; }
+                            let mut halo = *g;
+                            halo.extra[0] = wpx + SELECT_HALO * s;
+                            halo.paint = [0.0, 1.0, 0.34, halo.paint[3]];
+                            halo.look[1] = 0.0;
+                            put(&mut sink, halo, ident(&n.key, (k as u32) | 0x4000_0000, *gid), None);
+                        }
+                    }
+                    for (seq, (inst, glyph)) in glyphs.into_iter().enumerate() { put(&mut sink, inst, ident(&n.key, seq as u32, glyph), Some(glyph)); }
+                    // Text being composed is underlined.
+                    if let Some((a, b)) = mark {
+                        for (k, r) in self.text.boxes(para, n.origin(), *a, *b).into_iter().enumerate() {
+                            let bar = Instance { rect: dev(Rect::new(r.x, r.bottom() - 2.5, r.w, 1.5)), paint: [paint.tone, 0.0, 1.0, SHAPE], ..Default::default() };
+                            put(&mut sink, bar, ident(&n.key, u32::MAX - 8 - k as u32, 0), None);
+                        }
+                    }
                     // The caret, only while the field it belongs to has focus. It keeps one identity, so
                     // moving it does not make it condense again.
-                    let focused = caret_at.is_some_and(|f| within(&self.nodes, i, f));
-                    if let Some(at) = caret.filter(|_| focused) && let Some(r) = self.text.caret(para, (n.inner.x, n.inner.y), at) {
+                    if let Some(at) = caret.filter(|_| focused) && let Some(r) = self.text.caret(para, n.origin(), at) {
                         let bar = Instance { rect: dev(Rect::new(r.x, r.y, 1.5, r.h)), paint: [paint.tone, 1.0, 1.0, SHAPE], ..Default::default() };
                         let before = sink.scene.instances.len();
                         put(&mut sink, bar, ident(&n.key, u32::MAX - 4, 0), None);
@@ -1436,11 +1702,11 @@ struct Sink<'a> {
 /// What a subtree passes down besides fonts: its material override (nesting level and id) and the
 /// looseness it holds.
 #[derive(Clone, Copy, Default)]
-struct Inherit { level: u8, mat: Option<u8>, loosen: f32 }
+struct Inherit { level: u8, mat: Option<u8>, loosen: f32, select: bool }
 impl Inherit {
     fn with(self, mat: Option<u8>, loosen: f32) -> Self {
         let (level, mat) = match mat { Some(m) => (self.level + 1, Some(m)), None => (self.level, self.mat) };
-        Self { level, mat, loosen: self.loosen.max(loosen) }
+        Self { level, mat, loosen: self.loosen.max(loosen), select: self.select }
     }
     fn code(&self) -> f32 { self.mat.map_or(0.0, |m| crate::style::override_code(self.level, m)) }
 }
@@ -1475,22 +1741,23 @@ fn hoist<M>(el: &mut El<M>, out: &mut Vec<El<M>>) {
 /// `off` is (disabled, hidden), both inherited; `flow` is the nearest flow id above and its node.
 #[allow(clippy::too_many_arguments)]
 fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], off: (bool, bool), flow: Option<(Rc<str>, usize)>, inh: Inherit, tree: &mut TaffyTree<usize>, nodes: &mut Vec<Node<M>>) -> NodeId {
-    let El { key, style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, annotate, gaze_scope, material, loosen, anchor, clips, calm, children } = el;
+    let El { key, style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, annotate, gaze_scope, material, loosen, anchor, clips, calm, mut on_text, multiline, selectable, cursor, children } = el;
     let key = if key.is_empty() { path } else { key };
     let roles = fonts.unwrap_or(roles);
     let (off, hidden) = (off.0 || disabled, off.1 || hidden);
-    if off || hidden { on_press = None; on_key = None; on_drag = None; on_blur = None; focusable = false; commit = false; }
+    if off || hidden { on_press = None; on_key = None; on_drag = None; on_blur = None; on_text = None; focusable = false; commit = false; }
     if let Content::Text { font, .. } = &mut content { *font = Font::Face(font.resolve(roles)); }
     let i = nodes.len();
     let flow = own_flow.map(|f| (Rc::from(f.as_str()), i)).or(flow);
     // A material override nests: a deeper one gets a higher level, so it wins where both draw.
-    let inh = inh.with(material, loosen);
+    let mut inh = inh.with(material, loosen);
+    inh.select |= selectable;
     let leaf = !matches!(content, Content::None);
     let placeholder = NodeId::from(0u64);
     nodes.push(Node {
         key, parent, rect: Rect::default(), clip: Rect::default(), inner: Rect::default(), scroll, horizontal, focusable, disabled: off, extent: 0.0,
         content, fill, border, radius, on_press, on_key, on_drag, on_blur, loose, wipe, bar, reveal, commit, modal, hidden, flow: flow.clone(),
-        mat: inh.code(), loosen: inh.loosen, annotate, scope: gaze_scope, anchor, clips, calm, tid: placeholder,
+        mat: inh.code(), loosen: inh.loosen, annotate, scope: gaze_scope, anchor, clips, calm, on_text, multiline, selectable: inh.select, cursor, tid: placeholder,
     });
     let kids: Vec<NodeId> = children.into_iter().enumerate().map(|(n, c)| {
         let p = format!("{}/{n}", nodes[i].key);

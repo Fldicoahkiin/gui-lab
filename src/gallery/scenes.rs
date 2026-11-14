@@ -565,7 +565,7 @@ fn reading(g: &Gallery, w: f32, _h: f32) -> El<Msg> {
     }
     let mut around = Around::new(obstacles, q(0));
     around.min = (q(2) * 3.0).max(40.0);
-    body.children[0] = text_lh(ARTICLE, q(2), q(3), Paint::TEXT).key("read/text").fill_width().around(around);
+    body.children[0] = text_lh(ARTICLE, q(2), q(3), Paint::TEXT).key("read/text").fill_width().around(around).selectable();
 
     col().key("read/page").width(cw).gap(14.0)
         .child(text("长文 · 第 3 期", 12.0, Paint::DIM).font(Font::Mono))
