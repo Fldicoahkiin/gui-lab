@@ -1,6 +1,9 @@
 //! The gallery in a native window (winit + wgpu): Metal on macOS, Vulkan elsewhere. It forwards the
 //! pointer, wheel, keys and size to the framework, as the web page does.
-//! usage: cargo run --release --bin window [page]     (page is a hash name, e.g. dialog)
+//! usage: cargo run --release --bin window [page] [--shot <path.png>@<ms> …] [--exit-after <ms>]
+//!   page: a hash name, e.g. dialog. `--shot` reads the window's own frame back at that many ms after
+//!   start and saves it (any number of them); `--exit-after` closes the window after that many ms.
+//!   It reports the adapter and, every two seconds, how many frames it drew, on stderr.
 use lab::el::Key;
 use lab::gallery::{self, GalleryUi};
 use lab::render::Renderer;
@@ -15,6 +18,7 @@ use winit::window::{Window, WindowId};
 
 struct Running {
     window: Arc<Window>,
+    frames: u64,
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     r: Renderer,
@@ -29,6 +33,10 @@ struct App {
     mods: ModifiersState,
     /// Logical px.
     cursor: (f32, f32),
+    /// Frames to save (path, ms after start), soonest first; when to close.
+    shots: Vec<(String, f32)>,
+    exit_after: Option<f32>,
+    reported: f32,
 }
 
 impl App {
@@ -40,6 +48,8 @@ impl App {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle(Box::new(self.display.clone())));
         let surface = instance.create_surface(window.clone()).map_err(|e| e.to_string())?;
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions { compatible_surface: Some(&surface), ..Default::default() })).map_err(|e| e.to_string())?;
+        let info = adapter.get_info();
+        eprintln!("adapter: {} ({:?}, {:?})", info.name, info.backend, info.device_type);
         let (device, queue) = pollster::block_on(adapter.request_device(&Default::default())).map_err(|e| e.to_string())?;
         let size = window.inner_size();
         let caps = surface.get_capabilities(&adapter);
@@ -48,13 +58,14 @@ impl App {
         let mut config = surface.get_default_config(&adapter, size.width.max(1), size.height.max(1)).ok_or("surface not supported")?;
         config.format = format;
         surface.configure(&device, &config);
+        eprintln!("surface: {}×{} {:?}, present mode {:?}", config.width, config.height, config.format, config.present_mode);
         let mut r = Renderer::new(device, queue, format, config.width, config.height);
         for (id, pw, ph, px) in lab::demo::pictures() { r.set_picture(id, pw, ph, &px); }
         let faces = lab::text::load_bundled(concat!(env!("CARGO_MANIFEST_DIR"), "/assets")).map_err(|e| e.to_string())?;
         let mut ui = gallery::new_ui(faces, config.width, config.height, window.scale_factor() as f32);
         if let Some(p) = &self.page && ui.state.route(p) { ui.relayout(); }
         ui.restart(self.now());
-        Ok(Running { window, surface, config, r, ui })
+        Ok(Running { window, frames: 0, surface, config, r, ui })
     }
 }
 
@@ -126,15 +137,43 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 s.ui.tick(now);
+                if now - self.reported >= 2.0 {
+                    self.reported = now;
+                    eprintln!("{:6.1} s: {} frames", now, s.frames);
+                }
+                if self.exit_after.is_some_and(|t| now * 1000.0 >= t) {
+                    eprintln!("closing after {} frames", s.frames);
+                    el.exit();
+                    return;
+                }
+                // A frame to save: drawn into a texture of the surface's format and read back.
+                if self.shots.first().is_some_and(|(_, t)| now * 1000.0 >= *t) {
+                    let (path, _) = self.shots.remove(0);
+                    let look = s.ui.state.look();
+                    match read_back(&mut s.r, &mut s.ui, &look, s.config.format, s.config.width, s.config.height) {
+                        Ok(px) => { lab::offscreen::save_png(&path, s.config.width, s.config.height, &px); eprintln!("saved {path} at {:.1} s", now); }
+                        Err(e) => eprintln!("could not read the frame back: {e}"),
+                    }
+                    s.frames += 1;
+                    return;
+                }
+                let t0 = Instant::now();
                 let frame = match s.surface.get_current_texture() {
                     wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
-                    _ => { s.surface.configure(s.r.device(), &s.config); return; }
+                    other => {
+                        eprintln!("no surface texture ({:?}) after {:.0} ms; configuring again", std::mem::discriminant(&other), t0.elapsed().as_secs_f32() * 1000.0);
+                        s.surface.configure(s.r.device(), &s.config);
+                        return;
+                    }
                 };
+                if std::env::var_os("WINDOW_TRACE").is_some() { eprintln!("acquire {:.0} ms", t0.elapsed().as_secs_f32() * 1000.0); }
                 let view = frame.texture.create_view(&Default::default());
                 let look = s.ui.state.look();
                 s.r.draw(&view, &mut s.ui, &look);
                 drop(view);
                 s.r.queue().present(frame);
+                s.frames += 1;
+                if std::env::var_os("WINDOW_TRACE").is_some() { eprintln!("frame {:.0} ms", t0.elapsed().as_secs_f32() * 1000.0); }
             }
             _ => {}
         }
@@ -146,12 +185,52 @@ impl ApplicationHandler for App {
     }
 }
 
+/// Draw a frame into an off-screen texture of the surface's format and read it back as RGBA8.
+fn read_back(r: &mut Renderer, ui: &mut GalleryUi, look: &lab::style::Look, format: wgpu::TextureFormat, w: u32, h: u32) -> Result<Vec<u8>, String> {
+    let device = r.device().clone();
+    let tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: None, size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,
+        dimension: wgpu::TextureDimension::D2, format, usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC, view_formats: &[],
+    });
+    let view = tex.create_view(&Default::default());
+    r.draw(&view, ui, look);
+    let row = (w * 4).div_ceil(256) * 256;
+    let buf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (row * h) as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
+    let mut enc = device.create_command_encoder(&Default::default());
+    enc.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo { texture: &tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+        wgpu::TexelCopyBufferInfo { buffer: &buf, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(h) } },
+        wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 });
+    r.queue().submit([enc.finish()]);
+    buf.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+    device.poll(wgpu::PollType::wait_indefinitely()).map_err(|e| e.to_string())?;
+    let data = buf.slice(..).get_mapped_range().map_err(|e| format!("{e:?}"))?;
+    let bgra = matches!(format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb);
+    let mut px = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        for p in data[(y * row) as usize..(y * row + w * 4) as usize].chunks(4) {
+            if bgra { px.extend_from_slice(&[p[2], p[1], p[0], 255]); } else { px.extend_from_slice(&[p[0], p[1], p[2], 255]); }
+        }
+    }
+    Ok(px)
+}
+
 fn main() -> std::process::ExitCode {
     let el = match EventLoop::new() {
         Ok(el) => el,
         Err(e) => { eprintln!("no window system here: {e}"); return std::process::ExitCode::FAILURE; }
     };
-    let mut app = App { display: el.owned_display_handle(), page: std::env::args().nth(1), run: None, start: Instant::now(), mods: ModifiersState::empty(), cursor: (0.0, 0.0) };
+    let (mut page, mut shots, mut exit_after) = (None, vec![], None);
+    let mut args = std::env::args().skip(1);
+    while let Some(a) = args.next() {
+        match a.as_str() {
+            "--shot" => if let Some((p, t)) = args.next().as_deref().and_then(|v| v.rsplit_once('@')) && let Ok(t) = t.parse::<f32>() { shots.push((p.to_owned(), t)); },
+            "--exit-after" => exit_after = args.next().and_then(|v| v.parse().ok()),
+            _ => page = Some(a),
+        }
+    }
+    shots.sort_by(|a, b| a.1.total_cmp(&b.1));
+    let mut app = App { display: el.owned_display_handle(), page, run: None, start: Instant::now(), mods: ModifiersState::empty(), cursor: (0.0, 0.0), shots, exit_after, reported: 0.0 };
     match el.run_app(&mut app) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(e) => { eprintln!("{e}"); std::process::ExitCode::FAILURE }

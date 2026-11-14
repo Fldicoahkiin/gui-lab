@@ -83,11 +83,19 @@ cargo run --release --bin film -- film
 cargo run --release --bin sheet -- sheets
 ```
 
-原生窗口（winit；macOS 上用 Metal，其他系统用 Vulkan）。可以带一个页名，直接打开那一页。在这里的 Linux 容器里只编译过、没有显示器可以运行；macOS 上只做了类型检查（`cargo check --target aarch64-apple-darwin`），没有实际运行过：
+原生窗口（winit；macOS 上用 Metal，其他系统用 Vulkan）。可以带一个页名，直接打开那一页；`--shot 路径.png@毫秒` 在启动后那一刻把窗口自己的一帧读回存下（可以有多个），`--exit-after 毫秒` 到时关闭窗口；标准错误上报告显卡和每两秒画了多少帧：
 
 ```bash
 cargo run --release --bin window -- dialog
 ```
+
+在 Linux 上的验证方法（这里的容器没有显示器和显卡）：在 Xvfb 里运行，Vulkan 用 Mesa 的 lavapipe（llvmpipe，CPU），不需要设置 `WGPU_BACKEND`；winit 还需要 `libxkbcommon-x11-0`。用 `xdotool` 发真实的 X 输入：点左栏的“输入框”、点输入框、键入 “native window”、点顶栏“场景”、点“变形”卡片、点“下一步 →”、按 Esc；窗口在三个时刻读回自己的帧，同时用 ImageMagick 的 `import -window root` 从 X 服务器截屏对照，两者一致。1280 × 860 时约 25 帧每秒，退出码 0：
+
+```bash
+xvfb-run -a -s "-screen 0 1400x1000x24" ./drive.sh target/release/window out/
+```
+
+（`drive.sh` 是一段 xdotool 脚本，不在仓库里。）macOS 上只做了类型检查（`cargo check --target aarch64-apple-darwin`），没有实际运行过。
 
 网页版（需要 `wasm32-unknown-unknown` 目标、同版本的 `wasm-bindgen-cli`、Python 的 fonttools）：
 
