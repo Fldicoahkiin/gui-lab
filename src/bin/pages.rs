@@ -3,7 +3,8 @@
 //! into an input. Step 5: every material's specimen at looseness 0, 0.5 and 1, the annotation page in
 //! each mode, every style page at rest and with a front mid-flight, and two contact sheets
 //! (`styles.png`, `materials.png`).
-//! usage: pages <out_dir> [width] [height] [scale] [step5]     (device px; `step5` only does step 5)
+//! usage: pages <out_dir> [width] [height] [scale] [step5|perf]     (device px; `step5` only does step 5;
+//! `perf` times a frame of every material page, fully loosened)
 use lab::el::Key;
 use lab::gallery::{self, GalleryUi, Msg, Page};
 use lab::offscreen::{Offscreen, save_png};
@@ -35,6 +36,7 @@ fn main() {
     let h: u32 = a.get(3).and_then(|s| s.parse().ok()).unwrap_or(1800);
     let scale: f32 = a.get(4).and_then(|s| s.parse().ok()).unwrap_or(1.0);
     let only5 = a.get(5).is_some_and(|s| s == "step5");
+    if a.get(5).is_some_and(|s| s == "perf") { perf(w, h, scale); return; }
     std::fs::create_dir_all(&out).expect("out dir");
     let faces = || lab::text::load_bundled("assets").expect("fonts");
     step5(&out, scale);
@@ -185,6 +187,17 @@ fn step5(out: &str, scale: f32) {
     let (px, sw, sh) = sheet(&mats, 3);
     save_png(&format!("{out}/materials.png"), sw, sh, &px);
 
+    // A front passing over a picture under dot: the picture shows its marks, never holes.
+    send(&mut ui, Msg::Go(Page::Comp(10)));
+    send(&mut ui, Msg::Material(1));
+    settle(&mut ui, 1.5);
+    let (x, y) = ui.node("image/live").expect("picture").rect.center();
+    ui.press(x - 200.0, y);
+    ui.release(x - 200.0, y);
+    ui.pointer_leave();
+    settle(&mut ui, 0.3);
+    shoot(&mut o, &mut ui, out, "dot-ripple-picture");
+
     // The annotation page in each mode: the pointer over a figure, focus in the list.
     send(&mut ui, Msg::Go(Page::Gaze));
     settle(&mut ui, 1.0);
@@ -226,4 +239,21 @@ fn step5(out: &str, scale: f32) {
     }
     let (px, sw, sh) = sheet(&rest, 3);
     save_png(&format!("{out}/styles.png"), sw, sh, &px);
+}
+
+fn perf(w: u32, h: u32, scale: f32) {
+    let mut o = Offscreen::new(w, h);
+    let mut ui = gallery::new_ui(lab::text::load_bundled("assets").expect("fonts"), w, h, scale);
+    ui.pointer_move(700.0, 400.0);
+    for m in 0..MATERIAL_COUNT as u8 {
+        send(&mut ui, Msg::Go(Page::Material(m)));
+        send(&mut ui, Msg::Num(gallery::Target::Loose, lab::widgets::Edit::Set(1.0)));
+        settle(&mut ui, 1.0);
+        let look = ui.state.look();
+        o.draw(&mut ui, &look);
+        let n = 10;
+        let t0 = std::time::Instant::now();
+        for _ in 0..n { o.draw(&mut ui, &look); }
+        eprintln!("{:<9} {:6.1} ms per frame ({w}×{h})", Material::from_id(m).name(), t0.elapsed().as_secs_f64() * 1000.0 / n as f64);
+    }
 }
