@@ -251,6 +251,24 @@
       ],
       "response": "inherits (text inside is nudged and legible)",
       "recompose": "keyed labels recompose when their text changes"
+    },
+    {
+      "name": "orbit",
+      "title": "三维视图",
+      "functions": [
+        "orbit"
+      ],
+      "description": "转动一个三维视图：拖动环绕，滚轮推近拉远，获得焦点后方向键转动；快速拖动后松手会慢慢停下。相机是状态里的 Orbit，组件只报告输入。",
+      "files": [
+        "src/widgets/orbit.rs",
+        "src/mesh.rs"
+      ],
+      "dependencies": [
+        "base"
+      ],
+      "response": "loosen (a 3D element is decoration, like a picture, even when it can be turned)",
+      "recompose": "none (no text)",
+      "recipe": "docs/recipes/mesh.md"
     }
   ]
 }

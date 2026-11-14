@@ -9,6 +9,11 @@ autoexamples = false
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+default = ["gltf"]
+# A small glTF 2.0 reader (`mesh::load_gltf`): positions, normals, indices and node transforms.
+gltf = []
+
 [dependencies]
 wgpu = { version = "30", default-features = false, features = ["wgsl", "webgl", "webgpu", "vulkan", "std"] }
 parley = { version = "0.13", default-features = false, features = ["std"] }

@@ -2,7 +2,7 @@
 //! so all of it can be tested headless.
 use crate::el::{Content, Cursor, Drag, El, Font, Key, Modal, Mods, OnDrag, OnKey, OnText, Paint, Phase, Response, Role, Scope, TextInput};
 use crate::morph::{self, Cmd, Ease, FlowSpec, MorphSpec, Particle};
-use crate::scene::{EVERYWHERE, Field, Instance, PICTURE, SHAPE, Scene};
+use crate::scene::{EVERYWHERE, Field, Instance, MESH, PICTURE, SHAPE, Scene};
 use crate::gaze;
 use crate::style::{Gaze, GazeMode, Look, gaze as kinds};
 use crate::text::{Face, MONO, Nav, Para, Text};
@@ -97,6 +97,9 @@ pub struct Node<M> {
     pub recompose: bool,
     /// Its key was written by the view (not derived from its path).
     pub keyed: bool,
+    /// A `scene3d` element's pointer handler, and a wheel handler.
+    on_pick: Option<crate::el::OnPick<M>>,
+    on_wheel: Option<crate::el::OnWheel<M>>,
     /// The box layout gave it, relative to its parent (scrolling does not change it).
     local: taffy::Layout,
     tid: NodeId,
@@ -109,6 +112,7 @@ impl<M> Node<M> {
         match self.content {
             Content::Text { .. } => "text",
             Content::Picture { .. } => "image",
+            Content::Scene3d(_) => "mesh",
             Content::None if self.focusable || self.on_press.is_some() || self.on_drag.is_some() => "control",
             Content::None if self.fill.is_some() || self.border.is_some() => "shape",
             Content::None => "box",
@@ -346,6 +350,10 @@ pub struct Ui<S, M> {
     recomps: HashMap<String, Recomp>,
     slides: HashMap<u64, Slide>,
     no_recompose: bool,
+    // ── Meshes (DESIGN.md §1.18) ──
+    /// Every mesh `scene3d` elements can name; which copy the pointer was last over (element key, hit).
+    meshes: crate::mesh::Library,
+    mesh_hover: Option<(String, Option<crate::mesh::MeshHit>)>,
 }
 
 /// One element of the accessibility mirror (DESIGN.md §1.14): what a screen reader is told about it.
@@ -497,6 +505,7 @@ impl<S, M: Clone> Ui<S, M> {
             tree: TaffyTree::new(), tids: HashMap::new(), mkeys: HashMap::new(), virt_views: HashMap::new(), virt_made: HashMap::new(),
             scrolling: Scrolling::default(), touch: None, touches: HashSet::new(), touching: false, fling: None, over: HashMap::new(), event_t: None,
             recs: HashMap::new(), recomps: HashMap::new(), slides: HashMap::new(), no_recompose: false,
+            meshes: crate::mesh::Library::default(), mesh_hover: None,
         };
         ui.resize(w, h, scale);
         ui
@@ -523,6 +532,10 @@ impl<S, M: Clone> Ui<S, M> {
     pub fn dragging(&self) -> Option<&str> { self.capture.as_ref().map(|c| c.key.as_str()) }
     /// The morph in progress, if any.
     pub fn morph_run(&self) -> Option<&MorphRun> { self.run.as_ref() }
+    /// Every mesh `scene3d` elements can draw (DESIGN.md §1.18).
+    pub fn meshes(&self) -> &crate::mesh::Library { &self.meshes }
+    /// Add a mesh (one made in code, or read with `mesh::load_gltf`); views name it by the id returned.
+    pub fn add_mesh(&mut self, m: crate::mesh::Mesh) -> crate::mesh::MeshId { self.dirty = true; self.meshes.add(m) }
     /// The drawn page instances of a node and its descendants, as they are this frame.
     pub fn instances_of(&self, key: &str) -> Vec<Instance> {
         let Some(root) = self.nodes.iter().position(|n| n.key == key) else { return vec![] };
@@ -952,6 +965,7 @@ impl<S, M: Clone> Ui<S, M> {
             if let Some(f) = self.hovered && f(&mut self.state, self.hover.as_deref()) { self.relayout(); }
         }
         if self.capture.is_some() { self.drag(Phase::Move, x, y); }
+        if !self.touching { self.pick_hover(x, y); }
         if let Some(k) = self.text_capture.clone() && let Some(fi) = self.nodes.iter().position(|n| n.key == k) && self.field_at() == Some(fi)
             && let Some(at) = self.leaf_of(fi).and_then(|l| self.text_hit(l, x, y)) {
             self.send_text(TextInput::Pointer { at, phase: Phase::Move, clicks: self.clicks.3, shift: false });
@@ -962,6 +976,24 @@ impl<S, M: Clone> Ui<S, M> {
         }
     }
 
+    /// The `scene3d` element under (x, y) with a pick handler, and the copy there (logical px).
+    fn pick_at(&self, x: f32, y: f32) -> Option<(usize, Option<crate::mesh::MeshHit>)> {
+        let i = self.hit(x, y).and_then(|i| self.up(i, |n| n.on_pick.is_some()))?;
+        let n = &self.nodes[i];
+        let Content::Scene3d(sc) = &n.content else { return Some((i, None)) };
+        let r = n.inner;
+        Some((i, sc.pick(&self.meshes, (x - r.x) / r.w.max(1.0), (y - r.y) / r.h.max(1.0), r.w.max(1.0) / r.h.max(1.0))))
+    }
+    /// Tell a `scene3d` element when the copy under the pointer changes (onto one, another, or off).
+    fn pick_hover(&mut self, x: f32, y: f32) {
+        let now = self.pick_at(x, y).map(|(i, h)| (self.nodes[i].key.clone(), h));
+        if now == self.mesh_hover { return; }
+        let old = std::mem::replace(&mut self.mesh_hover, now.clone());
+        // Leaving an element tells it the pointer is on nothing there.
+        if let Some((k, Some(_))) = old && now.as_ref().is_none_or(|(n, _)| *n != k)
+            && let Some(f) = self.nodes.iter().find(|n| n.key == k).and_then(|n| n.on_pick.clone()) && let Some(m) = f(crate::mesh::Pick::Hover(None)) { self.send(m); }
+        if let Some((k, h)) = now && let Some(f) = self.nodes.iter().find(|n| n.key == k).and_then(|n| n.on_pick.clone()) && let Some(m) = f(crate::mesh::Pick::Hover(h)) { self.send(m); }
+    }
     /// Give the captured handler the pointer at (x, y), logical px. The element's current rect is
     /// used when it still exists, so a drag follows an element that moves.
     fn drag(&mut self, phase: Phase, x: f32, y: f32) {
@@ -1011,6 +1043,9 @@ impl<S, M: Clone> Ui<S, M> {
             }
             return;
         }
+        // A press on a 3D element says which copy it was on, then the element's drag (an orbit) goes on.
+        if let Some((i, h)) = self.pick_at(x, y) && let Some(f) = self.nodes[i].on_pick.clone() && let Some(m) = f(crate::mesh::Pick::Press(h)) { self.send(m); }
+        let hit = self.hit_target(x, y);
         if let Some(i) = hit.and_then(|i| self.up(i, |n| n.on_drag.is_some())) {
             let n = &self.nodes[i];
             let Some(handler) = n.on_drag.clone() else { return };
@@ -1068,6 +1103,11 @@ impl<S, M: Clone> Ui<S, M> {
         self.dirty = true;
         self.heard();
         let mut at = self.hit(x, y);
+        // An element that takes the wheel itself (a 3D view's dolly) gets it before any scroll node.
+        if let Some(i) = at.and_then(|i| self.up(i, |n| n.on_wheel.is_some())) && let Some(f) = self.nodes[i].on_wheel.clone() {
+            if let Some(m) = f(dx, dy) { self.send(m); }
+            return;
+        }
         while let Some(i) = at.and_then(|i| self.up(i, |n| n.scroll)) {
             let d = if self.nodes[i].horizontal { if dx != 0.0 { dx } else { dy } } else { dy };
             if d != 0.0 && self.scroll_by(i, d) { self.scrolled(); return; }
@@ -1153,7 +1193,7 @@ impl<S, M: Clone> Ui<S, M> {
             let a = n.access.clone().unwrap_or_default();
             let role = a.role.or_else(|| match &n.content {
                 Content::Text { .. } if !spoken => Some(Role::Text),
-                Content::Picture { .. } => Some(Role::Img),
+                Content::Picture { .. } | Content::Scene3d(_) => Some(Role::Img),
                 Content::None if n.on_press.is_some() && n.focusable && !spoken => Some(Role::Button),
                 _ => None,
             });
@@ -1946,6 +1986,14 @@ impl<S, M: Clone> Ui<S, M> {
                         self.field.wipe_rect = [r.x * s, r.y * s, r.right() * s, r.bottom() * s];
                     }
                 }
+                Content::Scene3d(sc) => {
+                    // The renderer draws the meshes off-screen and resolves them into this one instance.
+                    let k = sink.scene.meshes.len();
+                    let r = dev(n.inner);
+                    sink.scene.meshes.push(crate::scene::MeshDraw { scene: sc.clone(), rect: r });
+                    let inst = Instance { rect: r, uv: [0.0, 0.0, 1.0, 1.0], paint: [1.0, sc.picture.unwrap_or(0) as f32, 1.0, MESH], clip, extra: [sc.picture.map_or(0.0, |_| 1.0), k as f32, 0.0, 0.0], look: [mat, 0.0, r[1], r[3].max(1.0)], resp };
+                    put(&mut sink, inst, ident(&n.key, u32::MAX - 5, 0), None);
+                }
                 Content::None => {}
             }
             // Where a scroll node is: a thin bar along its far edge, when it holds more than it shows.
@@ -2076,7 +2124,8 @@ impl<S, M: Clone> Ui<S, M> {
         self.animating = active;
         if let Some((i, _, _)) = self.caret && i < self.page_len { self.scene.instances[i].paint[2] = if self.caret_on { self.base[i].paint[2] } else { 0.0 }; }
         self.ghosts.retain(|g| now < g.start + g.dur);
-        for g in &self.ghosts {
+        // An old page's 3D elements are not kept: their meshes went with that page's scene.
+        for g in self.ghosts.iter().filter(|g| g.inst.paint[3] != MESH) {
             let p = ((now - g.start) / g.dur.max(1e-4)).clamp(0.0, 1.0);
             let mut inst = g.inst;
             inst.extra[2] = inst.extra[2].max(p);
@@ -2612,6 +2661,8 @@ fn measure_key(c: &Content) -> u64 {
             (s, size.to_bits(), line.to_bits(), font.resolve([0; 3]), around.as_ref().map_or(0, |a| a.id()), nowrap).hash(&mut h);
         }
         Content::Picture { ratio, .. } => ratio.to_bits().hash(&mut h),
+        // Sized by its style alone.
+        Content::Scene3d(_) => 3u8.hash(&mut h),
         Content::None => 0u8.hash(&mut h),
     }
     h.finish()
@@ -2624,12 +2675,12 @@ fn measure_key(c: &Content) -> u64 {
 /// A virtual list's rows are built here, for what its viewport shows.
 #[allow(clippy::too_many_arguments)]
 fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], off: (bool, bool), flow: Option<(Rc<str>, usize)>, inh: Inherit, vx: &mut VirtCtx, built: &mut Built, nodes: &mut Vec<Node<M>>) -> usize {
-    let El { key, style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, annotate, gaze_scope, material, loosen, anchor, clips, calm, mut on_text, multiline, selectable, cursor, virt, access, ripple, mut children } = el;
+    let El { key, style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, annotate, gaze_scope, material, loosen, anchor, clips, calm, mut on_text, multiline, selectable, cursor, virt, access, ripple, mut on_pick, mut on_wheel, mut children } = el;
     let keyed = !key.is_empty();
     let key = if key.is_empty() { path } else { key };
     let roles = fonts.unwrap_or(roles);
     let (off, hidden) = (off.0 || disabled, off.1 || hidden);
-    if off || hidden { on_press = None; on_key = None; on_drag = None; on_blur = None; on_text = None; focusable = false; commit = false; }
+    if off || hidden { on_press = None; on_key = None; on_drag = None; on_blur = None; on_text = None; on_pick = None; on_wheel = None; focusable = false; commit = false; }
     if let Content::Text { font, .. } = &mut content { *font = Font::Face(font.resolve(roles)); }
     let i = nodes.len();
     let flow = own_flow.map(|f| (Rc::from(f.as_str()), i)).or(flow);
@@ -2645,7 +2696,8 @@ fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], of
     if ripple.legible.is_some() { inh.legible = ripple.legible; }
     if ripple.scope.is_some() { inh.scope = ripple.scope.clone(); }
     if ripple.recompose.is_some() { inh.recompose = ripple.recompose; }
-    let plain = is_text || inh.control;
+    // A 3D element is decoration (like a picture) even when it can be turned: fronts loosen it.
+    let plain = is_text || (inh.control && !matches!(content, Content::Scene3d(_)));
     let respond = inh.respond.unwrap_or(if plain { Response::Nudge } else { Response::Loosen });
     let legible = inh.legible.unwrap_or(plain);
     let recompose = is_text && !inh.field && inh.recompose.unwrap_or(keyed);
@@ -2676,7 +2728,7 @@ fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], of
         content, fill, border, radius, on_press, on_key, on_drag, on_blur, loose, wipe, bar, reveal, commit, modal, hidden, flow: flow.clone(),
         mat: inh.code(), loosen: inh.loosen, annotate, scope: gaze_scope, anchor, clips, calm, on_text, multiline, selectable: inh.select, cursor,
         virt: virt_info, access, respond, legible, ripple: inh.scope.clone(), ripple_scope: ripple.container, recompose, keyed,
-        local: taffy::Layout::new(), tid: placeholder,
+        on_pick, on_wheel, local: taffy::Layout::new(), tid: placeholder,
     });
     built.styles.push(style);
     built.kids.push(vec![]);

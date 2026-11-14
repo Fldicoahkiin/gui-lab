@@ -31,7 +31,12 @@
 //!     render of the old text and the last frame of the flight a plain render of the new one, exactly
 //!     (the hand-over to the real glyphs is invisible); mid-flight the frame differs from both.
 //!
-//! usage: check [components | recompose]     (`components` runs only 10 and 11, `recompose` only 13)
+//! 14. 3D (§1.18): a mesh drawn again after turning it by 0, and by a new renderer, is the same frame
+//!     byte for byte; at rest, at resolution 0.5 and 1, its silhouette is one unbroken run on every row
+//!     it spans (the object is convex) and, under the `near` material, every crease the CPU projects
+//!     has the outline drawn along it (with a control: a crease threshold above every angle draws none).
+//!
+//! usage: check [components | recompose | mesh]     (`components` runs only 10 and 11, `recompose` only 13, `mesh` only 14)
 use lab::demo::{BUST, PICTURE_SIZES, SKY, SPHERE, TERRAIN};
 use lab::el::{El, Font, Paint, col, picture, row, space, text_lh};
 use lab::morph::MorphSpec;
@@ -63,6 +68,11 @@ fn main() {
     let fonts = || load_bundled("assets").expect("fonts");
     if std::env::args().nth(1).is_some_and(|a| a == "recompose") {
         let f = recompose(&mut o, &fonts);
+        if f > 0 { eprintln!("{f} checks failed"); std::process::exit(1); }
+        return eprintln!("all checks passed");
+    }
+    if std::env::args().nth(1).is_some_and(|a| a == "mesh") {
+        let f = meshes(&mut o, &fonts);
         if f > 0 { eprintln!("{f} checks failed"); std::process::exit(1); }
         return eprintln!("all checks passed");
     }
@@ -415,6 +425,7 @@ fn main() {
     eprintln!("12. quality 0.5 at rest: largest difference {worst}/255, {} failing", failed - before);
 
     failed += recompose(&mut o, &fonts);
+    failed += meshes(&mut o, &fonts);
 
     if failed > 0 { eprintln!("{failed} checks failed"); std::process::exit(1); }
     eprintln!("all checks passed");
@@ -674,3 +685,103 @@ fn components(fonts: &dyn Fn() -> Vec<lab::text::Face>) -> usize {
     failed
 }
 const THEME_NAMES: [&str; 2] = ["dark", "light"];
+
+// ── 14. Meshes ───────────────────────────────────────────────────────────────────────────────────
+struct Obj { yaw: f32, scale: f32, crease: f32 }
+fn obj_scene(s: &Obj) -> lab::mesh::Scene3d {
+    let mut sc = lab::mesh::Scene3d::single(lab::mesh::MeshId::ICO[1]);
+    sc.items[0].transforms = vec![lab::mesh::Mat4::rotate_y(s.yaw).mul(&lab::mesh::Mat4::uniform(1.55))];
+    sc.spec.resolution_scale = s.scale;
+    sc.spec.edge_normal = s.crease;
+    sc
+}
+fn obj(s: &Obj) -> El<()> { col().pad(40.0, 40.0).child(lab::el::scene3d(obj_scene(s)).key("mesh").width(360.0).height(320.0)) }
+/// A point through a full 4 × 4 projection to device px of `r`.
+fn project(m: &lab::mesh::Mat4, p: [f32; 3], r: lab::ui::Rect) -> (f32, f32) {
+    let a = &m.0;
+    let c = |row: usize| a[row] * p[0] + a[4 + row] * p[1] + a[8 + row] * p[2] + a[12 + row];
+    let w = c(3);
+    (r.x + (c(0) / w * 0.5 + 0.5) * r.w, r.y + (0.5 - c(1) / w * 0.5) * r.h)
+}
+fn meshes(o: &mut Offscreen, fonts: &dyn Fn() -> Vec<lab::text::Face>) -> usize {
+    use lab::mesh::{Mesh, dot, sub};
+    let mut failed = 0;
+    let before = failed;
+    // Turning by 0 changes nothing, and a new renderer draws the same.
+    let mut ui = Ui::new(Obj { yaw: 20.0, scale: 0.5, crease: 15.0 }, obj, |_, _| {}, fonts(), W, H, 1.0);
+    ui.tick(2.0);
+    let look = Look { material: Material::Ascii, ..Look::default() };
+    let a = o.render(&mut ui, &look);
+    ui.state.yaw += 0.0; ui.relayout(); ui.tick(2.1);
+    let b = o.render(&mut ui, &look);
+    let mut o2 = Offscreen::new(W, H);
+    let c = o2.render(&mut ui, &look);
+    if a != b || a != c { eprintln!("FAIL mesh: turning by 0 or a new renderer changed the frame"); failed += 1; }
+    let ground = rgb8(DARK.ground);
+    for scale in [0.5, 1.0] {
+        for crease in [15.0, 120.0] {
+            let mut ui = Ui::new(Obj { yaw: 20.0, scale, crease }, obj, |_, _| {}, fonts(), W, H, 1.0);
+            ui.tick(2.0);
+            let r = ui.node("mesh").expect("mesh").rect;
+            let plain = o.render(&mut ui, &Look { material: Material::Plain, ..Look::default() });
+            // Silhouette: on every row it spans, one run of pixels that are not the ground.
+            let (x0, y0, x1, y1) = device_rect(r, 1.0);
+            let (mut rows, mut broken) = (0, 0);
+            for y in y0..y1 {
+                let runs = (x0..x1).fold((0, false), |(n, was), x| { let on = !close(px(&plain, W, x, y), ground); (n + (on && !was) as i32, on) }).0;
+                if runs > 0 { rows += 1; }
+                if runs > 1 { broken += 1; }
+            }
+            if rows < 100 || broken > 0 { eprintln!("FAIL mesh silhouette at {scale}: {rows} rows, {broken} with more than one run"); failed += 1; }
+            // Creases: project the faces the camera sees; every shared edge between two of them whose
+            // normals differ by more than the threshold must have the outline drawn along it.
+            let near = o.render(&mut ui, &Look { material: Material::Near, ..Look::default() });
+            let sc = obj_scene(&ui.state);
+            let lib = lab::mesh::Library::default();
+            let mesh = lib.get(lab::mesh::MeshId::ICO[1]).expect("ico");
+            let model = sc.items[0].transforms[0];
+            let mvp = sc.camera.proj(r.w / r.h).mul(&sc.camera.view());
+            let eye = sc.camera.eye();
+            let tris: Vec<[[f32; 3]; 3]> = mesh.tris.iter().map(|t| [model.point(t[0]), model.point(t[1]), model.point(t[2])]).collect();
+            let facing: Vec<bool> = tris.iter().map(|t| dot(Mesh::normal(t), sub(eye, t[0])) > 0.05).collect();
+            let key = |p: [f32; 3]| [(p[0] * 1e4).round() as i64, (p[1] * 1e4).round() as i64, (p[2] * 1e4).round() as i64];
+            let mut edges: std::collections::HashMap<([i64; 3], [i64; 3]), Vec<usize>> = Default::default();
+            for (i, t) in tris.iter().enumerate() { for k in 0..3 { let (a, b) = (key(t[k]), key(t[(k + 1) % 3])); edges.entry(if a < b { (a, b) } else { (b, a) }).or_default().push(i); } }
+            let (mut want, mut found) = (0, 0);
+            let mut drawn_any = 0;
+            for (i, t) in tris.iter().enumerate() { for k in 0..3 {
+                let (pa, pb) = (t[k], t[(k + 1) % 3]);
+                let (ka, kb) = (key(pa), key(pb));
+                let Some(fs) = edges.get(&if ka < kb { (ka, kb) } else { (kb, ka) }) else { continue };
+                let Some(&j) = fs.iter().find(|&&j| j != i) else { continue };
+                if j < i || !facing[i] || !facing[j] { continue; }
+                let creased = dot(Mesh::normal(t), Mesh::normal(&tris[j])) < (15.0f32).to_radians().cos();
+                if !creased { continue; }
+                for q in 1..10 {
+                    let f = q as f32 / 10.0;
+                    let p = [pa[0] + (pb[0] - pa[0]) * f, pa[1] + (pb[1] - pa[1]) * f, pa[2] + (pb[2] - pa[2]) * f];
+                    let (sx, sy) = project(&mvp, p, r);
+                    want += 1;
+                    let mut hit = false;
+                    for dy in -2i32..=2 { for dx in -2i32..=2 {
+                        let (x, y) = ((sx as i32 + dx).clamp(0, W as i32 - 1) as u32, (sy as i32 + dy).clamp(0, H as i32 - 1) as u32);
+                        let c = px(&near, W, x, y);
+                        // The outline is the ink colour over the faint face: grey and light (the contour bands
+                        // around it are the accents).
+                        let (r8, g8, b8) = (c[0] as i32, c[1] as i32, c[2] as i32);
+                        if (r8 - g8).abs() < 24 && (g8 - b8).abs() < 24 && r8 + g8 + b8 > 3 * 84 { hit = true; }
+                    } }
+                    if hit { found += 1; }
+                }
+                drawn_any += 1;
+            } }
+            let share = found as f32 / want.max(1) as f32;
+            if crease < 90.0 {
+                if drawn_any < 10 || share < 0.9 { eprintln!("FAIL mesh creases at {scale}: {found}/{want} samples on an outline over {drawn_any} edges"); failed += 1; }
+            } else if share > 0.3 { eprintln!("FAIL control: with no creases the outline is still on {found}/{want} samples at {scale}"); failed += 1; }
+            eprintln!("14. mesh at {scale}, crease {crease}°: {rows} rows, {broken} broken; {found}/{want} crease samples on an outline");
+        }
+    }
+    eprintln!("14. meshes: {} failing", failed - before);
+    failed
+}

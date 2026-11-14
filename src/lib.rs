@@ -6,6 +6,7 @@ pub mod error;
 pub mod gallery;
 pub mod gaze;
 pub mod marks;
+pub mod mesh;
 pub mod morph;
 pub mod perf;
 #[cfg(not(target_arch = "wasm32"))]
