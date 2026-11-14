@@ -16,6 +16,7 @@ struct PU {
   gp: vec4f, // pointer x, y (device px), strength (+ pulls, − pushes), radius (device px)
   gf: vec4f, // curl noise strength (px/s²), its scale (px), damping (1/s), spring back to the path (1/s²)
   gw: vec4f, // fronts: speed (device px/s), width (device px), push (px/s²), now (absolute s)
+  gt: vec4f, // turned around (any number of times, `morph::Turn`): alpha, beta, the leg's end (0 or 1)
   fronts: array<vec4f, 8>, // x, y, start time (absolute), strength
 };
 @group(0) @binding(0) var<uniform> pu: PU;
@@ -51,12 +52,19 @@ fn ease(x0: f32) -> f32 {
   if (k < 1.5) { return select(1.0 - pow(-2.0 * x + 2.0, 3.0) * 0.5, 4.0 * x * x * x, x < 0.5); }
   return (1.0 - exp2(-10.0 * x)) / (1.0 - exp2(-10.0));
 }
-fn alpha(k: f32, u: f32) -> f32 {
-  if (k > 0.5 && k < 1.5) { return smoothstep(0.0, 0.2, u); }
-  if (k > 1.5 && k < 2.5) { return 1.0 - smoothstep(0.8, 1.0, u); }
-  if (k > 2.5 && k < 3.5) { return 1.0 - smoothstep(0.0, 0.2, u); }
-  if (k > 3.5) { return smoothstep(0.8, 1.0, u); }
-  return 1.0;
+// The kind without the two mesh flags (8: starts behind a mesh, 16: lands behind one).
+fn base_kind(k: f32) -> f32 { return f32(u32(k) & 7u); }
+fn alpha(k0: f32, u: f32) -> f32 {
+  let code = u32(k0);
+  let k = base_kind(k0);
+  var a = 1.0;
+  if (k > 0.5 && k < 1.5) { a = smoothstep(0.0, 0.2, u); }
+  if (k > 1.5 && k < 2.5) { a = 1.0 - smoothstep(0.8, 1.0, u); }
+  if (k > 2.5 && k < 3.5) { a = 1.0 - smoothstep(0.0, 0.2, u); }
+  if (k > 3.5) { a = smoothstep(0.8, 1.0, u); }
+  if ((code & 8u) != 0u) { a *= smoothstep(0.06, 0.3, u); }
+  if ((code & 16u) != 0u) { a *= 1.0 - smoothstep(0.7, 0.94, u); }
+  return a;
 }
 fn progress(run: vec4f) -> f32 {
   let l = clamp((pu.res.w - run.z) / max(run.w, 1e-4), 0.0, 1.0);
@@ -67,7 +75,7 @@ fn progress(run: vec4f) -> f32 {
 // swarm arcs together; the seed keeps tiles from moving in lockstep.
 fn place(ab: vec4f, u: f32, misc: vec4f) -> vec2f {
   var q = mix(ab.xy, ab.zw, u);
-  if (misc.x < 2.5 && u > 0.0 && u < 1.0) {
+  if (base_kind(misc.x) < 2.5 && u > 0.0 && u < 1.0) {
     let d = ab.zw - ab.xy;
     let len = length(d);
     let dir = select(vec2f(1.0, 0.0), d / max(len, 1e-6), len > 0.5);
@@ -102,8 +110,9 @@ struct POut {
   if (a <= 0.0) { o.pos = vec4f(-2.0, -2.0, 0.0, 1.0); }
   // Cells that stay show only their own side.
   var w = u;
-  if (i.misc.x > 2.5 && i.misc.x < 3.5) { w = 0.0; }
-  if (i.misc.x > 3.5) { w = 1.0; }
+  let kb = base_kind(i.misc.x);
+  if (kb > 2.5 && kb < 3.5) { w = 0.0; }
+  if (kb > 3.5) { w = 1.0; }
   o.org = org; o.ab = i.ab; o.w = vec4f(w, a, i.misc.w, u); o.k = vec4f(1.0);
   return o;
 }
@@ -138,9 +147,11 @@ fn grid_cell(i: u32) -> Cell {
 }
 fn grid_u(c: Cell, clock: f32) -> f32 {
   if (pu.ge.z >= 0.0) {
-    // Turned around: from where it was at that moment, all at once, back to the start.
-    let at = mix(0.0, 1.0, ease(clamp((pu.ge.z - c.delay) / max(c.dur, 1e-4), 0.0, 1.0)));
-    return mix(at, 0.0, ease(clamp(clock / max(pu.ge.w, 1e-4), 0.0, 1.0)));
+    // Turned around: where it was at the first turn (ge.z), carried through the later turns as
+    // alpha × that + beta, then all at once to this leg's end.
+    let at = ease(clamp((pu.ge.z - c.delay) / max(c.dur, 1e-4), 0.0, 1.0));
+    let start = pu.gt.x * at + pu.gt.y;
+    return mix(start, pu.gt.z, ease(clamp(clock / max(pu.ge.w, 1e-4), 0.0, 1.0)));
   }
   return ease(clamp((clock - c.delay) / max(c.dur, 1e-4), 0.0, 1.0));
 }

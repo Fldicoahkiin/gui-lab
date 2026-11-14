@@ -34,6 +34,8 @@ pub struct Inputs {
     pub look: Look,
     pub now: f32,
     pub mclock: f32,
+    /// The ground clock (the dot ground's drift), which only global motion moves.
+    pub gclock: f32,
     pub size: (u32, u32),
     /// Something acts on every pixel this frame: a commit's front, flying tiles, the reduced pass.
     pub global: bool,
@@ -61,8 +63,8 @@ pub fn reach(m: Material, look: &Look, s: f32) -> f32 {
     }
 }
 
-/// Whether a material reads the material clock at rest or where things are loose.
-fn clocked(m: Material) -> bool { matches!(m, Material::Dot | Material::Glitch | Material::Xray) }
+/// Whether a material reads the material clock where things are loose (glitch's rows, xray's dashes).
+fn clocked(m: Material) -> bool { matches!(m, Material::Glitch | Material::Xray) }
 
 /// The materials in use: the global one and every override.
 fn materials(i: &Inputs) -> Vec<Material> {
@@ -84,8 +86,10 @@ fn fronts(f: &Field, look: &Look, now: f32, s: f32) -> Vec<Bx> {
 pub fn region(prev: &Inputs, cur: &Inputs, scale: f32) -> Region {
     if prev.global || cur.global || prev.size != cur.size || prev.look != cur.look || prev.field.calm != cur.field.calm || prev.meshes.len() != cur.meshes.len() { return Region::All; }
     let mats = materials(cur);
-    if prev.mclock != cur.mclock && mats.iter().any(|m| clocked(*m)) { return Region::All; }
+    // The dot ground drifts everywhere on the ground clock.
+    if prev.gclock != cur.gclock && mats.contains(&Material::Dot) { return Region::All; }
     if mats != materials(prev) { return Region::All; }
+    let clock_moved = prev.mclock != cur.mclock && mats.iter().any(|m| clocked(*m));
     let s = scale;
     let look = &cur.look;
     let liquid = if mats.contains(&Material::Liquid) { look.params[Material::Liquid as usize].0[0] * s } else { 0.0 };
@@ -121,7 +125,10 @@ pub fn region(prev: &Inputs, cur: &Inputs, scale: f32) -> Region {
         let condensing = cur.now - born < enter || prev.now - born < enter;
         let fronted = acting.iter().any(|f| !is_empty(meet(*f, r)));
         let meshy = i.paint[3] == MESH && (!is_empty(meet(lenses, r)) || !is_empty(meet(bursts, r)));
-        if condensing || fronted || meshy { st1 = union(st1, r); }
+        // Under a material whose loose parts read the material clock, what is held loose changes when
+        // it moves (only there: the rest of the window reads no clock).
+        let held = clock_moved && i.extra[2] > 0.0;
+        if condensing || fronted || meshy || held { st1 = union(st1, r); }
         // Pictures read the lens in stage 2.
         if i.paint[3] == PICTURE && !is_empty(meet(lenses, r)) { st2 = union(st2, meet(lenses, r)); }
     }
@@ -158,7 +165,7 @@ pub fn scissor(b: Bx, w: u32, h: u32) -> Option<[u32; 4]> {
 mod tests {
     use super::*;
     fn inputs(insts: Vec<Instance>) -> Inputs {
-        Inputs { instances: insts, annot: vec![], meshes: vec![], field: Field::default(), look: Look { material: Material::Plain, ..Look::default() }, now: 10.0, mclock: 0.0, size: (800, 600), global: false }
+        Inputs { instances: insts, annot: vec![], meshes: vec![], field: Field::default(), look: Look { material: Material::Plain, ..Look::default() }, now: 10.0, mclock: 0.0, gclock: 0.0, size: (800, 600), global: false }
     }
     fn inst(x: f32) -> Instance { Instance { rect: [x, 100.0, 40.0, 20.0], paint: [1.0, 0.0, 1.0, 1.0], extra: [0.0, 0.0, 0.0, -100.0], ..Default::default() } }
 

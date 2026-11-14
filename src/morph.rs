@@ -81,9 +81,19 @@ pub struct Recompose {
     pub count_max: f32,
     /// Unchanged glyphs that moved (the text got longer or shorter) slide to their new place over this.
     pub slide_ms: f32,
+    /// A text that changes again sooner than this after its last change is replaced at once, without
+    /// tiles (a readout that changes every frame never recomposes).
+    #[serde(default = "default_min_interval")]
+    pub min_interval_ms: f32,
+    /// At most this many recomposition tiles are alive at once over the whole window; a change that
+    /// would need more is replaced at once.
+    #[serde(default = "default_max_tiles")]
+    pub max_tiles: f32,
 }
+fn default_min_interval() -> f32 { 80.0 }
+fn default_max_tiles() -> f32 { 24000.0 }
 impl Default for Recompose {
-    fn default() -> Self { Self { duration_ms: 160.0, stagger: 0.2, count_max: 600.0, slide_ms: 120.0 } }
+    fn default() -> Self { Self { duration_ms: 160.0, stagger: 0.2, count_max: 600.0, slide_ms: 120.0, min_interval_ms: default_min_interval(), max_tiles: default_max_tiles() } }
 }
 
 /// The GPU particle path (DESIGN.md §1.10): when a morph would need more tiles than `gpu_above`, the
@@ -111,9 +121,30 @@ impl Default for Particles {
 }
 
 /// A morph on the GPU path: the same-sized grid over each element (device px: x0, y0, tile w, tile h),
-/// its columns and rows, and, once turned around, the flight clock it turned at and how long it goes back.
+/// its columns and rows, and, once turned around, how (`Turn`).
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Grid { pub a: [f32; 4], pub b: [f32; 4], pub cols: u32, pub rows: u32, pub turned: Option<(f32, f32)> }
+pub struct Grid { pub a: [f32; 4], pub b: [f32; 4], pub cols: u32, pub rows: u32, pub turned: Option<Turn> }
+
+/// A GPU morph turned around any number of times. Every turn after the first sends all tiles off at
+/// once over the same time, so each tile's progress at the start of the current leg is an affine
+/// function of where it was at the first turn: `alpha × u(first) + beta`, and the leg goes from there to
+/// `to` (0 or 1) over `dur` seconds. `first` is the forward flight's clock at the first turn.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Turn { pub first: f32, pub alpha: f32, pub beta: f32, pub to: f32, pub dur: f32 }
+impl Turn {
+    /// The turn after this one, `clock` seconds into this leg (on `ease`), going back over `dur`.
+    pub fn again(self, clock: f32, ease: Ease, dur: f32) -> Turn {
+        let e = ease.at(clock / self.dur.max(1e-4));
+        Turn { first: self.first, alpha: self.alpha * (1.0 - e), beta: self.beta * (1.0 - e) + self.to * e, to: 1.0 - self.to, dur }
+    }
+    /// A tile's progress `clock` seconds into the current leg, given its forward delay and duration (the
+    /// shader's `grid_u` does the same).
+    pub fn progress(&self, delay: f32, fwd: f32, clock: f32, ease: Ease) -> f32 {
+        let at = ease.at((self.first - delay) / fwd.max(1e-4));
+        let from = self.alpha * at + self.beta;
+        from + (self.to - from) * ease.at(clock / self.dur.max(1e-4))
+    }
+}
 impl Grid {
     pub fn count(&self) -> u32 { self.cols * self.rows }
     /// The grid for two elements' ink bounds at lattice `pitch` (device px): tiles of a whole number of
@@ -167,18 +198,27 @@ pub mod kind {
     pub const SRC_DUST: f32 = 3.0;
     /// A target cell too thin to fly: fades in where it is over the last 20%.
     pub const DST_DUST: f32 = 4.0;
+    /// Added to the kind: the tile starts on a mesh surface point that is behind the mesh now (hidden
+    /// until it has lifted off), and lands on one that is (it fades before it lands).
+    pub const SRC_HIDDEN: f32 = 8.0;
+    pub const DST_HIDDEN: f32 = 16.0;
+    /// The kind without the two flags.
+    pub fn base(k: f32) -> f32 { ((k as u32) & 7) as f32 }
 }
 
 fn smooth(a: f32, b: f32, x: f32) -> f32 { let t = ((x - a) / (b - a)).clamp(0.0, 1.0); t * t * (3.0 - 2.0 * t) }
 /// A tile's opacity at progress `u` (the shader has the same).
 pub fn alpha(k: f32, u: f32) -> f32 {
-    match k as u32 {
+    let code = k as u32;
+    let a = match code & 7 {
         1 => smooth(0.0, 0.2, u),
         2 => 1.0 - smooth(0.8, 1.0, u),
         3 => 1.0 - smooth(0.0, 0.2, u),
         4 => smooth(0.8, 1.0, u),
         _ => 1.0,
-    }
+    };
+    let a = if code & 8 != 0 { a * smooth(0.06, 0.3, u) } else { a };
+    if code & 16 != 0 { a * (1.0 - smooth(0.7, 0.94, u)) } else { a }
 }
 
 /// One tile, as the GPU reads it (instance rate).
@@ -231,7 +271,7 @@ pub fn noise2(x: f32, y: f32) -> [f32; 2] {
 pub fn position(p: &Particle, u: f32, curl: f32) -> [f32; 2] {
     let (a, b) = ([p.ab[0], p.ab[1]], [p.ab[2], p.ab[3]]);
     let mut q = [a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u];
-    if p.misc[0] < kind::SRC_DUST && u > 0.0 && u < 1.0 {
+    if kind::base(p.misc[0]) < kind::SRC_DUST && u > 0.0 && u < 1.0 {
         let d = [b[0] - a[0], b[1] - a[1]];
         let len = (d[0] * d[0] + d[1] * d[1]).sqrt();
         let dir = if len > 0.5 { [d[0] / len, d[1] / len] } else { [1.0, 0.0] };
@@ -282,9 +322,11 @@ pub fn morton(fx: f32, fy: f32) -> u32 {
     spread(fx) | (spread(fy) << 1)
 }
 
-/// One lattice cell of an element: its top-left (device px) and how much of it is covered.
+/// One lattice cell of an element: its top-left (device px), how much of it is covered, and a tag the
+/// caller can follow it by (a mesh surface point; `NO_TAG` for cells of the screen).
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Cell { pub x: f32, pub y: f32, pub cover: f32 }
+pub struct Cell { pub x: f32, pub y: f32, pub cover: f32, pub tag: u32 }
+pub const NO_TAG: u32 = u32::MAX;
 
 /// Device px rect x0, y0, x1, y1.
 pub type Bounds = [f32; 4];
@@ -367,34 +409,40 @@ pub fn cells(insts: &[Instance], tile: f32, atlas: &[u8]) -> Vec<Cell> {
     for cy in 0..nr { for cx in 0..nc {
         let o = &open[(cy * nc + cx) * 4..(cy * nc + cx) * 4 + 4];
         let cover = o.iter().map(|v| 1.0 - v).sum::<f32>() * 0.25;
-        out.push(Cell { x: (cx as i64 + c0) as f32 * tile, y: (cy as i64 + r0) as f32 * tile, cover });
+        out.push(Cell { x: (cx as i64 + c0) as f32 * tile, y: (cy as i64 + r0) as f32 * tile, cover, tag: NO_TAG });
     } }
     out
 }
 
-/// The tiles of one morph, and their size.
-pub struct Tiles { pub particles: Vec<Particle>, pub tile: f32 }
+/// The tiles of one morph, and their size; per tile, the tags of its source and target cells.
+pub struct Tiles { pub particles: Vec<Particle>, pub tile: f32, pub tags: Vec<[u32; 2]> }
 
 /// Sample both elements on the lattice (`pitch` device px), pair the cells that fly, and give every
 /// tile its run. The tile grows to a whole multiple of the lattice until there are at most `count_max`.
 /// Times are seconds on the flight's clock.
 pub fn tiles(src: &[Instance], dst: &[Instance], pitch: f32, spec: &MorphSpec, atlas: &[u8]) -> Tiles {
+    tiles_with(|t| cells(src, t, atlas), |t| cells(dst, t, atlas), ink_bounds(src), ink_bounds(dst), pitch, spec)
+}
+
+/// `tiles` with each side's cells from a function of the tile size (a mesh side samples its surface).
+pub fn tiles_with(mut sa: impl FnMut(f32) -> Vec<Cell>, mut sb: impl FnMut(f32) -> Vec<Cell>, ba: Option<Bounds>, bb: Option<Bounds>, pitch: f32, spec: &MorphSpec) -> Tiles {
     let mut m = 1.0f32;
     loop {
         let tile = pitch * m;
-        let (a, b) = (cells(src, tile, atlas), cells(dst, tile, atlas));
+        let (a, b) = (sa(tile), sb(tile));
         let count = |cs: &[Cell]| cs.iter().filter(|c| c.cover >= spec.threshold).count();
         let (fa, fb) = (count(&a), count(&b));
         let total = fa.max(fb) + (a.len() - fa) + (b.len() - fb);
         if (total as f32) <= spec.count_max.max(1.0) || m > 64.0 {
-            return Tiles { particles: build(&a, &b, ink_bounds(src), ink_bounds(dst), tile, spec), tile };
+            let (particles, tags) = build(&a, &b, ba, bb, tile, spec);
+            return Tiles { particles, tile, tags };
         }
         // Jump close to the right multiple, then go up one at a time.
         m = (m * (total as f32 / spec.count_max.max(1.0)).sqrt()).ceil().max(m + 1.0);
     }
 }
 
-fn build(a: &[Cell], b: &[Cell], ba: Option<Bounds>, bb: Option<Bounds>, tile: f32, spec: &MorphSpec) -> Vec<Particle> {
+fn build(a: &[Cell], b: &[Cell], ba: Option<Bounds>, bb: Option<Bounds>, tile: f32, spec: &MorphSpec) -> (Vec<Particle>, Vec<[u32; 2]>) {
     let order = |cs: &[Cell], bd: Option<Bounds>| {
         let bd = bd.unwrap_or([0.0, 0.0, 1.0, 1.0]);
         let (w, h) = ((bd[2] - bd[0]).max(1.0), (bd[3] - bd[1]).max(1.0));
@@ -421,10 +469,12 @@ fn build(a: &[Cell], b: &[Cell], ba: Option<Bounds>, bb: Option<Bounds>, tile: f
     };
     let seed = |n: usize| unit(hash(n as u32 ^ 0x9e37_79b9));
     let mut out = Vec::with_capacity(fa.len().max(fb.len()) + a.len() + b.len());
+    let mut tags = Vec::with_capacity(out.capacity());
     for (n, (i, j, k)) in pair(fa.len(), fb.len()).into_iter().enumerate() {
         let (s, t) = (fa[i], fb[j]);
         let sd = seed(n);
         out.push(Particle { ab: [s.x, s.y, t.x, t.y], run: [0.0, 1.0, delay(s.x, s.y, sd), dur], misc: [k, tile, sd, 0.3 + 0.4 * seed(n + 7_777_777)] });
+        tags.push([s.tag, t.tag]);
     }
     // Cells that do not fly, and every cell when one side has nothing that flies.
     let none = fa.is_empty() || fb.is_empty();
@@ -432,13 +482,15 @@ fn build(a: &[Cell], b: &[Cell], ba: Option<Bounds>, bb: Option<Bounds>, tile: f
     for (n, c) in a.iter().filter(|c| none || c.cover < spec.threshold).enumerate() {
         let sd = seed(n0 + n);
         out.push(Particle { ab: [c.x, c.y, c.x, c.y], run: [0.0, 1.0, delay(c.x, c.y, sd), dur], misc: [kind::SRC_DUST, tile, sd, 0.5] });
+        tags.push([c.tag, NO_TAG]);
     }
     let n0 = out.len();
     for (n, c) in b.iter().filter(|c| none || c.cover < spec.threshold).enumerate() {
         let sd = seed(n0 + n);
         out.push(Particle { ab: [c.x, c.y, c.x, c.y], run: [0.0, 1.0, delay(c.x, c.y, sd), dur], misc: [kind::DST_DUST, tile, sd, 0.5] });
+        tags.push([NO_TAG, c.tag]);
     }
-    out
+    (out, tags)
 }
 
 /// Turn every tile around at `clock` (seconds into the current run): from where it is now back to the
@@ -518,6 +570,27 @@ mod tests {
         // A second reversal goes forward again.
         reverse(&mut ps, 0.2, Ease::OutExpo, 0.5);
         for p in &ps { assert_eq!(p.run[1], 1.0); }
+    }
+
+    #[test]
+    fn a_gpu_turn_composes_any_number_of_times() {
+        // One tile's progress followed leg by leg must match the closed form at every turn.
+        let (delay, fwd, ease) = (0.1, 0.6, Ease::InOutCubic);
+        let mut t = Turn { first: 0.35, alpha: 1.0, beta: 0.0, to: 0.0, dur: 0.4 };
+        let mut u = ease.at((0.35 - delay) / fwd);
+        assert!((t.progress(delay, fwd, 0.0, ease) - u).abs() < 1e-6);
+        for leg in 0..12 {
+            let c = 0.05 + 0.03 * leg as f32;
+            let at = u + (t.to - u) * ease.at(c / t.dur);
+            assert!((t.progress(delay, fwd, c, ease) - at).abs() < 1e-5, "leg {leg}");
+            let next = t.again(c, ease, 0.4);
+            // The next leg starts where this one was, and heads the other way.
+            assert!((next.progress(delay, fwd, 0.0, ease) - at).abs() < 1e-5, "leg {leg}");
+            assert_eq!(next.to, 1.0 - t.to);
+            (t, u) = (next, at);
+        }
+        // Run to the end of a leg: exactly the end.
+        assert!((t.progress(delay, fwd, t.dur, ease) - t.to).abs() < 1e-6);
     }
 
     #[test]

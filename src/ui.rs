@@ -155,7 +155,8 @@ struct Ghost { inst: Instance, start: f32, dur: f32 }
 struct Old { id: u64, tag: Option<Tag>, inst: Instance }
 
 /// A text's glyphs as last painted, kept to see what changed in the next view (DESIGN.md §1.16).
-struct TextRec { s: String, face: u8, size: f32, line: f32, width: f32, print: f32, origin: (f32, f32), glyphs: Vec<(u64, Instance)> }
+/// `changed` is when its string last changed (seconds), to tell a readout that changes every frame.
+struct TextRec { s: String, face: u8, size: f32, line: f32, width: f32, print: f32, origin: (f32, f32), glyphs: Vec<(u64, Instance)>, changed: f32 }
 /// One tile of a recomposition: its run (a morph tile, `morph::Particle`) and the pieces of the old and
 /// the new glyphs it shows, as instances placed relative to its source and its target cell.
 struct RTile { p: Particle, src: Vec<Instance>, dst: Vec<Instance> }
@@ -203,7 +204,14 @@ pub struct MorphRun {
     pub tile: f32,
     pub src: Vec<Instance>,
     pub dst: Vec<Instance>,
+    /// 3D elements on either side: their tiles start (or land) on points of the mesh surface, projected
+    /// again every frame and hidden while they are behind the mesh. `tags` says, per tile, which point
+    /// of which emitter its source and target are (`emitter << 24 | point`, or `morph::NO_TAG`).
+    pub emit: Vec<Emitter>,
+    pub tags: Vec<[u32; 2]>,
 }
+/// A `scene3d` element that emits (or takes in) a morph's tiles: its key and the surface points.
+pub struct Emitter { pub key: String, pub points: Vec<crate::mesh::SurfacePoint> }
 impl MorphRun {
     /// Seconds into the flight, while the tiles are flying.
     pub fn clock(&self, now: f32) -> Option<f32> { self.flight.filter(|f| now >= f[0] && now < f[1]).map(|f| now - f[0]) }
@@ -303,6 +311,9 @@ pub struct Ui<S, M> {
     /// The material clock: time terms of materials (glitch's hold, xray's dashes, dot's drift) read it.
     /// It only runs while something moves, so a page at rest is a still image.
     mclock: f32,
+    /// The ground clock, and whether it runs (see `ground_clock`).
+    gclock: f32,
+    ground_moving: bool,
     moving: bool,
     // ── Frame times and the readout (DESIGN.md §1.12) ──
     perf: crate::perf::Perf,
@@ -507,7 +518,7 @@ impl<S, M: Clone> Ui<S, M> {
             run: None, painted_phase: 0, flows: HashMap::new(), ghosts: vec![], body_len: 0, animating: false, lifted: HashMap::new(),
             gaze_of: None, gaze_seen: HashMap::new(), annots: vec![], hovered: None, ticked: None, unused_key: None, released: None, input: None,
             dirty: true, look_of: None, timing: Timing::default(), wake_of: None, latest_birth: f32::NEG_INFINITY, gaze_until: f32::NEG_INFINITY,
-            marks_moving: false, caret: None, caret_on: true, static_loose: false, mclock: 0.0, moving: false,
+            marks_moving: false, caret: None, caret_on: true, static_loose: false, mclock: 0.0, moving: false, gclock: 0.0, ground_moving: false,
             perf: crate::perf::Perf { quality: 1.0, ..Default::default() }, span: 0, painting: false, overlay: false, overlay_at: 0.0,
             text_capture: None, sel: None, sel_drag: false, clicks: (f32::NEG_INFINITY, 0.0, 0.0, 0), a11y_sent: HashMap::new(), a11y_focus: None,
             tree: TaffyTree::new(), tids: HashMap::new(), mkeys: HashMap::new(), virt_views: HashMap::new(), virt_made: HashMap::new(),
@@ -548,6 +559,9 @@ impl<S, M: Clone> Ui<S, M> {
     /// Add a mesh (one made in code, or read with `mesh::load_gltf`); views name it by the id returned.
     pub fn add_mesh(&mut self, m: crate::mesh::Mesh) -> crate::mesh::MeshId { self.dirty = true; self.meshes.add(m) }
     /// The drawn page instances of a node and its descendants, as they are this frame.
+    /// How many recomposition tiles are alive now, over the whole window (bounded by
+    /// `Recompose::max_tiles`).
+    pub fn recompose_tiles(&self) -> usize { self.recomps.values().map(|r| r.tiles.len()).sum() }
     pub fn instances_of(&self, key: &str) -> Vec<Instance> {
         let Some(root) = self.nodes.iter().position(|n| n.key == key) else { return vec![] };
         (0..self.page_len).filter(|&i| within(&self.nodes, self.owners[i].0, root)).map(|i| self.scene.instances[*self.lifted.get(&i).unwrap_or(&i)]).collect()
@@ -696,6 +710,10 @@ impl<S, M: Clone> Ui<S, M> {
     }
     /// The clock that materials' time terms read: it runs only while something moves.
     pub fn material_clock(&self) -> f32 { self.mclock }
+    /// The ground clock (the dot ground's drift): it runs only while something moves the whole window
+    /// (a commit, a front that reaches everywhere, a morph, a flow, a fling or a pull).
+    pub fn ground_clock(&self) -> f32 { self.gclock }
+    pub fn set_ground_clock(&mut self, t: f32) { self.gclock = t; self.dirty = true; }
     /// Set the material clock (for tools that compare two runtimes whose pasts differ, such as `check`).
     pub fn set_material_clock(&mut self, t: f32) { self.mclock = t; self.dirty = true; }
     /// Is anything animating at `now`? (Not counting input or timed wakes.)
@@ -726,6 +744,14 @@ impl<S, M: Clone> Ui<S, M> {
         let split = self.split.as_ref().is_some_and(|sp| self.split_alive(sp, now));
         fronts || split || now < self.latest_birth + tm.enter || self.run.is_some() || !self.flows.is_empty() || !self.ghosts.is_empty()
             || self.fling.is_some() || !self.over.is_empty() || self.static_loose || !self.recomps.is_empty() || !self.slides.is_empty()
+    }
+    /// What moves the ground clock: what acts on the whole window. A front scoped to one control or
+    /// one area does not (DESIGN.md §1.19).
+    fn ground_moving_at(&self, now: f32) -> bool {
+        let tm = &self.timing;
+        let everywhere = self.field.fronts.iter().zip(&self.field.scopes).any(|(f, sc)| f[3] > 0.0 && now - f[2] < tm.wave_life && *sc == EVERYWHERE);
+        let split = self.split.as_ref().is_some_and(|sp| self.split_alive(sp, now));
+        everywhere || split || self.run.is_some() || !self.flows.is_empty() || !self.ghosts.is_empty() || self.fling.is_some() || !self.over.is_empty()
     }
     /// About how much of the window (0..1) can be loose at `now`: all of it while a front lives, things
     /// condense, a morph or flow runs; otherwise the area of instances held loose, a burst, the lens over
@@ -771,6 +797,7 @@ impl<S, M: Clone> Ui<S, M> {
         let dt = (t - self.now).clamp(0.0, 0.1);
         // The material clock runs only while something was moving.
         if self.moving { self.mclock += dt; }
+        if self.ground_moving { self.gclock += dt; }
         self.now = t;
         if let Some(f) = self.look_of { self.timing = Timing::of(&f(&self.state)); }
         if let Some(f) = self.ticked && f(&mut self.state, t) { self.relayout(); }
@@ -798,6 +825,7 @@ impl<S, M: Clone> Ui<S, M> {
         }
         // A morph moving into its next phase changes what is drawn; one that is over is dropped and the
         // view decides again.
+        self.reproject();
         let repaint = match &self.run {
             Some(r) if t >= r.end => { self.run = None; true }
             Some(r) => r.phase(t) != self.painted_phase,
@@ -810,6 +838,7 @@ impl<S, M: Clone> Ui<S, M> {
         if repaint || scrolled { self.paint(); } else { self.finish(); }
         if self.marks_moving { self.dirty = true; }
         self.moving = self.field_moving_at(t);
+        self.ground_moving = self.ground_moving_at(t);
     }
 
     /// A fling going on and pulls springing back (it paints what moved; the result is whether the caller
@@ -1988,7 +2017,7 @@ impl<S, M: Clone> Ui<S, M> {
                     if n.recompose && role == 0 && !hidden && !under && !self.no_recompose {
                         let ids = glyphs.iter().enumerate().map(|(seq, (inst, glyph))| (ident(&n.key, seq as u32, *glyph), *inst)).collect();
                         seen_recs.insert(n.key.clone());
-                        jobs.push(RecJob { node: i, rec: TextRec { s: para.s.to_owned(), face: para.face, size: para.size, line: para.line, width: para.width, print: para.print, origin: n.origin(), glyphs: ids } });
+                        jobs.push(RecJob { node: i, rec: TextRec { s: para.s.to_owned(), face: para.face, size: para.size, line: para.line, width: para.width, print: para.print, origin: n.origin(), glyphs: ids, changed: f32::NEG_INFINITY } });
                     }
                     for (seq, (inst, glyph)) in glyphs.into_iter().enumerate() { put(&mut sink, inst, ident(&n.key, seq as u32, glyph), Some(glyph)); }
                     // Text being composed is underlined.
@@ -2187,11 +2216,16 @@ impl<S, M: Clone> Ui<S, M> {
         let mut k0 = 0.0;
         if let Some(r) = &mut self.run {
             let reverse = r.from == to && r.to == from;
-            // The GPU path turns around once; a second reversal starts a new morph from where it is.
-            if reverse && let Some(clock) = r.clock(now) && r.grid.is_none_or(|g| g.turned.is_none()) {
+            // In flight, on either path, any number of times: every tile goes back from where it is.
+            if reverse && let Some(clock) = r.clock(now) {
                 let dur = spec.duration_ms / 1000.0 * (1.0 - spec.stagger.clamp(0.0, 0.9));
                 morph::reverse(&mut r.particles, clock, r.spec.ease, dur);
-                if let Some(g) = &mut r.grid { g.turned = Some((clock, dur)); }
+                if let Some(g) = &mut r.grid {
+                    g.turned = Some(match g.turned {
+                        None => morph::Turn { first: clock, alpha: 1.0, beta: 0.0, to: 0.0, dur },
+                        Some(t) => t.again(clock, r.spec.ease, dur),
+                    });
+                }
                 std::mem::swap(&mut r.from, &mut r.to);
                 r.spec = MorphSpec { ease: spec.ease, ..r.spec };
                 r.flight = Some([now, now + dur]);
@@ -2222,13 +2256,23 @@ impl<S, M: Clone> Ui<S, M> {
         let (src, dst) = (self.collect(from), self.collect(to));
         if src.is_empty() || dst.is_empty() { return; }
         let pitch = (spec.lattice * self.scale).max(1.5);
+        // 3D elements emit from their surface (on the CPU path); the rest of each side from the screen.
+        let (es, ed) = (self.emitters(from), self.emitters(to));
+        let meshy = !es.is_empty() || !ed.is_empty();
         // Many tiles: the GPU simulates a grid (when the renderer can), the CPU builds nothing.
         let above = self.look().particles.gpu_above;
         let grid = match (morph::ink_bounds(&src), morph::ink_bounds(&dst)) {
-            (Some(a), Some(b)) if self.particle_gpu && morph::Grid::estimate(a, b, pitch) > above => Some(morph::Grid::new(a, b, (spec.lattice * self.scale).max(1.0), spec.count_max.max(above))),
+            (Some(a), Some(b)) if !meshy && self.particle_gpu && morph::Grid::estimate(a, b, pitch) > above => Some(morph::Grid::new(a, b, (spec.lattice * self.scale).max(1.0), spec.count_max.max(above))),
             _ => None,
         };
-        let tiles = if let Some(g) = grid { morph::Tiles { particles: vec![], tile: g.a[2] } } else { morph::tiles(&src, &dst, pitch, &spec, &self.text.pixels) };
+        let mut emit = vec![];
+        let tiles = if let Some(g) = grid { morph::Tiles { particles: vec![], tile: g.a[2], tags: vec![] } }
+        else if meshy {
+            let (lib, atlas, cap) = (&self.meshes, &self.text.pixels, spec.count_max);
+            let t = morph::tiles_with(mesh_side(&src, &es, 0, lib, atlas, cap), mesh_side(&dst, &ed, es.len() as u32, lib, atlas, cap), morph::ink_bounds(&src), morph::ink_bounds(&dst), pitch, &spec);
+            for (key, sc, r) in es.iter().chain(&ed) { emit.push(Emitter { key: key.clone(), points: sc.surface(lib, surface_count(r, t.tile, cap), 0x51ab) }); }
+            t
+        } else { morph::tiles(&src, &dst, pitch, &spec, &self.text.pixels) };
         let (loosen, flight) = (spec.loosen_ms / 1000.0 * (1.0 - k0), spec.duration_ms / 1000.0);
         let (t1, t2) = (now + loosen, now + loosen + flight);
         let id = next_run();
@@ -2236,9 +2280,62 @@ impl<S, M: Clone> Ui<S, M> {
             id, upload: id, from: from.into(), to: to.into(), spec,
             src_until: t1, src_ramp: [k0, now, 1.0, t1], flight: Some([t1, t2]),
             dst_from: t2, dst_ramp: [1.0, t2, 0.0, t2 + tighten], end: t2 + tighten,
-            particles: tiles.particles, grid, tile: tiles.tile, src, dst,
+            particles: tiles.particles, grid, tile: tiles.tile, src, dst, emit, tags: tiles.tags,
         });
+        self.reproject();
         self.paint();
+    }
+
+    /// The `scene3d` elements in the subtree `key`: their keys, scenes and device rects.
+    fn emitters(&self, key: &str) -> Vec<(String, Rc<crate::mesh::Scene3d>, [f32; 4])> {
+        let Some(root) = self.nodes.iter().position(|n| n.key == key) else { return vec![] };
+        let s = self.scale;
+        (0..self.nodes.len()).filter(|&i| within(&self.nodes, i, root)).filter_map(|i| match &self.nodes[i].content {
+            Content::Scene3d(sc) => { let r = self.nodes[i].inner; Some((self.nodes[i].key.clone(), sc.clone(), [r.x * s, r.y * s, r.w * s, r.h * s])) }
+            _ => None,
+        }).collect()
+    }
+
+    /// A morph with 3D elements: every tile that starts or lands on a mesh surface point goes where that
+    /// point is now (the object may be turning), and is hidden while the point is behind the mesh.
+    fn reproject(&mut self) {
+        let s = self.scale;
+        let (nodes, lib) = (&self.nodes, &self.meshes);
+        let Some(r) = self.run.as_mut() else { return };
+        if r.emit.is_empty() { return; }
+        let scenes: Vec<Option<(Rc<crate::mesh::Scene3d>, [f32; 4])>> = r.emit.iter().map(|e| nodes.iter().find(|n| n.key == e.key).and_then(|n| match &n.content {
+            Content::Scene3d(sc) => Some((sc.clone(), [n.inner.x * s, n.inner.y * s, n.inner.w * s, n.inner.h * s])),
+            _ => None,
+        })).collect();
+        let at = |tag: u32| -> Option<(f32, f32, bool)> {
+            if tag == morph::NO_TAG { return None; }
+            let (e, k) = ((tag >> 24) as usize, (tag & 0x00ff_ffff) as usize);
+            let (sc, rect) = scenes.get(e)?.as_ref()?;
+            let sp = r.emit[e].points.get(k)?;
+            let (fx, fy, seen) = sc.project(lib, sp, rect[2] / rect[3].max(1.0))?;
+            let t = r.tile;
+            Some((rect[0] + fx * rect[2] - t * 0.5, rect[1] + fy * rect[3] - t * 0.5, seen))
+        };
+        let mut changed = false;
+        for (p, tag) in r.particles.iter_mut().zip(&r.tags) {
+            let mut code = morph::kind::base(p.misc[0]);
+            if let Some((x, y, seen)) = at(tag[0]) {
+                changed |= p.ab[0] != x || p.ab[1] != y;
+                p.ab[0] = x; p.ab[1] = y;
+                if !seen { code += morph::kind::SRC_HIDDEN; }
+                // A tile that stays where it is stays on its point.
+                if tag[1] == morph::NO_TAG && code as u32 & 7 >= 3 { p.ab[2] = x; p.ab[3] = y; }
+            }
+            if let Some((x, y, seen)) = at(tag[1]) {
+                changed |= p.ab[2] != x || p.ab[3] != y;
+                p.ab[2] = x; p.ab[3] = y;
+                if !seen { code += morph::kind::DST_HIDDEN; }
+                if tag[0] == morph::NO_TAG && code as u32 & 7 >= 3 { p.ab[0] = x; p.ab[1] = y; }
+            }
+            changed |= p.misc[0] != code;
+            p.misc[0] = code;
+        }
+        if changed { r.upload = next_run(); }
     }
 
     /// Everything a node and its descendants draw, drawn or hidden, at looseness 1 and fully born.
@@ -2295,9 +2392,23 @@ impl<S, M: Clone> Ui<S, M> {
             // The glyphs as they were put in the scene (clip, looseness, response, birth).
             let index: HashMap<u64, usize> = (0..self.scene.instances.len()).filter(|&k| self.owners.get(k).is_some_and(|o| o.0 == job.node)).map(|k| (self.owners[k].1, k)).collect();
             for (id, inst) in new.glyphs.iter_mut() { if let Some(&k) = index.get(id) { *inst = self.scene.instances[k]; } }
-            let kept = TextRec { glyphs: new.glyphs.clone(), ..new.clone_head() };
-            let Some(old) = self.recs.insert(key.clone(), kept) else { continue };
+            let old = self.recs.remove(&key);
+            let changed = match &old { None => f32::NEG_INFINITY, Some(o) if o.s == new.s => o.changed, Some(_) => now };
+            self.recs.insert(key.clone(), TextRec { glyphs: new.glyphs.clone(), changed, ..new.clone_head() });
+            let Some(old) = old else { continue };
             if old.s == new.s { continue; }
+            // A text that changes faster than the minimum interval, or a change that would put more
+            // tiles in the window than allowed, is replaced at once: no tiles, no slides, no condensing.
+            let live: usize = self.recomps.iter().filter(|(k, _)| **k != key).map(|(_, r)| r.tiles.len()).sum();
+            if now - old.changed < spec.min_interval_ms / 1000.0 - 1e-4 || live as f32 >= spec.max_tiles {
+                self.recomps.remove(&key);
+                for (id, _) in &new.glyphs {
+                    births.insert(*id, -1e4);
+                    self.slides.remove(id);
+                    if let Some(&k) = index.get(id) { self.scene.instances[k].extra[3] = -1e4; }
+                }
+                continue;
+            }
             // Common prefix and suffix, in whole graphemes.
             let og: Vec<(usize, &str)> = old.s.grapheme_indices(true).collect();
             let ng: Vec<(usize, &str)> = new.s.grapheme_indices(true).collect();
@@ -2328,7 +2439,12 @@ impl<S, M: Clone> Ui<S, M> {
                 }
                 i
             };
-            let mut src: Vec<Instance> = run.as_ref().map(|r| r.tiles.iter().flat_map(|t| tile_pieces(t, now - r.start, true)).collect()).unwrap_or_default();
+            // A retarget reuses the tiles in flight: each goes on from where it is, carrying what it shows
+            // now (pieces cut once from whole glyphs, never cut again, so nothing multiplies). Tiles that
+            // were fading out (merges, dust) are let go.
+            let prev: Vec<Unit> = run.as_ref().map(|r| r.tiles.iter().filter(|t| t.p.misc[0] != morph::kind::MERGE && t.p.misc[0] != morph::kind::SRC_DUST)
+                .filter_map(|t| tile_now(t, now - r.start)).collect()).unwrap_or_default();
+            let mut src: Vec<Instance> = vec![];
             let mut dst: Vec<Instance> = vec![];
             let mut new_slides = vec![];
             let mut new_changed: Vec<u64> = vec![];
@@ -2360,23 +2476,17 @@ impl<S, M: Clone> Ui<S, M> {
                 births.insert(*id, -1e4);
                 if let Some(&k) = index.get(id) { self.scene.instances[k].extra[3] = -1e4; }
             }
-            if src.is_empty() && dst.is_empty() { continue; }
+            if src.is_empty() && dst.is_empty() && prev.is_empty() { continue; }
+            // Whole glyphs only (the tiles in flight are not counted again).
             let glyphs = src.len().max(dst.len()).max(1) as f32;
             // A retarget lands when the run it replaces would have (but takes at least a third of a
             // flight), so a quick run of changes keeps arriving instead of starting over each time.
             let dur_ms = match &run { Some(r) => ((r.end - now) * 1000.0).max(spec.duration_ms * 0.35).min(spec.duration_ms), None => spec.duration_ms };
             let mspec = MorphSpec { duration_ms: dur_ms, stagger: spec.stagger, count_max: spec.count_max * glyphs, curl: 0.0, threshold: 0.5, ease: Ease::InOutCubic, ..MorphSpec::default() };
-            let tiles = morph::tiles(&src, &dst, 1.0, &mspec, &self.text.pixels);
-            let tile = tiles.tile;
-            let pieces = |insts: &[Instance], x: f32, y: f32| -> Vec<Instance> {
-                insts.iter().filter_map(|i| piece(i, [x, y, x + tile, y + tile]).map(|mut p| { p.rect[0] -= x; p.rect[1] -= y; p })).collect()
-            };
-            let rtiles: Vec<RTile> = tiles.particles.into_iter().filter_map(|p| {
-                let k = p.misc[0];
-                let src = if k == morph::kind::DST_DUST { vec![] } else { pieces(&src, p.ab[0], p.ab[1]) };
-                let dst = if k == morph::kind::SRC_DUST { vec![] } else { pieces(&dst, p.ab[2], p.ab[3]) };
-                (!src.is_empty() || !dst.is_empty()).then_some(RTile { p, src, dst })
-            }).collect();
+            let mut rtiles = recompose_tiles(prev, &src, &dst, &mspec, &self.text.pixels);
+            // Never more than the window's budget (what is left of it after the other texts).
+            let budget = (spec.max_tiles - live as f32).max(0.0) as usize;
+            if rtiles.len() > budget { rtiles.truncate(budget); }
             let dur = dur_ms / 1000.0;
             self.recomps.insert(key, Recomp { tiles: rtiles, start: now, end: now + dur, hide: new_changed.into_iter().collect() });
             self.animating = true;
@@ -2615,7 +2725,7 @@ fn response_caps<M>(n: &Node<M>, legible_cap: f32) -> (f32, f32, [f32; 4]) {
 
 impl TextRec {
     /// The same text without its glyphs.
-    fn clone_head(&self) -> TextRec { TextRec { s: self.s.clone(), face: self.face, size: self.size, line: self.line, width: self.width, print: self.print, origin: self.origin, glyphs: vec![] } }
+    fn clone_head(&self) -> TextRec { TextRec { s: self.s.clone(), face: self.face, size: self.size, line: self.line, width: self.width, print: self.print, origin: self.origin, glyphs: vec![], changed: self.changed } }
 }
 
 /// The part of a glyph instance inside box `b` (x0, y0, x1, y1, device px), as an instance of its own:
@@ -2629,6 +2739,86 @@ fn piece(i: &Instance, b: [f32; 4]) -> Option<Instance> {
     p.rect = [x0, y0, x1 - x0, y1 - y0];
     p.uv = [i.uv[0] + (x0 - r[0]) * du, i.uv[1] + (y0 - r[1]) * dv, i.uv[0] + (x1 - r[0]) * du, i.uv[1] + (y1 - r[1]) * dv];
     Some(p)
+}
+
+/// A tile that will fly in a recomposition: where its top-left is (device px) and what it shows, as
+/// instances placed relative to that corner.
+type Unit = ([f32; 2], Vec<Instance>);
+
+/// Where a recomposition tile is `clock` seconds into its run and the pieces it shows there (whichever
+/// side it shows more of), for a retarget; `None` when it shows nothing.
+fn tile_now(t: &RTile, clock: f32) -> Option<Unit> {
+    use morph::kind;
+    let u = morph::progress(&t.p, clock, Ease::InOutCubic);
+    let at = morph::position(&t.p, u, 0.0);
+    let k = t.p.misc[0];
+    let shows_dst = if k == kind::DST_DUST { morph::alpha(k, u) > 0.5 } else { u >= t.p.misc[3] };
+    let list = if shows_dst { &t.dst } else { &t.src };
+    (!list.is_empty()).then(|| (at, list.clone()))
+}
+
+/// The tiles of a recomposition: the tiles in flight (`prev`) and the cells of the changed old glyphs
+/// (`src`) fly to the cells of the changed new glyphs (`dst`), paired by Morton rank as a morph pairs
+/// (DESIGN.md §1.10, §1.16). Cells are cut from whole glyphs only; the tile grows by whole device px
+/// until each side has at most `spec.count_max` cells.
+fn recompose_tiles(prev: Vec<Unit>, src: &[Instance], dst: &[Instance], spec: &MorphSpec, atlas: &[u8]) -> Vec<RTile> {
+    use morph::kind;
+    let mut tile = 1.0f32;
+    let (a, b) = loop {
+        let (a, b) = (morph::cells(src, tile, atlas), morph::cells(dst, tile, atlas));
+        let n = (a.len() + prev.len()).max(b.len()) as f32;
+        if n <= spec.count_max.max(1.0) || tile >= 64.0 { break (a, b); }
+        tile = (tile * (n / spec.count_max.max(1.0)).sqrt()).ceil().max(tile + 1.0);
+    };
+    let cut = |insts: &[Instance], x: f32, y: f32| -> Vec<Instance> {
+        insts.iter().filter_map(|i| piece(i, [x, y, x + tile, y + tile]).map(|mut p| { p.rect[0] -= x; p.rect[1] -= y; p })).collect()
+    };
+    let th = spec.threshold;
+    let (mut su, mut sdust): (Vec<Unit>, Vec<Unit>) = (prev, vec![]);
+    for c in &a {
+        let p = cut(src, c.x, c.y);
+        if p.is_empty() { continue; }
+        if c.cover >= th { su.push(([c.x, c.y], p)); } else { sdust.push(([c.x, c.y], p)); }
+    }
+    let (mut tu, mut tdust): (Vec<Unit>, Vec<Unit>) = (vec![], vec![]);
+    for c in &b {
+        let p = cut(dst, c.x, c.y);
+        if p.is_empty() { continue; }
+        if c.cover >= th { tu.push(([c.x, c.y], p)); } else { tdust.push(([c.x, c.y], p)); }
+    }
+    // Nothing to pair with: everything stays where it is and fades.
+    if su.is_empty() || tu.is_empty() { sdust.append(&mut su); tdust.append(&mut tu); }
+    let order = |v: &mut Vec<Unit>| {
+        let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        for (p, _) in v.iter() { x0 = x0.min(p[0]); y0 = y0.min(p[1]); x1 = x1.max(p[0]); y1 = y1.max(p[1]); }
+        let (w, h) = ((x1 - x0).max(1.0), (y1 - y0).max(1.0));
+        v.sort_by_key(|(p, _)| (morph::morton((p[0] - x0) / w, (p[1] - y0) / h), p[1] as i64, p[0] as i64));
+    };
+    order(&mut su);
+    order(&mut tu);
+    let flight = spec.duration_ms / 1000.0;
+    let stagger = spec.stagger.clamp(0.0, 0.9);
+    let dur = flight * (1.0 - stagger);
+    let seed = |n: usize| (morph::hash(n as u32 ^ 0x9e37_79b9) >> 8) as f32 / 16_777_216.0;
+    let delay = |sd: f32| stagger * flight * 0.95 * sd;
+    let mut out = Vec::with_capacity(su.len().max(tu.len()) + sdust.len() + tdust.len());
+    for (n, (i, j, k)) in morph::pair(su.len(), tu.len()).into_iter().enumerate() {
+        let sd = seed(n);
+        let (s, t) = (&su[i], &tu[j]);
+        let p = Particle { ab: [s.0[0], s.0[1], t.0[0], t.0[1]], run: [0.0, 1.0, delay(sd), dur], misc: [k, tile, sd, 0.3 + 0.4 * seed(n + 7_777_777)] };
+        out.push(RTile { p, src: s.1.clone(), dst: t.1.clone() });
+    }
+    let n0 = out.len();
+    for (n, (at, list)) in sdust.into_iter().enumerate() {
+        let sd = seed(n0 + n);
+        out.push(RTile { p: Particle { ab: [at[0], at[1], at[0], at[1]], run: [0.0, 1.0, delay(sd), dur], misc: [kind::SRC_DUST, tile, sd, 0.5] }, src: list, dst: vec![] });
+    }
+    let n0 = out.len();
+    for (n, (at, list)) in tdust.into_iter().enumerate() {
+        let sd = seed(n0 + n);
+        out.push(RTile { p: Particle { ab: [at[0], at[1], at[0], at[1]], run: [0.0, 1.0, delay(sd), dur], misc: [kind::DST_DUST, tile, sd, 0.5] }, src: vec![], dst: list });
+    }
+    out
 }
 
 /// What a recomposition tile draws `clock` seconds into its run: the old glyphs' pieces, then (past the
@@ -2658,6 +2848,29 @@ fn tile_pieces(t: &RTile, clock: f32, settled: bool) -> Vec<Instance> {
         }
     }
     out
+}
+
+/// One side of a morph with 3D elements, as cells for a tile size: the screen cells of everything but
+/// the meshes, and a cell on every surface point of each mesh (tagged `emitter << 24 | point`).
+fn mesh_side<'a>(insts: &[Instance], ems: &'a [(String, Rc<crate::mesh::Scene3d>, [f32; 4])], base: u32, lib: &'a crate::mesh::Library, atlas: &'a [u8], cap: f32) -> impl FnMut(f32) -> Vec<morph::Cell> + 'a {
+    let flat: Vec<Instance> = insts.iter().filter(|i| i.paint[3] != MESH).copied().collect();
+    move |t: f32| {
+        let mut cs = morph::cells(&flat, t, atlas);
+        for (e, (_, sc, r)) in ems.iter().enumerate() {
+            for (k, sp) in sc.surface(lib, surface_count(r, t, cap), 0x51ab).iter().enumerate() {
+                if let Some((fx, fy, _)) = sc.project(lib, sp, r[2] / r[3].max(1.0)) {
+                    cs.push(morph::Cell { x: r[0] + fx * r[2] - t * 0.5, y: r[1] + fy * r[3] - t * 0.5, cover: 1.0, tag: (base + e as u32) << 24 | k as u32 });
+                }
+            }
+        }
+        cs
+    }
+}
+
+/// How many surface points a 3D element of device rect `r` emits at tile size `t`: enough that the
+/// half facing the camera covers its silhouette, at most `cap`.
+fn surface_count(r: &[f32; 4], t: f32, cap: f32) -> usize {
+    ((r[2] * r[3] / (t * t).max(1.0)) * 1.4).min(cap.max(1.0)).max(16.0) as usize
 }
 
 /// Whether node `i` is `root` or inside it.

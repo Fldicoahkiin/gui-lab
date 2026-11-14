@@ -132,8 +132,8 @@ pub fn page(s: &Gallery) -> El<Msg> {
     for (i, d) in PARAMS.iter().enumerate() {
         let tg = Target::Three(i);
         let v = *slot(&mut t.clone(), i);
-        // The camera's numbers change on every frame while it turns: they are shown at once, not recomposed.
-        nums = nums.child(number(&format!("three/p{i}"), d.name, v, d.spec, s.draft(tg), move |e| Msg::Num(tg, e)).width(300.0).recompose(!(7..=9).contains(&i)));
+        // The camera's numbers change on every frame while it turns: faster than `Recompose::min_interval_ms`, so they are replaced at once.
+        nums = nums.child(number(&format!("three/p{i}"), d.name, v, d.spec, s.draft(tg), move |e| Msg::Num(tg, e)).width(300.0));
     }
     // The ascii material's normal weight lives with the material; it is here too.
     let ascii = crate::style::Material::Ascii as u8;

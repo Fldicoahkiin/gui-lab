@@ -455,7 +455,8 @@ pub fn update(s: &mut Gallery, m: Msg) {
                 Target::OpValue => s.sc.op_value = v,
                 Target::Rip(i) => match i {
                     0 => s.legible_cap = v, 1 => s.loose_max = v, 2 => s.recompose.duration_ms = v,
-                    3 => s.recompose.stagger = v, 4 => s.recompose.count_max = v, _ => s.recompose.slide_ms = v,
+                    3 => s.recompose.stagger = v, 4 => s.recompose.count_max = v, 5 => s.recompose.slide_ms = v,
+                    6 => s.recompose.min_interval_ms = v, _ => s.recompose.max_tiles = v,
                 },
                 Target::Shown => {}
             }

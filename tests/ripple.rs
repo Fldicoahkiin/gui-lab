@@ -192,3 +192,61 @@ fn unkeyed_text_is_replaced_and_slides_are_made_for_moved_glyphs() {
     set(&mut ui, "10");
     assert_eq!(alpha_of(&ui).iter().filter(|&&x| x == 0.0).count(), 2);
 }
+
+#[test]
+fn a_number_that_changes_every_frame_stays_bounded() {
+    // 2,000 frames in a row, a new value each: faster than the minimum interval, so it is replaced at once.
+    let mut ui = num_ui("0", true);
+    let mut peak = 0usize;
+    let mut t = ui.now();
+    for i in 1..=2000 {
+        t += 1.0 / 60.0;
+        ui.tick(t);
+        set(&mut ui, &format!("{}", i * 7919 % 100_000));
+        ui.frame_drawn();
+        peak = peak.max(ui.recompose_tiles());
+        assert!(ui.scene().instances.len() < 4000, "frame {i}: {} instances", ui.scene().instances.len());
+    }
+    assert!(peak <= 6000, "peak {peak} tiles");
+    // Every 100 ms (slower than the interval, faster than a flight): each change retargets the tiles in
+    // flight, and their number stays bounded instead of multiplying.
+    let mut peak = 0usize;
+    for i in 1..=300 {
+        for _ in 0..6 { t += 1.0 / 60.0; ui.tick(t); ui.frame_drawn(); }
+        set(&mut ui, &format!("{}", i * 7919 % 100_000));
+        peak = peak.max(ui.recompose_tiles());
+    }
+    let spec = Recompose::default();
+    assert!(peak as f32 <= spec.max_tiles, "peak {peak} tiles");
+    assert!(peak <= 6 * spec.count_max as usize * 3, "peak {peak} tiles for five digits");
+    // And it comes to rest.
+    for _ in 0..60 { t += 1.0 / 60.0; ui.tick(t); ui.frame_drawn(); }
+    assert_eq!(ui.recompose_tiles(), 0);
+    assert!(!ui.needs_frame(t));
+}
+
+struct Pic;
+fn pic_view(_: &Pic) -> El<()> {
+    col().pad(40.0, 40.0)
+        .child(row().key("thumb").on_press(()).child(lab::el::picture(lab::demo::BUST, 1.0).key("in-control").width(120.0)))
+        .child(lab::el::picture(lab::demo::BUST, 1.0).key("loose-pic").width(120.0))
+}
+
+#[test]
+fn a_picture_inside_a_control_is_held_to_the_legibility_cap() {
+    let mut ui = Ui::new(Pic, pic_view, |_, _| {}, fonts(), 600, 600, 1.0).on_look(|_| Look::default());
+    ui.tick(2.0);
+    let n = |k: &str| ui.node(k).unwrap_or_else(|| panic!("no {k}")).legible;
+    assert!(n("in-control"), "a picture in a control is to be read");
+    assert!(!n("loose-pic"), "a picture on its own is decoration");
+    // Its instances carry the legible push code, which the material reads to hold the lens to the cap.
+    assert!(ui.instances_of("in-control").iter().all(|i| i.resp[1] > 1.5), "{:?}", ui.instances_of("in-control").iter().map(|i| i.resp).collect::<Vec<_>>());
+    assert!(ui.instances_of("loose-pic").iter().all(|i| i.resp[1] < 1.5));
+    // A front through the control loosens the picture at most to the cap.
+    let (x, y) = ui.node("thumb").unwrap().rect.center();
+    ui.press(x, y);
+    let cap = Look::default().legible_cap;
+    let mut t = ui.now();
+    for _ in 0..30 { t += 1.0 / 60.0; ui.tick(t); assert!(ui.looseness("in-control", t) <= cap + 1e-4); }
+    ui.release(x, y);
+}

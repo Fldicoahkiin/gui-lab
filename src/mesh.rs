@@ -369,6 +369,52 @@ impl Scene3d {
     /// first: the same transforms the GPU draws, intersected on the CPU (Möller–Trumbore).
     pub fn pick(&self, lib: &Library, fx: f32, fy: f32, aspect: f32) -> Option<MeshHit> {
         let (o, d) = self.camera.ray(fx, fy, aspect);
+        self.cast(lib, o, d).map(|(_, h)| h)
+    }
+    /// `n` points on the surfaces of every copy, area-weighted over the whole scene (world areas, so a
+    /// copy drawn twice as large gets four times the points); deterministic for a seed. Particles
+    /// emitted by a mesh start (or land) on these (DESIGN.md §1.10).
+    pub fn surface(&self, lib: &Library, n: usize, seed: u32) -> Vec<SurfacePoint> {
+        let mut copies: Vec<(u32, u32, f32)> = vec![];
+        for (gi, it) in self.items.iter().enumerate() {
+            let Some(mesh) = lib.get(it.mesh) else { continue };
+            for (ci, m) in it.transforms.iter().enumerate() {
+                let area: f32 = mesh.tris.iter().map(|t| { let (a, b, c) = (m.point(t[0]), m.point(t[1]), m.point(t[2])); 0.5 * dot(cross(sub(b, a), sub(c, a)), cross(sub(b, a), sub(c, a))).sqrt() }).sum();
+                if area > 0.0 { copies.push((gi as u32, ci as u32, area)); }
+            }
+        }
+        let total: f32 = copies.iter().map(|c| c.2).sum();
+        if total <= 0.0 { return vec![]; }
+        let mut out = Vec::with_capacity(n);
+        let mut acc = 0.0f32;
+        for (gi, ci, area) in copies {
+            let from = (acc / total * n as f32).round() as usize;
+            acc += area;
+            let to = (acc / total * n as f32).round() as usize;
+            let Some(mesh) = lib.get(self.items[gi as usize].mesh) else { continue };
+            out.extend(mesh.sample(to - from, seed ^ gi.wrapping_mul(0x85eb_ca6b) ^ ci.wrapping_mul(0xc2b2_ae35)).into_iter().map(|(p, _)| SurfacePoint { item: gi, copy: ci, p }));
+        }
+        out
+    }
+    /// Where a surface point is in the view now (fractions 0..1 of the element from its top left), and
+    /// whether it is seen: the nearest surface along the ray through it is the point itself (a depth
+    /// test against the mesh, on the CPU). `None` when the copy no longer exists or the point is
+    /// behind the camera.
+    pub fn project(&self, lib: &Library, sp: &SurfacePoint, aspect: f32) -> Option<(f32, f32, bool)> {
+        let m = self.items.get(sp.item as usize)?.transforms.get(sp.copy as usize)?;
+        let w = m.point(sp.p);
+        let c = self.camera.proj(aspect).mul(&self.camera.view());
+        let q = &c.0;
+        let clip = [q[0] * w[0] + q[4] * w[1] + q[8] * w[2] + q[12], q[1] * w[0] + q[5] * w[1] + q[9] * w[2] + q[13], q[3] * w[0] + q[7] * w[1] + q[11] * w[2] + q[15]];
+        if clip[2] <= 1e-6 { return None; }
+        let (fx, fy) = ((clip[0] / clip[2] + 1.0) * 0.5, (1.0 - clip[1] / clip[2]) * 0.5);
+        let (o, d) = self.camera.ray(fx, fy, aspect);
+        let along = dot(sub(w, o), d);
+        let seen = match self.cast(lib, o, d) { Some((t, _)) => t >= along - 1e-3 * along.abs().max(1.0), None => true };
+        Some((fx, fy, seen))
+    }
+    /// The nearest copy along a ray: its distance and which copy.
+    fn cast(&self, lib: &Library, o: [f32; 3], d: [f32; 3]) -> Option<(f32, MeshHit)> {
         let mut best: Option<(f32, MeshHit)> = None;
         for it in &self.items {
             let Some(mesh) = lib.get(it.mesh) else { continue };
@@ -388,9 +434,14 @@ impl Scene3d {
                 }
             }
         }
-        best.map(|(_, h)| h)
+        best
     }
 }
+
+/// A point on one copy's surface: the group (index in `items`), the copy, and the point in the mesh's
+/// own space, so it follows the copy as it turns.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SurfacePoint { pub item: u32, pub copy: u32, pub p: [f32; 3] }
 
 /// Which copy a pick found: the group's `id` and the copy's index in its transforms.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -586,6 +637,33 @@ mod tests {
         assert_eq!(pts.len(), 500);
         for (p, n) in &pts { assert!((p.iter().map(|v| v.abs()).fold(0.0, f32::max) - 0.5).abs() < 1e-4); assert!((dot(*n, *n) - 1.0).abs() < 1e-4); }
         assert_eq!(pts, m.sample(500, 3));
+    }
+
+    #[test]
+    fn surface_points_project_and_hide_behind_the_mesh() {
+        let lib = Library::default();
+        let mut sc = Scene3d::single(MeshId::ICO[2]);
+        sc.items[0].transforms = vec![Mat4::uniform(1.4)];
+        let pts = sc.surface(&lib, 2000, 9);
+        assert_eq!(pts.len(), 2000);
+        let eye = sc.camera.eye();
+        let (mut seen, mut agree) = (0, 0);
+        for sp in &pts {
+            let (fx, fy, vis) = sc.project(&lib, sp, 1.3).expect("in front of the camera");
+            assert!((-0.2..1.2).contains(&fx) && (-0.2..1.2).contains(&fy));
+            // On a sphere the seen half is the one facing the eye.
+            let w = sc.items[0].transforms[0].point(sp.p);
+            let facing = dot(norm(w), norm(sub(eye, w))) > 0.0;
+            seen += vis as usize;
+            agree += (vis == facing) as usize;
+        }
+        assert!((700..1300).contains(&seen), "{seen} of 2000 seen");
+        assert!(agree > 1900, "{agree} agree with facing");
+        // Turning the copy moves its points with it.
+        let a = sc.project(&lib, &pts[0], 1.3).expect("a");
+        sc.items[0].transforms = vec![Mat4::rotate_y(40.0).mul(&Mat4::uniform(1.4))];
+        let b = sc.project(&lib, &pts[0], 1.3).expect("b");
+        assert!((a.0 - b.0).abs() + (a.1 - b.1).abs() > 0.01);
     }
 
     #[cfg(feature = "gltf")]
