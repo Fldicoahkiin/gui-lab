@@ -1,6 +1,7 @@
 //! Text: shaping and line breaking by parley; every glyph is then kept as its own instance.
 //! Each glyph is rasterised once into an atlas that stores two things per texel: coverage, and how
-//! close that texel is to the nearest ink (255 at ink, falling to 0 at `SPREAD` pixels away).
+//! close that texel is to the glyph's outline, signed (128 on it, 255 at `SPREAD` pixels inside, 0 at
+//! `SPREAD` pixels outside).
 //!
 //! Several font faces can be registered; each text element picks one. A face can be marked as a pixel
 //! face: it is then drawn only at whole multiples of its native size, on whole device pixels, with
@@ -237,11 +238,22 @@ fn store(pixels: &mut [u8], pen: &mut (u32, u32, u32), data: &[u8], gw: u32, gh:
     Some(Slot { x: ax, y: ay, w, h, left, top })
 }
 
-/// Exact Euclidean distance to the nearest inked texel (Felzenszwalb & Huttenlocher), mapped to 255 at
-/// ink and 0 at `SPREAD` or further.
+/// Signed nearness to the glyph's outline: 128 on the outline, rising to 255 at `SPREAD` pixels inside
+/// the ink and falling to 0 at `SPREAD` pixels outside (exact Euclidean distances, Felzenszwalb &
+/// Huttenlocher, half a texel from the edge of the inked texels).
 fn nearness(cov: &[u8], w: usize, h: usize) -> Vec<u8> {
+    let outside = edt(cov, w, h, |c| c >= 128);
+    let inside = edt(cov, w, h, |c| c < 128);
+    cov.iter().enumerate().map(|(i, &c)| {
+        let sd = if c >= 128 { inside[i].sqrt() - 0.5 } else { 0.5 - outside[i].sqrt() };
+        ((0.5 + 0.5 * sd / SPREAD as f32).clamp(0.0, 1.0) * 255.0).round() as u8
+    }).collect()
+}
+
+/// Squared distance from every texel to the nearest texel where `seed` holds.
+fn edt(cov: &[u8], w: usize, h: usize, seed: impl Fn(u8) -> bool) -> Vec<f32> {
     const INF: f32 = 1e20;
-    let mut d: Vec<f32> = cov.iter().map(|&c| if c >= 128 { 0.0 } else { INF }).collect();
+    let mut d: Vec<f32> = cov.iter().map(|&c| if seed(c) { 0.0 } else { INF }).collect();
     let m = w.max(h);
     let (mut f, mut out, mut v, mut z) = (vec![0.0f32; m], vec![0.0f32; m], vec![0usize; m], vec![0.0f32; m + 1]);
     let pass = |f: &[f32], n: usize, out: &mut [f32], v: &mut [usize], z: &mut [f32]| {
@@ -269,5 +281,5 @@ fn nearness(cov: &[u8], w: usize, h: usize) -> Vec<u8> {
         pass(&f, w, &mut out, &mut v, &mut z);
         d[y * w..y * w + w].copy_from_slice(&out[..w]);
     }
-    d.iter().map(|&q| ((1.0 - q.sqrt() / SPREAD as f32).clamp(0.0, 1.0) * 255.0) as u8).collect()
+    d
 }

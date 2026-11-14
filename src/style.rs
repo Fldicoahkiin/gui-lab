@@ -3,7 +3,6 @@
 use crate::scene::Fx;
 use crate::text::{MONO, PIXEL, SANS};
 
-
 /// Font sizes of a theme, logical px. Pixel faces are snapped to whole multiples of their face size
 /// when drawn, so these are requests, not promises.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -144,6 +143,11 @@ impl Material {
     pub fn from_id(i: u8) -> Material { MATERIALS[(i as usize).min(MATERIAL_COUNT - 1)].0 }
     pub fn name(self) -> &'static str { MATERIALS[self as usize].1 }
 }
+
+/// The instance code of a material override at nesting `level` (1 = outermost): stage 1 writes it into
+/// `near.a` as `128 + level × 16 + id` (levels above 7 count as 7), so under max blending the deepest
+/// override wins and any override wins over a print pitch (which stays below 128).
+pub fn override_code(level: u8, id: u8) -> f32 { (128 + level.clamp(1, 7) as u32 * 16 + id.min(15) as u32) as f32 }
 
 /// One number of a material, for its gallery page.
 #[derive(Clone, Copy, Debug, PartialEq)]

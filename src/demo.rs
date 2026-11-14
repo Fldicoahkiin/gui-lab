@@ -31,7 +31,7 @@ impl Default for Demo {
 }
 impl Demo {
     pub fn theme(&self) -> Theme { THEMES[self.theme.min(THEMES.len() - 1)] }
-    pub fn look(&self) -> Look { Look { fx: self.fx, theme: self.theme(), material: self.material, pics: self.pics } }
+    pub fn look(&self) -> Look { Look { fx: self.fx, theme: self.theme(), material: self.material, pics: self.pics, ..Look::default() } }
 }
 
 #[derive(Clone, Debug, PartialEq)]

@@ -184,7 +184,7 @@ impl Gallery {
         let img = pages::IMAGE;
         pics[IMAGE_SLOT as usize] = PicFx { pitch: self.param(img, 0), levels: self.param(img, 1), ..PicFx::with_set(set::DOTS) };
         if let Page::Marks(s) = self.page { pics[MARK_SLOT as usize] = self.marks[s as usize]; }
-        Look { fx: self.demo.fx, theme: self.theme(), material: self.material, pics }
+        Look { fx: self.demo.fx, theme: self.theme(), material: self.material, pics, ..Look::default() }
     }
     /// The key of morph candidate `i` on the morph page.
     pub fn shape_key(i: usize) -> String { format!("morph/c{i}") }

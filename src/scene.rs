@@ -20,6 +20,10 @@ pub struct Instance {
     /// (logical px, 0 = off) in y. All: static looseness, time the instance first appeared.
     /// Pictures carry their `PicFx` slot in `paint[1]`.
     pub extra: [f32; 4],
+    /// Material override code (0 = the global material; else `128 + level × 16 + id`, see
+    /// `style::override_code`), accent hue (0, 1, 2), and the box the material's height treatments
+    /// measure against: top and height, device px (a text line, or the shape itself).
+    pub look: [f32; 4],
 }
 
 /// A run of instances drawn with one picture bound. Glyphs and shapes do not care which.
