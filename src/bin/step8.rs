@@ -3,7 +3,9 @@
 //!                picture under four mark sets → `mesh-materials.png`
 //!   particles    the 粒子 page going mesh → text → picture → mesh at 200,000 tiles, six frames of each
 //!                change, with the pointer in the swarm → `particles.png`
-//! usage: step8 <out_dir> [mesh | particles]
+//!   transitions  every preset's transition on the 风格 page, six frames each (from Normcore; Normcore's
+//!                own from Glitch), one row per preset → `transitions.png`
+//! usage: step8 <out_dir> [mesh | particles | transitions]
 use lab::el::{El, Paint, col, scene3d, text};
 use lab::mesh::{Mat4, MeshId, Scene3d};
 use lab::offscreen::{Offscreen, crop, save_png, sheet};
@@ -34,6 +36,67 @@ fn main() {
     let what = a.get(2).map(String::as_str).unwrap_or("mesh");
     if what == "mesh" { mesh(&out); }
     if what == "particles" { particles(&out); }
+    if what == "transitions" { transitions(&out); }
+}
+
+/// Play preset `to`'s transition from preset `from` on the 风格 page; `at` is called with the ui at each
+/// of `fractions` of the transition (and once more after it).
+pub fn play_transition(o: &mut Offscreen, from: usize, to: usize, fractions: &[f32], mut at: impl FnMut(&mut Offscreen, &mut lab::gallery::GalleryUi, usize)) {
+    use lab::gallery::{self, Msg, Page, presets::PreMsg};
+    let (w, h) = (o.w, o.h);
+    let mut ui = gallery::new_ui(lab::text::load_bundled("assets").expect("fonts"), w, h, 1.0);
+    gallery::update(&mut ui.state, Msg::Preset(PreMsg::From(from)));
+    gallery::update(&mut ui.state, Msg::Preset(PreMsg::To(to)));
+    gallery::update(&mut ui.state, Msg::Go(Page::Presets));
+    ui.relayout();
+    ui.pointer_leave();
+    let mut t = 0.0f32;
+    let step = |ui: &mut gallery::GalleryUi, t: &mut f32, to: f32| { while *t < to - 1e-4 { *t += 1.0 / 60.0; ui.tick(*t); } };
+    step(&mut ui, &mut t, 2.0);
+    let look = ui.state.look();
+    let _ = o.render(&mut ui, &look);
+    let (x, y) = ui.node("presets/play").expect("play").rect.center();
+    ui.press(x, y);
+    ui.release(x, y);
+    ui.pointer_leave();
+    let dur = ui.state.presets[to].transition.duration_ms / 1000.0;
+    let start = t;
+    for (k, f) in fractions.iter().enumerate() {
+        step(&mut ui, &mut t, start + dur * f);
+        let look = ui.state.look();
+        let _ = o.render(&mut ui, &look);
+        at(o, &mut ui, k);
+    }
+}
+
+fn transitions(out: &str) {
+    let (w, h) = (1100u32, 560u32);
+    let mut o = Offscreen::new(w, h);
+    let mut frames = vec![];
+    let n = lab::preset::presets().len();
+    for to in 0..n {
+        let from = if to == 7 { 3 } else { 7 };
+        play_transition(&mut o, from, to, &[0.08, 0.25, 0.42, 0.6, 0.8, 1.05], |o, ui, _| {
+            let look = ui.state.look();
+            let px = o.render(ui, &look);
+            frames.push(half(&crop(&px, w, h, [230, 60, 1100, 560])));
+        });
+    }
+    let (sw, sh, px) = sheet(&frames, 6);
+    save_png(&format!("{out}/transitions.png"), sw, sh, &px);
+    eprintln!("wrote {out}/transitions.png ({} rows of six)", n);
+}
+
+/// A frame at half size (2 × 2 average).
+fn half(f: &(u32, u32, Vec<u8>)) -> (u32, u32, Vec<u8>) {
+    let (w, h, px) = (f.0, f.1, &f.2);
+    let (hw, hh) = (w / 2, h / 2);
+    let mut o = vec![0u8; (hw * hh * 4) as usize];
+    for y in 0..hh { for x in 0..hw { for c in 0..4 {
+        let s = |dx: u32, dy: u32| px[(((y * 2 + dy) * w + x * 2 + dx) * 4 + c) as usize] as u32;
+        o[((y * hw + x) * 4 + c) as usize] = ((s(0, 0) + s(1, 0) + s(0, 1) + s(1, 1)) / 4) as u8;
+    } } }
+    (hw, hh, o)
 }
 
 fn particles(out: &str) {

@@ -42,8 +42,11 @@ struct Uniforms {
     qual: [f32; 4],
     /// Each front's scope box (device px).
     scopes: [[f32; 4]; 8],
-    /// `Look::loose_max`, and three spare numbers.
+    /// `Look::loose_max`, what a transition loosens everything by, and two spare numbers.
     rip: [f32; 4],
+    /// A preset's transition (`preset::Transition::pack`) and the elements its boxes find.
+    tr: [[f32; 4]; 9],
+    boxes: [[f32; 4]; 16],
 }
 
 const INK: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -190,6 +193,10 @@ pub struct Renderer {
     blit_group: wgpu::BindGroup,
     /// The last frame's two boxes (for the readout and the bench); `None`: all of it.
     pub last_region: Option<([u32; 4], [u32; 4])>,
+    /// The transition of the commit in progress and the boxes it finds (uniforms), and its looseness.
+    tr: [[f32; 4]; 9],
+    boxes: [[f32; 4]; 16],
+    tr_loose: f32,
 }
 
 /// The mesh pass's uniforms (see `mesh.wgsl`).
@@ -313,7 +320,7 @@ impl Renderer {
             pictures: HashMap::new(), instances, capacity, pipes, annots, annot_capacity: 256, up_pipe: None, shader, pl,
             ink: blank.clone(), soft: blank.clone(), lo: blank.clone(), lo_key: (0, 0, 0), material_up: material.clone(), auto: Default::default(), always_lo: false,
             near: blank, material_first: material.clone(), material, size: (0, 0), tiles, mesh, sim_rows: 0,
-            region: crate::dirty::Region::All, partial: true, frame_view: blank_view.clone(), prev: None, zero, blit, blit_group: blank_group, last_region: None,
+            region: crate::dirty::Region::All, partial: true, frame_view: blank_view.clone(), prev: None, zero, blit, blit_group: blank_group, last_region: None, tr: [[0.0; 4]; 9], boxes: [[0.0; 4]; 16], tr_loose: 0.0,
         };
         r.set_picture(u32::MAX, 1, 1, &[0, 0, 0, 255]);
         r.resize(w, h);
@@ -786,10 +793,21 @@ impl Renderer {
             text.dirty = false;
         }
         let (scale, now, mt) = (ui.scale(), ui.now(), ui.material_clock());
-        // A new commit: draw the frame as it was, in the look it had, into `before`, once.
+        // A new commit: the frame as it is on the screen (mid-transition too, so a second switch goes on
+        // from there) into `before`, once; before any frame was kept, the old scene in its old look.
         if let Some(sp) = ui.split() && sp.id != self.split_seen {
             self.split_seen = sp.id;
-            if let Some(old) = self.last_look {
+            if self.prev.is_some() {
+                let mut enc = self.device.create_command_encoder(&Default::default());
+                {
+                    let mut pass = clear(&mut enc, &self.before, wgpu::Color::BLACK);
+                    pass.set_pipeline(&self.blit);
+                    pass.set_bind_group(0, &self.blit_group, &[]);
+                    pass.draw(0..3, 0..1);
+                }
+                self.queue.submit([enc.finish()]);
+                self.split = [sp.at[0], sp.at[1], sp.t, 1.0];
+            } else if let Some(old) = self.last_look.or(Some(sp.look)) {
                 let before = self.before.clone();
                 // This draws the old scene into the shared images: the next frame is drawn whole.
                 self.prev = None;
@@ -800,7 +818,24 @@ impl Renderer {
         }
         // The front has left the screen: the old frame is not needed any more.
         let (w, h) = (self.size.0 as f32, self.size.1 as f32);
-        if self.split[3] > 0.0 && (now - self.split[2]) * look.fx.wave_speed * scale > (w * w + h * h).sqrt() { self.split = [0.0; 4]; }
+        let dur = look.transition.duration_ms / 1000.0;
+        let over = if dur > 0.0 { now - self.split[2] >= dur } else { (now - self.split[2]) * look.fx.wave_speed * scale > (w * w + h * h).sqrt() };
+        if self.split[3] > 0.0 && over { self.split = [0.0; 4]; }
+        // The transition's program and, for its boxes, the largest elements on the page (device px).
+        (self.tr, self.tr_loose) = if self.split[3] > 0.0 && dur > 0.0 {
+            (look.transition.pack([self.split[0], self.split[1]], self.split[2]), look.transition.loosen(((now - self.split[2]) / dur).clamp(0.0, 1.0)))
+        } else { ([[0.0; 4]; 9], 0.0) };
+        if self.split[3] > 0.0 && dur > 0.0 {
+            let mut found: Vec<[f32; 4]> = ui.nodes().iter().skip(1).filter(|n| n.kind() != "box" && n.rect.w >= 12.0 && n.rect.h >= 12.0)
+                .map(|n| { let r = n.rect.intersect(&n.clip); [r.x * scale, r.y * scale, r.right() * scale, r.bottom() * scale] })
+                .filter(|r| r[2] > r[0] + 8.0 && r[3] > r[1] + 8.0 && r[2] - r[0] < w * 0.9).collect();
+            found.sort_by(|a, b| ((b[2] - b[0]) * (b[3] - b[1])).total_cmp(&((a[2] - a[0]) * (a[3] - a[1]))));
+            found.truncate(16);
+            // In reading order.
+            found.sort_by(|a, b| (a[1], a[0]).partial_cmp(&(b[1], b[0])).unwrap_or(std::cmp::Ordering::Equal));
+            self.boxes = [[0.0; 4]; 16];
+            for (i, r) in found.into_iter().enumerate() { self.boxes[i] = r; }
+        }
         self.last_look = Some(*look);
         let split = self.split;
         // A morph: picture its two elements once, upload its tiles once per run.
@@ -1064,7 +1099,9 @@ impl Renderer {
             fd: [look.material.id() as f32, flag(self.out_format.is_srgb()), SPREAD as f32, marks::PALETTES.len() as f32],
             bg, fg, accent, pointer: [field.pointer[0], field.pointer[1], field.pointer[2], fx.lens_hard], wipe: field.wipe, wipe_rect: field.wipe_rect, split, fronts: field.fronts, pics,
             ground2: [th.ground2[0], th.ground2[1], th.ground2[2], look.loose_scale], second: c(th.second), third: c(th.third),
-            burst: field.burst, burst_t: field.burst_t, mats, calm: field.calm, qual, scopes: field.scopes, rip: [look.loose_max, 0.0, 0.0, 0.0],
+            burst: field.burst, burst_t: field.burst_t, mats, calm: field.calm, qual, scopes: field.scopes,
+            rip: [look.loose_max, if split[3] > 0.0 { self.tr_loose } else { 0.0 }, if split[3] > 0.0 { look.transition.steps.iter().rposition(|st| st.kind != crate::preset::StepKind::None).map_or(0.0, |i| i as f32 + 1.0) } else { 0.0 }, 0.0],
+            tr: if split[3] > 0.0 { self.tr } else { [[0.0; 4]; 9] }, boxes: self.boxes,
         };
         self.queue.write_buffer(&self.ubuf, 0, bytemuck::bytes_of(&u));
     }

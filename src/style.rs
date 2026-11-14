@@ -112,7 +112,8 @@ pub fn theme_index(name: &str) -> usize { THEMES.iter().position(|t| t.name == n
 /// How stage 2 draws text, shapes and the ground (DESIGN.md §1.6). Pictures always follow their own
 /// `PicFx` slot, whichever material is on: the slot is the instance's override. The discriminant is
 /// the id the shader dispatches on.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 #[repr(u8)]
 pub enum Material {
     /// Nothing loosens into units: fronts still push instances and new things still condense (as a
@@ -191,7 +192,8 @@ impl MaterialParams {
 }
 
 /// The annotation layer's settings (DESIGN.md §1.7).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum GazeMode {
     #[default]
     Off,
@@ -216,7 +218,7 @@ pub mod gaze {
     pub const COUNT: usize = 9;
     pub const NAMES: [&str; COUNT] = ["角标", "边框", "编号", "尺寸", "类型", "引线", "标尺", "十字线", "网格"];
 }
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Gaze {
     pub mode: GazeMode,
     pub kinds: u16,
@@ -263,7 +265,7 @@ pub mod colour {
 }
 
 /// How a picture turns into marks (DESIGN.md §1.6.1). Every field is a plain number.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PicFx {
     /// Cell size, logical px, 1–64.
     pub pitch: f32,
@@ -346,9 +348,15 @@ pub struct Look {
     pub recompose: crate::morph::Recompose,
     /// When morphs run on the GPU, and the forces on its particles (DESIGN.md §1.10).
     pub particles: crate::morph::Particles,
+    /// The interaction character a preset gives (DESIGN.md §4.1): how long a press's burst lasts, what
+    /// text and controls and what everything else do when nothing says, and how a commit arrives
+    /// (0 ms: the classic front from the press).
+    pub press_ms: f32,
+    pub roles: [crate::el::Response; 2],
+    pub transition: crate::preset::Transition,
 }
 impl Default for Look {
-    fn default() -> Self { Self { fx: Fx::default(), theme: DARK, material: Material::Dot, pics: [PicFx::default(); 8], params: MaterialParams::all(), gaze: Gaze::default(), loose_scale: 1.0, quality: 1.0, overlay: false, legible_cap: LEGIBLE_CAP, loose_max: 1.0, recompose: crate::morph::Recompose::default(), particles: crate::morph::Particles::default() } }
+    fn default() -> Self { Self { fx: Fx::default(), theme: DARK, material: Material::Dot, pics: [PicFx::default(); 8], params: MaterialParams::all(), gaze: Gaze::default(), loose_scale: 1.0, quality: 1.0, overlay: false, legible_cap: LEGIBLE_CAP, loose_max: 1.0, recompose: crate::morph::Recompose::default(), particles: crate::morph::Particles::default(), press_ms: 350.0, roles: [crate::el::Response::Nudge, crate::el::Response::Loosen], transition: crate::preset::Transition { duration_ms: 0.0, steps: [crate::preset::Step { kind: crate::preset::StepKind::None, from: 0.0, to: 0.0, a: 0.0, b: 0.0, c: 0.0, d: 0.0, e: 0.0 }; 4] } } }
 }
 /// The default `Look::legible_cap`.
 pub const LEGIBLE_CAP: f32 = 0.15;

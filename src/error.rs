@@ -84,3 +84,12 @@ pub enum MeshError {
     #[error("a buffer's base64 data has the character `{0}`, which is not base64.")]
     Base64(char),
 }
+
+/// A preset could not be read or changed (`preset::Preset`).
+#[derive(Clone, Debug, Error, PartialEq)]
+pub enum PresetError {
+    #[error("the preset is not valid JSON for a preset ({0}). Export one from the 风格 page to see every field; numbers stay numbers, `material` is a name such as \"dot\", step kinds are names such as \"reveal\".")]
+    Json(String),
+    #[error("the preset has no number at `{0}`. Paths are the JSON keys joined by dots, array places by their index: `transition.steps.0.a`, `interaction.press_ms`.")]
+    NoSuchNumber(String),
+}

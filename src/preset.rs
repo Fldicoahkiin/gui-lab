@@ -1,0 +1,247 @@
+//! Presets as data (DESIGN.md §4.1): a style preset is plain, serialisable data — theme, material and its
+//! numbers, type, annotation, how it answers (interaction character) and how it arrives (a transition).
+//! A transition is a small program of up to four steps over the same primitives (reveals with a shape,
+//! bands, fades, a light bar, colour planes, a loosening, layers, a melt, detection boxes, a carve, an
+//! outline-first draw, a peel), each a kind and five numbers, run by the material pass between the
+//! frame as it was and the new one. It plays for "switch to this style" and for "enter a page in this
+//! style": always the target's.
+use crate::el::Response;
+use crate::morph::Recompose;
+use crate::style::{Gaze, Look, Material, MaterialParams, PicFx, THEMES, Theme, styles, theme_index};
+use serde::{Deserialize, Serialize};
+
+/// What one step of a transition does. The numbers `a`–`e` mean what `StepKind::params` says.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StepKind {
+    #[default]
+    None,
+    /// The new frame appears where the shape has reached: a = shape (0 radial from the press, 1 a line at
+    /// angle b, 2 rows of c px top to bottom, 3 cells of c px in hashed order, 4 a torn line at angle b
+    /// with c px of noise), d = edge softness px, e = rows just reached show only the lattice's dots (0–1
+    /// of the window, the phosphor's lag).
+    Reveal,
+    /// Horizontal bands of a px tear sideways by up to b px with c px between the colour channels; d hard
+    /// cuts between the frames; locked (straight, new) from e on.
+    Bands,
+    /// A cross-fade, the new frame arriving from a px away at angle b.
+    Fade,
+    /// A light bar sweeping at angle a, b px wide; behind it the new frame with toner noise of
+    /// strength c settling within d px.
+    Bar,
+    /// a rows of flat colour planes slide across, b of the theme's hues, and uncover the new frame.
+    Planes,
+    /// Everything loosens by up to a (most at the middle of the step), through the material.
+    Loosen,
+    /// The layers part by up to a px at angle b (the brighter the nearer), swap, and close again.
+    Layers,
+    /// The old frame melts down by a px into blobs and runs off; a highlight b px wide and c bright
+    /// sweeps over the new one.
+    Melt,
+    /// Boxes find up to a elements (the largest), drawn with b px lines, and replace what is in them.
+    Boxes,
+    /// Strokes grow along the new outlines up to a px from them; the ink floods from b (0–1) on.
+    Carve,
+    /// Outlines (a px) and frames draw first, in reading order; the content fills from b (0–1) on.
+    Outline,
+    /// The old layer tears along a noisy line at angle a (b px of noise) and peels off by c px.
+    Peel,
+}
+impl StepKind {
+    pub const ALL: [StepKind; 13] = [StepKind::None, StepKind::Reveal, StepKind::Bands, StepKind::Fade, StepKind::Bar, StepKind::Planes, StepKind::Loosen, StepKind::Layers, StepKind::Melt, StepKind::Boxes, StepKind::Carve, StepKind::Outline, StepKind::Peel];
+    pub fn id(self) -> f32 { Self::ALL.iter().position(|k| *k == self).unwrap_or(0) as f32 }
+    /// The names of `a`–`e` for this kind (empty: unused), for number controls.
+    pub fn params(self) -> [&'static str; 5] {
+        match self {
+            StepKind::None => ["", "", "", "", ""],
+            StepKind::Reveal => ["形状", "角度", "尺寸", "柔边", "点阵带"],
+            StepKind::Bands => ["带高", "错位", "色差", "硬切", "锁定"],
+            StepKind::Fade => ["位移", "角度", "", "", ""],
+            StepKind::Bar => ["角度", "光条宽", "墨粉", "沉降", ""],
+            StepKind::Planes => ["行数", "色数", "", "", ""],
+            StepKind::Loosen => ["松开", "", "", "", ""],
+            StepKind::Layers => ["层距", "角度", "", "", ""],
+            StepKind::Melt => ["下落", "高光宽", "高光", "", ""],
+            StepKind::Boxes => ["框数", "线宽", "", "", ""],
+            StepKind::Carve => ["刻痕", "灌墨", "", "", ""],
+            StepKind::Outline => ["线宽", "填充", "", "", ""],
+            StepKind::Peel => ["角度", "撕边", "揭开", "", ""],
+        }
+    }
+}
+
+/// One step: its kind, when it runs (fractions 0–1 of the transition) and its numbers.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Step { pub kind: StepKind, pub from: f32, pub to: f32, pub a: f32, pub b: f32, pub c: f32, pub d: f32, pub e: f32 }
+fn step(kind: StepKind, from: f32, to: f32, v: [f32; 5]) -> Step { Step { kind, from, to, a: v[0], b: v[1], c: v[2], d: v[3], e: v[4] } }
+
+/// How a style arrives. `duration_ms` 0 is at once.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Transition { pub duration_ms: f32, pub steps: [Step; 4] }
+impl Transition {
+    pub fn of(duration_ms: f32, s: &[Step]) -> Self { let mut steps = [Step::default(); 4]; for (i, x) in s.iter().take(4).enumerate() { steps[i] = *x; } Self { duration_ms, steps } }
+    /// How loose everything is at `x` (0–1 of the transition), from its Loosen steps.
+    pub fn loosen(&self, x: f32) -> f32 {
+        self.steps.iter().filter(|s| s.kind == StepKind::Loosen).map(|s| { let e = ((x - s.from) / (s.to - s.from).max(1e-4)).clamp(0.0, 1.0); s.a * (std::f32::consts::PI * e).sin() }).sum::<f32>().max(0.0)
+    }
+    /// The uniform form: a header and two vec4s per step.
+    pub fn pack(&self, origin: [f32; 2], start: f32) -> [[f32; 4]; 9] {
+        let mut o = [[0.0; 4]; 9];
+        o[0] = [self.duration_ms / 1000.0, origin[0], origin[1], start];
+        for (i, s) in self.steps.iter().enumerate() { o[1 + i * 2] = [s.kind.id(), s.from, s.to, s.a]; o[2 + i * 2] = [s.b, s.c, s.d, s.e]; }
+        o
+    }
+}
+
+/// How a style answers: press feedback, fronts, what text and decoration do by default, recomposition.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Interaction {
+    /// How long the burst over a pressed control lasts.
+    pub press_ms: f32,
+    /// Fronts: speed (px/s), width (px), how long they live (s).
+    pub front_speed: f32,
+    pub front_width: f32,
+    pub front_life: f32,
+    /// What text and controls do, and what everything else does, when nothing says (DESIGN.md §1.15).
+    pub text: Response,
+    pub decoration: Response,
+    pub recompose: Recompose,
+}
+impl Default for Interaction {
+    fn default() -> Self { Self { press_ms: 350.0, front_speed: 760.0, front_width: 26.0, front_life: 1.4, text: Response::Nudge, decoration: Response::Loosen, recompose: Recompose::default() } }
+}
+
+/// A style preset as data.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Preset {
+    pub name: String,
+    pub hash: String,
+    /// The theme by name (`style::THEMES`), and the faces for display, body and mono (`text::SANS` …).
+    pub theme: String,
+    pub faces: [u8; 3],
+    pub material: Material,
+    /// The material's numbers (`style::MAT_PARAMS`).
+    pub params: [f32; 8],
+    pub gaze: Gaze,
+    pub loose_scale: f32,
+    /// The lattice pitch of text and shapes.
+    pub pitch: f32,
+    pub pic: PicFx,
+    pub interaction: Interaction,
+    pub transition: Transition,
+}
+impl Preset {
+    pub fn theme(&self) -> Theme {
+        let t = THEMES[theme_index(&self.theme)];
+        Theme { display: self.faces[0], body: self.faces[1], mono: self.faces[2], ..t }
+    }
+    /// The look this preset gives (the gallery's other choices stay as they are in `base`).
+    pub fn apply(&self, base: &Look) -> Look {
+        let mut l = *base;
+        l.theme = self.theme();
+        l.material = self.material;
+        l.params = MaterialParams::all();
+        l.params[self.material as usize] = MaterialParams(self.params);
+        l.gaze = self.gaze;
+        l.loose_scale = self.loose_scale;
+        l.fx.pitch = self.pitch;
+        let i = &self.interaction;
+        (l.fx.wave_speed, l.fx.wave_width, l.fx.wave_life) = (i.front_speed, i.front_width, i.front_life);
+        l.recompose = i.recompose;
+        l.press_ms = i.press_ms;
+        l.roles = [i.text, i.decoration];
+        l.transition = self.transition;
+        l
+    }
+    pub fn to_json(&self) -> String { serde_json::to_string_pretty(self).unwrap_or_default() }
+    pub fn from_json(s: &str) -> Result<Self, crate::error::PresetError> { serde_json::from_str(s).map_err(|e| crate::error::PresetError::Json(e.to_string())) }
+    /// Every number in the preset, by its path in the JSON (`transition.steps.0.a`), for number controls
+    /// made from the data itself.
+    pub fn numbers(&self) -> Vec<(String, f32)> {
+        let v = serde_json::to_value(self).unwrap_or_default();
+        let mut out = vec![];
+        walk(&v, String::new(), &mut out);
+        out
+    }
+    /// Set the number at `path` (as `numbers` names it).
+    pub fn set_number(&mut self, path: &str, x: f32) -> Result<(), crate::error::PresetError> {
+        let mut v = serde_json::to_value(&*self).map_err(|e| crate::error::PresetError::Json(e.to_string()))?;
+        let mut at = &mut v;
+        for k in path.split('.') {
+            at = match at { serde_json::Value::Object(m) => m.get_mut(k), serde_json::Value::Array(a) => k.parse::<usize>().ok().and_then(|i| a.get_mut(i)), _ => None }
+                .ok_or_else(|| crate::error::PresetError::NoSuchNumber(path.to_owned()))?;
+        }
+        if !at.is_number() { return Err(crate::error::PresetError::NoSuchNumber(path.to_owned())); }
+        *at = serde_json::json!(x);
+        *self = serde_json::from_value(v).map_err(|e| crate::error::PresetError::Json(e.to_string()))?;
+        Ok(())
+    }
+}
+fn walk(v: &serde_json::Value, path: String, out: &mut Vec<(String, f32)>) {
+    let join = |k: &str| if path.is_empty() { k.to_owned() } else { format!("{path}.{k}") };
+    match v {
+        serde_json::Value::Number(n) => out.push((path, n.as_f64().unwrap_or(0.0) as f32)),
+        serde_json::Value::Object(m) => for (k, x) in m { walk(x, join(k), out); },
+        serde_json::Value::Array(a) => for (i, x) in a.iter().enumerate() { walk(x, join(&i.to_string()), out); },
+        _ => {}
+    }
+}
+
+/// The twelve presets, in the order of `style::styles()`, each with its own interaction and transition.
+pub fn presets() -> Vec<Preset> {
+    use StepKind::*;
+    styles().iter().map(|st| {
+        let th = THEMES[st.theme];
+        let base = Interaction::default();
+        let (interaction, transition) = match st.hash {
+            // Detection boxes find each element, then replace it.
+            "gaze" => (Interaction { press_ms: 260.0, ..base }, Transition::of(820.0, &[step(Boxes, 0.0, 1.0, [12.0, 1.0, 0.0, 0.0, 0.0])])),
+            // Row by row, the dots latch on, the old rows linger a little.
+            "dotmatrix" => (Interaction { press_ms: 420.0, front_speed: 620.0, ..base }, Transition::of(760.0, &[step(Reveal, 0.0, 1.0, [2.0, 0.0, 7.0, 0.0, 0.08])])),
+            // A photocopier's light bar; toner noise settling behind it.
+            "lofi-print" => (Interaction { press_ms: 380.0, ..base }, Transition::of(880.0, &[step(Bar, 0.0, 1.0, [0.0, 70.0, 0.5, 160.0, 0.0])])),
+            // Bands tear, the channels split, three hard cuts, then lock.
+            "glitch" => (Interaction { press_ms: 300.0, front_speed: 1100.0, front_width: 16.0, ..base }, Transition::of(620.0, &[step(Bands, 0.0, 1.0, [14.0, 90.0, 8.0, 3.0, 0.82])])),
+            // Carved in: strokes along the outlines, the ink last.
+            "linocut" => (Interaction { press_ms: 420.0, front_speed: 520.0, ..base }, Transition::of(900.0, &[step(Carve, 0.0, 1.0, [9.0, 0.62, 0.0, 0.0, 0.0])])),
+            // Layers part in depth, swap, close.
+            "transparent" => (Interaction { press_ms: 340.0, ..base }, Transition::of(820.0, &[step(Layers, 0.0, 1.0, [46.0, 210.0, 0.0, 0.0, 0.0])])),
+            // Frames and lines first, the content after.
+            "tech-manual" => (Interaction { press_ms: 300.0, ..base }, Transition::of(880.0, &[step(Outline, 0.0, 1.0, [1.2, 0.55, 0.0, 0.0, 0.0]), step(Boxes, 0.0, 0.5, [10.0, 1.0, 0.0, 0.0, 0.0])])),
+            // Nothing.
+            "normcore" => (Interaction { press_ms: 200.0, ..base }, Transition::of(0.0, &[])),
+            // A short fade and a small move.
+            "cyberminimal" => (Interaction { press_ms: 160.0, front_width: 12.0, ..base }, Transition::of(120.0, &[step(Fade, 0.0, 1.0, [6.0, 90.0, 0.0, 0.0, 0.0])])),
+            // Flat colour planes slide across and uncover the new page.
+            "bauhaus" => (Interaction { press_ms: 380.0, front_speed: 680.0, front_width: 40.0, ..base }, Transition::of(860.0, &[step(Planes, 0.0, 1.0, [5.0, 3.0, 0.0, 0.0, 0.0])])),
+            // Melt into blobs, re-form, a chrome highlight sweeps.
+            "y2k" => (Interaction { press_ms: 420.0, ..base }, Transition::of(900.0, &[step(Melt, 0.0, 0.75, [90.0, 60.0, 0.9, 0.0, 0.0]), step(Loosen, 0.0, 0.8, [0.7, 0.0, 0.0, 0.0, 0.0])])),
+            // The old layer tears along a noisy edge and peels away.
+            _ => (Interaction { press_ms: 360.0, ..base }, Transition::of(820.0, &[step(Peel, 0.0, 1.0, [20.0, 26.0, 40.0, 0.0, 0.0])])),
+        };
+        Preset {
+            name: st.name.into(), hash: st.hash.into(), theme: th.name.into(), faces: th.roles(), material: st.material, params: st.params.0, gaze: st.gaze,
+            loose_scale: st.loose_scale, pitch: st.pitch, pic: st.pic, interaction, transition,
+        }
+    }).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn presets_round_trip_as_json_and_numbers() {
+        for p in presets() {
+            let j = p.to_json();
+            assert_eq!(Preset::from_json(&j).expect("parses"), p, "{}", p.name);
+            assert!(p.transition.duration_ms <= 900.0, "{}: {} ms", p.name, p.transition.duration_ms);
+            let n = p.numbers();
+            assert!(n.iter().any(|(k, _)| k == "transition.duration_ms") && n.iter().any(|(k, _)| k == "interaction.press_ms"));
+            let mut q = p.clone();
+            q.set_number("transition.steps.0.a", 3.5).expect("sets");
+            assert_eq!(q.transition.steps[0].a, 3.5);
+            assert!(q.set_number("transition.nothing", 1.0).is_err());
+        }
+        assert!(Preset::from_json("{\"name\": 3}").is_err());
+    }
+}

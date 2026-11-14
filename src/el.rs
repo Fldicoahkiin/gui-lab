@@ -132,7 +132,8 @@ impl Drag {
 }
 
 /// How an element answers the field's fronts, lens and pulls (DESIGN.md §1.15). Inherited down the tree.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Response {
     /// Fronts pass it by: no push, no looseness (the caret, a selection, the focus marks).
     Ignore,
