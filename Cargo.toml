@@ -1,0 +1,44 @@
+[package]
+name = "lab"
+version = "0.0.1"
+edition = "2024"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wgpu = { version = "30", default-features = false, features = ["wgsl", "webgl", "webgpu", "vulkan", "std"] }
+parley = { version = "0.13", default-features = false, features = ["std"] }
+swash = "0.2"
+taffy = "0.15"
+unicode-segmentation = "1"
+bytemuck = { version = "1", features = ["derive", "min_const_generics"] }
+pollster = "0.4"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+png = "0.17"
+winit = "0.30"
+# The system clipboard for the native window (X11 through x11rb, no C libraries).
+arboard = { version = "3", default-features = false }
+
+# macOS draws through Metal (Vulkan is not there without a translation layer).
+[target.'cfg(target_os = "macos")'.dependencies]
+wgpu = { version = "30", default-features = false, features = ["metal"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = ["HtmlCanvasElement", "Window", "Document", "console", "Performance"] }
+console_error_panic_hook = "0.1"
+
+[profile.release]
+opt-level = "s"
+lto = true
+
+# For iterating on the tools: optimised, but without the slow link-time step.
+[profile.quick]
+inherits = "release"
+lto = false
+incremental = true
+codegen-units = 16

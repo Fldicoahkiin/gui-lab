@@ -1,0 +1,169 @@
+pub mod demo;
+pub mod el;
+pub mod gallery;
+pub mod gaze;
+pub mod marks;
+pub mod morph;
+pub mod perf;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod offscreen;
+pub mod render;
+pub mod scene;
+pub mod style;
+pub mod text;
+pub mod ui;
+pub mod widgets;
+pub mod wrap;
+
+/// Web entry: the page is a canvas that forwards pointer, wheel, key and resize events here, and the
+/// page's `location.hash` (the gallery page, so it can be linked). Positions are CSS (logical) px;
+/// sizes are device px.
+#[cfg(target_arch = "wasm32")]
+mod web {
+    use crate::demo;
+    use crate::gallery::{self, GalleryUi};
+    use crate::el::Key;
+    use crate::render::Renderer;
+    use std::cell::RefCell;
+    use wasm_bindgen::prelude::*;
+
+    struct State { ui: GalleryUi, r: Renderer, surface: wgpu::Surface<'static>, config: wgpu::SurfaceConfiguration, started: bool }
+    thread_local! { static STATE: RefCell<Option<State>> = const { RefCell::new(None) }; }
+
+    #[wasm_bindgen]
+    pub async fn start(canvas: web_sys::HtmlCanvasElement, sans: Vec<u8>, pixel: Vec<u8>, mono: Vec<u8>, scale: f32, hash: String) -> Result<(), JsValue> {
+        console_error_panic_hook::set_once();
+        let (w, h) = (canvas.width(), canvas.height());
+        // WebGPU where an adapter really exists, WebGL2 otherwise.
+        let instance = wgpu::util::new_instance_with_webgpu_detection(wgpu::InstanceDescriptor::new_without_display_handle()).await;
+        let surface = instance.create_surface(wgpu::SurfaceTarget::Canvas(canvas)).map_err(|e| e.to_string())?;
+        let adapter = instance.request_adapter(&wgpu::RequestAdapterOptions { compatible_surface: Some(&surface), ..Default::default() }).await.map_err(|e| e.to_string())?;
+        let (device, queue) = adapter.request_device(&wgpu::DeviceDescriptor {
+            required_limits: wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits()), ..Default::default()
+        }).await.map_err(|e| e.to_string())?;
+        let caps = surface.get_capabilities(&adapter);
+        let format = caps.formats.iter().copied().find(|f| !f.is_srgb()).unwrap_or(caps.formats[0]);
+        let config = surface.get_default_config(&adapter, w, h).map(|mut c| { c.format = format; c }).ok_or("surface not supported")?;
+        surface.configure(&device, &config);
+        let mut r = Renderer::new(device, queue, format, w, h);
+        for (id, pw, ph, px) in demo::pictures() { r.set_picture(id, pw, ph, &px); }
+        let mut ui = gallery::new_ui(crate::text::bundled(sans, pixel, mono), w, h, scale);
+        if ui.state.route(&hash) { ui.relayout(); }
+        ui.perf_mut().backend = backend_name(adapter.get_info().backend).into();
+        STATE.with(|s| *s.borrow_mut() = Some(State { ui, r, surface, config, started: false }));
+        Ok(())
+    }
+    fn with<R>(f: impl FnOnce(&mut State) -> R) -> Option<R> { STATE.with(|s| s.borrow_mut().as_mut().map(f)) }
+
+    #[wasm_bindgen] pub fn resize(w: u32, h: u32, scale: f32) {
+        with(|s| { s.config.width = w.max(1); s.config.height = h.max(1); s.surface.configure(s.r.device(), &s.config); s.ui.resize(w, h, scale); });
+    }
+    // Every input first brings the clock to its time: frames are drawn on demand, so the last tick may
+    // be long ago, and what the input starts (a burst, a front) starts now.
+    // Pointers of every kind: `kind` is 0 mouse, 1 touch, 2 pen (DESIGN.md §1.8.2).
+    fn kind(k: u32) -> crate::ui::PointerKind { match k { 1 => crate::ui::PointerKind::Touch, 2 => crate::ui::PointerKind::Pen, _ => crate::ui::PointerKind::Mouse } }
+    /// `te` is when the event happened (its timestamp), `t` when it is handled.
+    #[wasm_bindgen] pub fn pointer_move(id: u32, k: u32, x: f32, y: f32, t: f32, te: f32) { with(|s| { s.ui.tick(t); s.ui.event_time(te.min(t)); s.ui.pointer_moved(id as u64, kind(k), x, y) }); }
+    #[wasm_bindgen] pub fn pointer_leave(t: f32) { with(|s| { s.ui.tick(t); s.ui.pointer_leave() }); }
+    #[wasm_bindgen] pub fn pointer_down(id: u32, k: u32, x: f32, y: f32, shift: bool, t: f32, te: f32) { with(|s| { s.ui.tick(t); s.ui.event_time(te.min(t)); s.ui.pointer_down(id as u64, kind(k), x, y, shift); }); }
+    #[wasm_bindgen] pub fn pointer_up(id: u32, k: u32, x: f32, y: f32, t: f32) { with(|s| { s.ui.tick(t); s.ui.pointer_up(id as u64, kind(k), x, y) }); }
+    #[wasm_bindgen] pub fn pointer_cancel(id: u32, t: f32) { with(|s| { s.ui.tick(t); s.ui.pointer_cancel(id as u64) }); }
+    // The accessibility mirror (DESIGN.md §1.14): the page keeps a hidden DOM tree of these.
+    /// What changed in the mirror since the last call, as JSON: `[{"set": {...}}, {"remove": key}, {"focus": key}]`.
+    #[wasm_bindgen] pub fn a11y_update() -> String { with(|s| a11y_json(&s.ui.a11y_diff())).unwrap_or_else(|| "[]".into()) }
+    /// Assistive technology focused or activated a mirrored element.
+    #[wasm_bindgen] pub fn a11y_focus(key: &str, t: f32) { with(|s| { s.ui.tick(t); s.ui.focus_key(key) }); }
+    #[wasm_bindgen] pub fn a11y_activate(key: &str, t: f32) -> bool { with(|s| { s.ui.tick(t); s.ui.activate(key) }).unwrap_or(false) }
+    fn a11y_json(ops: &[crate::ui::A11yOp]) -> String {
+        use crate::ui::A11yOp;
+        let q = |s: &str| { let mut o = String::from("\""); for c in s.chars() { match c { '"' => o.push_str("\\\""), '\\' => o.push_str("\\\\"), c if (c as u32) < 0x20 => o.push_str(&format!("\\u{:04x}", c as u32)), c => o.push(c) } } o.push('"'); o };
+        let parts: Vec<String> = ops.iter().map(|op| match op {
+            A11yOp::Remove(k) => format!("{{\"remove\":{}}}", q(k)),
+            A11yOp::Focus(k) => format!("{{\"focus\":{}}}", k.as_deref().map_or("null".into(), q)),
+            A11yOp::Set(n) => {
+                let mut f = vec![format!("\"key\":{}", q(&n.key)), format!("\"role\":\"{}\"", n.role.aria()), format!("\"name\":{}", q(&n.name)),
+                    format!("\"rect\":[{},{},{},{}]", n.rect.x, n.rect.y, n.rect.w, n.rect.h)];
+                if let Some(p) = &n.parent { f.push(format!("\"parent\":{}", q(p))); }
+                if let Some((v, lo, hi)) = n.value { f.push(format!("\"value\":[{v},{lo},{hi}]")); }
+                if let Some(t) = &n.text { f.push(format!("\"text\":{}", q(t))); }
+                if let Some(c) = n.checked { f.push(format!("\"checked\":{c}")); }
+                if let Some(c) = n.selected { f.push(format!("\"selected\":{c}")); }
+                if n.level > 0 { f.push(format!("\"level\":{}", n.level)); }
+                if n.modal { f.push("\"modal\":true".into()); }
+                if n.disabled { f.push("\"disabled\":true".into()); }
+                if n.focusable { f.push("\"focusable\":true".into()); }
+                format!("{{\"set\":{{{}}}}}", f.join(","))
+            }
+        }).collect();
+        format!("[{}]", parts.join(","))
+    }
+    /// Whether a fling is going on, for automation and tests.
+    #[wasm_bindgen] pub fn flinging() -> bool { with(|s| s.ui.flinging()).unwrap_or(false) }
+    /// A scroll node's offset (CSS px), for automation and tests.
+    #[wasm_bindgen] pub fn scroll_offset(key: &str) -> f32 { with(|s| s.ui.scroll_offset(key)).unwrap_or(0.0) }
+    #[wasm_bindgen] pub fn wheel(x: f32, y: f32, dx: f32, dy: f32, t: f32) { with(|s| { s.ui.tick(t); s.ui.wheel_xy(x, y, dx, dy) }); }
+    /// The page's hash changed (a link, Back): show that page. Returns whether it names one.
+    #[wasm_bindgen] pub fn route(hash: &str) -> bool {
+        with(|s| { let ok = s.ui.state.route(hash); if ok { s.ui.relayout(); } ok }).unwrap_or(false)
+    }
+    /// The current page's hash name, for the page to put in `location.hash`.
+    #[wasm_bindgen] pub fn hash() -> String { with(|s| s.ui.state.page.hash()).unwrap_or_default() }
+    /// A DOM key name and Shift. Returns whether the page should not act on it itself.
+    #[wasm_bindgen] pub fn key(name: &str, shift: bool, t: f32) -> bool {
+        let Some(k) = Key::from_name(name) else { return false };
+        with(|s| { s.ui.tick(t); s.ui.key(k, shift) }).unwrap_or(false)
+    }
+    /// A DOM key name with its modifiers (`cmd` is Ctrl or ⌘). Returns whether the page should not act
+    /// on it itself.
+    #[wasm_bindgen] pub fn key_mods(name: &str, shift: bool, cmd: bool, alt: bool, t: f32) -> bool {
+        let Some(k) = Key::from_name(name) else { return false };
+        with(|s| { s.ui.tick(t); s.ui.key_mods(k, crate::el::Mods { shift, cmd, alt }) }).unwrap_or(false)
+    }
+    // Text (DESIGN.md §1.8.1): the page's hidden text element forwards typed text, the input method's
+    // composition and the clipboard here while a text field has focus.
+    #[wasm_bindgen] pub fn text_focused() -> bool { with(|s| s.ui.text_focused()).unwrap_or(false) }
+    #[wasm_bindgen] pub fn text_input(text: &str, t: f32) -> bool { with(|s| { s.ui.tick(t); s.ui.text_input(text) }).unwrap_or(false) }
+    #[wasm_bindgen] pub fn ime_preedit(text: &str, t: f32) -> bool { with(|s| { s.ui.tick(t); s.ui.ime_preedit(text, None) }).unwrap_or(false) }
+    #[wasm_bindgen] pub fn ime_commit(text: &str, t: f32) -> bool { with(|s| { s.ui.tick(t); s.ui.ime_commit(text) }).unwrap_or(false) }
+    #[wasm_bindgen] pub fn paste(text: &str, t: f32) -> bool { with(|s| { s.ui.tick(t); s.ui.paste(text) }).unwrap_or(false) }
+    #[wasm_bindgen] pub fn copy() -> Option<String> { with(|s| s.ui.copy()).flatten() }
+    #[wasm_bindgen] pub fn cut(t: f32) -> Option<String> { with(|s| { s.ui.tick(t); s.ui.cut() }).flatten() }
+    /// Where the focused field's caret is (x, y, w, h, CSS px), or nothing when focus is not on one.
+    #[wasm_bindgen] pub fn ime_rect() -> Vec<f32> { with(|s| s.ui.ime_rect().map(|r| vec![r.x, r.y, r.w, r.h]).unwrap_or_default()).unwrap_or_default() }
+    /// Where the element with this key is (x, y, w, h, CSS px), or nothing: for automation and tests.
+    #[wasm_bindgen] pub fn node_rect(key: &str) -> Vec<f32> { with(|s| s.ui.node(key).map(|n| vec![n.rect.x, n.rect.y, n.rect.w, n.rect.h]).unwrap_or_default()).unwrap_or_default() }
+    /// The CSS cursor for where the pointer is.
+    #[wasm_bindgen] pub fn cursor() -> String { with(|s| s.ui.cursor().css().to_owned()).unwrap_or_else(|| "default".into()) }
+    /// A DOM key name let go.
+    #[wasm_bindgen] pub fn key_up(name: &str, t: f32) {
+        let Some(k) = Key::from_name(name) else { return };
+        with(|s| { s.ui.tick(t); s.ui.key_up(k) });
+    }
+    /// Frames drawn and wakes that found nothing to draw, since the start.
+    #[wasm_bindgen] pub fn frames() -> Vec<u32> { with(|s| vec![s.ui.perf().drawn as u32, s.ui.perf().skipped as u32]).unwrap_or_default() }
+    fn backend_name(b: wgpu::Backend) -> &'static str { match b { wgpu::Backend::BrowserWebGpu => "WebGPU", wgpu::Backend::Gl => "WebGL2", _ => "other" } }
+    /// Draw a frame if one is needed. Returns when the next one is: 0 as soon as possible (keep the
+    /// animation frame loop going), a delay in seconds (a timed wake), or -1 (only input can change
+    /// anything: stop until then).
+    #[wasm_bindgen] pub fn frame(t: f32) -> f32 {
+        with(|s| {
+            if !s.started { s.ui.restart(t); s.started = true; }
+            s.ui.tick(t);
+            if s.ui.needs_frame(t) { draw(s); } else { s.ui.perf_mut().skipped += 1; }
+            s.ui.next_wake(t).map_or(-1.0, |w| (w - t).max(0.0))
+        }).unwrap_or(-1.0)
+    }
+    fn draw(s: &mut State) {
+        {
+            let tex = match s.surface.get_current_texture() {
+                wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+                _ => { s.surface.configure(s.r.device(), &s.config); return; }
+            };
+            let view = tex.texture.create_view(&Default::default());
+            let look = s.ui.state.look();
+            s.r.draw(&view, &mut s.ui, &look);
+            drop(view);
+            s.r.queue().present(tex);
+        }
+    }
+}

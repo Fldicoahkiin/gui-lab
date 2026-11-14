@@ -1,0 +1,221 @@
+{
+  "name": "gui-lab",
+  "description": "组件以源码分发：把 files 里的文件和 dependencies 里各项的文件拷进自己的项目，再按需要改。组件只依赖框架的 el 模块（界面树）和 taffy 的对齐类型。",
+  "requires": [
+    "src/el.rs"
+  ],
+  "items": [
+    {
+      "name": "base",
+      "title": "共用尺寸",
+      "description": "组件共用的尺寸（字号、控件高度、线宽、圆角）和选中时的颜色。每个组件都用到它。",
+      "files": [
+        "src/widgets/mod.rs"
+      ],
+      "dependencies": []
+    },
+    {
+      "name": "button",
+      "title": "按钮",
+      "functions": [
+        "button",
+        "button_as"
+      ],
+      "description": "执行一个操作。按下时立即触发，也可以用 Enter 或空格键触发。",
+      "files": [
+        "src/widgets/button.rs"
+      ],
+      "dependencies": [
+        "base"
+      ]
+    },
+    {
+      "name": "number",
+      "title": "数字",
+      "functions": [
+        "number"
+      ],
+      "description": "精确设置一个数值：获得焦点后直接键入，或用方向键和两侧的按钮按步长改；在数值上横向拖动可以连续调。",
+      "files": [
+        "src/widgets/number.rs"
+      ],
+      "dependencies": [
+        "base"
+      ]
+    },
+    {
+      "name": "input",
+      "title": "输入框",
+      "functions": [
+        "input",
+        "textarea"
+      ],
+      "description": "输入一行或多行文字（textarea）。可以点、拖动、双击选择，Shift 加方向键扩展选区；Ctrl / ⌘ 加 A、C、X、V、Z 全选、复制、剪切、粘贴、撤销；支持输入法，正在组字的部分画在插入点上，带下划线。",
+      "files": [
+        "src/widgets/input.rs"
+      ],
+      "dependencies": [
+        "base"
+      ]
+    },
+    {
+      "name": "switch",
+      "title": "开关",
+      "functions": [
+        "switch",
+        "switch_sized"
+      ],
+      "description": "在两种状态之间切换一项设置。",
+      "files": [
+        "src/widgets/switch.rs"
+      ],
+      "dependencies": [
+        "base"
+      ]
+    },
+    {
+      "name": "slider",
+      "title": "滑块",
+      "functions": [
+        "slider"
+      ],
+      "description": "在一个范围内大致地选一个值。需要精确的值时，用数字控件。",
+      "files": [
+        "src/widgets/slider.rs"
+      ],
+      "dependencies": [
+        "base",
+        "number"
+      ]
+    },
+    {
+      "name": "tabs",
+      "title": "标签页",
+      "functions": [
+        "tabs"
+      ],
+      "description": "在同一位置的几组内容之间切换。",
+      "files": [
+        "src/widgets/tabs.rs"
+      ],
+      "dependencies": [
+        "base"
+      ]
+    },
+    {
+      "name": "choice",
+      "title": "选项",
+      "functions": [
+        "choice",
+        "segmented"
+      ],
+      "description": "从几个互斥的选项中选一个。",
+      "files": [
+        "src/widgets/choice.rs"
+      ],
+      "dependencies": [
+        "base"
+      ]
+    },
+    {
+      "name": "list",
+      "title": "列表",
+      "functions": [
+        "list"
+      ],
+      "description": "显示一组条目，可以选中其中一项；条目多时可以滚动。",
+      "files": [
+        "src/widgets/list.rs"
+      ],
+      "dependencies": [
+        "base"
+      ]
+    },
+    {
+      "name": "menu",
+      "title": "菜单",
+      "functions": [
+        "menu"
+      ],
+      "description": "按钮显示当前选项；按下后在它下方的一层里列出全部选项。按一项选中它，按列表以外的地方或 Esc 关闭。",
+      "files": [
+        "src/widgets/menu.rs"
+      ],
+      "dependencies": [
+        "base"
+      ]
+    },
+    {
+      "name": "card",
+      "title": "卡片",
+      "functions": [
+        "card"
+      ],
+      "description": "把相关的内容放在一个带边框的区域里。",
+      "files": [
+        "src/widgets/card.rs"
+      ],
+      "dependencies": [
+        "base"
+      ]
+    },
+    {
+      "name": "dialog",
+      "title": "对话框",
+      "functions": [
+        "dialog"
+      ],
+      "description": "在页面之上显示需要处理的内容。关闭之前，页面的其余部分不响应操作；Esc 或关闭按钮关闭它。",
+      "files": [
+        "src/widgets/dialog.rs"
+      ],
+      "dependencies": [
+        "base",
+        "button"
+      ]
+    },
+    {
+      "name": "image",
+      "title": "图片",
+      "functions": [
+        "image"
+      ],
+      "description": "按原比例显示一张图片。图片松开时变成记号；指针在图上移动时，图会在指针附近松开。",
+      "files": [
+        "src/widgets/image.rs"
+      ],
+      "dependencies": [
+        "base"
+      ]
+    },
+    {
+      "name": "divider",
+      "title": "分隔线",
+      "functions": [
+        "divider",
+        "vdivider"
+      ],
+      "description": "分开两组内容。",
+      "files": [
+        "src/widgets/divider.rs"
+      ],
+      "dependencies": [
+        "base"
+      ]
+    },
+    {
+      "name": "scroll-area",
+      "title": "滚动区",
+      "functions": [
+        "scroll_area"
+      ],
+      "description": "在固定的高度里显示更长的内容，用滚轮滚动；一侧的细条表示当前位置。",
+      "files": [
+        "src/widgets/scroll.rs"
+      ],
+      "dependencies": [
+        "base"
+      ]
+    }
+  ]
+}
