@@ -482,9 +482,9 @@ fn burst_k(p: vec2f) -> f32 {
   if (u.burst_t.y <= 0.0 || age < 0.0 || age > u.burst_t.z || p.x < r.x || p.y < r.y || p.x >= r.z || p.y >= r.w) { return 0.0; }
   return u.burst_t.y * (1.0 - age / u.burst_t.z);
 }
-/// How loose text and shapes are here: fronts and their tails, the half-plane, bursts, and each
-/// instance's own looseness, scaled by the style.
-fn kt(p: vec2f) -> f32 { return clamp((field(p, 0.6) + near_t(p).b + burst_k(p)) * loose_scale(), 0.0, 1.0); }
+/// How loose text and shapes are here: fronts and their tails, the half-plane, and each instance's
+/// own looseness, scaled by the style.
+fn kt(p: vec2f) -> f32 { return clamp((field(p, 0.6) + near_t(p).b) * loose_scale(), 0.0, 1.0); }
 /// Whatever is drawn at a point, pictures as their marks: for materials that move the picture around.
 fn scene_at(q: vec2f) -> vec3f {
   let n = near_t(q);
@@ -514,7 +514,7 @@ fn m_dot(frag: vec2f) -> vec3f {
   let cell = floor(p / pitch);
   let block = (cell + 0.5) * pitch;
   let centre = block + (h2(cell) - 0.5) * u.fa.z * pitch;
-  let loose = (field(centre, 0.6) + near(centre).b + burst_k(centre) + (h1(cell + 7.0) - 0.5) * 0.22) * loose_scale();
+  let loose = (field(centre, 0.6) + near(centre).b + (h1(cell + 7.0) - 0.5) * 0.22) * loose_scale();
   let printed = select(0.0, here.a * 255.0 * 0.5, here.a < 0.5);
   let printed_b = select(0.0, near_t(block).a * 255.0 * 0.5, near_t(block).a < 0.5);
   var col: vec3f; var alpha: f32;
@@ -693,7 +693,8 @@ fn m_glitch(p: vec2f, pic: bool) -> vec3f {
   let a0 = mp(GLITCH, 0); let a1 = mp(GLITCH, 1);
   let slice = max(a0.x * s, 1.0); let shift = a0.y * s; let split = a0.z * s; let hold = max(a0.w, 16.0); let block = max(a1.x * s, 2.0);
   let row = floor(p.y / slice);
-  let kr = kt(vec2f(p.x, (row + 0.5) * slice));
+  let rc = vec2f(p.x, (row + 0.5) * slice);
+  let kr = clamp(kt(rc) + burst_k(rc), 0.0, 1.0);
   let here = select(exact(p), scene_at(p), pic);
   if (kr <= 0.0) { return here; }
   let tq = floor(u.res.w * 1000.0 / hold);

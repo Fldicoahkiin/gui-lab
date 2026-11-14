@@ -271,12 +271,16 @@ fn narrow_rail_scrolls_sideways() {
 #[test]
 fn theme_switch_keeps_the_old_frame() {
     let mut ui = gallery_at(comp("button"));
-    let old = ui.scene().instances.len();
     assert!(ui.split().is_none());
+    // The theme menu opens over the page; its options are commits.
+    click(&mut ui, "theme");
+    assert_eq!(ui.modal(), Some("theme/layer"));
+    let old = ui.scene().instances.len();
     let (x, y) = centre(&ui, "theme:1");
     ui.press(x, y);
     ui.release(x, y);
     assert_eq!(ui.state.theme, 1);
+    assert_eq!(ui.modal(), None, "the menu closes");
     let sp = ui.split().expect("split");
     assert_eq!(sp.at, [x, y]);
     assert_eq!(sp.scene.instances.len(), old);
@@ -284,12 +288,19 @@ fn theme_switch_keeps_the_old_frame() {
     // Navigation is not a commit.
     click(&mut ui, "nav/number");
     assert_eq!(ui.split().unwrap().id, id);
-    // Keys on the control commit too.
-    ui.key(Key::Tab, false);
+    // Keys commit too: in the open material menu, focus is on the first option.
     let before = ui.split().unwrap().id;
-    while ui.focus() != Some("material") { ui.key(Key::Tab, false); }
-    ui.key(Key::Left, false);
+    click(&mut ui, "material");
+    assert_eq!(ui.focus(), Some("material:0"));
+    ui.key(Key::Tab, false);
+    ui.key(Key::Enter, false);
+    assert_eq!(ui.state.material, lab::style::Material::Dot);
     assert_eq!(ui.split().unwrap().id, before + 1);
+    // A style page changes everything, from the rail item pressed.
+    click(&mut ui, "nav/style-bauhaus");
+    assert_eq!(ui.split().unwrap().id, before + 2);
+    assert_eq!(ui.state.material, lab::style::Material::Halftone);
+    assert_eq!(ui.state.theme().name, "包豪斯");
 }
 
 #[test]
@@ -312,7 +323,7 @@ fn navigation_keeps_the_shell_and_renews_the_page() {
 fn every_page_has_a_plain_hash() {
     let forbidden = ["settings", "sidebar", "customize", "upgrade", "downloads"];
     let pages = Page::all();
-    assert_eq!(pages.len(), COMPONENTS.len() + 12 + 2 + 2);
+    assert_eq!(pages.len(), COMPONENTS.len() + 12 + 11 + 1 + 12 + 2 + 2);
     for p in pages {
         let h = p.hash();
         assert!(!h.is_empty() && h.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'), "{h}");

@@ -131,6 +131,20 @@
       ]
     },
     {
+      "name": "menu",
+      "title": "菜单",
+      "functions": [
+        "menu"
+      ],
+      "description": "按钮显示当前选项；按下后在它下方的一层里列出全部选项。按一项选中它，按列表以外的地方或 Esc 关闭。",
+      "files": [
+        "src/widgets/menu.rs"
+      ],
+      "dependencies": [
+        "base"
+      ]
+    },
+    {
       "name": "card",
       "title": "卡片",
       "functions": [

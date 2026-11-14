@@ -2,14 +2,16 @@
 //! components, the mark sets and the type; each component has a page with a live preview, every
 //! variant, its own numbers and its source. The top bar switches theme and material; the switch is
 //! committed from the control that was pressed. The old skeleton demo is one of the pages.
+mod looks;
 mod pages;
+mod styles;
 
 use crate::demo::{self, Demo};
 use crate::el::{El, Font, Paint, col, row, space, text};
 use crate::morph::{Cmd, Ease, FlowSpec, MorphSpec};
-use crate::style::{Look, MATERIALS, Material, PicFx, THEMES, Theme, set};
+use crate::style::{GAZE_MODES, Gaze, GazeMode, Look, MATERIAL_COUNT, MATERIALS, Material, MaterialParams, PicFx, THEMES, Theme, gaze, set, styles};
 use crate::text::Face;
-use crate::widgets::{Edit, SELECTED, Spec, TextEdit, Variant, button_as, divider, segmented, vdivider};
+use crate::widgets::{Edit, SELECTED, Spec, TextEdit, Variant, button_as, divider, menu, vdivider};
 use std::rc::Rc;
 use taffy::AlignItems;
 
@@ -20,7 +22,7 @@ pub const NARROW: f32 = 720.0;
 pub const RAIL: f32 = 220.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Page { Comp(usize), Marks(u8), Morph, Flow, Type, Demo }
+pub enum Page { Comp(usize), Marks(u8), Material(u8), Gaze, Style(u8), Morph, Flow, Type, Demo }
 
 pub const MARK_HASH: [&str; set::COUNT] = ["chars", "dither", "pixel", "mosaic", "brick", "dots", "cross", "diagonal", "diamond", "lines", "glow", "stroke"];
 
@@ -29,6 +31,9 @@ impl Page {
     pub fn all() -> Vec<Page> {
         let mut v: Vec<Page> = (0..COMPONENTS.len()).map(Page::Comp).collect();
         v.extend((0..set::COUNT as u8).map(Page::Marks));
+        v.extend((0..MATERIAL_COUNT as u8).map(Page::Material));
+        v.push(Page::Gaze);
+        v.extend((0..12u8).map(Page::Style));
         v.extend([Page::Morph, Page::Flow]);
         v.push(Page::Type);
         v.push(Page::Demo);
@@ -39,6 +44,9 @@ impl Page {
         match self {
             Page::Comp(i) => COMPONENTS[i].hash.to_owned(),
             Page::Marks(s) => format!("marks-{}", MARK_HASH[s as usize]),
+            Page::Material(m) => format!("material-{}", Material::from_id(m).name()),
+            Page::Gaze => "gaze".into(),
+            Page::Style(i) => format!("style-{}", styles()[i as usize].hash),
             Page::Morph => "morph".into(),
             Page::Flow => "flow".into(),
             Page::Type => "type".into(),
@@ -55,6 +63,9 @@ impl Page {
         match self {
             Page::Comp(i) => COMPONENTS[i].title,
             Page::Marks(s) => set::NAMES[s as usize],
+            Page::Material(m) => Material::from_id(m).name(),
+            Page::Gaze => "标注层",
+            Page::Style(i) => styles()[i as usize].name,
             Page::Morph => "粒子",
             Page::Flow => "换页",
             Page::Type => "字号与字体",
@@ -76,6 +87,15 @@ pub enum Target {
     /// Morph parameter `i` (see `MORPH_PARAMS`), flow parameter `i` (`FLOW_PARAMS`).
     Morph(usize),
     Flow(usize),
+    /// Number `i` of material `m` (see `style::MAT_PARAMS`), and the looseness the material pages hold
+    /// their specimen at.
+    Mat(u8, usize),
+    Loose,
+    /// The annotation page's density and draw-on time.
+    Density,
+    DrawMs,
+    /// A number on a style page (its own meaning per page).
+    StyleNum(usize),
     /// A variant: shown, but its value does not change.
     Shown,
 }
@@ -106,6 +126,21 @@ pub enum Msg {
     Ease(usize),
     /// Open a card of the page-change page, or go back to the list.
     Open(Option<usize>),
+    /// Open the theme (1), material (2) or style (3) menu, or close it (0).
+    Menu(u8),
+    /// Apply style preset `i` (theme, material, its numbers, annotation, type).
+    Style(usize),
+    /// The annotation page: mode, and one kind on or off.
+    GazeMode(usize),
+    GazeKind(u16),
+    /// A choice on a style page: slot, index.
+    Choose(usize, usize),
+    /// A toggle on a style page.
+    Toggle(usize),
+    /// The launcher's query (cyberminimalism).
+    Query(TextEdit),
+    /// A slider on a style page.
+    Slide(usize, f32),
 }
 
 pub struct Gallery {
@@ -142,6 +177,26 @@ pub struct Gallery {
     pub flow: FlowSpec,
     /// Commands for the runtime, taken after every update.
     pub cmds: Vec<Cmd>,
+    /// Which top-bar menu is open (0 = none).
+    pub menu: u8,
+    /// Every material's numbers; the looseness the material pages hold their specimen at.
+    pub mats: [MaterialParams; MATERIAL_COUNT],
+    pub loose: f32,
+    /// The style applied last, if any, and what it set: annotation, looseness scale, picture marks.
+    pub style: Option<usize>,
+    pub gaze: Gaze,
+    pub loose_scale: f32,
+    pub style_pic: PicFx,
+    /// The annotation page's own settings.
+    pub gaze_page: Gaze,
+    /// What the pointer is over (kept by the runtime), and the clock (for things that tick).
+    pub hovered: Option<String>,
+    pub clock: f32,
+    /// State of the style pages' controls.
+    pub choices: [usize; 8],
+    pub toggles: [bool; 8],
+    pub slides: [f32; 8],
+    pub query: TextEdit,
 }
 
 impl Default for Gallery {
@@ -153,6 +208,10 @@ impl Default for Gallery {
             tab: 0, pick: 1, row: Some(2), dialog: 0, marks: std::array::from_fn(|s| mark_defaults(s as u8)), shown: demo::BUST, wipe: 0.3,
             demo: Demo::default(), width: 1280.0,
             shape: 0, shape_before: None, morph: MorphSpec::default(), opened: None, flow: FlowSpec::default(), cmds: vec![],
+            menu: 0, mats: MaterialParams::all(), loose: 0.0, style: None, gaze: Gaze::default(), loose_scale: 1.0, style_pic: PicFx::default(),
+            gaze_page: Gaze { mode: GazeMode::All, kinds: gaze::FRAME | gaze::INDEX | gaze::SIZE, density: 12.0, ..Gaze::default() },
+            hovered: None, clock: 0.0, choices: [0, 1, 0, 0, 0, 0, 0, 0], toggles: [true, false, true, false, true, false, false, false],
+            slides: [0.35, 0.4, 0.6, 14.0, 0.5, 0.5, 0.5, 0.5], query: TextEdit::new("lay"),
         }
     }
 }
@@ -171,9 +230,10 @@ pub fn mark_defaults(s: u8) -> PicFx {
     }
 }
 
-/// `PicFx` slots: the demo uses 0 and 1; the image page 2; the mark pages 3.
+/// `PicFx` slots: the demo uses 0 and 1; the image page 2; the mark pages 3; the style pages 4.
 pub const IMAGE_SLOT: u8 = 2;
 pub const MARK_SLOT: u8 = 3;
+pub const STYLE_SLOT: u8 = 4;
 pub const WIPE_SPEC: Spec = Spec { min: 0.0, max: 1.0, step: 0.01, decimals: 2, unit: "" };
 
 impl Gallery {
@@ -184,7 +244,22 @@ impl Gallery {
         let img = pages::IMAGE;
         pics[IMAGE_SLOT as usize] = PicFx { pitch: self.param(img, 0), levels: self.param(img, 1), ..PicFx::with_set(set::DOTS) };
         if let Page::Marks(s) = self.page { pics[MARK_SLOT as usize] = self.marks[s as usize]; }
-        Look { fx: self.demo.fx, theme: self.theme(), material: self.material, pics, ..Look::default() }
+        pics[STYLE_SLOT as usize] = self.style_pic;
+        let gaze = if self.page == Page::Gaze { self.gaze_page } else { self.gaze };
+        Look { fx: self.demo.fx, theme: self.theme(), material: self.material, pics, params: self.mats, gaze, loose_scale: self.loose_scale }
+    }
+    /// Apply style preset `i`: everything at once; the theme and material switches still work after.
+    pub fn apply_style(&mut self, i: usize) {
+        let st = styles()[i.min(11)];
+        self.style = Some(i.min(11));
+        self.theme = st.theme; self.demo.theme = st.theme;
+        self.material = st.material; self.demo.material = st.material;
+        self.mats = MaterialParams::all();
+        self.mats[st.material as usize] = st.params;
+        self.gaze = st.gaze;
+        self.loose_scale = st.loose_scale;
+        self.demo.fx.pitch = st.pitch;
+        self.style_pic = st.pic;
     }
     /// The key of morph candidate `i` on the morph page.
     pub fn shape_key(i: usize) -> String { format!("morph/c{i}") }
@@ -209,15 +284,26 @@ pub fn update(s: &mut Gallery, m: Msg) {
             // Parts the two pages share (the page title, the rail's selection) move rather than vanish.
             if p != s.page { s.cmds.push(Cmd::Flow(s.flow)); }
             s.page = p; s.edit = None; s.dialog = 0;
+            // A style page shows its style.
+            if let Page::Style(i) = p { s.apply_style(i as usize); }
         }
+        Msg::Menu(k) => s.menu = k,
+        Msg::Style(i) => { s.apply_style(i); s.menu = 0; }
+        Msg::GazeMode(i) => s.gaze_page.mode = GAZE_MODES[i.min(GAZE_MODES.len() - 1)].0,
+        Msg::GazeKind(k) => s.gaze_page.kinds ^= k,
+        Msg::Choose(slot, i) => s.choices[slot.min(7)] = i,
+        Msg::Toggle(slot) => s.toggles[slot.min(7)] = !s.toggles[slot.min(7)],
+        Msg::Query(t) => s.query = t,
+        Msg::Slide(slot, v) => s.slides[slot.min(7)] = v.clamp(0.0, 1.0),
         Msg::MorphTo(i) => s.morph_to(i),
         Msg::MorphBack => if let Some(b) = s.shape_before { s.morph_to(b); },
         Msg::Ease(i) => s.morph.ease = Ease::from_index(i),
         Msg::Open(o) => { if o != s.opened { s.cmds.push(Cmd::Flow(s.flow)); } s.opened = o; }
-        Msg::Theme(i) => { s.theme = i.min(THEMES.len() - 1); s.demo.theme = s.theme; }
-        Msg::Material(i) => { s.material = MATERIALS[i.min(MATERIALS.len() - 1)].0; s.demo.material = s.material; }
+        Msg::Theme(i) => { s.theme = i.min(THEMES.len() - 1); s.demo.theme = s.theme; s.menu = 0; }
+        Msg::Material(i) => { s.material = MATERIALS[i.min(MATERIALS.len() - 1)].0; s.demo.material = s.material; s.menu = 0; }
         Msg::Reset => {
             let d = Gallery::default();
+            s.mats = d.mats; s.loose = d.loose; s.style = None; s.gaze = d.gaze; s.loose_scale = d.loose_scale; s.style_pic = d.style_pic; s.gaze_page = d.gaze_page;
             s.params = d.params; s.marks = d.marks; s.wipe = d.wipe; s.edit = None;
             s.value = d.value; s.level = d.level;
             s.demo = Demo { theme: s.theme, material: s.material, ..Demo::default() };
@@ -234,6 +320,11 @@ pub fn update(s: &mut Gallery, m: Msg) {
                 Target::Value => s.value = v,
                 Target::Morph(i) => *morph_slot(&mut s.morph, i) = v,
                 Target::Flow(i) => *flow_slot(&mut s.flow, i) = v,
+                Target::Mat(m, i) => s.mats[m as usize].0[i] = v,
+                Target::Loose => s.loose = v,
+                Target::Density => s.gaze_page.density = v,
+                Target::DrawMs => s.gaze_page.draw_ms = v,
+                Target::StyleNum(i) => s.slides[i.min(7)] = v,
                 Target::Shown => {}
             }
             s.edit = None;
@@ -270,6 +361,8 @@ pub fn view(s: &Gallery) -> El<Msg> {
     let main = col().key(format!("main/{}", s.page.hash())).scroll().bar().grow(1.0).fill_width();
     let main = match s.page {
         Page::Demo => main.child(demo::view(&s.demo).map(Rc::new(Msg::Demo))),
+        Page::Material(_) | Page::Gaze => main.pad(if narrow { 18.0 } else { 40.0 }, 32.0).child(looks::page(s)),
+        Page::Style(i) => main.child(styles::page(s, i as usize)),
         _ => main.pad(if narrow { 18.0 } else { 40.0 }, 32.0).child(pages::page(s)),
     };
     if narrow {
@@ -284,23 +377,26 @@ pub fn view(s: &Gallery) -> El<Msg> {
 fn top_bar(s: &Gallery) -> El<Msg> {
     let theme_names: Vec<&str> = THEMES.iter().map(|t| t.name).collect();
     let material_names: Vec<&str> = MATERIALS.iter().map(|m| m.1).collect();
-    let material_now = MATERIALS.iter().position(|m| m.0 == s.material).unwrap_or(0);
+    let style_names: Vec<&str> = styles().iter().map(|t| t.name).collect();
+    let material_now = MATERIALS.iter().position(|m| m.0 == s.material);
     row().key("top").fill_width().wrap().gap(12.0).pad(20.0, 10.0).align(AlignItems::CENTER)
         .child(text("gui-lab", 17.0, Paint::INK).font(Font::Mono).key("top/name"))
         .child(space(0.0, 0.0).grow(1.0))
-        .child(row().key("top/controls").gap(10.0).wrap().align(AlignItems::CENTER)
-            .child(text("主题", 13.0, Paint::DIM))
-            .child(segmented("theme", &theme_names, s.theme, 30.0, Msg::Theme).commit())
-            .child(text("材质", 13.0, Paint::DIM))
-            .child(segmented("material", &material_names, material_now, 30.0, Msg::Material).commit())
+        .child(row().key("top/controls").gap(16.0).wrap().align(AlignItems::CENTER)
+            .child(menu("theme", "主题", &theme_names, Some(s.theme), s.menu == 1, true, Msg::Menu(if s.menu == 1 { 0 } else { 1 }), Msg::Menu(0), Msg::Theme))
+            .child(menu("material", "材质", &material_names, material_now, s.menu == 2, true, Msg::Menu(if s.menu == 2 { 0 } else { 2 }), Msg::Menu(0), Msg::Material))
+            .child(menu("style", "风格", &style_names, s.style, s.menu == 3, true, Msg::Menu(if s.menu == 3 { 0 } else { 3 }), Msg::Menu(0), Msg::Style))
             .child(button_as("reset", "恢复默认", Variant::Default, Msg::Reset)))
 }
 
 /// The groups and their pages.
-fn groups() -> [(&'static str, Vec<Page>); 4] {
+fn groups() -> [(&'static str, Vec<Page>); 7] {
     [
         ("组件", (0..COMPONENTS.len()).map(Page::Comp).collect()),
         ("记号", (0..set::COUNT as u8).map(Page::Marks).collect()),
+        ("材质", (0..MATERIAL_COUNT as u8).map(Page::Material).collect()),
+        ("标注", vec![Page::Gaze]),
+        ("风格", (0..12u8).map(Page::Style).collect()),
         ("变换", vec![Page::Morph, Page::Flow]),
         ("排版", vec![Page::Type, Page::Demo]),
     ]
@@ -310,6 +406,8 @@ fn rail_item(s: &Gallery, p: Page, h: f32) -> El<Msg> {
     let on = s.page == p;
     let mut item = row().key(format!("nav/{}", p.hash())).height(h).pad(12.0, 0.0).radius(4.0).align(AlignItems::CENTER).on_press(Msg::Go(p))
         .child(text(p.name(), 14.0, if on { Paint::ACCENT } else { Paint::TEXT }));
+    // A style page changes the whole look: the change spreads from the item pressed.
+    if matches!(p, Page::Style(_)) { item = item.commit(); }
     // The selection is one thing that moves from item to item when the page changes.
     if on { item = item.fill(SELECTED).flow("rail-selection"); }
     item
@@ -340,4 +438,19 @@ pub type GalleryUi = crate::ui::Ui<Gallery, Msg>;
 pub fn new_ui(faces: Vec<Face>, w: u32, h: u32, scale: f32) -> GalleryUi {
     let state = Gallery { width: w as f32 / scale, ..Gallery::default() };
     crate::ui::Ui::new(state, view, update, faces, w, h, scale).on_resize(|s, w, _| s.width = w).on_commands(|s| std::mem::take(&mut s.cmds))
+        .on_gaze(|s| s.look().gaze)
+        .on_hover(|s, k| {
+            let k = k.map(str::to_owned);
+            if k == s.hovered { return false; }
+            // Only the pages that show what is hovered need a new view.
+            let shows = matches!(s.page, Page::Style(_));
+            s.hovered = k;
+            shows
+        })
+        .on_tick(|s, t| {
+            // The departure board ticks once a second.
+            let changed = s.page == Page::Style(1) && t.floor() != s.clock.floor();
+            s.clock = t;
+            changed
+        })
 }

@@ -3,7 +3,9 @@
 use crate::el::{Content, Drag, El, Font, Key, Modal, OnDrag, OnKey, Paint, Phase};
 use crate::morph::{self, Cmd, Ease, FlowSpec, MorphSpec, Particle};
 use crate::scene::{Field, Instance, PICTURE, SHAPE, Scene};
-use crate::text::{Face, Para, Text};
+use crate::gaze;
+use crate::style::{Gaze, GazeMode, gaze as kinds};
+use crate::text::{Face, MONO, Para, Text};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -78,6 +80,16 @@ pub struct Node<M> {
 impl<M> Node<M> {
     pub fn text(&self) -> Option<&str> { if let Content::Text { s, .. } = &self.content { Some(s) } else { None } }
     pub fn pressable(&self) -> bool { self.on_press.is_some() }
+    /// What the annotation layer calls this element.
+    pub fn kind(&self) -> &'static str {
+        match self.content {
+            Content::Text { .. } => "text",
+            Content::Picture { .. } => "image",
+            Content::None if self.focusable || self.on_press.is_some() || self.on_drag.is_some() => "control",
+            Content::None if self.fill.is_some() || self.border.is_some() => "shape",
+            Content::None => "box",
+        }
+    }
     /// Something the pointer can act on: hover marks frame it.
     fn active(&self) -> bool { self.focusable || self.on_press.is_some() || self.on_drag.is_some() }
 }
@@ -200,6 +212,15 @@ pub struct Ui<S, M> {
     animating: bool,
     /// Page instance → where its copy drawn over the page is, while it flows.
     lifted: HashMap<usize, usize>,
+    /// The annotation layer: its settings (from the state), when each annotated element first
+    /// appeared, and this frame's records.
+    gaze_of: Option<fn(&S) -> Gaze>,
+    gaze_seen: HashMap<String, f32>,
+    annots: Vec<gaze::Annot>,
+    /// Tells the state which element the pointer is over (when it changes), and the time on every
+    /// tick; either returns whether the view changed.
+    hovered: Option<fn(&mut S, Option<&str>) -> bool>,
+    ticked: Option<fn(&mut S, f32) -> bool>,
 }
 
 impl<S, M: Clone> Ui<S, M> {
@@ -211,6 +232,15 @@ impl<S, M: Clone> Ui<S, M> {
         self.relayout();
         self
     }
+    /// Read the annotation layer's settings from the state (DESIGN.md §1.7).
+    pub fn on_gaze(mut self, f: fn(&S) -> Gaze) -> Self { self.gaze_of = Some(f); self.finish(); self }
+    /// Let the state know which element the pointer is over; `f` returns whether the view changed.
+    pub fn on_hover(mut self, f: fn(&mut S, Option<&str>) -> bool) -> Self { self.hovered = Some(f); self }
+    /// Let the state know the time on every tick (for things that change by themselves, like a clock);
+    /// `f` returns whether the view changed.
+    pub fn on_tick(mut self, f: fn(&mut S, f32) -> bool) -> Self { self.ticked = Some(f); self }
+    /// This frame's annotation records.
+    pub fn annots(&self) -> &[gaze::Annot] { &self.annots }
     /// Take the commands `update` leaves in the state (morphs, flows) after every update.
     pub fn on_commands(mut self, f: fn(&mut S) -> Vec<Cmd>) -> Self { self.commands = Some(f); self }
     /// `w`, `h` are device px; `scale` is device px per logical px.
@@ -221,6 +251,7 @@ impl<S, M: Clone> Ui<S, M> {
             hover: None, focus: None, pressed: None, capture: None, modal_at: None, modal_key: None, return_focus: None, split: None, splits: 0,
             keyboard: false, marks: Marks::default(), sized: None, commands: None, unseen: vec![], base: vec![], tags: vec![], roles: vec![],
             run: None, painted_phase: 0, flows: HashMap::new(), ghosts: vec![], body_len: 0, animating: false, lifted: HashMap::new(),
+            gaze_of: None, gaze_seen: HashMap::new(), annots: vec![], hovered: None, ticked: None,
         };
         ui.resize(w, h, scale);
         ui
@@ -273,6 +304,7 @@ impl<S, M: Clone> Ui<S, M> {
     pub fn tick(&mut self, t: f32) {
         let dt = (t - self.now).clamp(0.0, 0.1);
         self.now = t;
+        if let Some(f) = self.ticked && f(&mut self.state, t) { self.relayout(); }
         let target = if self.keyboard { self.focus.clone() } else { self.hover.clone().or_else(|| self.focus.clone()) };
         let target = target.and_then(|k| self.node(&k).map(|n| (n.rect, n.clip)));
         let k = 1.0 - (-dt * 16.0).exp();
@@ -307,7 +339,13 @@ impl<S, M: Clone> Ui<S, M> {
         let s = self.scale;
         self.field.pointer = [x * s, y * s, 1.0, 0.0];
         self.keyboard = false;
-        self.hover = self.hit(x, y).and_then(|i| self.up(i, Node::active)).map(|i| self.nodes[i].key.clone());
+        let hover = self.hit(x, y).and_then(|i| self.up(i, Node::active)).map(|i| self.nodes[i].key.clone());
+        if hover != self.hover {
+            // A control the pointer comes onto gets a short burst over it (the glitch material reads it).
+            if let Some(n) = hover.as_deref().and_then(|k| self.node(k)) { self.burst(n.rect, 0.75, 0.22); }
+            self.hover = hover;
+            if let Some(f) = self.hovered && f(&mut self.state, self.hover.as_deref()) { self.relayout(); }
+        }
         if self.capture.is_some() { self.drag(Phase::Move, x, y); }
     }
 
@@ -322,7 +360,12 @@ impl<S, M: Clone> Ui<S, M> {
     }
     pub fn pointer_leave(&mut self) {
         self.field.pointer = [-1e5, -1e5, 0.0, 0.0];
-        self.hover = None;
+        if self.hover.take().is_some() && let Some(f) = self.hovered && f(&mut self.state, None) { self.relayout(); }
+    }
+    /// A burst over a rect (logical px) from now: `strength` 0..1 for `secs`.
+    pub fn burst(&mut self, r: Rect, strength: f32, secs: f32) {
+        let s = self.scale;
+        self.field.burst(Some([r.x * s, r.y * s, r.right() * s, r.bottom() * s]), self.now, strength, secs);
     }
 
     pub fn press(&mut self, x: f32, y: f32) {
@@ -345,6 +388,8 @@ impl<S, M: Clone> Ui<S, M> {
         let pressed = hit.and_then(|i| self.up(i, |n| n.on_press.is_some()));
         if let Some(i) = pressed {
             self.pressed = Some(self.nodes[i].key.clone());
+            let r = self.nodes[i].rect;
+            self.burst(r, 1.0, 0.35);
             if self.up(i, |n| n.commit).is_some() { self.snapshot(x, y); }
             let m = self.nodes[i].on_press.clone();
             if let Some(m) = m { self.send(m); } else { self.paint(); }
@@ -759,6 +804,7 @@ impl<S, M: Clone> Ui<S, M> {
     fn finish(&mut self) {
         self.animate();
         self.paint_marks();
+        self.paint_gaze();
     }
 
     fn animate(&mut self) {
@@ -925,7 +971,153 @@ impl<S, M: Clone> Ui<S, M> {
             self.scene.push(bar(if sx > 0.0 { cx } else { cx - th }, y0, th, len));
         }
     }
+
+    /// Stage 3: the annotation records of this frame and their instances, exact, in Departure Mono at
+    /// whole multiples of its size.
+    fn paint_gaze(&mut self) {
+        self.scene.annot.clear();
+        let g = match self.gaze_of { Some(f) => f(&self.state), None => { self.annots.clear(); return; } };
+        if g.mode == GazeMode::Off { self.annots.clear(); self.gaze_seen.clear(); return; }
+        let s = self.scale;
+        let now = self.now;
+        let window = Rect::new(0.0, 0.0, self.size.0, self.size.1);
+        let pointer = (self.field.pointer[2] > 0.0).then(|| (self.field.pointer[0] / s, self.field.pointer[1] / s));
+        let focus = self.focus.as_deref().and_then(|f| self.nodes.iter().position(|n| n.key == f));
+        let annots = gaze::select(&self.nodes, &g, pointer, focus, window);
+        self.gaze_seen = annots.iter().map(|a| (a.key.clone(), self.gaze_seen.get(&a.key).copied().unwrap_or(now))).collect();
+        let (scope, scopes) = gaze::scope(&self.nodes, window);
+        let view = scopes.first().map_or(window, |&i| self.nodes[i].clip);
+        let clip = [view.x * s, view.y * s, view.right() * s, view.bottom() * s];
+        let col = [g.colour[0], g.colour[1], g.colour[2], 0.0];
+        let t = s.round().max(1.0);
+        let mut out: Vec<Instance> = Vec::new();
+        let dev = |v: f32| (v * s).round();
+        // A line or a block in device px: the gaze colour, or the page ground (`plate`) under labels.
+        let bar = |out: &mut Vec<Instance>, x: f32, y: f32, w: f32, h: f32, alpha: f32, plate: bool| {
+            if w <= 0.0 || h <= 0.0 { return; }
+            out.push(Instance { rect: [x, y, w, h], paint: [0.0, if plate { 1.0 } else { 0.0 }, alpha, SHAPE], clip, look: col, ..Default::default() });
+        };
+        const SIZE: f32 = 11.0;
+        const LINE: f32 = 14.0;
+        let text = &mut self.text;
+        // A label at logical (x, y), on a plate; returns its width.
+        let label = |text: &mut Text, out: &mut Vec<Instance>, str: &str, x: f32, y: f32| -> f32 {
+            let (w, _) = text.measure(str, MONO, SIZE, LINE, None);
+            bar(out, dev(x) - t * 2.0, dev(y), dev(w) + t * 4.0, dev(LINE), 0.82, true);
+            let proto = Instance { paint: [0.0, 0.0, 1.0, 0.0], look: col, ..Default::default() };
+            text.emit(Para { s: str, face: MONO, size: SIZE, line: LINE, width: 1e5, print: 0.0 }, (x, y), proto, s, |mut i, _| { i.clip = clip; out.push(i); });
+            w
+        };
+        for a in &annots {
+            let p = gaze::drawn(now - self.gaze_seen[&a.key], g.draw_ms);
+            let (x0, y0, x1, y1) = (dev(a.rect.x), dev(a.rect.y), dev(a.rect.right()), dev(a.rect.bottom()));
+            let (w, h) = (x1 - x0, y1 - y0);
+            if g.has(kinds::BOX) {
+                // Drawn on round the rect: top, right, bottom, left.
+                bar(&mut out, x0, y0, (w * p).round(), t, 0.9, false);
+                bar(&mut out, x1 - t, y0, t, (h * p).round(), 0.9, false);
+                bar(&mut out, x1 - (w * p).round(), y1 - t, (w * p).round(), t, 0.9, false);
+                bar(&mut out, x0, y1 - (h * p).round(), t, (h * p).round(), 0.9, false);
+            }
+            if g.has(kinds::FRAME) {
+                let len = (10.0f32 * s).min(w * 0.3).min(h * 0.3).max(t * 2.0) * p;
+                let len = len.round();
+                for (cx, cy, sx, sy) in [(x0, y0, 1.0, 1.0), (x1, y0, -1.0, 1.0), (x0, y1, 1.0, -1.0), (x1, y1, -1.0, -1.0)] {
+                    let bx = if sx > 0.0 { cx } else { cx - len };
+                    let by = if sy > 0.0 { cy } else { cy - t };
+                    bar(&mut out, bx, by, len, t, 1.0, false);
+                    let vx = if sx > 0.0 { cx } else { cx - t };
+                    let vy = if sy > 0.0 { cy } else { cy - len };
+                    bar(&mut out, vx, vy, t, len, 1.0, false);
+                }
+            }
+            if g.has(kinds::LEADER) { continue; }
+            let mut tag = String::new();
+            if g.has(kinds::INDEX) { tag = format!("{:02}", gaze::count(a.index as f32, p) as u32); }
+            if g.has(kinds::KIND) { if !tag.is_empty() { tag.push(' '); } tag.push_str(a.label.as_deref().unwrap_or(a.kind)); }
+            if !tag.is_empty() {
+                let y = if a.rect.y - LINE - 2.0 >= view.y { a.rect.y - LINE - 2.0 } else { a.rect.y + 2.0 };
+                label(text, &mut out, &tag, a.rect.x + 2.0, y);
+            }
+            if g.has(kinds::SIZE) {
+                let str = format!("{}×{}", gaze::count(a.rect.w.round(), p), gaze::count(a.rect.h.round(), p));
+                let (tw, _) = text.measure(&str, MONO, SIZE, LINE, None);
+                let y = if a.rect.bottom() + LINE + 2.0 <= view.bottom() { a.rect.bottom() + 2.0 } else { a.rect.bottom() - LINE - 2.0 };
+                label(text, &mut out, &str, a.rect.right() - tw - 2.0, y);
+            }
+        }
+        if g.has(kinds::LEADER) {
+            let names: Vec<String> = annots.iter().map(|a| {
+                let name = a.label.clone().unwrap_or_else(|| a.kind.to_owned());
+                if g.has(kinds::INDEX) { format!("{:02}  {name}", a.index) } else { name }
+            }).collect();
+            let sizes: Vec<(f32, f32)> = names.iter().map(|n| { let (w, _) = text.measure(n, MONO, SIZE, LINE, None); (w + 4.0, LINE) }).collect();
+            let boxes = gaze::place_labels(&annots, scope, |a| sizes[annots.iter().position(|b| b.node == a.node).unwrap_or(0)]);
+            for (k, a) in annots.iter().enumerate() {
+                let p = gaze::drawn(now - self.gaze_seen[&a.key], g.draw_ms);
+                let (side, b) = boxes[k];
+                let (ax, ay) = match side { gaze::Side::Left => (a.rect.x, a.rect.center().1), gaze::Side::Right => (a.rect.right(), a.rect.center().1) };
+                let (lx, ly) = match side { gaze::Side::Left => (b.right() + 4.0, b.center().1), gaze::Side::Right => (b.x - 4.0, b.center().1) };
+                let knee = match side { gaze::Side::Left => lx + 14.0, gaze::Side::Right => lx - 14.0 };
+                // Elbow: along from the element to the knee, up or down to the label's line, into the label.
+                let (ax, ay, lx, ly, knee) = (dev(ax), dev(ay), dev(lx), dev(ly), dev(knee));
+                let seg1 = ((ax - knee).abs() * p).round();
+                if ax > knee { bar(&mut out, ax - seg1, ay, seg1, t, 1.0, false); } else { bar(&mut out, ax, ay, seg1, t, 1.0, false); }
+                if p >= 1.0 {
+                    bar(&mut out, knee.min(ax).min(knee), ay.min(ly), t, (ay - ly).abs() + t, 1.0, false);
+                    bar(&mut out, lx.min(knee), ly, (knee - lx).abs(), t, 1.0, false);
+                }
+                bar(&mut out, ax - t, ay - t, t * 3.0, t * 3.0, 1.0, false);
+                if p >= 1.0 { label(text, &mut out, &names[k], b.x + 2.0, b.y); }
+            }
+        }
+        let pt = pointer.filter(|&(x, y)| scope.contains(x, y));
+        if g.has(kinds::GRID) {
+            let (x0, y0, x1, y1) = (dev(scope.x), dev(scope.y), dev(scope.right()), dev(scope.bottom()));
+            let mut y = y0;
+            while y < y1 { bar(&mut out, x0, y, x1 - x0, t, 0.10, false); y += dev(8.0); }
+            let cols = 12.0;
+            let gutter = 16.0;
+            let cw = (scope.w - gutter * (cols - 1.0)) / cols;
+            for c in 0..12 {
+                let x = scope.x + c as f32 * (cw + gutter);
+                bar(&mut out, dev(x), y0, cw.mul_add(s, 0.0).round(), y1 - y0, 0.05, false);
+                bar(&mut out, dev(x), y0, t, y1 - y0, 0.22, false);
+                bar(&mut out, dev(x + cw) - t, y0, t, y1 - y0, 0.22, false);
+            }
+        }
+        if g.has(kinds::RULER) {
+            let (x0, y0, x1, y1) = (dev(scope.x), dev(scope.y), dev(scope.right()), dev(scope.bottom()));
+            bar(&mut out, x0, y0, x1 - x0, dev(16.0), 0.85, true);
+            bar(&mut out, x0, y0, dev(16.0), y1 - y0, 0.85, true);
+            let mut v = 0.0;
+            while scope.x + v < scope.right() {
+                let len = if v % 100.0 == 0.0 { 9.0 } else if v % 50.0 == 0.0 { 6.0 } else { 3.0 };
+                bar(&mut out, dev(scope.x + v), y0 + dev(16.0) - dev(len), t, dev(len), 0.9, false);
+                if v % 100.0 == 0.0 && v > 0.0 { label(text, &mut out, &format!("{v}"), scope.x + v + 3.0, scope.y); }
+                v += 10.0;
+            }
+            let mut v = 0.0;
+            while scope.y + v < scope.bottom() {
+                let len = if v % 100.0 == 0.0 { 9.0 } else if v % 50.0 == 0.0 { 6.0 } else { 3.0 };
+                bar(&mut out, x0 + dev(16.0) - dev(len), dev(scope.y + v), dev(len), t, 0.9, false);
+                v += 10.0;
+            }
+            if let Some((px, py)) = pt {
+                bar(&mut out, dev(px), y0, t, dev(16.0), 1.0, false);
+                bar(&mut out, x0, dev(py), dev(16.0), t, 1.0, false);
+            }
+        }
+        if g.has(kinds::CROSS) && let Some((px, py)) = pt {
+            bar(&mut out, dev(scope.x), dev(py), dev(scope.w), t, 0.45, false);
+            bar(&mut out, dev(px), dev(scope.y), t, dev(scope.h), 0.45, false);
+            label(text, &mut out, &format!("x {:.0}  y {:.0}", px - scope.x, py - scope.y), px + 10.0, py + 8.0);
+        }
+        self.scene.annot = out;
+        self.annots = annots;
+    }
 }
+
 
 /// Where `paint` puts instances: the scene (with owners and flow tags) or, for hidden nodes, aside.
 struct Sink<'a> {

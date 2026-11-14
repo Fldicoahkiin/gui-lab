@@ -1,6 +1,7 @@
 pub mod demo;
 pub mod el;
 pub mod gallery;
+pub mod gaze;
 pub mod marks;
 pub mod morph;
 #[cfg(not(target_arch = "wasm32"))]

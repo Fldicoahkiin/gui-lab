@@ -91,13 +91,13 @@ pub fn page(s: &Gallery) -> El<Msg> {
         Page::Marks(k) => marks_page(s, k),
         Page::Morph => morph_page(s),
         Page::Flow => flow_page(s),
-        Page::Type | Page::Demo => type_page(s),
+        _ => type_page(s),
     }
 }
 
 // ── Parts shared by the pages ────────────────────────────────────────────────────────────────────
 
-fn header(s: &Gallery, h: &str, title: &str, ident: &str, desc: &str) -> El<Msg> {
+pub(super) fn header(s: &Gallery, h: &str, title: &str, ident: &str, desc: &str) -> El<Msg> {
     let sz = s.theme().sizes;
     col().key(format!("{h}/header")).gap(10.0)
         .child(row().key(format!("{h}/title-row")).wrap().gap(16.0).align(AlignItems::BASELINE)
@@ -107,7 +107,7 @@ fn header(s: &Gallery, h: &str, title: &str, ident: &str, desc: &str) -> El<Msg>
         .child(text_lh(desc, sz.body, (sz.body * 1.7).round(), Paint::DIM).key(format!("{h}/desc")))
 }
 
-fn section(h: &str, name: &str, body: El<Msg>) -> El<Msg> {
+pub(super) fn section(h: &str, name: &str, body: El<Msg>) -> El<Msg> {
     col().key(format!("{h}/{name}")).gap(12.0).fill_width()
         .child(text(name, 13.0, Paint::DIM))
         .child(body)
@@ -141,7 +141,7 @@ fn params(s: &Gallery, c: usize) -> El<Msg> {
 
 /// A source file in the mono face, line numbers in the dim tone, in a scroll area. Long lines wrap
 /// under their own number.
-fn source(h: &str, file: &str, src: &str) -> El<Msg> {
+pub(super) fn source(h: &str, file: &str, src: &str) -> El<Msg> {
     let mut lines = col().key(format!("{h}/lines")).fill_width();
     for (i, l) in src.lines().enumerate() {
         lines = lines.child(row().gap(14.0).align(AlignItems::START)
@@ -487,7 +487,7 @@ const FLOW_ITEMS: [(&str, &str, u32); 6] = [
     ("山", "同一片地形，从另一个方向看。", TERRAIN),
 ];
 
-fn ratio(id: u32) -> f32 { let (w, h) = PICTURE_SIZES[id as usize]; h as f32 / w as f32 }
+pub(super) fn ratio(id: u32) -> f32 { let (w, h) = PICTURE_SIZES[id as usize]; h as f32 / w as f32 }
 
 fn flow_page(s: &Gallery) -> El<Msg> {
     let h = "flow";
