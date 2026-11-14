@@ -62,7 +62,7 @@ pub const LO_MIN_AREA: f32 = 0.15;
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct PartUniforms {
     res: [f32; 4], m: [f32; 4], bg: [f32; 4], fg: [f32; 4], accent: [f32; 4],
-    ga: [f32; 4], gb: [f32; 4], gd: [f32; 4], ge: [f32; 4], gp: [f32; 4], gf: [f32; 4], gw: [f32; 4], fronts: [[f32; 4]; 8],
+    ga: [f32; 4], gb: [f32; 4], gd: [f32; 4], ge: [f32; 4], gp: [f32; 4], gf: [f32; 4], gw: [f32; 4], gt: [f32; 4], fronts: [[f32; 4]; 8],
 }
 
 /// How particles can be simulated here (DESIGN.md §1.10): a compute shader (WebGPU, native), a fragment
@@ -240,7 +240,7 @@ struct MeshGpu {
 
 /// What one frame is drawn from. `tiles`: a morph's tiles are flying, this many seconds in, with this
 /// curl (device px), ease, the picture flag of the morph's picture (0 if none) and the flight's length.
-struct Frame<'a> { scene: &'a Scene, field: &'a Field, look: &'a Look, lib: &'a crate::mesh::Library, scale: f32, t: f32, mt: f32, split: [f32; 4], tiles: Option<[f32; 5]>, grid: Option<(crate::morph::Grid, f32, f32)> }
+struct Frame<'a> { scene: &'a Scene, field: &'a Field, look: &'a Look, lib: &'a crate::mesh::Library, scale: f32, t: f32, mt: [f32; 2], split: [f32; 4], tiles: Option<[f32; 5]>, grid: Option<(crate::morph::Grid, f32, f32)> }
 
 impl Renderer {
     pub fn new(device: wgpu::Device, queue: wgpu::Queue, out_format: wgpu::TextureFormat, w: u32, h: u32) -> Self {
@@ -669,12 +669,13 @@ impl Renderer {
         let c = |v: [f32; 3]| [v[0], v[1], v[2], 1.0];
         let pa = &look.particles;
         let mut u = PartUniforms { res: [self.size.0 as f32, self.size.1 as f32, scale, clock], m, bg: c(th.ground), fg: c(th.ink), accent: c(th.accent),
-            ga: [0.0; 4], gb: [0.0; 4], gd: [0.0; 4], ge: [SIM_DT, 0.0, -1.0, 0.0], gp: [0.0; 4], gf: [0.0; 4], gw: [0.0; 4], fronts: [[0.0; 4]; 8] };
+            ga: [0.0; 4], gb: [0.0; 4], gd: [0.0; 4], ge: [SIM_DT, 0.0, -1.0, 0.0], gp: [0.0; 4], gf: [0.0; 4], gw: [0.0; 4], gt: [1.0, 0.0, 0.0, 0.0], fronts: [[0.0; 4]; 8] };
         if let Some((g, stagger, start)) = grid {
             u.ga = g.a; u.gb = g.b;
             u.gd = [g.cols as f32, g.rows as f32, self.tiles.sim.as_ref().map_or(1.0, |s| s.width as f32), stagger];
-            let (tc, td) = g.turned.unwrap_or((-1.0, 0.0));
+            let (tc, td) = g.turned.map_or((-1.0, 0.0), |t| (t.first, t.dur));
             u.ge = [SIM_DT, start, tc, td];
+            if let Some(t) = g.turned { u.gt = [t.alpha, t.beta, t.to, 0.0]; }
             u.gp = [field.pointer[0], field.pointer[1], pa.pointer * scale * field.pointer[2], pa.pointer_radius * scale];
             u.gf = [pa.curl * scale, pa.curl_scale * scale, pa.damping, pa.spring];
             u.gw = [look.fx.wave_speed * scale, look.fx.wave_width * scale, pa.front * scale, now];
@@ -792,7 +793,7 @@ impl Renderer {
             );
             text.dirty = false;
         }
-        let (scale, now, mt) = (ui.scale(), ui.now(), ui.material_clock());
+        let (scale, now, mt) = (ui.scale(), ui.now(), [ui.material_clock(), ui.ground_clock()]);
         // A new commit: the frame as it is on the screen (mid-transition too, so a second switch goes on
         // from there) into `before`, once; before any frame was kept, the old scene in its old look.
         if let Some(sp) = ui.split() && sp.id != self.split_seen {
@@ -897,7 +898,7 @@ impl Renderer {
         // What changed since the last frame (DESIGN.md §1.19).
         let inputs = crate::dirty::Inputs {
             instances: ui.scene().instances.clone(), annot: ui.scene().annot.clone(), meshes: ui.scene().meshes.iter().map(|m| m.scene.fingerprint() ^ (m.rect[2].to_bits() as u64) << 32 ^ m.rect[3].to_bits() as u64).collect(),
-            field: *ui.field(), look: *look, now, mclock: mt, size: self.size,
+            field: *ui.field(), look: *look, now, mclock: mt[0], gclock: mt[1], size: self.size,
             global: split[3] > 0.0 || tiles.is_some() || lo.is_some() || self.hide_glyphs,
         };
         let region = match (&self.prev, self.partial) { (Some(p), true) => crate::dirty::region(p, &inputs, scale), _ => crate::dirty::Region::All };
@@ -1079,7 +1080,7 @@ impl Renderer {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn uniforms(&self, field: &Field, look: &Look, scale: f32, t: f32, mt: f32, split: [f32; 4], qual: [f32; 4]) {
+    fn uniforms(&self, field: &Field, look: &Look, scale: f32, t: f32, mt: [f32; 2], split: [f32; 4], qual: [f32; 4]) {
         let (fx, th) = (&look.fx, &look.theme);
         let c = |v: [f32; 3]| [v[0], v[1], v[2], 1.0];
         let (bg, fg, accent) = (c(th.ground), c(th.ink), c(th.accent));
@@ -1093,14 +1094,14 @@ impl Renderer {
         }
         let u = Uniforms {
             res: [self.size.0 as f32, self.size.1 as f32, scale, t],
-            fa: [fx.pitch, mt, fx.jitter, fx.glitch],
+            fa: [fx.pitch, mt[0], fx.jitter, fx.glitch],
             fb: [fx.wave_speed, fx.wave_life, fx.wave_width, fx.wave_tail],
             fc: [fx.push, fx.lens, fx.enter, flag(fx.square)],
             fd: [look.material.id() as f32, flag(self.out_format.is_srgb()), SPREAD as f32, marks::PALETTES.len() as f32],
             bg, fg, accent, pointer: [field.pointer[0], field.pointer[1], field.pointer[2], fx.lens_hard], wipe: field.wipe, wipe_rect: field.wipe_rect, split, fronts: field.fronts, pics,
             ground2: [th.ground2[0], th.ground2[1], th.ground2[2], look.loose_scale], second: c(th.second), third: c(th.third),
-            burst: field.burst, burst_t: field.burst_t, mats, calm: field.calm, qual, scopes: field.scopes,
-            rip: [look.loose_max, if split[3] > 0.0 { self.tr_loose } else { 0.0 }, if split[3] > 0.0 { look.transition.steps.iter().rposition(|st| st.kind != crate::preset::StepKind::None).map_or(0.0, |i| i as f32 + 1.0) } else { 0.0 }, 0.0],
+            burst: field.burst, burst_t: [field.burst_t[0], field.burst_t[1], field.burst_t[2], look.legible_cap], mats, calm: field.calm, qual, scopes: field.scopes,
+            rip: [look.loose_max, if split[3] > 0.0 { self.tr_loose } else { 0.0 }, if split[3] > 0.0 { look.transition.steps.iter().rposition(|st| st.kind != crate::preset::StepKind::None).map_or(0.0, |i| i as f32 + 1.0) } else { 0.0 }, mt[1]],
             tr: if split[3] > 0.0 { self.tr } else { [[0.0; 4]; 9] }, boxes: self.boxes,
         };
         self.queue.write_buffer(&self.ubuf, 0, bytemuck::bytes_of(&u));

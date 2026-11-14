@@ -934,6 +934,7 @@ fn presets(fonts: &dyn Fn() -> Vec<lab::text::Face>) -> usize {
         run(&mut fresh, &mut tf, 4.0);
         // The material clock is history (it ran while the transition's page moved); the frames compared are of now.
         fresh.set_material_clock(ui.material_clock());
+        fresh.set_ground_clock(ui.ground_clock());
         let look = fresh.state.look();
         let want = o.render(&mut fresh, &look);
         let name = &ui.state.presets[to].name;

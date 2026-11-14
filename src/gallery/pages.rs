@@ -190,20 +190,22 @@ fn comp_page(s: &Gallery, c: usize) -> El<Msg> {
 fn shown(e: Edit) -> Msg { Msg::Num(Target::Shown, e) }
 
 /// The ripple section's numbers (DESIGN.md §1.15, §1.16): name, spec, and where each lives in the state.
-pub const RIPPLE_PARAMS: [(&str, Spec); 6] = [
+pub const RIPPLE_PARAMS: [(&str, Spec); 8] = [
     ("可读上限", Spec { min: 0.0, max: 1.0, step: 0.01, decimals: 2, unit: "" }),
     ("松开上限", Spec { min: 0.0, max: 1.0, step: 0.05, decimals: 2, unit: "" }),
     ("重组时长", Spec { min: 0.0, max: 3000.0, step: 10.0, decimals: 0, unit: "ms" }),
     ("重组错开", Spec { min: 0.0, max: 0.9, step: 0.05, decimals: 2, unit: "" }),
     ("每字粒子", Spec { min: 1.0, max: 20000.0, step: 50.0, decimals: 0, unit: "" }),
     ("滑动时长", Spec { min: 0.0, max: 3000.0, step: 10.0, decimals: 0, unit: "ms" }),
+    ("最短间隔", Spec { min: 0.0, max: 1000.0, step: 10.0, decimals: 0, unit: "ms" }),
+    ("粒子总数上限", Spec { min: 100.0, max: 200000.0, step: 1000.0, decimals: 0, unit: "" }),
 ];
 /// The scope choices of the counter: its own subtree, the row it is in, the whole window.
 pub const RIPPLE_SCOPES: [&str; 3] = ["自身", "这一块", "整个窗口"];
 pub fn ripple_scope(i: usize) -> Scope { match i { 0 => Scope::Own, 1 => Scope::Container(None), _ => Scope::Global } }
 pub fn ripple_value(s: &Gallery, i: usize) -> f32 {
     let r = &s.recompose;
-    [s.legible_cap, s.loose_max, r.duration_ms, r.stagger, r.count_max, r.slide_ms][i.min(5)]
+    [s.legible_cap, s.loose_max, r.duration_ms, r.stagger, r.count_max, r.slide_ms, r.min_interval_ms, r.max_tiles][i.min(7)]
 }
 
 /// The ripple section of the button page: a counter whose presses reach what the scope says, three

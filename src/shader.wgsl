@@ -36,12 +36,12 @@ struct U {
   second: vec4f,   // accent hues 1 and 2
   third: vec4f,
   burst: vec4f,    // a burst's rect, device px (x0, y0, x1, y1)
-  burst_t: vec4f,  // its start time, strength, length (s)
+  burst_t: vec4f,  // its start time, strength, length (s); w: the legibility cap (Look::legible_cap)
   mats: array<vec4f, 24>, // every material's numbers, two vec4s each (style.rs MAT_PARAMS)
   calm: array<vec4f, 4>,  // boxes fronts pass by (x0, y0, x1, y1, device px)
   qual: vec4f,     // the material resolution: 1 / q for the reduced pass (1 otherwise), q, its size w, h
   scopes: array<vec4f, 8>, // each front's scope box (x0, y0, x1, y1, device px): it reaches instances centred inside
-  rip: vec4f,      // looseness per pixel is clamped to x (Look::loose_max) after summing; y: everything loosened by a transition; z, w spare
+  rip: vec4f,      // looseness per pixel is clamped to x (Look::loose_max) after summing; y: everything loosened by a transition; z: its last step; w: the ground clock (s)
   tr: array<vec4f, 9>,     // a transition (preset.rs Transition::pack): duration (s), origin, start; two vec4s per step
   boxes: array<vec4f, 16>, // the elements a transition's boxes find (x0, y0, x1, y1, device px)
 };
@@ -246,6 +246,25 @@ fn ink_of(i: VOut, solid: bool) -> vec4f {
       return vec4f(col * a, a);
     }
     let code = select(hue * 0.15 + 0.07, ink_code_as(i, true), is_big(i) && !solid);
+    // Transparent electronics: a solid is drawn as its edges (the silhouette and the creases, from the
+    // resolved nearness) in its unlit colour over a faint shaded fill, as shapes are drawn by their
+    // outline, so what is behind it shows through. Loosened, the edges break into dashes that run along
+    // and the fill thins further.
+    if (eff_mat(i.look.x) == XRAY && !solid) {
+      let k = loose1(i);
+      let line = max(mp(XRAY, 0).x * u.res.z * 1.5, 0.75);
+      let dash = max(mp(XRAY, 0).w * u.res.z, 2.0);
+      let face = -s.w;
+      var wire = clamp(line + 0.5 - abs(face), 0.0, 1.0) * step(-0.5, face);
+      let along = (i.pos.x + i.pos.y) * 0.7071 + u.fa.y * 40.0 * u.res.z;
+      wire *= mix(1.0, step(fract(along / (dash * 2.0)), 0.5), smoothstep(0.25, 0.7, k));
+      let fill = max(mp(XRAY, 0).y, 0.3);
+      let body = s.x * i.paint.z * mix(fill, fill * 0.4, smoothstep(0.05, 0.6, k));
+      let aw = max(wire * i.paint.z, body);
+      let tw = mix(r, c.g * (1.0 - c.b), wire);
+      let gw = mix(g, c.b, wire);
+      return vec4f(tw * aw, gw * aw, code * aw, aw);
+    }
     return vec4f(r * a, g * a, code * a, a);
   }
   if (i.paint.w > 1.5) { return vec4f(textureSampleLevel(tex1, samp, clamp(i.uv, vec2f(0.0), vec2f(1.0)), 0.0).rgb * a, a); }
@@ -282,7 +301,7 @@ fn near_of(i: VOut) -> vec4f {
   let s = inst(i);
   let born = clamp((u.res.w - i.extra.w) / max(u.fc.z, 1e-3), 0.0, 1.0);
   let loose = min(own_loose(i), 1.0) * step(0.02, s.y) * step(0.01, i.paint.z);
-  var slot = select(0.0, (i.paint.y + 1.0) / 8.0, s.z > 0.5);
+  var slot = select(0.0, (i.paint.y + 1.0) / 8.0 - select(0.0, 1.0 / 32.0, i.resp.y > 1.5), s.z > 0.5);
   // A 3D element drawn through the material marks its pixels (within the nearness) with the projected
   // normal's code, 1..9 / 255: below any picture's flag, so nothing else reads it (ascii does).
   if (i.paint.w > 2.5 && i.extra.x < 0.5 && s.y > 0.01) { slot = max(round(mesh_near(i).b * 255.0), 1.0) / 255.0; }
@@ -446,7 +465,14 @@ fn mark(s: f32, col: f32, uv: vec2f, lod: f32) -> vec2f {
 }
 /// The picture's own looseness at a point: the field (fronts, half-plane), the lens, and the
 /// instance's own (held, born, set at rest).
-fn pic_k(q: vec2f) -> f32 { return clamp(half_plane(q) + lens(q) + near_t(q).b + u.rip.y, 0.0, u.rip.x); }
+// A picture to read (a picture in a control: legible, so its instances carry the push code 2) is marked
+// in near.g a little below its slot's step; the lens loosens it at most to the legibility cap.
+fn pic_legible(g: f32) -> bool { return g > 0.05 && g * 8.0 - round(g * 8.0) < -0.1; }
+fn pic_k(q: vec2f) -> f32 {
+  let n = near_t(q);
+  let l = select(lens(q), min(lens(q), u.burst_t.w), pic_legible(n.g));
+  return clamp(half_plane(q) + l + n.b + u.rip.y, 0.0, u.rip.x);
+}
 /// Step 2: the pitch grows from 1 to `pitch` over the first half of loosening.
 fn pic_p(k: f32, pitch: f32) -> f32 {
   return max(1.0, round(mix(1.0, max(1.0, round(pitch * u.res.z)), smoothstep(0.0, 0.5, k))));
@@ -669,7 +695,9 @@ fn m_dot(frag: vec2f) -> vec3f {
   // ink by its true outline (the nearness image), never by a rectangle.
   var g = gnd(frag);
   let gp = 9.0 * s; let gc = floor(frag / gp); let gcen = (gc + 0.5) * gp;
-  let mt = u.fa.y;
+  // The ground drifts on the ground clock, which runs only with what moves the whole window (a commit,
+  // a front that reaches everywhere, a morph, a flow): a local press does not move the whole ground.
+  let mt = u.rip.w;
   let drift = (sin(gc.x * 0.21 + mt * 0.33) + sin(gc.y * 0.37 - mt * 0.21) + sin((gc.x + gc.y) * 0.13 + mt * 0.17)) / 3.0;
   var lvl = max(0.0, drift - 0.25) * 0.55 * step(h1(gc), 0.4) + wave(gcen, 0.16) * 0.95 + lens(gcen) * 0.7;
   lvl *= 1.0 - smoothstep(0.1, 0.35, near(gcen).r);
@@ -1047,7 +1075,13 @@ fn m_collage(p: vec2f) -> vec3f {
   if (!w.shape || (d.a > 0.02 && d.txt)) { return exact(p); }
   // The torn edge grows out of the shape and bites into it by less than a pixel, so a thin track or a
   // hairline outline stays whole.
-  let nsd = sd + max((vnoise(p / (22.0 * s)) - 0.5) * 2.0 * tear + (vnoise(p / (4.0 * s)) - 0.5) * tear * 0.35 - tear * 0.2, -0.4 * s);
+  var nsd = sd + max((vnoise(p / (22.0 * s)) - 0.5) * 2.0 * tear + (vnoise(p / (4.0 * s)) - 0.5) * tear * 0.35 - tear * 0.2, -0.4 * s);
+  // A 3D object is cut from several papers, one per face: loosened, the creases open into torn gaps
+  // (the nearness of a mesh is its silhouette and its creases), each with its lip of fibre.
+  let ng = near_t(p).g;
+  if (ng > 0.5 / 255.0 && ng < 0.05 && k > 0.0) {
+    nsd -= k * (3.0 + 4.0 * vnoise(p / (9.0 * s))) * s;
+  }
   // Shadow, from the same edge a little up and to the left.
   let ps = p - vec2f(2.0, 3.0) * s;
   let sh = sdist(ps) + (vnoise(ps / (22.0 * s)) - 0.5) * 2.0 * tear - tear * 0.2;
