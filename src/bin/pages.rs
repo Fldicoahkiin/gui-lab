@@ -328,6 +328,7 @@ fn perf(w: u32, h: u32, scale: f32) {
         let n = 10;
         let t0 = std::time::Instant::now();
         for _ in 0..n { o.draw(&mut ui, &look); }
-        eprintln!("{:<9} {:6.1} ms per frame ({w}×{h})", Material::from_id(m).name(), t0.elapsed().as_secs_f64() * 1000.0 / n as f64);
+        let cpu = ui.perf().summary(lab::perf::now_ms()).submit[1];
+        eprintln!("{:<9} {:6.1} ms per frame ({w}×{h}; of which {cpu:.1} ms recording and submitting on the CPU)", Material::from_id(m).name(), t0.elapsed().as_secs_f64() * 1000.0 / n as f64);
     }
 }
