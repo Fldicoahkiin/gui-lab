@@ -4,6 +4,11 @@
 pub const GLYPH: f32 = 0.0;
 pub const SHAPE: f32 = 1.0;
 pub const PICTURE: f32 = 2.0;
+/// A `scene3d` element's meshes, resolved by the renderer into ink and nearness (DESIGN.md §1.18).
+/// `extra[1]` is its index in `Scene::meshes`.
+pub const MESH: f32 = 3.0;
+/// Batches of mesh instances are keyed by this plus their index (pictures by their id).
+pub const MESH_BATCH: u32 = 0x4000_0000;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
@@ -31,6 +36,10 @@ pub struct Instance {
     pub resp: [f32; 4],
 }
 
+/// One `scene3d` element to draw: what it holds and its content box (device px: x, y, w, h).
+#[derive(Clone, Debug)]
+pub struct MeshDraw { pub scene: std::rc::Rc<crate::mesh::Scene3d>, pub rect: [f32; 4] }
+
 /// A run of instances drawn with one picture bound. Glyphs and shapes do not care which.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Batch { pub start: u32, pub end: u32, pub picture: u32 }
@@ -44,18 +53,21 @@ pub struct Scene {
     pub layer: Option<u32>,
     /// Stage 3, the annotation layer (DESIGN.md §1.7): drawn after the material, exactly, never loose.
     pub annot: Vec<Instance>,
+    /// The `scene3d` elements whose mesh instances are in this scene.
+    pub meshes: Vec<MeshDraw>,
 }
 
 impl Scene {
-    pub fn clear(&mut self) { self.instances.clear(); self.batches.clear(); self.layer = None; self.annot.clear(); }
+    pub fn clear(&mut self) { self.instances.clear(); self.batches.clear(); self.layer = None; self.annot.clear(); self.meshes.clear(); }
     /// Everything pushed from now on is in the modal layer.
     pub fn begin_layer(&mut self) { self.layer = Some(self.instances.len() as u32); }
     pub fn push(&mut self, i: Instance) {
         let n = self.instances.len() as u32;
-        let picture = if i.paint[3] == PICTURE { Some(i.extra[1] as u32) } else { None };
+        let picture = if i.paint[3] == PICTURE { Some(i.extra[1] as u32) } else if i.paint[3] == MESH { Some(MESH_BATCH + i.extra[1] as u32) } else { None };
         // A batch never straddles the start of the layer, so the renderer can draw the two apart.
         match self.batches.last_mut() {
-            Some(b) if picture.is_none_or(|p| p == b.picture) && self.layer != Some(n) => b.end = n + 1,
+            // Glyphs and shapes join any batch whose group holds the glyph atlas: not a 3D element's.
+            Some(b) if picture.map_or(b.picture < MESH_BATCH, |p| p == b.picture) && self.layer != Some(n) => b.end = n + 1,
             _ => self.batches.push(Batch { start: n, end: n + 1, picture: picture.unwrap_or(0) }),
         }
         self.instances.push(i);

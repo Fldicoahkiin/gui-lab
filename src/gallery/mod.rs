@@ -6,6 +6,7 @@ mod looks;
 mod pages;
 mod scenes;
 mod styles;
+pub mod three;
 
 use crate::demo::{self, Demo};
 use crate::el::{El, Font, Paint, col, row, space, text};
@@ -26,7 +27,7 @@ pub const NARROW: f32 = 720.0;
 pub const RAIL: f32 = 220.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Page { Comp(usize), LongList, Marks(u8), Material(u8), Gaze, Style(u8), Morph, Flow, Type, Demo, Scenes, Scene(u8) }
+pub enum Page { Comp(usize), LongList, Marks(u8), Material(u8), Gaze, Style(u8), Morph, Flow, Three, Type, Demo, Scenes, Scene(u8) }
 
 pub const MARK_HASH: [&str; set::COUNT] = ["chars", "dither", "pixel", "mosaic", "brick", "dots", "cross", "diagonal", "diamond", "lines", "glow", "stroke"];
 
@@ -38,7 +39,7 @@ impl Page {
         v.extend((0..MATERIAL_COUNT as u8).map(Page::Material));
         v.push(Page::Gaze);
         v.extend((0..12u8).map(Page::Style));
-        v.extend([Page::Morph, Page::Flow]);
+        v.extend([Page::Morph, Page::Flow, Page::Three]);
         v.push(Page::Type);
         v.push(Page::Demo);
         v.push(Page::Scenes);
@@ -56,6 +57,7 @@ impl Page {
             Page::Style(i) => format!("style-{}", styles()[i as usize].hash),
             Page::Morph => "morph".into(),
             Page::Flow => "flow".into(),
+            Page::Three => "three".into(),
             Page::Type => "type".into(),
             Page::Demo => "demo".into(),
             Page::Scenes => "scenes".into(),
@@ -78,6 +80,7 @@ impl Page {
             Page::Style(i) => styles()[i as usize].name,
             Page::Morph => "粒子",
             Page::Flow => "换页",
+            Page::Three => "三维",
             Page::Type => "字号与字体",
             Page::Demo => "骨架演示",
             Page::Scenes => "全部场景",
@@ -99,6 +102,8 @@ pub enum Target {
     /// Morph parameter `i` (see `MORPH_PARAMS`), flow parameter `i` (`FLOW_PARAMS`).
     Morph(usize),
     Flow(usize),
+    /// Number `i` of the 3D page (`three::PARAMS`).
+    Three(usize),
     /// Number `i` of material `m` (see `style::MAT_PARAMS`), and the looseness the material pages hold
     /// their specimen at.
     Mat(u8, usize),
@@ -172,6 +177,8 @@ pub enum Msg {
     RipCount,
     RipScope(usize),
     RipBurst,
+    /// Something on the 3D page.
+    Three(three::TMsg),
 }
 
 pub struct Gallery {
@@ -249,6 +256,8 @@ pub struct Gallery {
     pub rip_count: u32,
     /// Ten fast presses of the counter in progress: when they started (state clock) and how many are done.
     pub rip_burst: Option<(f32, u32)>,
+    /// The 3D page.
+    pub three: three::Three,
 }
 
 impl Default for Gallery {
@@ -264,7 +273,7 @@ impl Default for Gallery {
             gaze_page: Gaze { mode: GazeMode::All, kinds: gaze::FRAME | gaze::INDEX | gaze::SIZE, density: 12.0, ..Gaze::default() },
             hovered: None, clock: 0.0, choices: [0, 0, 0, 0, 0, 0, 0, 0], toggles: [true, false, true, false, true, false, false, false],
             slides: [0.35, 0.4, 0.6, 14.0, 0.5, 2.0, 0.0, 0.5], query: TextEdit::new("lay"), sc: Scenes::default(), overlay: false, quality: 1.0, long_pick: None, long_on: vec![],
-            rip_scope: 1, legible_cap: crate::style::LEGIBLE_CAP, loose_max: 1.0, recompose: crate::morph::Recompose::default(), rip_count: 1, rip_burst: None, notes: TextEdit::new("第一行\n第二行，长一些的一行会在框的宽度里折行。"),
+            rip_scope: 1, legible_cap: crate::style::LEGIBLE_CAP, loose_max: 1.0, recompose: crate::morph::Recompose::default(), rip_count: 1, rip_burst: None, three: three::Three::default(), notes: TextEdit::new("第一行\n第二行，长一些的一行会在框的宽度里折行。"),
         }
     }
 }
@@ -378,7 +387,7 @@ pub fn update(s: &mut Gallery, m: Msg) {
             s.params = d.params; s.marks = d.marks; s.wipe = d.wipe; s.edit = None;
             s.value = d.value; s.level = d.level;
             s.demo = Demo { theme: s.theme, material: s.material, ..Demo::default() };
-            s.morph = d.morph; s.flow = d.flow;
+            s.morph = d.morph; s.flow = d.flow; s.three = d.three;
             s.sc = Scenes::default();
         }
         // Variants are shown as they are: typing into one does not change it.
@@ -392,6 +401,7 @@ pub fn update(s: &mut Gallery, m: Msg) {
                 Target::Value => s.value = v,
                 Target::Morph(i) => *morph_slot(&mut s.morph, i) = v,
                 Target::Flow(i) => *flow_slot(&mut s.flow, i) = v,
+                Target::Three(i) => *three::slot(&mut s.three, i) = v,
                 Target::Mat(m, i) => s.mats[m as usize].0[i] = v,
                 Target::Loose => s.loose = v,
                 Target::Density => s.gaze_page.density = v,
@@ -412,6 +422,7 @@ pub fn update(s: &mut Gallery, m: Msg) {
         Msg::Press => s.presses += 1,
         Msg::RipCount => s.rip_count += 1,
         Msg::RipScope(i) => s.rip_scope = i.min(2),
+        Msg::Three(m) => three::update(s, m),
         Msg::RipBurst => { s.rip_burst = Some((s.clock, 0)); burst_step(s, s.clock); }
         Msg::Text(t) => s.text = t,
         Msg::Notes(t) => s.notes = t,
@@ -453,6 +464,7 @@ pub fn view(s: &Gallery) -> El<Msg> {
         Page::Demo => main.child(demo::view(&s.demo).map(Rc::new(Msg::Demo))),
         Page::Material(_) | Page::Gaze => main.pad(if narrow { 18.0 } else { 40.0 }, 32.0).child(looks::page(s)),
         Page::Style(i) => main.child(styles::page(s, i as usize)),
+        Page::Three => main.pad(if narrow { 18.0 } else { 40.0 }, 32.0).child(three::page(s)),
         Page::Scenes | Page::Scene(_) => main.pad(if narrow { 18.0 } else { 40.0 }, 32.0).child(scenes::list(s)),
         _ => main.pad(if narrow { 18.0 } else { 40.0 }, 32.0).child(pages::page(s)),
     };
@@ -510,7 +522,7 @@ fn groups() -> [(&'static str, Vec<Page>); 8] {
         ("材质", (0..MATERIAL_COUNT as u8).map(Page::Material).collect()),
         ("标注", vec![Page::Gaze]),
         ("风格", (0..12u8).map(Page::Style).collect()),
-        ("变换", vec![Page::Morph, Page::Flow]),
+        ("变换", vec![Page::Morph, Page::Flow, Page::Three]),
         ("排版", vec![Page::Type, Page::Demo]),
         ("场景", std::iter::once(Page::Scenes).chain((0..scenes::COUNT as u8).map(Page::Scene)).collect()),
     ]
@@ -577,13 +589,16 @@ pub fn new_ui(faces: Vec<Face>, w: u32, h: u32, scale: f32) -> GalleryUi {
             let changed = s.page == Page::Style(1) && t.floor() != s.clock.floor();
             s.clock = t;
             let burst = burst_step(s, t);
-            scenes::tick(s, t) || changed || burst
+            // The 3D page's camera coasts after a fast drag.
+            let coast = s.page == Page::Three && s.three.orbit.step(t);
+            scenes::tick(s, t) || changed || burst || coast
         })
         .on_look(|s| s.look())
         .on_wake(|s, t| {
             // The departure board wants the next whole second; scenes say for themselves.
             let board = (s.page == Page::Style(1)).then(|| t.floor() + 1.0);
             let burst = s.rip_burst.map(|(start, n)| start + n as f32 * BURST_GAP);
+            let burst = if s.page == Page::Three && s.three.orbit.moving() { Some(t) } else { burst };
             let board = match (board, burst) { (Some(a), Some(b)) => Some(a.min(b)), (a, b) => a.or(b) };
             match (board, scenes::wake(s, t)) { (Some(a), Some(b)) => Some(a.min(b)), (a, b) => a.or(b) }
         })

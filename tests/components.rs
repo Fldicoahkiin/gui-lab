@@ -335,9 +335,9 @@ fn navigation_keeps_the_shell_and_renews_the_page() {
 fn every_page_has_a_plain_hash() {
     let forbidden = ["settings", "sidebar", "customize", "upgrade", "downloads"];
     let pages = Page::all();
-    // The components, the ten thousand rows, mark sets, materials, the annotation page, styles, morph
-    // and flow, type and demo, the scene list and the scenes.
-    assert_eq!(pages.len(), COMPONENTS.len() + 1 + 12 + 12 + 1 + 12 + 2 + 2 + 1 + 7);
+    // The components, the ten thousand rows, mark sets, materials, the annotation page, styles, morph,
+    // flow and 3D, type and demo, the scene list and the scenes.
+    assert_eq!(pages.len(), COMPONENTS.len() + 1 + 12 + 12 + 1 + 12 + 3 + 2 + 1 + 7);
     for p in pages {
         let h = p.hash();
         assert!(!h.is_empty() && h.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'), "{h}");

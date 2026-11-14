@@ -131,11 +131,51 @@ pub struct Renderer {
     pub always_lo: bool,
     size: (u32, u32),
     tiles: Tiles,
+    mesh: MeshGpu,
+}
+
+/// The mesh pass's uniforms (see `mesh.wgsl`).
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct MeshUniforms { view: [f32; 16], proj: [f32; 16], light: [f32; 4], misc: [f32; 4], size: [f32; 4], spread: [f32; 4] }
+
+/// One copy of a mesh, as the mesh pass reads it (instance rate): its transform's columns, its paint
+/// (tone, accent, hue) and its number + 1 as two bytes.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct MeshCopy { m: [[f32; 4]; 4], paint: [f32; 4], id: [f32; 4] }
+
+const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth24Plus;
+const GBUF: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+
+/// One `scene3d` element's off-screen images (DESIGN.md §1.18), and what they were last drawn from.
+struct MeshTarget {
+    size: (u32, u32),
+    ubuf: wgpu::Buffer,
+    copies: wgpu::Buffer,
+    capacity: usize,
+    /// colour, normal + depth, id; the depth buffer; the mask, the horizontal distances, the resolve.
+    views: [wgpu::TextureView; 7],
+    /// mask, h, v, and the mesh pass's own (reads no image).
+    groups: [wgpu::BindGroup; 4],
+    /// Stage 1 reads the resolve (tex0) and the colour (tex1).
+    stage1: wgpu::BindGroup,
+    drawn: Option<(u64, [u32; 2], u32)>,
+}
+
+/// The mesh pass: its pipelines, every mesh of the library in one vertex buffer, and a target per element.
+struct MeshGpu {
+    layout: wgpu::BindGroupLayout,
+    pipes: [wgpu::RenderPipeline; 4], // mesh, mask, h, v
+    verts: wgpu::Buffer,
+    ranges: Vec<(u32, u32)>,
+    generation: u32,
+    targets: Vec<MeshTarget>,
 }
 
 /// What one frame is drawn from. `tiles`: a morph's tiles are flying, this many seconds in, with this
 /// curl (device px), ease, the picture flag of the morph's picture (0 if none) and the flight's length.
-struct Frame<'a> { scene: &'a Scene, field: &'a Field, look: &'a Look, scale: f32, t: f32, mt: f32, split: [f32; 4], tiles: Option<[f32; 5]> }
+struct Frame<'a> { scene: &'a Scene, field: &'a Field, look: &'a Look, lib: &'a crate::mesh::Library, scale: f32, t: f32, mt: f32, split: [f32; 4], tiles: Option<[f32; 5]> }
 
 impl Renderer {
     pub fn new(device: wgpu::Device, queue: wgpu::Queue, out_format: wgpu::TextureFormat, w: u32, h: u32) -> Self {
@@ -178,6 +218,7 @@ impl Renderer {
             pipe("vs_inst", "fs_ink_top", INK, Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING), true),
         ];
         let tiles = Self::tiles(&device);
+        let mesh = Self::mesh_gpu(&device);
         let ubuf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: std::mem::size_of::<Uniforms>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         // Only the mark atlas has mip levels; for every other texture the mipmap filter does nothing.
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor { mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, mipmap_filter: wgpu::MipmapFilterMode::Linear, ..Default::default() });
@@ -210,7 +251,7 @@ impl Renderer {
             before: blank.clone(), blank: blank.clone(), split_seen: 0, split: [0.0; 4], last_look: None, marks_ready: false, hide_glyphs: false,
             pictures: HashMap::new(), instances, capacity, pipes, annots, annot_capacity: 256, up_pipe: None, shader, pl,
             ink: blank.clone(), soft: blank.clone(), lo: blank.clone(), lo_key: (0, 0, 0), material_up: material.clone(), auto: Default::default(), always_lo: false,
-            near: blank, material_first: material.clone(), material, size: (0, 0), tiles,
+            near: blank, material_first: material.clone(), material, size: (0, 0), tiles, mesh,
         };
         r.set_picture(u32::MAX, 1, 1, &[0, 0, 0, 255]);
         r.resize(w, h);
@@ -249,6 +290,144 @@ impl Renderer {
         let buf = Self::particle_buffer(device, capacity);
         Tiles { layout, pipes, ubuf, snaps, group, buf, capacity, count: 0, seen: 0, uploaded: 0 }
     }
+    fn mesh_gpu(device: &wgpu::Device) -> MeshGpu {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: None, source: wgpu::ShaderSource::Wgsl(include_str!("mesh.wgsl").into()) });
+        let tex = |binding| wgpu::BindGroupLayoutEntry {
+            binding, visibility: wgpu::ShaderStages::FRAGMENT, count: None,
+            ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+        };
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: None, entries: &[
+            wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::VERTEX_FRAGMENT, count: None, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None } },
+            tex(1), tex(2), tex(3), tex(4),
+        ] });
+        let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
+        let bufs = [
+            Some(wgpu::VertexBufferLayout { array_stride: 24, step_mode: wgpu::VertexStepMode::Vertex, attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3] }),
+            Some(wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<MeshCopy>() as u64, step_mode: wgpu::VertexStepMode::Instance, attributes: &wgpu::vertex_attr_array![2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4] }),
+        ];
+        let target = |format| Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL });
+        let mesh = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("fs_mesh"), layout: Some(&pl),
+            vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_mesh"), compilation_options: Default::default(), buffers: &bufs },
+            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, ..Default::default() },
+            depth_stencil: Some(wgpu::DepthStencilState { format: DEPTH, depth_write_enabled: Some(true), depth_compare: Some(wgpu::CompareFunction::Less), stencil: Default::default(), bias: Default::default() }),
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some("fs_mesh"), compilation_options: Default::default(), targets: &[target(GBUF), target(GBUF), target(GBUF)] }),
+            multiview_mask: None, cache: None,
+        });
+        let full = |fs: &str| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some(fs), layout: Some(&pl),
+            vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_full"), compilation_options: Default::default(), buffers: &[] },
+            primitive: Default::default(), depth_stencil: None, multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some(fs), compilation_options: Default::default(), targets: &[target(GBUF)] }),
+            multiview_mask: None, cache: None,
+        });
+        let pipes = [mesh, full("fs_mask"), full("fs_h"), full("fs_v")];
+        let verts = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: 24, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        MeshGpu { layout, pipes, verts, ranges: vec![], generation: 0, targets: vec![] }
+    }
+
+    /// Draw every `scene3d` element of `scene` off-screen and resolve it (DESIGN.md §1.18), unless it
+    /// is exactly what its target already holds.
+    fn prepare_meshes(&mut self, enc: &mut wgpu::CommandEncoder, scene: &Scene, lib: &crate::mesh::Library) {
+        if scene.meshes.is_empty() { return; }
+        if self.mesh.generation != lib.generation {
+            let mut all: Vec<[f32; 6]> = vec![];
+            self.mesh.ranges = lib.all().iter().map(|m| { let first = all.len() as u32; all.extend(m.vertices()); (first, all.len() as u32 - first) }).collect();
+            self.mesh.verts = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&all), usage: wgpu::BufferUsages::VERTEX });
+            self.mesh.generation = lib.generation;
+            for t in &mut self.mesh.targets { t.drawn = None; }
+        }
+        for (k, md) in scene.meshes.iter().enumerate() {
+            let sc = &md.scene;
+            let rs = sc.spec.resolution_scale.clamp(0.25, 1.0);
+            let (rw, rh) = (md.rect[2].max(1.0), md.rect[3].max(1.0));
+            let size = (((rw * rs).ceil() as u32).max(1), ((rh * rs).ceil() as u32).max(1));
+            if self.mesh.targets.len() <= k || self.mesh.targets[k].size != size {
+                let t = self.mesh_target(size);
+                if self.mesh.targets.len() <= k { self.mesh.targets.push(t); } else { self.mesh.targets[k] = t; }
+            }
+            let key = (sc.fingerprint(), [rw as u32, rh as u32], lib.generation);
+            if self.mesh.targets[k].drawn == Some(key) { continue; }
+            self.mesh.targets[k].drawn = Some(key);
+            let px = rw / size.0 as f32;
+            let radius = ((SPREAD as f32 / px).ceil() + 1.0).clamp(2.0, 40.0);
+            let cam = &sc.camera;
+            let u = MeshUniforms {
+                view: cam.view().0, proj: cam.proj(rw / rh).0,
+                light: [sc.light.dir[0], sc.light.dir[1], sc.light.dir[2], sc.light.ambient.clamp(0.0, 1.0)],
+                misc: [cam.near.max(1e-3), cam.far.max(cam.near + 1e-3), sc.spec.edge_depth.max(0.0), sc.spec.edge_normal.clamp(0.0, 180.0).to_radians().cos()],
+                size: [size.0 as f32, size.1 as f32, px, radius], spread: [SPREAD as f32, 0.0, 0.0, 0.0],
+            };
+            let mut copies: Vec<MeshCopy> = Vec::with_capacity(sc.count());
+            let mut draws: Vec<(u32, u32, u32, u32)> = vec![];
+            for it in &sc.items {
+                let Some(&(first, count)) = self.mesh.ranges.get(it.mesh.0 as usize) else { continue };
+                let start = copies.len() as u32;
+                for m in &it.transforms {
+                    let n = copies.len() as u32 + 1;
+                    copies.push(MeshCopy { m: m.cols(), paint: [it.paint.tone, it.paint.accent, it.paint.hue as f32, 0.0], id: [(n & 255) as f32, ((n >> 8) & 255) as f32, 0.0, 0.0] });
+                }
+                draws.push((first, count, start, copies.len() as u32));
+            }
+            let t = &mut self.mesh.targets[k];
+            self.queue.write_buffer(&t.ubuf, 0, bytemuck::bytes_of(&u));
+            if copies.len() > t.capacity {
+                t.capacity = copies.len().next_power_of_two();
+                t.copies = self.device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (t.capacity * std::mem::size_of::<MeshCopy>()) as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+            }
+            if !copies.is_empty() { self.queue.write_buffer(&t.copies, 0, bytemuck::cast_slice(&copies)); }
+            let t = &self.mesh.targets[k];
+            {
+                let att = |v| Some(wgpu::RenderPassColorAttachment { view: v, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store } });
+                let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("mesh"), timestamp_writes: None, occlusion_query_set: None, multiview_mask: None,
+                    color_attachments: &[att(&t.views[0]), att(&t.views[1]), att(&t.views[2])],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment { view: &t.views[3], depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Discard }), stencil_ops: None }),
+                });
+                pass.set_pipeline(&self.mesh.pipes[0]);
+                pass.set_bind_group(0, &t.groups[3], &[]);
+                pass.set_vertex_buffer(0, self.mesh.verts.slice(..));
+                pass.set_vertex_buffer(1, t.copies.slice(..));
+                // Every group of copies in one call.
+                for (first, count, a, b) in draws { if b > a { pass.draw(first..first + count, a..b); } }
+            }
+            for (pipe, (view, group)) in [(1, (4, 0)), (2, (5, 1)), (3, (6, 2))] {
+                let mut pass = clear(enc, &t.views[view], wgpu::Color::TRANSPARENT);
+                pass.set_pipeline(&self.mesh.pipes[pipe]);
+                pass.set_bind_group(0, &t.groups[group], &[]);
+                pass.draw(0..3, 0..1);
+            }
+        }
+    }
+
+    fn mesh_target(&self, size: (u32, u32)) -> MeshTarget {
+        let d = &self.device;
+        let tex = |format| Self::target(d, size.0, size.1, format);
+        let views = [tex(GBUF), tex(GBUF), tex(GBUF), tex(DEPTH), tex(GBUF), tex(GBUF), tex(GBUF)];
+        let ubuf = d.create_buffer(&wgpu::BufferDescriptor { label: None, size: std::mem::size_of::<MeshUniforms>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let group = |t: [&wgpu::TextureView; 4]| d.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: &self.mesh.layout, entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: ubuf.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(t[0]) },
+            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(t[1]) },
+            wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(t[2]) },
+            wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(t[3]) },
+        ] });
+        let b = &self.blank;
+        // The mesh pass reads nothing; mask reads normal + depth and id; h the mask; v the mask, h, normal and id.
+        let groups = [group([b, b, &views[1], &views[2]]), group([&views[4], b, b, b]), group([&views[4], &views[5], &views[1], &views[2]]), group([b, b, b, b])];
+        let stage1 = Self::bind(d, &self.layout, &self.ubuf, &self.sampler, [&views[6], &views[0], &self.marks_view, &self.palette_view, &self.chars_view, b, b, b]);
+        let capacity = 64;
+        let copies = d.create_buffer(&wgpu::BufferDescriptor { label: None, size: (capacity * std::mem::size_of::<MeshCopy>()) as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        MeshTarget { size, ubuf, copies, capacity, views, groups, stage1, drawn: None }
+    }
+
+    /// The bind group a batch of stage 1 draws with: its picture's, or its 3D element's resolve.
+    fn batch_group(&self, picture: u32) -> Option<&wgpu::BindGroup> {
+        if picture >= crate::scene::MESH_BATCH { return self.mesh.targets.get((picture - crate::scene::MESH_BATCH) as usize).map(|t| &t.stage1); }
+        self.pictures.get(&picture).or_else(|| self.pictures.get(&u32::MAX))
+    }
+
     fn tile_group(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, ubuf: &wgpu::Buffer, snaps: &[wgpu::TextureView; 4]) -> wgpu::BindGroup {
         let mut entries = vec![wgpu::BindGroupEntry { binding: 0, resource: ubuf.as_entire_binding() }];
         // Bindings 1–4: source ink, target ink, source near, target near.
@@ -389,7 +568,7 @@ impl Renderer {
             self.split_seen = sp.id;
             if let Some(old) = self.last_look {
                 let before = self.before.clone();
-                self.frame(&before, Frame { scene: &sp.scene, field: &sp.field, look: &old, scale, t: sp.t, mt, split: [0.0; 4], tiles: None }, false);
+                self.frame(&before, Frame { scene: &sp.scene, field: &sp.field, look: &old, lib: ui.meshes(), scale, t: sp.t, mt, split: [0.0; 4], tiles: None }, false);
                 self.split = [sp.at[0], sp.at[1], sp.t, 1.0];
             }
         }
@@ -406,10 +585,13 @@ impl Renderer {
                 for (insts, ink, near) in [(&run.src, 0, 2), (&run.dst, 1, 3)] {
                     let mut sc = Scene::default();
                     for i in insts { sc.push(*i); }
+                    // A 3D element in the morph: its meshes as the page has them.
+                    sc.meshes = ui.scene().meshes.clone();
                     let (iv, nv) = (self.tiles.snaps[ink].clone(), self.tiles.snaps[near].clone());
                     self.uniforms(&Field::default(), look, scale, now, mt, [0.0; 4], [1.0, 1.0, w, h]);
                     self.upload(&sc);
                     let mut enc = self.device.create_command_encoder(&Default::default());
+                    self.prepare_meshes(&mut enc, &sc, ui.meshes());
                     self.stage1(&mut enc, &sc, &iv, &nv, None, 0);
                     self.queue.submit([enc.finish()]);
                 }
@@ -437,7 +619,7 @@ impl Renderer {
         let loose = tiles.is_some() || ui.loose_estimate(now, look.fx.lens) >= LO_MIN_AREA;
         let lo = (q < 1.0 && (loose || self.always_lo)).then(|| { let (w, h) = self.lo_for(q); [1.0 / q, q, w as f32, h as f32] });
         let pending = ui.perf().pending;
-        self.frame_q(target, Frame { scene: ui.scene(), field: ui.field(), look, scale, t: now, mt, split, tiles }, true, lo);
+        self.frame_q(target, Frame { scene: ui.scene(), field: ui.field(), look, lib: ui.meshes(), scale, t: now, mt, split, tiles }, true, lo);
         let submit = (crate::perf::now_ms() - started) as f32;
         let parts = ui.morph_run().map_or(0, |r| if r.clock(now).is_some() { r.particles.len() as u32 } else { 0 });
         let p = ui.perf_mut();
@@ -479,7 +661,7 @@ impl Renderer {
             for b in &scene.batches {
                 if pending && b.start >= layer { draw_tiles(&mut pass); pending = false; }
                 pass.set_pipeline(if b.start >= layer { top } else { pipe });
-                let group = self.pictures.get(&b.picture).or_else(|| self.pictures.get(&u32::MAX)).expect("blank picture");
+                let Some(group) = self.batch_group(b.picture) else { continue };
                 pass.set_bind_group(0, group, &[]);
                 pass.draw(0..4, b.start..b.end);
             }
@@ -492,7 +674,7 @@ impl Renderer {
             pass.set_pipeline(&self.pipes[4]);
             // The modal layer is not liquid (see `fs_ink_top`).
             for b in scene.batches.iter().filter(|b| b.start < layer) {
-                let group = self.pictures.get(&b.picture).or_else(|| self.pictures.get(&u32::MAX)).expect("blank picture");
+                let Some(group) = self.batch_group(b.picture) else { continue };
                 pass.set_bind_group(0, group, &[]);
                 pass.draw(0..4, b.start..b.end);
             }
@@ -529,6 +711,7 @@ impl Renderer {
             self.queue.write_buffer(&self.annots, 0, bytemuck::cast_slice(&scene.annot));
         }
         let mut enc = self.device.create_command_encoder(&Default::default());
+        self.prepare_meshes(&mut enc, scene, f.lib);
         let (ink, near, soft) = (self.ink.clone(), self.near.clone(), self.soft.clone());
         self.stage1(&mut enc, scene, &ink, &near, wants_soft.then_some(&soft), tiles);
         if lo.is_some() {

@@ -67,3 +67,20 @@ pub enum ViewProblem {
     #[error("`{key}` sends fronts to `Scope::Container(Some(\"{container}\"))`, but no element has that key. Write the key of an element on the page, or `Scope::Container(None)` and mark the region with `.ripple_scope()`.")]
     UnknownContainer { key: String, container: String },
 }
+
+/// A glTF file could not be read into a mesh (`mesh::load_gltf`).
+#[derive(Clone, Debug, Error, PartialEq)]
+pub enum MeshError {
+    #[error("the glTF JSON could not be parsed ({0}). Pass the bytes of a `.gltf` file (JSON) or a `.glb` file (binary).")]
+    Json(String),
+    #[error("the glTF file ends before the data it describes (an accessor, a buffer view or a GLB chunk reaches past the end). Export it again, or embed the buffers.")]
+    Truncated,
+    #[error("the glTF file has no {0}. Only triangle meshes with positions are read; export the scene with its meshes.")]
+    Missing(&'static str),
+    #[error("the glTF file refers to an external buffer `{0}…`. Only buffers inside the file are read: export as `.glb`, or as `.gltf` with embedded (data: URI) buffers.")]
+    ExternalBuffer(String),
+    #[error("the glTF file uses {0}, which this loader does not read (positions, normals, indices and node transforms only; no skins, morph targets or textures).")]
+    Unsupported(&'static str),
+    #[error("a buffer's base64 data has the character `{0}`, which is not base64.")]
+    Base64(char),
+}

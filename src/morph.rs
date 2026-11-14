@@ -6,7 +6,7 @@
 //! than `count_max`). It carries no colour of its own: it shows what the source drew in its cell (read
 //! from a picture of the source's stage-1 output) and, as it lands, what the target draws in its cell.
 //! So at the hand-over a tile is exactly the piece of the element it replaces, whatever the material.
-use crate::scene::{GLYPH, Instance, PICTURE};
+use crate::scene::{GLYPH, Instance, MESH, PICTURE};
 use crate::text::{ATLAS, SPREAD};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -277,7 +277,8 @@ fn cover_at(i: &Instance, x: f32, y: f32, atlas: &[u8]) -> f32 {
             } else { atlas.get(o).map_or(0.0, |&c| c as f32 / 255.0) };
             c * a
         }
-        k if k == PICTURE => a,
+        // A 3D element counts as covering its box; its tiles show what it drew there.
+        k if k == PICTURE || k == MESH => a,
         _ => {
             if i.paint[0].max(i.paint[1]) < 0.1 { return 0.0; }
             let (lx, ly) = (x - r[0], y - r[1]);

@@ -70,8 +70,14 @@ pub enum Content {
            select: Option<(usize, usize)>, mark: Option<(usize, usize)>, nowrap: bool },
     /// A picture by id, with its height as a fraction of its width, and the `PicFx` slot it uses.
     Picture { id: u32, ratio: f32, fx: u8 },
+    /// Meshes, a camera and a light, drawn into the element's box (DESIGN.md §1.18).
+    Scene3d(Rc<crate::mesh::Scene3d>),
 }
 
+/// Handles the pointer over a `scene3d` element: which copy it is on, or pressed (DESIGN.md §1.18).
+pub type OnPick<M> = Rc<dyn Fn(crate::mesh::Pick) -> Option<M>>;
+/// Handles the wheel over an element before any scroll node does (dx, dy, logical px).
+pub type OnWheel<M> = Rc<dyn Fn(f32, f32) -> Option<M>>;
 /// Handles a key while the element has focus; the flag is Shift.
 pub type OnKey<M> = Rc<dyn Fn(Key, bool) -> Option<M>>;
 /// Handles text input while the element has focus (a text field, DESIGN.md §1.8.1).
@@ -242,6 +248,10 @@ pub struct El<M> {
     pub access: Option<Access>,
     /// Ripple scope, response, legibility and recomposition (DESIGN.md §1.15, §1.16).
     pub ripple: Ripple,
+    /// A `scene3d` element: what the pointer is over, and presses, by the copy under it.
+    pub on_pick: Option<OnPick<M>>,
+    /// The wheel over this element (taken before scrolling).
+    pub on_wheel: Option<OnWheel<M>>,
     pub children: Vec<El<M>>,
 }
 
@@ -290,7 +300,7 @@ impl<M> El<M> {
     fn new(style: Style, content: Content) -> Self {
         // Nothing shrinks unless asked: fixed sizes stay fixed inside columns and scroll areas.
         let style = Style { flex_shrink: 0.0, ..style };
-        Self { key: String::new(), style, content, fill: None, border: None, radius: 0.0, on_press: None, on_key: None, on_drag: None, on_blur: None, focusable: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, modal: None, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, clips: false, calm: false, on_text: None, multiline: false, selectable: false, cursor: None, virt: None, access: None, ripple: Ripple::default(), children: vec![] }
+        Self { key: String::new(), style, content, fill: None, border: None, radius: 0.0, on_press: None, on_key: None, on_drag: None, on_blur: None, focusable: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, modal: None, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, clips: false, calm: false, on_text: None, multiline: false, selectable: false, cursor: None, virt: None, access: None, ripple: Ripple::default(), on_pick: None, on_wheel: None, children: vec![] }
     }
     pub fn key(mut self, k: impl Into<String>) -> Self { self.key = k.into(); self }
     pub fn gap(mut self, g: f32) -> Self { self.style.gap = Size { width: length(g), height: length(g) }; self }
@@ -415,6 +425,10 @@ impl<M> El<M> {
     pub fn recompose(mut self, on: bool) -> Self { self.ripple.recompose = Some(on); self }
     /// Choose the `PicFx` slot of a picture.
     pub fn pic_fx(mut self, slot: u8) -> Self { if let Content::Picture { fx, .. } = &mut self.content { *fx = slot; } self }
+    /// Hear which copy of a `scene3d` element the pointer is over and which one it presses.
+    pub fn on_pick(mut self, f: impl Fn(crate::mesh::Pick) -> Option<M> + 'static) -> Self { self.on_pick = Some(Rc::new(f)); self }
+    /// Take the wheel over this element (before any scroll node): dx, dy in logical px.
+    pub fn on_wheel(mut self, f: impl Fn(f32, f32) -> Option<M> + 'static) -> Self { self.on_wheel = Some(Rc::new(f)); self }
     pub fn scroll(mut self) -> Self { self.scroll = true; self.style.overflow.y = taffy::Overflow::Scroll; self.style.scrollbar_width = 0.0; self }
     /// Scroll horizontally instead (the wheel's vertical movement scrolls it too).
     pub fn scroll_x(mut self) -> Self { self.scroll = true; self.horizontal = true; self.style.overflow.x = taffy::Overflow::Scroll; self.style.scrollbar_width = 0.0; self }
@@ -425,15 +439,17 @@ impl<M> El<M> {
 
     /// The same tree sending other messages: lets one application embed another's view.
     pub fn map<N: 'static>(self, f: Rc<dyn Fn(M) -> N>) -> El<N> where M: 'static {
-        let El { key, style, content, fill, border, radius, on_press, on_key, on_drag, on_blur, focusable, scroll, horizontal, bar, reveal, disabled, commit, modal, fonts, loose, wipe, flow, hidden, annotate, gaze_scope, material, loosen, anchor, clips, calm, on_text, multiline, selectable, cursor, virt, access, ripple, children } = self;
+        let El { key, style, content, fill, border, radius, on_press, on_key, on_drag, on_blur, focusable, scroll, horizontal, bar, reveal, disabled, commit, modal, fonts, loose, wipe, flow, hidden, annotate, gaze_scope, material, loosen, anchor, clips, calm, on_text, multiline, selectable, cursor, virt, access, ripple, on_pick, on_wheel, children } = self;
         let virt = virt.map(|v| { let f = f.clone(); let b = v.build; Virtual { count: v.count, row_h: v.row_h, overscan: v.overscan, selected: v.selected, build: Rc::new(move |i: usize| b(i).map(f.clone())) as Rc<dyn Fn(usize) -> El<N>> } });
         let on_key = on_key.map(|k| { let f = f.clone(); Rc::new(move |key: Key, shift: bool| k(key, shift).map(|m| f(m))) as OnKey<N> });
         let on_text = on_text.map(|t| { let f = f.clone(); Rc::new(move |i: TextInput| t(i).map(|m| f(m))) as OnText<N> });
         let on_drag = on_drag.map(|d| { let f = f.clone(); Rc::new(move |g: Drag| d(g).map(|m| f(m))) as OnDrag<N> });
+        let on_pick = on_pick.map(|d| { let f = f.clone(); Rc::new(move |g: crate::mesh::Pick| d(g).map(|m| f(m))) as OnPick<N> });
+        let on_wheel = on_wheel.map(|d| { let f = f.clone(); Rc::new(move |x: f32, y: f32| d(x, y).map(|m| f(m))) as OnWheel<N> });
         El {
             key, style, content, fill, border, radius, on_press: on_press.map(|m| f(m)), on_key, on_drag, on_blur: on_blur.map(|m| f(m)),
             focusable, scroll, horizontal, bar, reveal, disabled, commit, modal: modal.map(|m| Modal { dismiss: f(m.dismiss), beneath: m.beneath }),
-            fonts, loose, wipe, flow, hidden, annotate, gaze_scope, material, loosen, anchor, clips, calm, on_text, multiline, selectable, cursor, virt, access, ripple, children: children.into_iter().map(|c| c.map(f.clone())).collect(),
+            fonts, loose, wipe, flow, hidden, annotate, gaze_scope, material, loosen, anchor, clips, calm, on_text, multiline, selectable, cursor, virt, access, ripple, on_pick, on_wheel, children: children.into_iter().map(|c| c.map(f.clone())).collect(),
         }
     }
 }
@@ -449,6 +465,13 @@ pub fn text_lh<M>(s: impl Into<String>, size: f32, line: f32, paint: Paint) -> E
     El::new(Style::default(), Content::Text { s: s.into(), size, line, paint, font: Font::Body, print: 0.0, caret: None, weight: 0.0, around: None, select: None, mark: None, nowrap: false })
 }
 pub fn picture<M>(id: u32, ratio: f32) -> El<M> { El::new(Style { size: Size { width: percent(1.0), height: auto() }, ..Default::default() }, Content::Picture { id, ratio, fx: 0 }) }
+/// Meshes with a camera and a light (DESIGN.md §1.18), as wide as its parent and 240 px tall unless
+/// sized otherwise. It is decoration by default (`Response::Loosen`), like a picture.
+pub fn scene3d<M>(s: crate::mesh::Scene3d) -> El<M> {
+    El::new(Style { size: Size { width: percent(1.0), height: length(240.0) }, ..Default::default() }, Content::Scene3d(Rc::new(s)))
+}
+/// One mesh at the origin, with the default camera and light (`mesh::Scene3d::single`).
+pub fn mesh<M>(id: crate::mesh::MeshId) -> El<M> { scene3d(crate::mesh::Scene3d::single(id)) }
 /// Every child in the same place, centred in the stack (a one-cell grid): for things that replace one
 /// another where they stand, like the candidates of a morph.
 pub fn stack<M>(children: impl IntoIterator<Item = El<M>>) -> El<M> {

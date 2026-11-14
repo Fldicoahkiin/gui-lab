@@ -137,6 +137,16 @@ fn box_d(local: vec2f, size: vec2f, r: f32) -> f32 {
 fn inst(i: VOut) -> vec4f {
   if (i.pos.x < i.clip.x || i.pos.y < i.clip.y || i.pos.x >= i.clip.z || i.pos.y >= i.clip.w) { discard; }
   let kind = i.paint.w;
+  if (kind > 2.5) {
+    // A 3D element (DESIGN.md §1.18): its resolve gives the silhouette's and the faces' signed nearness
+    // (filtered: the target may be smaller than the box). Past the box it falls off by the distance.
+    let e = mesh_near(i);
+    let over = max(max(-i.local.x, i.local.x - i.size.x), max(-i.local.y, i.local.y - i.size.y));
+    let sil = (e.r - 0.5) * 2.0 * u.fd.z - max(over, 0.0);
+    let face = (e.g - 0.5) * 2.0 * u.fd.z - max(over, 0.0);
+    let pic = i.extra.x > 0.5 && sil > 0.0;
+    return vec4f(clamp(sil + 0.5, 0.0, 1.0), clamp(0.5 + face / (2.0 * u.fd.z), 0.0, 1.0), select(0.0, 1.0, pic), -face);
+  }
   if (kind > 1.5) {
     // A picture with an alpha channel (a cut-out) has its true outline: outside it, nothing is there.
     var d = box_d(i.local, i.size, 0.0);
@@ -160,6 +170,25 @@ fn inst(i: VOut) -> vec4f {
   return vec4f(clamp(0.5 - d, 0.0, 1.0), near, 0.0, d);
 }
 
+/// A 3D element's resolved nearness here (tex0 is its resolve for mesh batches).
+fn mesh_near(i: VOut) -> vec4f { return textureSampleLevel(tex0, samp, clamp(i.uv, vec2f(0.0), vec2f(1.0)), 0.0); }
+/// A 3D element's colour texel here, nearest (tex1 is its colour image): shade, tone, accent and
+/// 0.5 + hue / 4. At the silhouette's filtered edge an empty texel takes a drawn neighbour's colour.
+fn mesh_px(i: VOut) -> vec4f {
+  let dims = vec2f(textureDimensions(tex1));
+  let q = vec2i(clamp(floor(clamp(i.uv, vec2f(0.0), vec2f(1.0)) * dims), vec2f(0.0), dims - 1.0));
+  var c = textureLoad(tex1, q, 0);
+  if (c.a < 0.25) {
+    let lim = vec2i(dims) - 1;
+    var dirs = array<vec2i, 8>(vec2i(1, 0), vec2i(-1, 0), vec2i(0, 1), vec2i(0, -1), vec2i(1, 1), vec2i(-1, 1), vec2i(1, -1), vec2i(-1, -1));
+    for (var k = 0; k < 8; k++) {
+      let n = textureLoad(tex1, clamp(q + dirs[k], vec2i(0), lim), 0);
+      if (n.a >= 0.25) { c = n; break; }
+    }
+  }
+  return c;
+}
+
 /// Whether the height materials (chrome, liquid) shade this instance: shapes whose shorter side and
 /// glyphs whose type size is at least their `min_px`.
 fn is_big(i: VOut) -> bool {
@@ -167,6 +196,7 @@ fn is_big(i: VOut) -> bool {
   if (m != CHROME && m != LIQUID) { return false; }
   let min_px = mp(CHROME, 0).w * u.res.z;
   if (i.paint.w < 0.5) { return i.look.w >= min_px * 1.25; }
+  if (i.paint.w > 2.5) { return i.extra.x < 0.5 && min(i.size.x, i.size.y) >= min_px; }
   // Filled shapes, and rings whose band is wide enough to carry a bevel.
   return i.paint.w < 1.5 && min(i.size.x, i.size.y) >= min_px && (i.extra.x == 0.0 || i.extra.x >= min_px * 0.25);
 }
@@ -188,7 +218,10 @@ fn own_loose(i: VOut) -> f32 {
   let born = clamp((u.res.w - i.extra.w) / max(u.fc.z, 1e-3), 0.0, 1.0);
   let k = max(i.extra.z, 1.0 - born);
   if (i.resp.x <= 0.0) { return k; }
-  return k + clamp(wave_in(i.pos.xy, i.resp.zw, 0.6), 0.0, max(i.resp.x - k, 0.0));
+  var w = wave_in(i.pos.xy, i.resp.zw, 0.6);
+  // A 3D element also loosens under the lens and a hover's burst, as pictures do.
+  if (i.paint.w > 2.5) { w = max(w, max(lens(i.pos.xy), burst_k(i.pos.xy))); }
+  return k + clamp(w, 0.0, max(i.resp.x - k, 0.0));
 }
 
 @fragment fn fs_ink(i: VOut) -> @location(0) vec4f { return ink_of(i, false); }
@@ -198,6 +231,21 @@ fn own_loose(i: VOut) -> f32 {
 fn ink_of(i: VOut, solid: bool) -> vec4f {
   let s = inst(i);
   var a = s.x * i.paint.z;
+  if (i.paint.w > 2.5) {
+    // Flat shading in the theme's colours: the lit share of the object's tone and accent, so the
+    // material decodes it like any shape (code 0.07 above the hue: a shape, and a mesh).
+    let c = mesh_px(i);
+    let hue = clamp(round((c.a - 0.5) * 4.0), 0.0, 2.0);
+    let r = c.r * c.g * (1.0 - c.b);
+    let g = c.r * c.b;
+    if (i.extra.x > 0.5) {
+      // Drawn as a picture: its own colours, straight.
+      let col = u.bg.rgb * max(1.0 - r - g, 0.0) + u.fg.rgb * r + hue_col(hue) * g;
+      return vec4f(col * a, a);
+    }
+    let code = select(hue * 0.15 + 0.07, ink_code_as(i, true), is_big(i) && !solid);
+    return vec4f(r * a, g * a, code * a, a);
+  }
   if (i.paint.w > 1.5) { return vec4f(textureSampleLevel(tex1, samp, clamp(i.uv, vec2f(0.0), vec2f(1.0)), 0.0).rgb * a, a); }
   // Transparent electronics: filled shapes are drawn by their outline, a faint fill and contour lines
   // inside, so what is under them shows through. Loosened, the outlines break into moving dashes.
@@ -232,7 +280,10 @@ fn near_of(i: VOut) -> vec4f {
   let s = inst(i);
   let born = clamp((u.res.w - i.extra.w) / max(u.fc.z, 1e-3), 0.0, 1.0);
   let loose = min(own_loose(i), 1.0) * step(0.02, s.y) * step(0.01, i.paint.z);
-  let slot = select(0.0, (i.paint.y + 1.0) / 8.0, s.z > 0.5);
+  var slot = select(0.0, (i.paint.y + 1.0) / 8.0, s.z > 0.5);
+  // A 3D element drawn through the material marks its pixels (within the nearness) with the projected
+  // normal's code, 1..9 / 255: below any picture's flag, so nothing else reads it (ascii does).
+  if (i.paint.w > 2.5 && i.extra.x < 0.5 && s.y > 0.01) { slot = max(round(mesh_near(i).b * 255.0), 1.0) / 255.0; }
   var code = select(0.0, round(i.extra.y * 2.0) / 255.0, i.paint.w < 0.5 && s.y > 0.02);
   // A material override reaches through the nearness of shapes and pictures, but only just around
   // glyphs, so text set in its own material does not change the shape it sits on.
@@ -678,9 +729,37 @@ fn m_ascii(p: vec2f) -> vec3f {
   let cell = floor(p / P);
   if (kt((cell + 0.5) * P) <= 0.1 + 0.4 * h1(cell + 1.3)) { return exact(p); }
   let avg = cell_avg(cell, P);
-  let d = dec_at(avg, (cell + 0.5) * P);
-  let n = clamp(floor(avg.a * levels), 0.0, levels - 1.0);
-  let m = char_mark(round(n * 15.0 / (levels - 1.0)), fract(p / P), P);
+  let centre = (cell + 0.5) * P;
+  let d = dec_at(avg, centre);
+  var n = clamp(floor(avg.a * levels), 0.0, levels - 1.0);
+  var m = -1.0;
+  // On a 3D element (DESIGN.md §1.18): density by the light on it, and on its edges and slanted faces a
+  // stroke (| / - \) along the edge or across the slope, by the projected normal, as often as
+  // `ascii_normal_weight` says.
+  let code = round(near_t(centre).g * 255.0);
+  if (code >= 1.0 && code <= 9.0) {
+    n = clamp(floor(clamp(d.tone + d.acc, 0.0, 1.0) * avg.a * levels), 0.0, levels - 1.0);
+    let wgt = clamp(a0.w, 0.0, 1.0);
+    let sd = sdist(centre);
+    var ang = -1.0;
+    if (abs(sd) < P * 0.75) {
+      // On an edge: along it (across the nearness's gradient).
+      let g = sgrad(centre);
+      if (length(g) > 1e-3) { ang = atan2(g.y, g.x) + 1.5707963; }
+    } else if (code >= 2.0 && sd > 0.0) {
+      // A face turned away: across its slope (the normal's direction turned a quarter).
+      ang = (code - 2.0 + 0.5) / 8.0 * 3.14159265 + 1.5707963;
+    }
+    if (ang > -0.5 && h1(cell + 5.1) < wgt) {
+      // The nearest of the four families, drawn as a line through the cell one stroke wide.
+      let fam = round(fract(ang / 3.14159265) * 4.0) % 4.0;
+      let dir = vec2f(cos(fam * 0.7853982), sin(fam * 0.7853982));
+      let q = fract(p / P) - 0.5;
+      let dist = abs(q.x * dir.y - q.y * dir.x) * P;
+      m = clamp(max(1.0, P * 0.14) - dist + 0.5, 0.0, 1.0) * step(abs(dot(q, dir)), 0.42) * step(0.02, avg.a);
+    }
+  }
+  if (m < 0.0) { m = char_mark(round(n * 15.0 / (levels - 1.0)), fract(p / P), P); }
   let colour = select(d.rgb, u.fg.rgb, a0.z >= 0.5);
   return mix(gnd(p), colour, m);
 }

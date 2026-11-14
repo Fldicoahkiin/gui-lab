@@ -98,7 +98,7 @@ pub fn page(s: &Gallery) -> El<Msg> {
 
 // ── Parts shared by the pages ────────────────────────────────────────────────────────────────────
 
-pub(super) fn header(s: &Gallery, h: &str, title: &str, ident: &str, desc: &str) -> El<Msg> {
+pub(crate) fn header(s: &Gallery, h: &str, title: &str, ident: &str, desc: &str) -> El<Msg> {
     let sz = s.theme().sizes;
     col().key(format!("{h}/header")).gap(10.0)
         .child(row().key(format!("{h}/title-row")).wrap().gap(16.0).align(AlignItems::BASELINE)
@@ -108,7 +108,7 @@ pub(super) fn header(s: &Gallery, h: &str, title: &str, ident: &str, desc: &str)
         .child(text_lh(desc, sz.body, (sz.body * 1.7).round(), Paint::DIM).key(format!("{h}/desc")))
 }
 
-pub(super) fn section(h: &str, name: &str, body: El<Msg>) -> El<Msg> {
+pub(crate) fn section(h: &str, name: &str, body: El<Msg>) -> El<Msg> {
     col().key(format!("{h}/{name}")).gap(12.0).fill_width()
         .child(text(name, 13.0, Paint::DIM).heading(2))
         .child(body)
