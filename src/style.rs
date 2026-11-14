@@ -165,7 +165,7 @@ pub const MAT_PARAMS: [&[MatParam]; MATERIAL_COUNT] = [
     &[mp("刻痕", 0.0, 1.0, 0.05, 2, "", 0.6), mp("刻带", 2.0, 40.0, 1.0, 0, "px", 12.0), mp("刀长", 2.0, 40.0, 1.0, 0, "px", 12.0), mp("刀距", 2.0, 16.0, 0.5, 1, "px", 4.0), mp("抖动", 0.0, 1.0, 0.05, 2, "", 0.4)],
     &[mp("行高", 1.0, 40.0, 1.0, 0, "px", 6.0), mp("位移", 0.0, 200.0, 2.0, 0, "px", 48.0), mp("色差", 0.0, 30.0, 0.5, 1, "px", 6.0), mp("保持", 16.0, 500.0, 2.0, 0, "ms", 90.0), mp("块", 4.0, 120.0, 2.0, 0, "px", 28.0)],
     &[mp("线宽", 0.5, 4.0, 0.25, 2, "px", 1.0), mp("填充", 0.0, 1.0, 0.02, 2, "", 0.12), mp("等距线", 2.0, 32.0, 1.0, 0, "px", 7.0), mp("虚线", 2.0, 24.0, 1.0, 0, "px", 6.0)],
-    &[mp("倒角", 1.0, 32.0, 0.5, 1, "px", 9.0), mp("环境", 0.2, 3.0, 0.05, 2, "", 1.0), mp("高光", 0.0, 2.0, 0.05, 2, "", 0.9), mp("最小字号", 8.0, 120.0, 1.0, 0, "px", 30.0), mp("着色", 0.0, 1.0, 0.05, 2, "", 0.15)],
+    &[mp("倒角", 1.0, 32.0, 0.5, 1, "px", 9.0), mp("环境", 0.2, 3.0, 0.05, 2, "", 1.0), mp("高光", 0.0, 2.0, 0.05, 2, "", 0.9), mp("最小尺寸", 8.0, 120.0, 1.0, 0, "px", 44.0), mp("着色", 0.0, 1.0, 0.05, 2, "", 0.15)],
     &[mp("融合", 2.0, 40.0, 1.0, 0, "px", 14.0), mp("折射", 0.0, 30.0, 0.5, 1, "px", 7.0), mp("光泽", 0.0, 2.0, 0.05, 2, "", 0.9), mp("下垂", 0.0, 120.0, 2.0, 0, "px", 40.0)],
     &[mp("撕边", 0.0, 20.0, 0.5, 1, "px", 5.0), mp("纸边", 0.0, 4.0, 0.25, 2, "px", 1.5)],
 ];
@@ -369,7 +369,7 @@ pub fn styles() -> [Style; 12] {
             ..base("Lo-Fi Print", "lofi-print", PAPER, Material::Print) },
         Style { pic: PicFx { pitch: 3.0, levels: 4.0, palette: 3.0, colours: 4.0, spread: 0.6, ..PicFx::with_set(set::PIXEL) },
             ..base("Glitch", "glitch", GLITCH, Material::Glitch) },
-        Style { pic: PicFx { pitch: 6.0, levels: 6.0, colour: colour::GIVEN as f32, tint_a: [0.085, 0.075, 0.07], ground: 1.0, follow: 1.0, gamma: 0.9, ..PicFx::with_set(set::STROKE) },
+        Style { pic: PicFx { pitch: 7.0, levels: 6.0, colour: colour::TWO as f32, tint_a: [0.085, 0.075, 0.07], tint_b: [0.925, 0.886, 0.792], ground: 0.0, follow: 1.0, gamma: 0.8, ..PicFx::with_set(set::STROKE) },
             ..base("Metamorphosis Linocut", "linocut", CREAM, Material::Lino) },
         Style { gaze: Gaze { mode: GazeMode::All, kinds: LEADER | INDEX, density: 10.0, draw_ms: 420.0, colour: COOL.accent, only_marked: true },
             pic: PicFx { pitch: 5.0, levels: 6.0, colour: colour::GIVEN as f32, tint_a: COOL.accent, ground: 0.1, ..PicFx::with_set(set::LINES) },

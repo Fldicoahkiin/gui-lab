@@ -3,7 +3,7 @@
 use super::pages::ratio;
 use super::{Gallery, Msg, STYLE_SLOT, Target};
 use crate::demo::{BUST, SKY, SPHERE, TERRAIN};
-use crate::el::{El, Font, Paint, col, picture, row, space, stack, text, text_lh};
+use crate::el::{El, Font, Paint, col, picture, row, space, text, text_lh};
 use crate::style::{Material, styles};
 use crate::widgets::{Spec, Variant, button_as, card, choice, input, number, segmented, slider, switch, tabs};
 use taffy::{AlignItems, JustifyContent};
@@ -47,8 +47,10 @@ pub fn page(s: &Gallery, i: usize) -> El<Msg> {
         .child(body)
 }
 
-fn pic(h: &str, k: &str, id: u32, w: f32) -> El<Msg> {
-    col().key(format!("{h}/{k}-box")).width(w).child(picture(id, ratio(id)).key(format!("{h}/{k}")).pic_fx(STYLE_SLOT))
+fn pic(h: &str, k: &str, id: u32, w: f32) -> El<Msg> { pic_at(h, k, id, w, 0.0) }
+/// A picture in the style's marks, held at a looseness (1: always shown as marks).
+fn pic_at(h: &str, k: &str, id: u32, w: f32, loose: f32) -> El<Msg> {
+    col().key(format!("{h}/{k}-box")).width(w).child(picture(id, ratio(id)).key(format!("{h}/{k}")).pic_fx(STYLE_SLOT).loose(loose))
 }
 
 // ── 1 Algorithmic / Digital Gaze: a feed, framed and measured ───────────────────────────────────────
@@ -94,12 +96,12 @@ fn dotmatrix(s: &Gallery, h: &str) -> El<Msg> {
         .child(text("站台", 12.0, Paint::DIM).width(60.0)).child(text("状态", 12.0, Paint::DIM).width(120.0)));
     for (i, (time, dest, plat)) in rows.iter().enumerate() {
         // The status of one row changes every few seconds, as boards do.
-        let late = (tick / 4 + i) % 5 == 0;
+        let late = (tick / 4 + i).is_multiple_of(5);
         let status = if late { format!("晚点 {} 分", 3 + (tick / 4 + i) % 7) } else { "正点".to_owned() };
         board = board.child(row().key(format!("{h}/row{i}")).fill_width().gap(18.0).height(36.0).align(AlignItems::CENTER)
-            .child(text(*time, 24.0, Paint::ACCENT).font(Font::Mono).print(3.0).width(90.0))
+            .child(text(*time, 22.0, Paint::ACCENT).font(Font::Mono).width(90.0))
             .child(text(*dest, 24.0, Paint::ACCENT).grow(1.0))
-            .child(text(*plat, 24.0, Paint::ACCENT).font(Font::Mono).print(3.0).width(60.0))
+            .child(text(*plat, 22.0, Paint::ACCENT).font(Font::Mono).width(60.0))
             .child(text(status, 24.0, if late { Paint::hue(1) } else { Paint::ACCENT }).width(120.0).key(format!("{h}/status{i}-{late}"))));
     }
     col().key(format!("{h}/comp")).gap(26.0)
@@ -132,7 +134,7 @@ fn print_zine(s: &Gallery, h: &str) -> El<Msg> {
                     .child(button_as(format!("{h}/subscribe"), "订阅", Variant::Accent, Msg::Press))
                     .child(segmented(&format!("{h}/issue"), &issues, issue, 30.0, |i| Msg::Choose(2, i)))))
             .child(col().key(format!("{h}/right")).width(390.0).gap(12.0)
-                .child(pic(h, "photo", if issue == 1 { SKY } else { BUST }, 390.0))
+                .child(pic_at(h, "photo", if issue == 1 { SKY } else { BUST }, 390.0, 1.0))
                 .child(row().gap(10.0).align(AlignItems::CENTER)
                     .child(space(28.0, 28.0).radius(14.0).fill(Paint::ACCENT))
                     .child(text_lh("图注：石膏像，复印三次。", 13.0, 20.0, Paint::DIM)))))
@@ -161,18 +163,18 @@ fn linocut(s: &Gallery, h: &str) -> El<Msg> {
     let shown = [BUST, TERRAIN, SKY][s.choices[3].min(2)];
     row().key(format!("{h}/comp")).gap(44.0).align(AlignItems::START).wrap()
         .child(col().key(format!("{h}/left")).width(520.0).gap(20.0)
-            .child(stack([
-                space(220.0, 220.0).radius(110.0).fill(Paint::ACCENT).loose(0.55).key(format!("{h}/sun")),
-                text_lh("刀与木", 128.0, 140.0, Paint::INK).font(Font::Display).loose(0.38).key(format!("{h}/headline")),
-            ]).key(format!("{h}/hero")).width(520.0).height(260.0))
+            .child(col().key(format!("{h}/hero")).width(520.0).height(300.0)
+                .child(space(190.0, 190.0).radius(95.0).fill(Paint::ACCENT).loose(0.6).key(format!("{h}/sun")).absolute(Some(320.0), Some(0.0), None, None))
+                .child(text_lh("刀与木", 140.0, 150.0, Paint::INK).font(Font::Display).loose(0.45).key(format!("{h}/headline")).absolute(Some(0.0), Some(130.0), None, None)))
             .child(text_lh("每一道线都是从板上挖掉的。留下的才是墨。", 18.0, 30.0, Paint::INK))
             .child(text_lh("版画展　十一月二十日至十二月十日　每天九点至五点", 14.0, 24.0, Paint::DIM))
             .child(row().gap(12.0).align(AlignItems::CENTER)
                 .child(button_as(format!("{h}/next"), "换一张", Variant::Accent, Msg::Choose(3, (s.choices[3] + 1) % 3)))
                 .child(text(format!("第 {} 张，共 3 张", s.choices[3] % 3 + 1), 13.0, Paint::DIM))))
         .child(col().key(format!("{h}/right")).width(380.0).gap(10.0)
-            .child(pic(h, "print", shown, 380.0))
-            .child(row().fill_width().height(10.0).fill(Paint::INK).loose(0.5).key(format!("{h}/rule"))))
+            // The print itself is held loose: cut in strokes that follow the form.
+            .child(col().key(format!("{h}/print-box")).width(380.0).child(picture(shown, ratio(shown)).key(format!("{h}/print")).pic_fx(STYLE_SLOT).loose(1.0)))
+            .child(text("木版　34 × 28 厘米", 12.0, Paint::DIM)))
 }
 
 // ── 6 Transparent Electronics: see-through layers of a device ───────────────────────────────────────
@@ -261,13 +263,15 @@ fn cyber(s: &Gallery, h: &str) -> El<Msg> {
     let hits: Vec<&(&str, &str)> = COMMANDS.iter().filter(|(c, d)| q.is_empty() || c.contains(&q) || d.contains(&q)).collect();
     let mut results = col().key(format!("{h}/results")).width(560.0).gap(0.0);
     for (i, (c, d)) in hits.iter().enumerate() {
-        let on = s.row == Some(i);
+        let on = s.row.unwrap_or(0).min(hits.len().saturating_sub(1)) == i;
         results = results.child(row().key(format!("{h}/hit{i}")).fill_width().height(34.0).pad(12.0, 0.0).gap(16.0).align(AlignItems::CENTER).on_press(Msg::Row(i)).focusable(false)
             .child(text(if on { "›" } else { " " }, 13.0, Paint::ACCENT).font(Font::Mono).width(10.0))
             .child(text(*c, 13.0, if on { Paint::ACCENT } else { Paint::INK }).font(Font::Mono).width(150.0))
             .child(text(*d, 13.0, Paint::DIM).grow(1.0)));
     }
     col().key(format!("{h}/comp")).fill_width().height(560.0).align(AlignItems::CENTER).justify(JustifyContent::CENTER).gap(0.0).gaze_scope()
+        .child(text("SESSION 2A · 本地", 11.0, Paint::DIM).font(Font::Mono).absolute(Some(0.0), Some(0.0), None, None))
+        .child(text("23:58", 11.0, Paint::DIM).font(Font::Mono).absolute(None, None, Some(0.0), Some(0.0)))
         .child(row().key(format!("{h}/line")).width(560.0).gap(12.0).align(AlignItems::CENTER)
             .child(text("›", 18.0, Paint::ACCENT).font(Font::Mono))
             .child(input(&format!("{h}/query"), &s.query, "输入命令", 530.0, 40, Msg::Query).border(0.0, Paint::GROUND)))
@@ -290,9 +294,9 @@ fn bauhaus(s: &Gallery, h: &str) -> El<Msg> {
         .child(space(210.0, 110.0 * big(2)).radius(55.0 * big(2)).fill(Paint::hue(2)).key(format!("{h}/bar")).absolute(Some(408.0), Some(470.0), None, None))
         .child(text_lh("形·色·线", 96.0, 110.0, Paint::INK).font(Font::Display).key(format!("{h}/headline")).absolute(Some(20.0), Some(16.0), None, None))
         .child(text_lh("包豪斯 1919 — 1933", 15.0, 22.0, Paint::INK).font(Font::Mono).absolute(Some(20.0), Some(580.0), None, None));
-    row().key(format!("{h}/comp")).gap(44.0).align(AlignItems::START).wrap()
+    row().key(format!("{h}/comp")).gap(32.0).align(AlignItems::START).wrap()
         .child(poster)
-        .child(col().key(format!("{h}/side")).width(300.0).gap(18.0)
+        .child(col().key(format!("{h}/side")).width(260.0).gap(18.0)
             .child(text_lh("形式追随功能。", 24.0, 34.0, Paint::INK).font(Font::Display))
             .child(text_lh("选一个形状，它会变大。三种颜色、三种形状和一道粗网格，就是这张海报的全部。", 15.0, 26.0, Paint::TEXT))
             .child(segmented(&format!("{h}/shape"), &["圆", "方", "条"], pick, 32.0, |i| Msg::Choose(5, i)))

@@ -171,7 +171,7 @@ fn loose1(i: VOut) -> f32 {
       stroke *= mix(1.0, step(fract(along / (dash * 2.0)), 0.5), smoothstep(0.05, 0.4, k));
     }
     var contour = 0.0;
-    if (-d > cpitch * 0.75) {
+    if (-d > cpitch * 0.75 && -d < cpitch * 3.5) {
       let f = abs(fract(-d / cpitch + 0.5) - 0.5) * cpitch;
       contour = clamp(line * 0.5 + 0.5 - f, 0.0, 1.0) * 0.45 * (1.0 - smoothstep(0.0, 0.6, k));
     }
@@ -474,7 +474,10 @@ fn ink_inward(p: vec2f) -> Ink {
   if (d > 0.5) { return dec(p); }
   let g = sgrad(p);
   let n = g / max(length(g), 1e-3);
-  return dec(p + n * (1.5 - d));
+  let q = p + n * (1.5 - d);
+  // A picture's ink is its own colour, not text's: nothing to extend from there.
+  if (near_t(q).g > 0.05) { var o = dec(vec2f(-10.0)); o.a = 0.0; o.shape = false; return o; }
+  return dec(q);
 }
 fn burst_k(p: vec2f) -> f32 {
   let age = u.res.w - u.burst_t.x;
@@ -664,23 +667,31 @@ fn m_lino(p: vec2f) -> vec3f {
   let sd = sdist(p);
   let w = ink_inward(p);
   if (w.a < 0.02 && sd < -u.fd.z + 0.6) { return gnd(p); }
-  let n = vnoise(p / (slen * 0.7));
-  let cut = sd + (n - 0.5) * carve * 2.0 * (1.0 + band * 0.5);
+  // The cut edge: a slow wander of the knife and small chips.
+  let n = vnoise(p / (slen * 2.0)) - 0.5;
+  let chip = vnoise(p / (slen * 0.35) + 3.0) - 0.5;
+  let cut = sd + (n * 2.0 + chip * 0.8) * carve * (1.0 + 1.5 * k) * s;
   var inked = smoothstep(-0.6, 0.6, cut);
   if (abs(sd) < band && abs(sd) < u.fd.z - 0.5) {
     let g = sgrad(p);
     let nrm = g / max(length(g), 1e-3);
     let tng = vec2f(-nrm.y, nrm.x);
-    let wv = wob * spitch * (vnoise(p / slen + 7.0) - 0.5) * 2.0;
-    let lane = floor((sd + wv) / spitch);
-    let st = fract((sd + wv) / spitch);
-    let along = fract(dot(p, tng) / slen + h1(vec2f(lane, 2.0)) * 5.0);
-    let taper = sin(3.14159 * along);
-    let depth = 1.0 - abs(sd) / max(band, 1e-3);
-    let width = clamp(taper * (0.25 + 0.5 * depth), 0.0, 0.9);
-    let stroke = smoothstep(width * 0.5 + 0.08, width * 0.5 - 0.08, abs(st - 0.5));
-    if (sd < 0.0) { inked = max(inked, stroke * step(0.3, h1(vec2f(lane, floor(dot(p, tng) / slen))))); }
-    else { inked = min(inked, 1.0 - stroke); }
+    let wv = wob * spitch * (vnoise(p / slen + 7.0) - 0.5);
+    let along = dot(p, tng) / spitch + wv / spitch;
+    let lane = floor(along);
+    if (sd > 0.0) {
+      // Gouges: white wedges cut in from the edge, each of its own length.
+      let len = band * (0.35 + 0.65 * h1(vec2f(lane, 4.0)));
+      let width = 0.42 * clamp(1.0 - sd / max(len, 1e-3), 0.0, 1.0);
+      let g1 = smoothstep(width + 0.06, width - 0.06, abs(fract(along) - 0.5)) * step(0.25, h1(vec2f(lane, 9.0)));
+      inked = min(inked, 1.0 - g1);
+    } else {
+      // Ridges of ink left standing outside, echoing the edge, in long broken lines.
+      let echo = -sd / (spitch * 1.6) + wv / spitch * 0.4;
+      let on_line = smoothstep(0.6 * s, 0.0, abs(fract(echo + 0.5) - 0.5) * spitch * 1.6 - 0.4 * s) * step(0.6, -sd / spitch);
+      let dash = step(0.35, vnoise(vec2f(dot(p, tng) / (slen * 1.5), floor(echo + 0.5) * 3.1)));
+      inked = max(inked, on_line * dash);
+    }
   }
   let lino = mix(gnd(p), select(w.rgb, u.fg.rgb, w.a < 0.02), inked);
   return mix(exact(p), lino, smoothstep(0.0, 0.12, k));
@@ -821,14 +832,14 @@ fn m_liquid(p: vec2f) -> vec3f {
   let gl = max(length(vec2f(gx, gy)) / (2.0 * e), 1e-3);
   let alpha = clamp((f - 0.5) / gl + 0.5, 0.0, 1.0);
   if (alpha <= 0.0) { return base; }
-  let h = smoothstep(0.5, 0.95, f);
+  let h = smoothstep(0.5, 0.75, f);
   let n = normalize(vec3f(-gx * 3.0, -gy * 3.0, 1.0) * vec3f(1.0, 1.0, 0.6 + h));
   // Colour: the field's own, so joins between two colours blend.
   var sc = soft_t(p);
   var colr = select(u.accent.rgb, sc.rgb / max(sc.a, 1e-3), sc.a > 0.004);
   // Behind its thin edges, the page is bent by the surface.
   let behind = gnd(p + n.xy * a0.y * s * 4.0) ;
-  let body = mix(behind, colr * (0.5 + 0.55 * h), 0.35 + 0.65 * smoothstep(0.0, 0.5, h));
+  let body = mix(behind, colr * (0.72 + 0.38 * h), 0.6 + 0.4 * smoothstep(0.0, 0.4, h));
   let r = vec3f(2.0 * n.z * n.x, 2.0 * n.z * n.y, 2.0 * n.z * n.z - 1.0);
   let env = mix(vec3f(1.0), vec3f(0.55, 0.6, 0.75), smoothstep(-0.3, 0.6, r.y));
   let hv = normalize(vec3f(-0.4, -0.65, 0.65) + vec3f(0.0, 0.0, 1.0));

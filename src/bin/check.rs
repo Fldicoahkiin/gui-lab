@@ -6,13 +6,20 @@
 //!     landing frame the target at looseness 1, within 2/255 over each element; mid-flight, under the
 //!     light theme, tiles are drawn outside and between the two elements.
 //!
+//!  5. Rest (step 5): for every material but chrome and liquid, body text at looseness 0 is drawn
+//!     exactly as `plain` draws it (print: within its paper grain; dot: the glyphs' own pixels, since
+//!     its ground has units at rest); with a control that loosened text
+//!     does differ.
+//!  6. Every material, light theme: a fully loosened picture shows no page-ground pixel.
+//!  7. Annotation frames lie on the layout rects to the pixel.
+//!
 //! usage: check
 use lab::demo::{BUST, PICTURE_SIZES, SKY, SPHERE, TERRAIN};
 use lab::el::{El, Font, Paint, col, picture, row, space, text_lh};
 use lab::morph::MorphSpec;
 use lab::marks::PALETTES;
 use lab::offscreen::Offscreen;
-use lab::style::{DARK, LIGHT, Look, Material, PicFx, Theme, set};
+use lab::style::{DARK, Gaze, GazeMode, LIGHT, Look, MATERIAL_COUNT, Material, PicFx, Theme, gaze, set};
 use lab::text::{MONO, PIXEL, SANS, load_bundled};
 use lab::ui::Ui;
 
@@ -204,6 +211,80 @@ fn main() {
     }
     eprintln!("4. morphs: largest difference {worst}/255, {} failing", failed - before);
 
+    // ── 5. Every material is restrained at rest ─────────────────────────────────────────────────────
+    let before = failed;
+    for theme in [DARK, LIGHT] {
+        let mut ui = Ui::new(Rest { loose: 0.0 }, rest, |_, _| {}, fonts(), W, H, 1.0);
+        ui.pointer_leave();
+        ui.tick(100.0);
+        let r = ui.node("body").expect("body").rect;
+        let plain = o.render(&mut ui, &Look { theme, material: Material::Plain, ..Look::default() });
+        for m in 0..MATERIAL_COUNT as u8 {
+            let mat = Material::from_id(m);
+            if matches!(mat, Material::Chrome | Material::Liquid | Material::Plain) { continue; }
+            let look = Look { theme, material: mat, ..Look::default() };
+            let img = o.render(&mut ui, &look);
+            // The dot material's ground has its units at rest (§1.6): there only the glyphs' own
+            // pixels are compared.
+            let d = if mat == Material::Dot { diff_ink(&plain, &img, r, rgb8(theme.ground)) } else { diff(&plain, &img, r) };
+            // Print's paper grain moves the ground by at most grain × 2.75 % (7/255 at the default).
+            let allowed = if mat == Material::Print { 8 } else { 0 };
+            eprintln!("   rest {} {:?}: body differs from plain by {d}/255", theme.name, mat);
+            if d > allowed { eprintln!("FAIL rest: {:?} body text is not exact at rest ({d}/255)", mat); failed += 1; }
+            if theme.name == DARK.name && !matches!(mat, Material::Collage | Material::Xray) {
+                // Control: loosened, the same comparison sees the material.
+                ui.state.loose = 1.0; ui.relayout(); ui.tick(100.0);
+                let d1 = diff(&plain, &o.render(&mut ui, &look), r);
+                ui.state.loose = 0.0; ui.relayout(); ui.tick(100.0);
+                if d1 <= allowed { eprintln!("FAIL control: {:?} loosened looks like plain", mat); failed += 1; }
+            }
+        }
+    }
+    eprintln!("5. rest: {} failing", failed - before);
+
+    // ── 6. No material shows the ground inside a loosened picture ───────────────────────────────────
+    let before = failed;
+    let ground = rgb8(LIGHT.ground);
+    let mut ui = Ui::new(One { id: BUST, loose: 1.0 }, one, |_, _| {}, fonts(), W, H, 1.0);
+    ui.pointer_leave();
+    ui.tick(100.0);
+    let (x0, y0, x1, y1) = device_rect(ui.node("pic").expect("pic").rect, 1.0);
+    for m in 0..MATERIAL_COUNT as u8 {
+        for f in [PicFx::default(), PicFx { pitch: 12.0, ground: 0.0, ..PicFx::with_set(set::CHARS) }, PicFx { pitch: 6.0, ..PicFx::with_set(set::STROKE) }] {
+            let mut look = Look { theme: LIGHT, material: Material::from_id(m), ..Look::default() };
+            look.pics[0] = f;
+            // A front mid-way, too, for the materials that move things.
+            ui.press(30.0, 30.0); ui.release(30.0, 30.0); ui.tick(100.3);
+            let img = o.render(&mut ui, &look);
+            let n = (y0..y1).flat_map(|y| (x0..x1).map(move |x| (x, y))).filter(|&(x, y)| close(px(&img, W, x, y), ground)).count();
+            if n > 0 { eprintln!("FAIL ground shows in a loosened picture under {:?}: {n} px", Material::from_id(m)); failed += 1; }
+            ui.tick(110.0);
+        }
+    }
+    eprintln!("6. pictures under every material: {} failing", failed - before);
+
+    // ── 7. Annotation frames on the layout rects ────────────────────────────────────────────────────
+    let before = failed;
+    let magenta = [255u8, 0, 255];
+    let g = Gaze { mode: GazeMode::All, kinds: gaze::FRAME, density: 20.0, draw_ms: 100.0, colour: [1.0, 0.0, 1.0], only_marked: false };
+    let mut ui = Ui::new(g, framed, |_, _| {}, fonts(), W, H, 1.0).on_gaze(|g| *g);
+    ui.pointer_leave();
+    ui.tick(5.0);
+    let look = Look { theme: DARK, material: Material::Plain, ..Look::default() };
+    let img = o.render(&mut ui, &look);
+    let mut frames = 0;
+    for a in ui.annots() {
+        let (x0, y0, x1, y1) = device_rect(a.rect, 1.0);
+        let corners = [(x0, y0), (x1 - 1, y0), (x0, y1 - 1), (x1 - 1, y1 - 1)];
+        let outside = [(x0 - 1, y0), (x0, y0 - 1), (x1, y1 - 1), (x1 - 1, y1)];
+        let on = corners.iter().all(|&(x, y)| px(&img, W, x, y) == magenta);
+        let off = outside.iter().all(|&(x, y)| px(&img, W, x, y) != magenta);
+        if !on || !off { eprintln!("FAIL frame of {} is not on its rect ({on}, {off})", a.key); failed += 1; }
+        frames += 1;
+    }
+    if frames < 4 { eprintln!("FAIL only {frames} frames"); failed += 1; }
+    eprintln!("7. annotation frames: {frames} checked, {} failing", failed - before);
+
     if failed > 0 { eprintln!("{failed} checks failed"); std::process::exit(1); }
     eprintln!("all checks passed");
 }
@@ -244,6 +325,36 @@ fn diff(a: &[u8], b: &[u8], r: lab::ui::Rect) -> i32 {
     let mut d = 0;
     for y in y0..y1.min(H) { for x in x0..x1.min(W) {
         let (p, q) = (px(a, W, x, y), px(b, W, x, y));
+        for c in 0..3 { d = d.max((p[c] as i32 - q[c] as i32).abs()); }
+    } }
+    d
+}
+
+/// Body text on the ground, with a heading, a picture and a control around it.
+struct Rest { loose: f32 }
+fn rest(s: &Rest) -> El<()> {
+    let (w, h) = PICTURE_SIZES[SKY as usize];
+    col().pad(30.0, 20.0).gap(20.0).loosen(s.loose)
+        .child(text_lh("松开与合拢", 52.0, 64.0, Paint::INK).key("head"))
+        .child(row().gap(30.0)
+            .child(col().width(330.0).child(text_lh("材质决定松开时画什么。静止时，页面是一张干净、可读的页面；波前经过时按轮廓松开。Body text 0123.", 16.0, 27.0, Paint::TEXT).key("body")))
+            .child(col().width(260.0).child(picture(SKY, h as f32 / w as f32).key("pic"))))
+        .child(space(120.0, 30.0).radius(4.0).fill(Paint::ACCENT))
+}
+/// Separate elements to frame.
+fn framed(_: &Gaze) -> El<()> {
+    col().pad(40.0, 40.0).gap(40.0)
+        .child(space(200.0, 60.0).fill(Paint::FAINT).key("f1"))
+        .child(row().gap(50.0).child(space(90.0, 90.0).radius(45.0).fill(Paint::ACCENT).key("f2")).child(text_lh("标注", 30.0, 40.0, Paint::INK).key("f3")))
+        .child(space(310.0, 37.0).border(1.0, Paint::DIM).key("f4"))
+}
+/// Largest channel difference over the pixels of a rect where `a` is not the ground.
+fn diff_ink(a: &[u8], b: &[u8], r: lab::ui::Rect, ground: [u8; 3]) -> i32 {
+    let (x0, y0, x1, y1) = device_rect(r, 1.0);
+    let mut d = 0;
+    for y in y0..y1.min(H) { for x in x0..x1.min(W) {
+        let (p, q) = (px(a, W, x, y), px(b, W, x, y));
+        if close(p, ground) { continue; }
         for c in 0..3 { d = d.max((p[c] as i32 - q[c] as i32).abs()); }
     } }
     d

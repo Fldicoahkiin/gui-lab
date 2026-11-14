@@ -1003,11 +1003,12 @@ impl<S, M: Clone> Ui<S, M> {
         // A label at logical (x, y), on a plate; returns its width.
         let label = |text: &mut Text, out: &mut Vec<Instance>, str: &str, x: f32, y: f32| -> f32 {
             let (w, _) = text.measure(str, MONO, SIZE, LINE, None);
-            bar(out, dev(x) - t * 2.0, dev(y), dev(w) + t * 4.0, dev(LINE), 0.82, true);
+            bar(out, dev(x) - t * 2.0, dev(y), dev(w) + t * 4.0, dev(LINE), 1.0, true);
             let proto = Instance { paint: [0.0, 0.0, 1.0, 0.0], look: col, ..Default::default() };
             text.emit(Para { s: str, face: MONO, size: SIZE, line: LINE, width: 1e5, print: 0.0 }, (x, y), proto, s, |mut i, _| { i.clip = clip; out.push(i); });
             w
         };
+        let mut tags: Vec<Rect> = vec![];
         for a in &annots {
             let p = gaze::drawn(now - self.gaze_seen[&a.key], g.draw_ms);
             let (x0, y0, x1, y1) = (dev(a.rect.x), dev(a.rect.y), dev(a.rect.right()), dev(a.rect.bottom()));
@@ -1037,13 +1038,18 @@ impl<S, M: Clone> Ui<S, M> {
             if g.has(kinds::KIND) { if !tag.is_empty() { tag.push(' '); } tag.push_str(a.label.as_deref().unwrap_or(a.kind)); }
             if !tag.is_empty() {
                 let y = if a.rect.y - LINE - 2.0 >= view.y { a.rect.y - LINE - 2.0 } else { a.rect.y + 2.0 };
-                label(text, &mut out, &tag, a.rect.x + 2.0, y);
+                // Two elements starting at the same corner: the later tag moves along.
+                let (tw, _) = text.measure(&tag, MONO, SIZE, LINE, None);
+                let mut x = a.rect.x + 2.0;
+                while tags.iter().any(|r: &Rect| r.intersect(&Rect::new(x - 2.0, y, tw + 4.0, LINE)).w > 0.0 && r.intersect(&Rect::new(x - 2.0, y, tw + 4.0, LINE)).h > 0.0) { x += 8.0; }
+                tags.push(Rect::new(x - 2.0, y, tw + 4.0, LINE));
+                label(text, &mut out, &tag, x, y);
             }
-            if g.has(kinds::SIZE) {
+            if g.has(kinds::SIZE) && a.rect.h >= LINE + 6.0 {
+                // Inside the bottom right corner, where nothing else is labelled.
                 let str = format!("{}×{}", gaze::count(a.rect.w.round(), p), gaze::count(a.rect.h.round(), p));
                 let (tw, _) = text.measure(&str, MONO, SIZE, LINE, None);
-                let y = if a.rect.bottom() + LINE + 2.0 <= view.bottom() { a.rect.bottom() + 2.0 } else { a.rect.bottom() - LINE - 2.0 };
-                label(text, &mut out, &str, a.rect.right() - tw - 2.0, y);
+                label(text, &mut out, &str, a.rect.right() - tw - 4.0, a.rect.bottom() - LINE - 3.0);
             }
         }
         if g.has(kinds::LEADER) {
@@ -1052,7 +1058,8 @@ impl<S, M: Clone> Ui<S, M> {
                 if g.has(kinds::INDEX) { format!("{:02}  {name}", a.index) } else { name }
             }).collect();
             let sizes: Vec<(f32, f32)> = names.iter().map(|n| { let (w, _) = text.measure(n, MONO, SIZE, LINE, None); (w + 4.0, LINE) }).collect();
-            let boxes = gaze::place_labels(&annots, scope, |a| sizes[annots.iter().position(|b| b.node == a.node).unwrap_or(0)]);
+            let lscope = if g.has(kinds::RULER) { scope.inset(22.0, 22.0, 0.0, 0.0) } else { scope };
+            let boxes = gaze::place_labels(&annots, lscope, |a| sizes[annots.iter().position(|b| b.node == a.node).unwrap_or(0)]);
             for (k, a) in annots.iter().enumerate() {
                 let p = gaze::drawn(now - self.gaze_seen[&a.key], g.draw_ms);
                 let (side, b) = boxes[k];

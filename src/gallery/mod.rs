@@ -210,7 +210,7 @@ impl Default for Gallery {
             shape: 0, shape_before: None, morph: MorphSpec::default(), opened: None, flow: FlowSpec::default(), cmds: vec![],
             menu: 0, mats: MaterialParams::all(), loose: 0.0, style: None, gaze: Gaze::default(), loose_scale: 1.0, style_pic: PicFx::default(),
             gaze_page: Gaze { mode: GazeMode::All, kinds: gaze::FRAME | gaze::INDEX | gaze::SIZE, density: 12.0, ..Gaze::default() },
-            hovered: None, clock: 0.0, choices: [0, 1, 0, 0, 0, 0, 0, 0], toggles: [true, false, true, false, true, false, false, false],
+            hovered: None, clock: 0.0, choices: [0, 0, 0, 0, 0, 0, 0, 0], toggles: [true, false, true, false, true, false, false, false],
             slides: [0.35, 0.4, 0.6, 14.0, 0.5, 0.5, 0.5, 0.5], query: TextEdit::new("lay"),
         }
     }
