@@ -81,15 +81,15 @@ fn script(d: &mut Dir, i: usize) -> usize {
             d.wait(1.0); d.snap("the title scatters into the page");
             d.wait(3.2); d.snap("the operator types");
             d.wait(5.0); d.snap("done; the page is a page");
-            1
+            3
         }
         1 => {
             d.snap("rest");
             d.drag("read/bust", -240.0, 60.0, 0.5, true); d.snap("dragging the bust left");
             d.drag("read/bust", 0.0, 0.0, 0.05, false);
-            d.drag("read/bust", 300.0, 160.0, 0.6, false); d.wait(0.6); d.snap("dropped to the right");
+            d.drag("read/bust", 300.0, -20.0, 0.6, false); d.wait(0.6); d.snap("dropped to the right");
             d.click("read/which:2"); d.wait(0.8); d.snap("two obstacles");
-            let (dx, dy) = if narrow { (120.0, -420.0) } else { (330.0, -380.0) };
+            let (dx, dy) = if narrow { (120.0, -120.0) } else { (230.0, -150.0) };
             d.drag("read/disc", dx, dy, 0.6, true); d.snap("the disc dragged into the text");
             d.ui.release(0.0, 0.0);
             d.send(Msg::Num(lab::gallery::Target::Scene(1, 0), lab::widgets::Edit::Set(36.0)));
@@ -99,9 +99,9 @@ fn script(d: &mut Dir, i: usize) -> usize {
         2 => {
             d.snap("rest");
             let r = d.ui.node("pr/wall").expect("wall").rect;
-            d.hover(r.x + r.w * 0.12, r.y + r.h * 0.4); d.wait(0.3); d.snap("the pointer over characters");
-            d.hover(r.x + r.w * 0.5, r.y + r.h * 0.35); d.wait(0.3); d.snap("over strokes");
-            d.hover(r.x + r.w * 0.72, r.y + r.h * 0.5); d.wait(0.3); d.snap("over glow");
+            d.hover(r.x + r.w * 0.33, r.y + r.h * 0.42); d.wait(0.3); d.snap("the pointer between pixels and strokes");
+            d.hover(r.x + r.w * 0.5, r.y + r.h * 0.3); d.wait(0.3); d.snap("over strokes");
+            d.hover(r.x + r.w * 0.66, r.y + r.h * 0.62); d.wait(0.3); d.snap("between strokes and glow");
             d.ui.pointer_leave();
             d.drag("pr/seam1", -r.w * 0.12, 0.0, 0.5, false);
             d.send(Msg::Num(lab::gallery::Target::Scene(2, 3), lab::widgets::Edit::Set(1.0)));

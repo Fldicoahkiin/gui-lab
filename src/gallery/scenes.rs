@@ -34,7 +34,7 @@ pub const PARAMS: [&[P]; COUNT] = [
     &[p("间隔", 0.0, 60.0, 1.0, 0, "px", 14.0), p("图宽", 120.0, 520.0, 10.0, 0, "px", 300.0), p("字号", 12.0, 24.0, 1.0, 0, "px", 17.0), p("行高", 18.0, 44.0, 1.0, 0, "px", 30.0)],
     &[p("点距", 2.0, 32.0, 0.5, 1, "px", 8.0), p("级数", 2.0, 16.0, 1.0, 0, "", 8.0), p("透镜", 20.0, 300.0, 5.0, 0, "px", 130.0), p("松开", 0.0, 1.0, 0.05, 2, "", 0.0)],
     &[p("飞行", 300.0, 3000.0, 50.0, 0, "ms", 1300.0), p("弧度", 0.0, 200.0, 2.0, 0, "px", 80.0), p("错开", 0.0, 0.9, 0.05, 2, "", 0.5), p("点距", 2.0, 12.0, 0.5, 1, "px", 4.0)],
-    &[p("层距", 40.0, 260.0, 5.0, 0, "px", 150.0), p("标注", 2.0, 40.0, 1.0, 0, "个", 14.0), p("等距线", 1.5, 12.0, 0.5, 1, "px", 3.0)],
+    &[p("层距", 40.0, 600.0, 5.0, 0, "px", 380.0), p("标注", 2.0, 40.0, 1.0, 0, "个", 14.0), p("等距线", 1.5, 12.0, 0.5, 1, "px", 3.0)],
     &[p("速度", 60.0, 180.0, 1.0, 0, "BPM", 112.0), p("强度", 0.0, 1.0, 0.05, 2, "", 0.7), p("低频", 0.0, 2.0, 0.05, 2, "", 1.0), p("种子", 0.0, 99.0, 1.0, 0, "", 7.0)],
     &[p("波速", 200.0, 3000.0, 20.0, 0, "px/s", 760.0), p("波宽", 4.0, 120.0, 1.0, 0, "px", 26.0), p("尾长", 0.0, 600.0, 10.0, 0, "px", 150.0)],
 ];
@@ -114,7 +114,7 @@ impl Default for Scenes {
         for (i, ps) in PARAMS.iter().enumerate() { for (j, q) in ps.iter().enumerate() { p[i][j] = q.default; } }
         Self {
             p, strip: true, shown: 0, at: 0.0, op: 0, running: false, op_text: TextEdit::default(), op_switch: false, op_tab: 0, op_count: 0, op_value: 12.0,
-            obj: [(330.0, 140.0), (60.0, 620.0)], obstacle: 0, seams: [0.2, 0.4, 0.6, 0.8], pic: 0, form: 0, apart: false, keep: false,
+            obj: [(330.0, 120.0), (30.0, 330.0)], obstacle: 0, seams: [0.2, 0.4, 0.6, 0.8], pic: 0, form: 0, apart: false, keep: false,
             playing: false, song: 0.0, since: 0.0, beat: -1, levels: [0.0; BANDS], look: 7,
         }
     }
@@ -241,7 +241,7 @@ pub fn look(g: &Gallery, l: &mut Look) {
         4 => {
             l.params[Material::Near as usize].0[0] = q(2);
             l.gaze = if g.sc.apart {
-                Gaze { mode: GazeMode::All, kinds: gaze::BOX | gaze::INDEX | gaze::SIZE | gaze::KIND, density: q(1), draw_ms: 420.0, colour: l.theme.accent, only_marked: false }
+                Gaze { mode: GazeMode::All, kinds: gaze::FRAME | gaze::BOX | gaze::INDEX | gaze::SIZE | gaze::KIND, density: q(1), draw_ms: 420.0, colour: l.theme.accent, only_marked: true }
             } else { Gaze { mode: GazeMode::Off, ..l.gaze } };
         }
         5 => {
@@ -408,7 +408,8 @@ fn reading(g: &Gallery, w: f32, _h: f32) -> El<Msg> {
     let (dx, dy) = sc.obj[1];
     let (bx, dx) = (bx.min(cw - 40.0), dx.min(cw - 40.0));
     let mut obstacles = vec![];
-    let mut body = col().key("read/body").width(cw);
+    // The text first: the things it flows around are drawn (and hit) over it.
+    let mut body = col().key("read/body").width(cw).child(space(0.0, 0.0).key("read/text-slot"));
     let drag = |k: usize, x0: f32, y0: f32| move |d: Drag| Some(Msg::Scene(SMsg::Place(k, (x0 + d.dx).round(), (y0 + d.dy).max(-40.0).round())));
     let nudge = |k: usize, x0: f32, y0: f32| move |key: Key, shift: bool| {
         let s = if shift { 40.0 } else { 10.0 };
@@ -426,9 +427,11 @@ fn reading(g: &Gallery, w: f32, _h: f32) -> El<Msg> {
     }
     let mut around = Around::new(obstacles, q(0));
     around.min = (q(2) * 3.0).max(40.0);
-    body = body.child(text_lh(ARTICLE, q(2), q(3), Paint::TEXT).key("read/text").fill_width().around(around));
+    body.children[0] = text_lh(ARTICLE, q(2), q(3), Paint::TEXT).key("read/text").fill_width().around(around);
+
     col().key("read/page").width(cw).gap(14.0)
         .child(text("长文 · 第 3 期", 12.0, Paint::DIM).font(Font::Mono))
+        .child(text_lh("沿着轮廓排字", (cw / 14.0).clamp(28.0, 46.0), (cw / 14.0).clamp(28.0, 46.0) * 1.25, Paint::INK).font(Font::Display).weight(1.5))
         .child(row().fill_width().justify(JustifyContent::SPACE_BETWEEN).align(AlignItems::END).wrap().gap(10.0)
             .child(text("文 / 编辑部　约 900 字", 13.0, Paint::DIM))
             .child(segmented("read/which", &["胸像", "圆", "两个"], sc.obstacle, 28.0, |i| Msg::Scene(SMsg::Obstacle(i)))))
@@ -442,27 +445,34 @@ const STRIP_NAMES: [&str; 5] = ["字符", "像素画", "笔触", "光点", "积�
 fn printing(g: &Gallery, w: f32, h: f32) -> El<Msg> {
     let sc = &g.sc;
     let id = [BUST, SKY, TERRAIN][sc.pic.min(2)];
-    let r = ratio(id);
-    let pw = w.min((h - 70.0) / r).max(200.0);
-    let ph = (pw * r).round();
+    let r_ = ratio(id);
+    let pw = w.min((h - 110.0) / r_).max(200.0);
+    let ph = (pw * r_).round();
     let loose = sc.get(2, 3);
     let edges = [0.0, sc.seams[0], sc.seams[1], sc.seams[2], sc.seams[3], 1.0];
-    let mut wall = col().key("pr/wall").width(pw).height(ph).gaze_scope();
+    // Labels above the picture and the seams in gaps between the windows: nothing is drawn over the
+    // picture itself, so every one of its pixels is the picture's own.
+    let top = 22.0;
+    let gap = 6.0;
+    let mut wall = col().key("pr/wall").width(pw).height(ph + top + 22.0).gaze_scope();
     for k in 0..5 {
         let (x0, x1) = ((edges[k] * pw).round(), (edges[k + 1] * pw).round());
+        let (l, r) = (if k == 0 { 0.0 } else { gap * 0.5 }, if k == 4 { 0.0 } else { gap * 0.5 });
         // A window onto the same picture, at the same place: each window shows it in its own marks.
-        wall = wall.child(col().key(format!("pr/region{k}")).width((x1 - x0).max(0.0)).height(ph).clip().absolute(Some(x0), Some(0.0), None, None)
-            .child(picture(id, r).key(format!("pr/pic{k}")).pic_fx(k as u8).loose(loose).width(pw).absolute(Some(-x0), Some(0.0), None, None))
-            .child(text(format!("{:02} {}", k + 1, STRIP_NAMES[k]), 12.0, Paint::INK).font(Font::Mono).absolute(Some(10.0), Some(10.0), None, None)));
+        wall = wall.child(col().key(format!("pr/region{k}")).width((x1 - x0 - l - r).max(0.0)).height(ph).clip().absolute(Some(x0 + l), Some(top), None, None)
+            .child(picture(id, r_).key(format!("pr/pic{k}")).pic_fx(k as u8).loose(loose).width(pw).absolute(Some(-x0 - l), Some(0.0), None, None)));
+        if x1 - x0 > 40.0 {
+            wall = wall.child(text(format!("{:02} {}", k + 1, STRIP_NAMES[k]), 12.0, Paint::DIM).font(Font::Mono).absolute(Some(x0 + l + 2.0), Some(0.0), None, None));
+        }
     }
     for i in 0..4 {
         let x = (sc.seams[i] * pw).round();
         let f0 = sc.seams[i];
-        let seam = col().key(format!("pr/seam{i}")).width(24.0).height(ph).absolute(Some(x - 12.0), Some(0.0), None, None).align(AlignItems::CENTER)
+        let seam = col().key(format!("pr/seam{i}")).width(24.0).height(ph + 22.0).absolute(Some(x - 12.0), Some(top), None, None).align(AlignItems::CENTER)
             .on_drag_with(move |d| Some(Msg::Scene(SMsg::Seam(i, f0 + d.dx / pw))))
             .on_key(move |k, shift| { let s = if shift { 0.1 } else { 0.02 }; match k { Key::Left => Some(Msg::Scene(SMsg::Seam(i, f0 - s))), Key::Right => Some(Msg::Scene(SMsg::Seam(i, f0 + s))), _ => None } })
-            .child(space(1.5, ph).fill(Paint::ACCENT))
-            .child(space(14.0, 14.0).radius(7.0).fill(Paint::ACCENT).absolute(Some(5.0), Some(ph - 24.0), None, None));
+            .child(space(1.0, ph).fill(Paint::ACCENT.alpha(0.7)))
+            .child(space(14.0, 14.0).radius(7.0).fill(Paint::ACCENT).absolute(Some(5.0), Some(ph + 6.0), None, None));
         wall = wall.child(seam);
     }
     col().key("pr/page").gap(12.0).align(AlignItems::CENTER)
@@ -490,8 +500,8 @@ fn morph(g: &Gallery, w: f32, h: f32) -> El<Msg> {
         text_lh("山与水", size, size * 1.15, Paint::INK).font(Font::Display).weight(3.0),
         col().width(pw).child(picture(SKY, ratio(SKY)).key("mo/pic").pic_fx(super::STYLE_SLOT)),
         col().width(pw).child(picture(SKY, ratio(SKY)).key("mo/marks").pic_fx(super::STYLE_SLOT).loose(1.0)),
-        row().key("mo/go-button").height(96.0).pad(56.0, 0.0).radius(48.0).fill(Paint::ACCENT).center().on_press(Msg::Scene(SMsg::Form(0)))
-            .child(text("出发", 40.0, Paint::GROUND).weight(1.5)),
+        row().key("mo/go-button").height(96.0).pad(56.0, 0.0).radius(48.0).border(3.0, Paint::ACCENT).fill(Paint::ACCENT.alpha(0.12)).center().on_press(Msg::Scene(SMsg::Form(0)))
+            .child(text("出发", 40.0, Paint::ACCENT).weight(1.5)),
     ];
     let stage = stack(forms.into_iter().enumerate().map(|(i, e)| col().key(form_key(i)).hidden_until_morphed(i != f).child(e))).key("mo/stack");
     col().key("mo/page").width(w).height(h).align(AlignItems::CENTER).gap(16.0)
@@ -508,39 +518,50 @@ fn apart(g: &mut Gallery, a: bool) {
     g.sc.apart = a;
     g.cmds.push(Cmd::Flow(FlowSpec { flow_ms: 520.0, flow_loose: 0.3, out_ms: 240.0 }));
 }
-/// The small application that is taken apart; `layer` names the copy (its keys and flow id).
-fn xr_app(g: &Gallery, layer: &str, w: f32) -> El<Msg> {
+/// The small application that is taken apart; `layer` names the copy (its keys), `filled` whether
+/// its panels are filled (the nearness copy is not: a filled panel would hide the nearness of
+/// everything on it, since the nearness of a union is the largest).
+fn xr_app(layer: &str, w: f32, filled: bool, notes: bool) -> El<Msg> {
     let k = |s: &str| format!("xr/{layer}/{s}");
-    col().key(k("app")).width(w).gap(12.0).pad(20.0, 18.0).radius(16.0).fill(Paint::tone(0.04)).border(1.0, Paint::DIM)
-        .child(row().fill_width().justify(JustifyContent::SPACE_BETWEEN).align(AlignItems::CENTER)
-            .child(text("今晚", 22.0, Paint::INK).font(Font::Display).key(k("title")))
+    let note = |e: El<Msg>, n: &str| if notes { e.annotate(n) } else { e };
+    let mut app = col().key(k("app")).width(w).gap(12.0).pad(20.0, 18.0).radius(16.0).border(1.0, Paint::DIM);
+    if filled { app = app.fill(Paint::tone(0.04)); }
+    app.child(row().fill_width().justify(JustifyContent::SPACE_BETWEEN).align(AlignItems::CENTER)
+            .child(note(text("今晚", 22.0, Paint::INK).font(Font::Display).key(k("title")), "标题"))
             .child(text("21:40", 13.0, Paint::DIM).font(Font::Mono)))
-        .child(col().key(k("pic")).fill_width().child(picture(SPHERE, ratio(SPHERE)).key(k("picture"))))
-        .child(col().gap(0.0).fill_width()
+        .child(note(col().key(k("pic")).fill_width().child(picture(SPHERE, ratio(SPHERE)).key(k("picture"))), "图片"))
+        .child(note(col().key(k("rows")).gap(0.0).fill_width()
             .children(["月亮升起　20:56", "气温　14 °C", "风　东北 2 级"].iter().enumerate().map(|(i, t)| {
                 row().key(k(&format!("row{i}"))).fill_width().height(34.0).align(AlignItems::CENTER).child(text(*t, 14.0, Paint::TEXT))
-            })))
+            })), "列表"))
         .child(row().fill_width().gap(10.0).align(AlignItems::CENTER)
             .child(space(0.0, 0.0).grow(1.0))
-            .child(row().key(k("remind")).height(32.0).pad(16.0, 0.0).radius(16.0).fill(Paint::ACCENT).center().child(text("提醒我", 14.0, Paint::GROUND))))
-        .child(text_lh(if g.sc.apart { "中间图：离墨的远近一圈圈画出来" } else { "按住空格，或按住下面的按钮" }, 12.0, 18.0, Paint::DIM).key(k("hint")))
+            .child(note(row().key(k("remind")).height(32.0).pad(16.0, 0.0).radius(16.0).fill(Paint::ACCENT).center().child(text("提醒我", 14.0, Paint::GROUND)), "按钮")))
 }
 fn xray(g: &Gallery, w: f32, h: f32) -> El<Msg> {
     let sc = &g.sc;
-    let narrow = w < 640.0;
-    let aw = if narrow { (w - 24.0).min(340.0) } else { 340.0 };
-    let d = sc.get(4, 0);
-    let (cx, cy) = ((w - aw) * 0.5, 10.0);
-    let mut stage = col().key("xr/stage").width(w).height(h - 60.0).gaze_scope();
-    // Apart: the top layer lifts off to the right, the outlines and the nearness stay behind it.
-    let offs = if narrow { [(0.0, -d * 0.3), (0.0, 0.0), (0.0, d * 0.3)] } else { [(-d, d * 0.12), (0.0, 0.0), (d, -d * 0.12)] };
+    let narrow = w < 900.0;
+    let aw = if narrow { (w - 24.0).min(320.0) } else { 320.0 };
+    // Wide: the three layers side by side; narrow: down the page, each a little lower than the last.
+    let d = if narrow { sc.get(4, 0).min(150.0) } else { sc.get(4, 0).min((w - aw) * 0.5 - 4.0) };
+    let (cx, cy) = ((w - aw) * 0.5, 34.0);
+    let sh = if narrow && sc.apart { 3.0 * 460.0 } else { h - 60.0 };
+    let mut stage = col().key("xr/stage").width(w).height(sh).gaze_scope();
+    let offs = if narrow { [(0.0, 920.0), (0.0, 460.0), (0.0, 0.0)] } else { [(-d, 0.0), (0.0, 0.0), (d, 0.0)] };
+    let label = |t: &str, x: f32, y: f32| text(t, 12.0, Paint::DIM).font(Font::Mono).absolute(Some(x), Some(y - 24.0), None, None);
     if sc.apart {
         stage = stage
-            .child(xr_app(g, "near", aw).material(Material::Near.id()).absolute(Some(cx + offs[0].0), Some(cy + offs[0].1 + d * 0.2), None, None))
-            .child(xr_app(g, "outline", aw).material(Material::Xray.id()).absolute(Some(cx + offs[1].0), Some(cy + offs[1].1 + d * 0.1), None, None));
+            .child(label("03  中间图：离墨的远近", cx + offs[0].0, cy + offs[0].1))
+            .child(xr_app("near", aw, false, false).material(Material::Near.id()).absolute(Some(cx + offs[0].0), Some(cy + offs[0].1), None, None))
+            .child(label("02  轮廓", cx + offs[1].0, cy + offs[1].1))
+            .child(xr_app("outline", aw, true, false).material(Material::Xray.id()).absolute(Some(cx + offs[1].0), Some(cy + offs[1].1), None, None))
+            .child(label("01  画面", cx + offs[2].0, cy + offs[2].1));
     }
     let (ox, oy) = if sc.apart { offs[2] } else { (0.0, 0.0) };
-    stage = stage.child(col().key(format!("xr/top-{}", sc.apart)).flow("xr-top").absolute(Some(cx + ox), Some(cy + oy), None, None).child(xr_app(g, if sc.apart { "top-a" } else { "top" }, aw)));
+    stage = stage.child(col().key(format!("xr/top-{}", sc.apart)).flow("xr-top").absolute(Some(cx + ox), Some(cy + oy), None, None).child(xr_app(if sc.apart { "top-a" } else { "top" }, aw, true, true)));
+    if !sc.apart {
+        stage = stage.child(text("按住空格，或按住下面的按钮", 12.0, Paint::DIM).absolute(Some(cx), Some(cy + 480.0), None, None));
+    }
     let hold = row().key("xr/hold").height(36.0).pad(18.0, 0.0).radius(18.0).border(1.0, Paint::ACCENT).center()
         .fill(if sc.apart { Paint::ACCENT.alpha(0.18) } else { Paint::GROUND })
         .on_drag_with(|d| match d.phase { Phase::Start => Some(Msg::Scene(SMsg::Apart(true))), Phase::End => Some(Msg::Scene(SMsg::Apart(false))), Phase::Move => None })
@@ -623,7 +644,10 @@ fn sound(g: &Gallery, w: f32, h: f32) -> El<Msg> {
                 .child(space(pulse * 0.25, pulse * 0.25).radius(pulse * 0.125).fill(Paint::ACCENT).key("snd/pulse"))
                 .child(text(format!("{bpm:.0} BPM · {mm:02}:{ss:02}"), 14.0, Paint::DIM).font(Font::Mono).key("snd/time")))
             .child(text_lh("夜行", size, size * 1.2, Paint::INK).font(Font::Display).weight(2.0).key("snd/title"))
-            .child(text_lh(LYRICS[bars % LYRICS.len()], 20.0, 30.0, Paint::TEXT).key(format!("snd/lyric{}", bars % LYRICS.len()))))
+            .child(LYRICS.iter().enumerate().fold(col().key("snd/lyrics").gap(6.0).align(AlignItems::CENTER).pad(0.0, 10.0), |c, (k, l)| {
+                let on = k == bars % LYRICS.len() && (sc.playing || st > 0.0);
+                c.child(text_lh(*l, if on { 22.0 } else { 16.0 }, if on { 32.0 } else { 26.0 }, if on { Paint::INK } else { Paint::DIM }).key(format!("snd/lyric{k}-{on}")))
+            })))
         .child(col().key("snd/lower").align(AlignItems::CENTER).gap(14.0)
             .child(spec)
             .child(row().gap(12.0).align(AlignItems::CENTER)
@@ -645,10 +669,10 @@ fn styles_scene(g: &Gallery, w: f32, _h: f32) -> El<Msg> {
         if on { b = b.fill(Paint::ACCENT.alpha(0.12)); }
         grid = grid.child(b);
     }
-    let cw = if narrow { w } else { (w - 340.0).min(620.0) };
+    let cw = if narrow { w } else { (w - 340.0).min(860.0) };
     let card = col().key("st/card").width(cw).gap(16.0)
         .child(text("星期五　·　11 月 14 日", 13.0, Paint::DIM).font(Font::Mono))
-        .child(text_lh("今天，晴", 64.0, 72.0, Paint::INK).font(Font::Display).weight(2.0).key("st/headline"))
+        .child(text_lh("今天，晴", if narrow { 56.0 } else { 96.0 }, if narrow { 64.0 } else { 108.0 }, Paint::INK).font(Font::Display).weight(2.0).key("st/headline"))
         .child(row().gap(18.0).fill_width().align(AlignItems::START).wrap()
             .child(col().width(if narrow { cw } else { cw * 0.55 }).child(picture(SKY, ratio(SKY)).key("st/pic").pic_fx(super::STYLE_SLOT)))
             .child(col().grow(1.0).gap(10.0).min_width(180.0)
@@ -656,7 +680,14 @@ fn styles_scene(g: &Gallery, w: f32, _h: f32) -> El<Msg> {
                 .child(row().gap(10.0).wrap()
                     .child(button_as("st/remind", "提醒我", Variant::Accent, Msg::Press))
                     .child(button_as("st/share", "分享", Variant::Default, Msg::Press)))
-                .child(switch("st/rain", "下雨时通知", g.toggles[6], None, Msg::Toggle(6)).width(200.0))));
+                .child(switch("st/rain", "下雨时通知", g.toggles[6], None, Msg::Toggle(6)).width(200.0))))
+        .child(row().key("st/days").gap(12.0).wrap().fill_width()
+            .children([("六", "晴", 18, 0u8), ("日", "多云", 15, 1), ("一", "小雨", 11, 2), ("二", "晴", 16, 0)].iter().map(|(d, wx, t, hue)| {
+                col().key(format!("st/day{d}")).width(if narrow { (cw - 12.0) / 2.0 } else { (cw - 36.0) / 4.0 }).gap(8.0).pad(14.0, 12.0).radius(8.0).border(1.0, Paint::FAINT)
+                    .child(row().fill_width().justify(JustifyContent::SPACE_BETWEEN).child(text(format!("星期{d}"), 13.0, Paint::DIM)).child(space(14.0, 14.0).radius(7.0).fill(Paint::hue(*hue))))
+                    .child(text(format!("{t}°"), 30.0, Paint::INK).font(Font::Display))
+                    .child(text(*wx, 13.0, Paint::TEXT))
+            })));
     let mut r = row().key("st/page").gap(28.0).align(AlignItems::START).width(w);
     if narrow { r = col().key("st/page").gap(20.0).width(w); }
     r.child(card).child(col().gap(10.0).child(text("风格（← → 切换）", 12.0, Paint::DIM)).child(grid))
@@ -669,7 +700,7 @@ pub fn page(g: &Gallery, i: usize) -> El<Msg> {
     let narrow = g.width < 720.0;
     let pad = if narrow { 14.0 } else { 36.0 };
     let w = g.width - pad * 2.0;
-    let strip_h = if !g.sc.strip { 44.0 } else if narrow { 150.0 } else { 56.0 };
+    let strip_h = if !g.sc.strip { 44.0 } else if narrow { 60.0 } else { 56.0 };
     let h = (g.height - 52.0 - 64.0 - strip_h - 24.0).max(260.0);
     let (_, title, desc, _) = SCENES[i];
     let stage = match i {
@@ -694,14 +725,18 @@ pub fn page(g: &Gallery, i: usize) -> El<Msg> {
 }
 
 fn strip(g: &Gallery, i: usize, pad: f32) -> El<Msg> {
-    let mut r = row().key(format!("scene/{i}/strip")).fill_width().pad(pad, 10.0).gap(14.0).wrap().align(AlignItems::CENTER)
-        .child(button_as(format!("scene/{i}/strip-toggle"), if g.sc.strip { "收起参数" } else { "参数" }, Variant::Quiet, Msg::Scene(SMsg::Strip)));
+    let narrow = g.width < 720.0;
+    let mut r = row().key(format!("scene/{i}/strip")).fill_width().pad(pad, 10.0).gap(14.0).align(AlignItems::CENTER);
+    // Narrow: one row that scrolls sideways, so the stage keeps the height.
+    r = if narrow { r.scroll_x().bar() } else { r.wrap() };
+    r = r.child(button_as(format!("scene/{i}/strip-toggle"), if g.sc.strip { "收起参数" } else { "参数" }, Variant::Quiet, Msg::Scene(SMsg::Strip)));
     if g.sc.strip {
         for (j, q) in PARAMS[i].iter().enumerate() {
             let t = Target::Scene(i, j);
             r = r.child(number(&format!("scene/{i}/p{j}"), q.name, g.sc.get(i, j), q.spec, g.draft(t), move |e: Edit| Msg::Num(t, e)));
         }
-        r = r.child(space(0.0, 0.0).grow(1.0)).child(button_as(format!("scene/{i}/reset"), "重置", Variant::Default, Msg::Scene(SMsg::Reset(i))));
+        if !narrow { r = r.child(space(0.0, 0.0).grow(1.0)); }
+        r = r.child(button_as(format!("scene/{i}/reset"), "重置", Variant::Default, Msg::Scene(SMsg::Reset(i))));
     }
     r
 }
