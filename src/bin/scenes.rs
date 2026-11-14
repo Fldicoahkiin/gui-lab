@@ -6,7 +6,7 @@
 //! usage: scenes <out_dir> [perf]
 use lab::el::Key;
 use lab::gallery::{self, GalleryUi, Msg, Page, SCENES};
-use lab::offscreen::{Offscreen, save_png};
+use lab::offscreen::{Offscreen, save_png, sheet};
 use lab::style::styles;
 
 const W: u32 = 1280;
@@ -56,19 +56,6 @@ fn shrink(f: &(u32, u32, Vec<u8>), k: u32) -> (u32, u32, Vec<u8>) {
     } } }
     (sw, sh, o)
 }
-fn sheet(frames: &[(u32, u32, Vec<u8>)], cols: usize) -> (u32, u32, Vec<u8>) {
-    let (fw, fh) = (frames[0].0, frames[0].1);
-    let rows = frames.len().div_ceil(cols);
-    let (w, h) = (cols as u32 * (fw + 8) + 8, rows as u32 * (fh + 8) + 8);
-    let mut px = vec![60u8; (w * h * 4) as usize];
-    for p in px.chunks_mut(4) { p[3] = 255; }
-    for (n, (_, _, f)) in frames.iter().enumerate() {
-        let (ox, oy) = (8 + (n % cols) as u32 * (fw + 8), 8 + (n / cols) as u32 * (fh + 8));
-        for y in 0..fh { let d = (((oy + y) * w + ox) * 4) as usize; px[d..d + (fw * 4) as usize].copy_from_slice(&f[(y * fw * 4) as usize..((y + 1) * fw * 4) as usize]); }
-    }
-    (w, h, px)
-}
-
 /// The scripted interaction of scene `i`; returns which frame is its most striking.
 fn script(d: &mut Dir, i: usize) -> usize {
     let narrow = d.ui.state.width < 720.0;

@@ -42,8 +42,8 @@ pub fn bundled(sans: Vec<u8>, pixel: Vec<u8>, mono: Vec<u8>) -> Vec<Face> {
 }
 /// Read the bundled faces from a directory (native only; the web page passes the bytes in).
 #[cfg(not(target_arch = "wasm32"))]
-pub fn load_bundled(dir: &str) -> std::io::Result<Vec<Face>> {
-    let r = |f: &str| std::fs::read(format!("{dir}/{f}"));
+pub fn load_bundled(dir: &str) -> Result<Vec<Face>, crate::error::FontError> {
+    let r = |f: &str| { let path = format!("{dir}/{f}"); std::fs::read(&path).map_err(|source| crate::error::FontError::Missing { path, source }) };
     Ok(bundled(r(SANS_FILE)?, r(PIXEL_FILE)?, r(MONO_FILE)?))
 }
 

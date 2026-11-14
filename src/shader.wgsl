@@ -105,7 +105,8 @@ fn vs_pad(i: VIn, spad: f32) -> VOut {
   let r = vec4f(i.rect.xy - vec2f(pad), i.rect.zw + vec2f(pad * 2.0));
   var p = r.xy + c * r.zw;
   // Each instance rides the wave: it is pushed outward a little as a front passes under it.
-  let centre = i.rect.xy + i.rect.zw * 0.5;
+  // A legible piece is pushed as one: every instance of it measures the push at the piece's centre.
+  let centre = select(i.rect.xy + i.rect.zw * 0.5, i.resp.zw, i.resp.y > 1.5);
   let w = u.fb.z * 1.3 * u.res.z;
   let still = calm_at(centre) || i.resp.y < 0.5;
   for (var k = 0; k < 8; k++) {
@@ -581,8 +582,8 @@ fn m_dot(frag: vec2f) -> vec3f {
   let bh = 5.0 * s; let band = floor(p.y / bh);
   let w0 = wave(vec2f(p.x, (band + 0.5) * bh), 0.6);
   let pick = step(0.55, h1(vec2f(band, floor(t * 9.0))));
-  // Only what the fronts loosen slips: text that is only nudged stays where it is.
-  p.x += (h1(vec2f(band, floor(t * 17.0))) - 0.5) * 70.0 * s * u.fa.w * pick * smoothstep(0.2, 0.9, w0) * clamp(near_t(frag).b * 4.0, 0.0, 1.0);
+  // Only what is really loose slips: nudged text, and text held at the legibility cap, stays in place.
+  p.x += (h1(vec2f(band, floor(t * 17.0))) - 0.5) * 70.0 * s * u.fa.w * pick * smoothstep(0.2, 0.9, w0) * smoothstep(0.2, 0.45, near_t(frag).b);
   let here = near_t(frag);
   let pitch = max(1.5, u.fa.x * s);
   let cell = floor(p / pitch);

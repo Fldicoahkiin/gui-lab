@@ -1,12 +1,15 @@
 //! Filmstrips of step 4 (DESIGN.md §1.10), from the gallery's own pages. For each morph pair and
 //! material, seven moments on one contact sheet: before, the hand-over, four in flight, the target
 //! landed and tightened. For the page change, five moments opening a card and five going back.
-//! `film perf` instead times frames of a morph at the particle cap.
+//! `film perf` instead times frames of a morph at the particle cap. `film <out> ripple` makes the
+//! ripple and recomposition strips of DESIGN.md §1.15–§1.16 from the button page, at 2× scale: the counter
+//! going 1 → 2 (eight frames across the recomposition), ten fast presses (0, 100, 200, 300, 500, 800 ms),
+//! and one press reaching three neighbours that each answer in their own way.
 //!
-//! usage: film <out_dir> [perf]
+//! usage: film <out_dir> [perf | ripple]
 use lab::gallery::{self, GalleryUi, Msg, Page};
 use lab::morph::MorphSpec;
-use lab::offscreen::{Offscreen, save_png};
+use lab::offscreen::{Offscreen, save_png, sheet};
 use std::time::Instant;
 
 const W: u32 = 1280;
@@ -27,19 +30,6 @@ fn shot(o: &mut Offscreen, ui: &mut GalleryUi, crop: lab::ui::Rect) -> (u32, u32
     for y in y0..y1 { out.extend_from_slice(&px[((y * o.w + x0) * 4) as usize..((y * o.w + x1) * 4) as usize]); }
     (x1 - x0, y1 - y0, out)
 }
-/// Frames side by side in rows of `cols`, on a mid-grey with 8 px gaps.
-fn sheet(frames: &[(u32, u32, Vec<u8>)], cols: usize) -> (u32, u32, Vec<u8>) {
-    let (fw, fh) = (frames[0].0, frames[0].1);
-    let rows = frames.len().div_ceil(cols);
-    let (w, h) = (cols as u32 * (fw + 8) + 8, rows as u32 * (fh + 8) + 8);
-    let mut px = vec![96u8; (w * h * 4) as usize];
-    for (n, (_, _, f)) in frames.iter().enumerate() {
-        let (ox, oy) = (8 + (n % cols) as u32 * (fw + 8), 8 + (n / cols) as u32 * (fh + 8));
-        for y in 0..fh { let d = (((oy + y) * w + ox) * 4) as usize; px[d..d + (fw * 4) as usize].copy_from_slice(&f[(y * fw * 4) as usize..((y + 1) * fw * 4) as usize]); }
-    }
-    (w, h, px)
-}
-
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     let out = a.get(1).cloned().unwrap_or_else(|| "film".into());
@@ -47,6 +37,7 @@ fn main() {
     let faces = || lab::text::load_bundled("assets").expect("fonts");
     let mut o = Offscreen::new(W, H);
     if a.get(2).map(String::as_str) == Some("perf") { return perf(&mut o, faces()); }
+    if a.get(2).map(String::as_str) == Some("ripple") { return ripple(&out, faces); }
 
     // ── Morphs ──────────────────────────────────────────────────────────────────────────────────
     let pairs = [(0, 2, "text-picture"), (2, 0, "picture-text"), (0, 5, "text-button"), (3, 1, "shape-paragraph"), (6, 4, "card-ring")];
@@ -109,6 +100,75 @@ fn main() {
             eprintln!("flow {dir} {mname}");
         }
     }
+}
+
+/// The ripple strips (see the top of this file).
+fn ripple(out: &str, faces: impl Fn() -> Vec<lab::text::Face>) {
+    let scale = 2.0;
+    let (w, h) = (1280u32, 1200u32);
+    let mut o = Offscreen::new(w * 2, h * 2);
+    let fresh = |scope: usize| {
+        let mut ui = gallery::new_ui(faces(), w * 2, h * 2, scale);
+        ui.pointer_leave();
+        send(&mut ui, Msg::Go(Page::from_hash("button").expect("button page")));
+        ui.state.rip_scope = scope;
+        ui.relayout();
+        // The section in view.
+        let y = ui.node("ripple/area").expect("ripple area").rect.y;
+        ui.wheel(640.0, 400.0, y - 120.0);
+        ui.pointer_leave();
+        settle(&mut ui, 3.0);
+        ui
+    };
+    let crop = |o: &mut Offscreen, ui: &mut GalleryUi, r: lab::ui::Rect| {
+        let look = ui.state.look();
+        let px = o.render(ui, &look);
+        let (x0, y0) = ((r.x * scale).max(0.0) as u32, (r.y * scale).max(0.0) as u32);
+        let (x1, y1) = (((r.right() * scale) as u32).min(o.w), ((r.bottom() * scale) as u32).min(o.h));
+        let mut f = Vec::with_capacity(((x1 - x0) * (y1 - y0) * 4) as usize);
+        for y in y0..y1 { f.extend_from_slice(&px[((y * o.w + x0) * 4) as usize..((y * o.w + x1) * 4) as usize]); }
+        (x1 - x0, y1 - y0, f)
+    };
+    let press = |ui: &mut GalleryUi, key: &str| {
+        let (x, y) = ui.node(key).expect("node").rect.center();
+        ui.press(x, y);
+        ui.release(x, y);
+        ui.pointer_leave();
+    };
+    // (a) The counter 1 → 2: the digit recomposes, nothing else moves.
+    let mut ui = fresh(0);
+    let digit = ui.node("ripple/count").expect("count").rect;
+    let r = lab::ui::Rect::new(digit.x - 120.0, digit.y - 14.0, 220.0, digit.h + 28.0);
+    let d = ui.state.recompose.duration_ms / 1000.0;
+    press(&mut ui, "ripple/counter");
+    let t0 = ui.now();
+    let mut frames = vec![];
+    for k in 0..8 { settle(&mut ui, t0 + d * k as f32 / 7.0); frames.push(crop(&mut o, &mut ui, r)); }
+    let (sw, sh, px) = sheet(&frames, 4);
+    save_png(&format!("{out}/a-counter-1-2.png"), sw, sh, &px);
+    eprintln!("a: counter {} → {}", 1, ui.state.rip_count);
+    // (b) Ten presses in 300 ms (the scope is the row, so the neighbours show the fronts too).
+    let mut ui = fresh(1);
+    let area = ui.node("ripple/area").expect("area").rect;
+    press(&mut ui, "ripple/burst");
+    let t0 = ui.now();
+    let mut frames = vec![];
+    for ms in [0.0, 100.0, 200.0, 300.0, 500.0, 800.0] { settle(&mut ui, t0 + ms / 1000.0); frames.push(crop(&mut o, &mut ui, area)); }
+    let (sw, sh, px) = sheet(&frames, 2);
+    save_png(&format!("{out}/b-ten-presses.png"), sw, sh, &px);
+    eprintln!("b: ten presses, count {}", ui.state.rip_count);
+    // (c) One press, the three responses side by side as the front passes them.
+    let mut ui = fresh(1);
+    let n0 = ui.node("ripple/n0").expect("n0").rect;
+    let n2 = ui.node("ripple/n2").expect("n2").rect;
+    let r = lab::ui::Rect::new(n0.x - 24.0, n0.y - 24.0, n2.right() - n0.x + 48.0, n0.h + 48.0);
+    press(&mut ui, "ripple/counter");
+    let t0 = ui.now();
+    let mut frames = vec![];
+    for ms in [0.0, 200.0, 300.0, 400.0, 550.0, 900.0] { settle(&mut ui, t0 + ms / 1000.0); frames.push(crop(&mut o, &mut ui, r)); }
+    let (sw, sh, px) = sheet(&frames, 3);
+    save_png(&format!("{out}/c-three-responses.png"), sw, sh, &px);
+    eprintln!("c: three responses");
 }
 
 /// Frame time with a morph at the particle cap, against the same page without one.

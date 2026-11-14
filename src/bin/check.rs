@@ -31,7 +31,7 @@
 //!     render of the old text and the last frame of the flight a plain render of the new one, exactly
 //!     (the hand-over to the real glyphs is invisible); mid-flight the frame differs from both.
 //!
-//! usage: check [components]     (`components` runs only 10 and 11)
+//! usage: check [components | recompose]     (`components` runs only 10 and 11, `recompose` only 13)
 use lab::demo::{BUST, PICTURE_SIZES, SKY, SPHERE, TERRAIN};
 use lab::el::{El, Font, Paint, col, picture, row, space, text_lh};
 use lab::morph::MorphSpec;
@@ -61,6 +61,11 @@ fn main() {
     let mut failed = 0;
     let mut o = Offscreen::new(W, H);
     let fonts = || load_bundled("assets").expect("fonts");
+    if std::env::args().nth(1).is_some_and(|a| a == "recompose") {
+        let f = recompose(&mut o, &fonts);
+        if f > 0 { eprintln!("{f} checks failed"); std::process::exit(1); }
+        return eprintln!("all checks passed");
+    }
     if std::env::args().nth(1).is_some_and(|a| a == "components") {
         let f = components(&fonts);
         if f > 0 { eprintln!("{f} checks failed"); std::process::exit(1); }
@@ -409,8 +414,16 @@ fn main() {
     }
     eprintln!("12. quality 0.5 at rest: largest difference {worst}/255, {} failing", failed - before);
 
+    failed += recompose(&mut o, &fonts);
+
+    if failed > 0 { eprintln!("{failed} checks failed"); std::process::exit(1); }
+    eprintln!("all checks passed");
+}
+
+/// 13. Recomposition: the first frame is the old text and the last the new one, exactly.
+fn recompose(o: &mut Offscreen, fonts: &dyn Fn() -> Vec<lab::text::Face>) -> usize {
     // ── 13. Recomposition hands over without a visible change ──────────────────────────────────────
-    let before = failed;
+    let mut failed = 0;
     let mut worst = 0;
     let spec = lab::morph::Recompose::default();
     let (t0, flight) = (50.0f32, spec.duration_ms / 1000.0);
@@ -440,10 +453,8 @@ fn main() {
             if m == 0 { eprintln!("FAIL control: recompose {from:?} → {to:?} {material:?} mid-flight equals an end"); failed += 1; }
         }
     }
-    eprintln!("13. recomposition hand-over: largest difference {worst}/255, {} failing", failed - before);
-
-    if failed > 0 { eprintln!("{failed} checks failed"); std::process::exit(1); }
-    eprintln!("all checks passed");
+    eprintln!("13. recomposition hand-over: largest difference {worst}/255, {} failing", failed);
+    failed
 }
 
 struct Num(String);
