@@ -1,3 +1,5 @@
+extern crate self as lab;
+
 pub mod demo;
 pub mod el;
 pub mod error;
@@ -8,6 +10,9 @@ pub mod morph;
 pub mod perf;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod offscreen;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod drive;
+pub mod recipes;
 pub mod render;
 pub mod scene;
 pub mod style;

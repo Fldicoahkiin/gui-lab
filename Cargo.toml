@@ -3,6 +3,8 @@ name = "lab"
 version = "0.0.1"
 edition = "2024"
 license = "MIT"
+# The files in examples/ are the recipes (docs/recipes/): compiled into the library as `lab::recipes`.
+autoexamples = false
 
 [lib]
 crate-type = ["cdylib", "rlib"]

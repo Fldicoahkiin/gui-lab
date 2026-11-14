@@ -29,6 +29,29 @@ pub enum SurfaceError {
     NoAdapter,
     #[error("the GPU device could not be opened: {0}")]
     Device(String),
+    #[error("the off-screen target is {have_w} × {have_h} device px but {w} × {h} was asked for. Make the `Offscreen` with the same size as the page (`Offscreen::try_new(w, h)`).")]
+    SizeMismatch { w: u32, h: u32, have_w: u32, have_h: u32 },
+}
+
+/// A script of input events could not be played (`drive::play`, the `render` tool).
+#[derive(Debug, Error)]
+pub enum DriveError {
+    #[error("the events in `{file}` are not a JSON list of events ({message}). Each event is an object such as {{\"at_ms\": 100, \"kind\": \"press\", \"target\": \"button/live\"}}; kinds are press, release, move (x, y or target), key (key: \"Enter\", shift, cmd, alt), wheel (x, y or target, dx, dy) and text (text).")]
+    BadEvents { file: String, message: String },
+    #[error("no element has the key `{key}`. Keys on this page that look close: {near}. Run with `--tree out.json` to see every key.")]
+    UnknownTarget { key: String, near: String },
+    #[error("a pointer event needs a position: give `x` and `y` (logical px) or `target` (an element's key).")]
+    NoPosition,
+    #[error("`{name}` is not a key name. Use DOM names: Enter, Backspace, Delete, Escape, Tab, ArrowUp/Down/Left/Right, Home, End, PageUp, PageDown, F1–F24, or a single character such as \"a\" or \" \".")]
+    UnknownKey { name: String },
+    #[error("event {index}: {inner}")]
+    AtEvent { index: usize, inner: Box<DriveError> },
+    #[error(transparent)]
+    Look(#[from] LookError),
+    #[error(transparent)]
+    Surface(#[from] SurfaceError),
+    #[error(transparent)]
+    Font(#[from] FontError),
 }
 
 /// Something about a view that the runtime had to guess at. `Ui::problems()` lists them after each
