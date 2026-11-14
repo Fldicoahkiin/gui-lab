@@ -1,3 +1,14 @@
+//! number
+//!
+//! Purpose: Set a number exactly.
+//! Props: `key`, `label`, `value`, `spec: Spec` (min, max, step, decimals, unit), `draft` (what is
+//!   being typed), `msg`.
+//! States: rest, focused, typing (accent border and caret), disabled; a new value recomposes its
+//!   digits (`{key}/shown`).
+//! Messages: `msg(Edit::Draft(s))` while typing, `Edit::Set(v)` on Enter / steps / arrows / scrub,
+//!   `Edit::Cancel` on Esc or blur.
+//! Usage: `number("copies", "份数", s.copies, SPEC, s.draft.as_deref(), Msg::Copies)`
+//!
 //! A numeric control for setting a value exactly: step buttons on either side, and once focused the
 //! value can be typed (digits, `.`, `-`, Backspace; Enter commits, Esc cancels) or stepped with
 //! Up / Down (Shift for ×10). Dragging sideways on the value scrubs it, one step per `SCRUB` px; a

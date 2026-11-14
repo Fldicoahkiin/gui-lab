@@ -30,7 +30,8 @@ fn every_recipe_lays_out_and_answers() {
         assert!(t.walk().len() > 3, "{name}: an empty tree");
         assert!(d.problems().is_empty(), "{name}: {:?}", d.problems());
         // Its own interaction.
-        let (key, check): (&str, Box<dyn Fn(&lab::tree::TreeNode) -> bool>) = match name {
+        type Check = Box<dyn Fn(&lab::tree::TreeNode) -> bool>;
+        let (key, check): (&str, Check) = match name {
             "form" => ("form/send", Box::new(|t| t.find("form/sent").and_then(|n| n.text.as_deref()) == Some("已提交 1 次"))),
             "list" => ("files/list:3", Box::new(|t| t.find("files/picked").and_then(|n| n.text.as_deref()) == Some("选中：封面.jpg"))),
             "dialog" => ("rename/save", Box::new(|t| t.find("rename").is_none())),

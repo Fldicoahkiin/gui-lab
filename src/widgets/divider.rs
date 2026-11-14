@@ -1,3 +1,11 @@
+//! divider
+//!
+//! Purpose: A thin line between groups.
+//! Props: `thickness` (logical px).
+//! States: none.
+//! Messages: none.
+//! Usage: `divider(1.0)` or `vdivider(1.0)`
+//!
 //! A thin line between groups: `divider` across, `vdivider` down. `thickness` is logical px.
 use crate::el::{El, Paint, space};
 

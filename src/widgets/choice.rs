@@ -1,3 +1,12 @@
+//! choice
+//!
+//! Purpose: Choose one of several named options.
+//! Props: `choice(key, label, options, current, msg)`; `segmented(key, options, current, height,
+//!   msg)`.
+//! States: the current option is filled; segmented is one focus stop, Left / Right move.
+//! Messages: `msg(i)` with the option's index.
+//! Usage: `segmented("view", &["日", "周"], s.view, 30.0, Msg::View)`
+//!
 //! Choosing one of several named options.
 //!
 //! - `choice`: a label and a row of small buttons that wraps; each option is its own focus stop.

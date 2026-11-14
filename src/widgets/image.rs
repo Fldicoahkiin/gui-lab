@@ -1,3 +1,12 @@
+//! image
+//!
+//! Purpose: A picture at its aspect ratio, with an optional caption.
+//! Props: `key`, `id` (picture id), `ratio` (height / width), `slot` (`PicFx` set for its marks),
+//!   `caption`.
+//! States: rest; loosens into its marks under fronts and the lens.
+//! Messages: none.
+//! Usage: `image("sky", SKY, 0.6, 0, Some("天空"))`
+//!
 //! A picture at its own aspect ratio, filling the width it is given, with an optional caption. `slot`
 //! picks which of the eight `PicFx` sets it turns into marks with when it loosens.
 use super::LABEL;

@@ -1,3 +1,12 @@
+//! switch
+//!
+//! Purpose: Turn one setting on or off.
+//! Props: `key`, `label`, `on`, `states` (names of off / on), `msg`; `switch_sized` adds the track
+//!   height.
+//! States: off, on, focused, disabled.
+//! Messages: `msg` on press, Enter or Space.
+//! Usage: `switch("notify", "通知", s.notify, None, Msg::Notify)`
+//!
 //! A two-state switch with a label and, optionally, the name of the current state. The whole row is
 //! pressable.
 use super::{CONTROL_H, LABEL, LINE};

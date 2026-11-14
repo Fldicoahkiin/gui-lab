@@ -1,3 +1,11 @@
+//! slider
+//!
+//! Purpose: Set a value roughly by dragging (the number control is the exact way).
+//! Props: `key`, `value`, `spec`, `width`, `msg`.
+//! States: rest, focused, dragging (captured until release).
+//! Messages: `msg(v)` while dragging and on Left / Right / Home / End.
+//! Usage: `slider("level", s.level, SPEC, 240.0, Msg::Level)`
+//!
 //! A slider for a value in a range. Drag anywhere on it, or with focus use Left / Right (Shift for
 //! ×10) and Home / End. It is the secondary way to set a value; `number` is the exact one.
 use super::{LINE, Spec};

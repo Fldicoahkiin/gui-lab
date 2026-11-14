@@ -1,3 +1,11 @@
+//! scroll
+//!
+//! Purpose: Scroll what does not fit in a fixed height.
+//! Props: `key`, `height`, `body`.
+//! States: scroll offset kept by the runtime by key; a thin bar shows where it is.
+//! Messages: none.
+//! Usage: `scroll_area("code", 380.0, lines)`
+//!
 //! A scroll area: a fixed height that clips what it holds and scrolls it with the wheel, with a thin
 //! bar for where it is.
 use super::LINE;
