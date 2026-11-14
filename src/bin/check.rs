@@ -12,6 +12,10 @@
 //!     does differ.
 //!  6. Every material, light theme: a fully loosened picture shows no page-ground pixel.
 //!  7. Annotation frames lie on the layout rects to the pixel.
+//!  8. Text around an outline (`wrap`), light theme: no glyph ink pixel within `gap - 1` px of the
+//!     obstacle's ink (a disc and the cut-out bust, several gaps), with a control that ignores the gap.
+//!  9. Every showcase scene at rest is calm: no instance outside its declared live area is loose,
+//!     still condensing, or under a front.
 //!
 //! usage: check
 use lab::demo::{BUST, PICTURE_SIZES, SKY, SPHERE, TERRAIN};
@@ -285,6 +289,70 @@ fn main() {
     if frames < 4 { eprintln!("FAIL only {frames} frames"); failed += 1; }
     eprintln!("7. annotation frames: {frames} checked, {} failing", failed - before);
 
+    // ── 8. Text keeps its gap from the obstacle's ink ───────────────────────────────────────────────
+    let before = failed;
+    let ground = rgb8(LIGHT.ground);
+    let inked = |img: &[u8]| -> Vec<bool> { (0..W * H).map(|i| { let o = (i * 4) as usize; (0..3).map(|c| (img[o + c] as i32 - ground[c] as i32).abs()).sum::<i32>() > 30 }).collect() };
+    let mut cases = 0;
+    for (kind, x, y, gap) in [(0u8, 220.0, 60.0, 12.0), (0, 40.0, 140.0, 6.0), (1, 300.0, 40.0, 16.0), (1, 120.0, 180.0, 24.0), (0, 380.0, 90.0, 0.0)] {
+        for control in [false, true] {
+            let st = Wr { kind, x, y, gap: if control { -1000.0 } else { gap }, show: 0 };
+            let mut ui = Ui::new(st, wrapped, |_, _| {}, fonts(), W, H, 1.0);
+            ui.pointer_leave();
+            ui.tick(50.0);
+            let look = Look { theme: LIGHT, material: Material::Plain, ..Look::default() };
+            ui.state.show = 1; ui.relayout(); ui.tick(50.0);
+            let obstacle = inked(&o.render(&mut ui, &look));
+            ui.state.show = 2; ui.relayout(); ui.tick(50.0);
+            let glyphs = inked(&o.render(&mut ui, &look));
+            let r = (gap.max(1.0) as i32) + 1;
+            let mut nearest = f32::INFINITY;
+            for py in 0..H as i32 { for px_ in 0..W as i32 {
+                if !glyphs[(py * W as i32 + px_) as usize] { continue; }
+                for dy in -r..=r { for dx in -r..=r {
+                    let (qx, qy) = (px_ + dx, py + dy);
+                    if qx < 0 || qy < 0 || qx >= W as i32 || qy >= H as i32 || !obstacle[(qy * W as i32 + qx) as usize] { continue; }
+                    nearest = nearest.min(((dx * dx + dy * dy) as f32).sqrt());
+                } }
+            } }
+            if control {
+                if nearest > 1.5 { eprintln!("FAIL control (kind {kind} at {x},{y}): text ignoring the obstacle is {nearest} px from it"); failed += 1; }
+            } else {
+                cases += 1;
+                // Distances between pixel centres; an edge pixel counts as ink from either side.
+                if nearest < gap - 1.0 { eprintln!("FAIL kind {kind} at {x},{y}: glyph ink {nearest:.1} px from the obstacle, gap {gap}"); failed += 1; }
+            }
+        }
+    }
+    eprintln!("8. text around outlines: {cases} cases, {} failing", failed - before);
+
+    // ── 9. Scenes at rest are calm ─────────────────────────────────────────────────────────────────
+    let before = failed;
+    for (i, live) in [(0usize, None), (1, None), (2, Some("pr/wall")), (3, None), (4, None), (5, None), (6, None)] {
+        let mut ui = lab::gallery::new_ui(fonts(), 1280, 800, 1.0);
+        ui.pointer_leave();
+        lab::gallery::update(&mut ui.state, lab::gallery::Msg::Go(lab::gallery::Page::Scene(i as u8)));
+        ui.relayout();
+        let mut t = 0.0;
+        while t < 6.0 { t += 1.0 / 30.0; ui.tick(t); }
+        let fx = ui.state.look().fx;
+        let allowed: Vec<_> = live.map(|k| ui.instances_of(k)).unwrap_or_default();
+        let loose = ui.scene().instances.iter().filter(|i| !allowed.contains(i))
+            .filter(|i| i.extra[2] > 0.0 || i.extra[3] + fx.enter > t).count();
+        let fronts = ui.field().fronts.iter().filter(|f| f[3] > 0.0 && t - f[2] < fx.wave_life).count();
+        if loose > 0 || fronts > 0 { eprintln!("FAIL scene {i} at rest: {loose} loose instances, {fronts} fronts"); failed += 1; }
+    }
+    // Control: the same count sees a held picture as loose.
+    {
+        let mut ui = lab::gallery::new_ui(fonts(), 1280, 800, 1.0);
+        lab::gallery::update(&mut ui.state, lab::gallery::Msg::Go(lab::gallery::Page::Scene(2)));
+        lab::gallery::update(&mut ui.state, lab::gallery::Msg::Num(lab::gallery::Target::Scene(2, 3), lab::widgets::Edit::Set(1.0)));
+        ui.relayout();
+        ui.tick(6.0);
+        if !ui.scene().instances.iter().any(|i| i.extra[2] > 0.0) { eprintln!("FAIL control: a held picture is not seen as loose"); failed += 1; }
+    }
+    eprintln!("9. scenes at rest: {} failing", failed - before);
+
     if failed > 0 { eprintln!("{failed} checks failed"); std::process::exit(1); }
     eprintln!("all checks passed");
 }
@@ -358,4 +426,23 @@ fn diff_ink(a: &[u8], b: &[u8], r: lab::ui::Rect, ground: [u8; 3]) -> i32 {
         for c in 0..3 { d = d.max((p[c] as i32 - q[c] as i32).abs()); }
     } }
     d
+}
+
+/// Text flowing around an obstacle: a disc (kind 1) or the cut-out bust (0), at (x, y). `show` 1 draws
+/// only the obstacle, 2 only the text (laid out the same either way).
+struct Wr { kind: u8, x: f32, y: f32, gap: f32, show: u8 }
+const WRAP_TEXT: &str = "文字沿着轮廓排开，每一行只拿到这一条带子里没有被挡住的部分；被挡成两段时，左右各排一行。Text keeps its distance from the ink of whatever is in its way, whatever its shape. ";
+fn wrapped(s: &Wr) -> El<()> {
+    use lab::wrap::{Around, Silhouette};
+    let (ob, sil) = if s.kind == 1 {
+        (space(150.0, 150.0).radius(75.0).fill(Paint::ACCENT), Silhouette::circle(s.x + 75.0, s.y + 75.0, 75.0))
+    } else {
+        let (iw, ih, a) = lab::demo::cutout_alpha();
+        let w = 240.0;
+        (col().width(w).child(picture(lab::demo::CUTOUT, ih as f32 / iw as f32)), Silhouette::from_alpha(iw, ih, |x, y| a[(y * iw + x) as usize], s.x, s.y, w))
+    };
+    let alpha = if s.show == 1 { 0.0 } else { 1.0 };
+    col().pad(20.0, 20.0).child(col().width(640.0)
+        .child(text_lh(WRAP_TEXT.repeat(4), 16.0, 26.0, Paint::INK.alpha(alpha)).fill_width().around(Around::new(vec![sil], s.gap)))
+        .child(ob.hidden_until_morphed(s.show == 2).absolute(Some(s.x), Some(s.y), None, None)))
 }

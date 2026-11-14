@@ -227,7 +227,7 @@ fn main() {
 /// A frame of every scene in the middle of its interaction, at 1280 × 800 (llvmpipe here).
 fn perf() {
     let mut o = Offscreen::new(W, H);
-    for i in 0..SCENES.len() {
+    for (i, scene) in SCENES.iter().enumerate() {
         let mut d = open(&mut o, i, None, W, H);
         // Into the busy part of each scene.
         match i {
@@ -245,6 +245,6 @@ fn perf() {
         let t0 = std::time::Instant::now();
         let mut t = d.ui.now();
         for _ in 0..n { t += 1.0 / 60.0; d.ui.tick(t); let look = d.ui.state.look(); d.o.draw(&mut d.ui, &look); }
-        eprintln!("{:<9} {:6.1} ms per frame (1280×800, layout and draw)", SCENES[i].0, t0.elapsed().as_secs_f64() * 1000.0 / n as f64);
+        eprintln!("{:<9} {:6.1} ms per frame (1280×800, layout and draw)", scene.0, t0.elapsed().as_secs_f64() * 1000.0 / n as f64);
     }
 }
