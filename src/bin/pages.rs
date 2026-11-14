@@ -1,10 +1,13 @@
-//! Render every gallery page in every theme and material to PNG files (one per combination), plus a
-//! few states: a dialog open, the narrow layout, a theme switch half-way, typing into an input.
-//! usage: pages <out_dir> [width] [height] [scale]     (device px)
+//! Render every gallery page in every theme and in the plain and dot materials to PNG files (one per
+//! combination), plus a few states: a dialog open, the narrow layout, a theme switch half-way, typing
+//! into an input. Step 5: every material's specimen at looseness 0, 0.5 and 1, the annotation page in
+//! each mode, every style page at rest and with a front mid-flight, and two contact sheets
+//! (`styles.png`, `materials.png`).
+//! usage: pages <out_dir> [width] [height] [scale] [step5]     (device px; `step5` only does step 5)
 use lab::el::Key;
 use lab::gallery::{self, GalleryUi, Msg, Page};
 use lab::offscreen::{Offscreen, save_png};
-use lab::style::MATERIALS;
+use lab::style::{GAZE_MODES, MATERIAL_COUNT, MATERIALS, Material, styles};
 
 const THEME_FILE: [&str; 3] = ["dark", "light", "pixel"];
 
@@ -31,15 +34,18 @@ fn main() {
     let w: u32 = a.get(2).and_then(|s| s.parse().ok()).unwrap_or(1280);
     let h: u32 = a.get(3).and_then(|s| s.parse().ok()).unwrap_or(1800);
     let scale: f32 = a.get(4).and_then(|s| s.parse().ok()).unwrap_or(1.0);
+    let only5 = a.get(5).is_some_and(|s| s == "step5");
     std::fs::create_dir_all(&out).expect("out dir");
     let faces = || lab::text::load_bundled("assets").expect("fonts");
+    step5(&out, scale);
+    if only5 { return; }
     let mut o = Offscreen::new(w, h);
     let mut ui = gallery::new_ui(faces(), w, h, scale);
     ui.pointer_leave();
 
     for p in Page::all() {
         for (ti, tname) in THEME_FILE.iter().enumerate() {
-            for (mi, (_, mname)) in MATERIALS.iter().enumerate() {
+            for (mi, (_, mname)) in MATERIALS.iter().enumerate().take(2) {
                 send(&mut ui, Msg::Go(p));
                 send(&mut ui, Msg::Theme(ti));
                 send(&mut ui, Msg::Material(mi));
@@ -128,4 +134,96 @@ fn main() {
         settle(&mut ui, 3.0);
         shoot(&mut o, &mut ui, &out, &format!("narrow-{}", p.hash()));
     }
+}
+
+/// A smaller copy (box filter, whole factor).
+fn shrink(px: &[u8], w: u32, h: u32, f: u32) -> (Vec<u8>, u32, u32) {
+    let (sw, sh) = (w / f, h / f);
+    let mut o = vec![0u8; (sw * sh * 4) as usize];
+    for y in 0..sh { for x in 0..sw { for c in 0..4 {
+        let mut acc = 0u32;
+        for j in 0..f { for i in 0..f { acc += px[(((y * f + j) * w + x * f + i) * 4 + c) as usize] as u32; } }
+        o[((y * sw + x) * 4 + c) as usize] = (acc / (f * f)) as u8;
+    } } }
+    (o, sw, sh)
+}
+/// Tiles of the same size in a grid, `cols` wide, with a gutter.
+fn sheet(tiles: &[(Vec<u8>, u32, u32)], cols: u32) -> (Vec<u8>, u32, u32) {
+    let (tw, th) = (tiles[0].1, tiles[0].2);
+    let g = 8;
+    let rows = (tiles.len() as u32).div_ceil(cols);
+    let (w, h) = (cols * (tw + g) + g, rows * (th + g) + g);
+    let mut o = vec![40u8; (w * h * 4) as usize];
+    for p in o.chunks_mut(4) { p[3] = 255; }
+    for (k, (px, _, _)) in tiles.iter().enumerate() {
+        let (cx, cy) = (g + (k as u32 % cols) * (tw + g), g + (k as u32 / cols) * (th + g));
+        for y in 0..th { let d = (((cy + y) * w + cx) * 4) as usize; let s = ((y * tw) * 4) as usize; o[d..d + (tw * 4) as usize].copy_from_slice(&px[s..s + (tw * 4) as usize]); }
+    }
+    (o, w, h)
+}
+
+fn step5(out: &str, scale: f32) {
+    let (w, h) = ((1280.0 * scale) as u32, (1000.0 * scale) as u32);
+    let faces = || lab::text::load_bundled("assets").expect("fonts");
+    let mut o = Offscreen::new(w, h);
+    let mut ui = gallery::new_ui(faces(), w, h, scale);
+    ui.pointer_leave();
+    let mut mats = vec![];
+    for m in 0..MATERIAL_COUNT as u8 {
+        send(&mut ui, Msg::Go(Page::Material(m)));
+        for (k, name) in [(0.0, "k0"), (0.5, "k05"), (1.0, "k1")] {
+            send(&mut ui, Msg::Num(gallery::Target::Loose, lab::widgets::Edit::Set(k)));
+            settle(&mut ui, 1.5);
+            let look = ui.state.look();
+            let px = o.render(&mut ui, &look);
+            save_png(&format!("{out}/material-{}-{name}.png", Material::from_id(m).name()), w, h, &px);
+            if k == 0.5 { mats.push(shrink(&px, w, h, 2)); }
+        }
+        eprintln!("material {}", Material::from_id(m).name());
+    }
+    send(&mut ui, Msg::Num(gallery::Target::Loose, lab::widgets::Edit::Set(0.0)));
+    let (px, sw, sh) = sheet(&mats, 3);
+    save_png(&format!("{out}/materials.png"), sw, sh, &px);
+
+    // The annotation page in each mode: the pointer over a figure, focus in the list.
+    send(&mut ui, Msg::Go(Page::Gaze));
+    settle(&mut ui, 1.0);
+    let (fx, fy) = ui.node("gaze/fig-b").expect("figure").rect.center();
+    let (rx, ry) = ui.node("gaze/row1").expect("row").rect.center();
+    for (i, (_, name)) in GAZE_MODES.iter().enumerate() {
+        send(&mut ui, Msg::GazeMode(i));
+        ui.press(rx, ry);
+        ui.release(rx, ry);
+        ui.pointer_move(fx, fy);
+        settle(&mut ui, 0.1);
+        shoot(&mut o, &mut ui, out, &format!("gaze-{i}-mid"));
+        settle(&mut ui, 2.0);
+        shoot(&mut o, &mut ui, out, &format!("gaze-{i}"));
+        eprintln!("gaze {name}");
+    }
+    ui.pointer_leave();
+
+    // Every style page: at rest, and with a front mid-flight.
+    let mut rest = vec![];
+    for (i, st) in styles().iter().enumerate() {
+        let mut ui = gallery::new_ui(faces(), w, h, scale);
+        ui.pointer_leave();
+        send(&mut ui, Msg::Go(Page::Style(i as u8)));
+        settle(&mut ui, 2.5);
+        let look = ui.state.look();
+        let px = o.render(&mut ui, &look);
+        save_png(&format!("{out}/style-{}-rest.png", st.hash), w, h, &px);
+        rest.push(shrink(&px, w, h, 4));
+        // A press on empty page ground, left of the composition's middle.
+        let comp = ui.node(&format!("style-{}/comp", st.hash)).expect("composition").rect;
+        let (x, y) = (comp.x + comp.w * 0.35, comp.y + comp.h * 0.5);
+        ui.press(x, y);
+        ui.release(x, y);
+        ui.pointer_leave();
+        settle(&mut ui, 0.38);
+        shoot(&mut o, &mut ui, out, &format!("style-{}-ripple", st.hash));
+        eprintln!("style {}", st.hash);
+    }
+    let (px, sw, sh) = sheet(&rest, 3);
+    save_png(&format!("{out}/styles.png"), sw, sh, &px);
 }
