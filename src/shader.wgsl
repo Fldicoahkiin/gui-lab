@@ -1131,6 +1131,11 @@ fn shade(p: vec2f) -> vec3f {
   return col;
 }
 
+/// Zero a box of an image (stage 1 drawn again only where things changed, DESIGN.md §1.19).
+@fragment fn fs_zero() -> @location(0) vec4f { return vec4f(0.0); }
+/// Copy the kept frame to the target.
+@fragment fn fs_blit(@builtin(position) frag: vec4f) -> @location(0) vec4f { return textureLoad(tex0, vec2i(floor(frag.xy)), 0); }
+
 /// The material pass. At full resolution `qual.x` is 1 and every pixel is shaded. For the reduced pass
 /// it is 1 / q, so the pixel centre of the small target lands on the full frame's coordinates; a pixel
 /// at rest there is not shaded but marked (alpha 1) for the full-resolution pass to shade, a loose one
