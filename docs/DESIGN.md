@@ -319,6 +319,35 @@ gallery 里：换页时页标题（`page-title`）和左栏的选中底色（`ra
 
 **验收**：`tests/frames.rs`：每个 gallery 页和每个场景（声音场景暂停）在输入（指针进来移动、滚一下、Tab）以后，过了这一页能起的最长动画（波前寿命、凝结、提交的波前穿过窗口、标注画出、流动）`needs_frame` 为假，下一次唤醒不是“现在”；#button 上空闲 3 秒画 0 帧，按一下以后在波前的一半寿命里至少 25 帧，波前结束后停；输入框有焦点时插入点按定时唤醒闪烁（下一次唤醒在一个相位以内，四个相位 3–5 帧）；出发牌每秒唤醒，不是每帧。网页（WebGL2、swiftshader、DevTools 虚拟时钟）：#button 空闲 3 秒画 0 帧，波纹期间 > 0，之后又是 0。原生（Xvfb + lavapipe）：#button 空闲时两秒的报告里帧数不变，xdotool 按一下以后两秒内画了约 33 帧，然后又不变。
 
+### 1.12 帧时间读数和分辨率预算
+
+**读数**（顶栏“性能”菜单的第一项，或 F2；`Look::overlay`）：标注层在材质之上、窗口右下角，用 Departure Mono 11 像素画一块（底是页面底色，0.92 不透明）：
+
+```
+F2 frames       58/s  drawn 1234 skipped 56
+ms               last    avg    max
+update+layout    0.42   0.50   2.10
+scene build      0.80   0.91   3.02
+gpu submit       1.20   1.13   4.00
+total            ...
+instances 1234  particles 0  glyph atlas 12%
+layouts 12  shaped 345  views 40
+quality 0.5 auto  WebGL2  dpr 2
+```
+
+数据（`src/perf.rs`，不依赖显卡）：`Perf.pending` 是上一帧以后花掉的时间，运行时往里加——`update+layout` 是 `update`、`view`、布局（最外一层的 `send` / `relayout` 计时，减去其中建场景的时间），`scene build` 是 `paint` 和 `finish`（生成实例、动画、角标、标注）；渲染器在 `draw` 里从开始到最后一次 `queue.submit` 的 CPU 时间是 `gpu submit`，然后 `Perf::frame` 把这三样记成一帧（只留最近两秒）。`Perf::summary(now)` 给出最近一秒画了几帧、每一项的最近 / 平均 / 最大毫秒。时间用 `perf::now_ms()`：网页是 `performance.now()`，原生是 `Instant`。另有工作计数（`Counters`：布局次数、parley 排版次数、`view` 次数、场景次数），测试也用。后端名和设备像素比由宿主填（`Perf::backend`：WebGPU、WebGL2、Vulkan、Metal）。读数打开时每 0.5 秒定时唤醒一次刷新，所以静止时帧数会落到 0；关着时不唤醒。
+
+**分辨率预算**（`Look::quality`：1、0.75、0.5，或 0 = 自动）。第二遍（材质）可以先在 `q` 倍分辨率的一张图（`lo`，`ceil(宽 × q) × ceil(高 × q)`，画面的格式）上画：`fs_material` 用 `p = frag × (1 / q)`（`qual.x`），所以小图上的像素中心落在全分辨率画面的坐标上，材质函数里的长度、点距、取样都不用改。然后全分辨率的 `fs_material_up` 逐像素决定：
+
+- **静止的像素**（`rest_at(p)`：图片上 `pic_k(p) = 0`；其他地方 `kt(p) < 0.02`、没有 burst、透镜 < 0.02）由材质在全分辨率重新算（`shade(p)`）。对“静止时等于 plain”的材质，这就是直接取 ink；对静止时有自己样子的材质（dot 的底、print 的纸纹、chrome、liquid、xray、near），它们静止的样子也是全分辨率的。所以静止的页面和 `q = 1` 逐像素相同，文字永远是清楚的。
+- **松开的像素**取 `lo` 双线性插值的颜色。松开的东西（记号、散开的点、刻痕）本来就在变，半分辨率看不出来，代价降到 `q²`。
+
+只有可能有东西松开时才画 `lo`（运行时 `moving_at`、飞行中的粒子、对比擦除、有实例带静态松开度、指针在图片所在的页面上）；整页静止时一遍全分辨率，和以前一样。`Renderer::always_lo` 让验收强制画 `lo`。
+
+**自动**（`perf::AutoQuality`）：每画一帧喂一次这一帧的 CPU 时间（三项之和）；取一个短的滑动平均（新值占 0.2），连续 30 帧超过 12 ms 就降一级（1 → 0.75 → 0.5），连续 120 帧不超过就升一级。读数里写“quality 0.75 auto”。
+
+**验收**：`tests/perf.rs`（自动档的降和升、一帧慢的不算、最近一秒的统计、F2 和菜单打开读数且读数的字在标注层里、打开时 0.5 秒唤醒一次）；`check` 第 12 条：每种材质静止时，`q = 0.5`（强制画 `lo`）和 `q = 1` 逐像素相同，正文和 plain 相同（同第 5 条的容差），并且有对照：松开以后两种分辨率看得出不同。llvmpipe 上的帧时间（只能作相对比较）见 §9。
+
 ## 2. 参数必须能精确设置
 
 不用滑块当主要手段。数字控件（`number`）：

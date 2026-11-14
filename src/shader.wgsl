@@ -1031,22 +1031,32 @@ fn shade(p: vec2f) -> vec3f {
   return col;
 }
 
-/// The material pass. At full resolution `qual.x` is 1; for the reduced pass it is 1 / q, so the
-/// pixel centre of the small target lands on the full frame's coordinates.
-@fragment fn fs_material(@builtin(position) frag: vec4f) -> @location(0) vec4f { return vec4f(shade(frag.xy * u.qual.x), 1.0); }
+/// The material pass. At full resolution `qual.x` is 1 and every pixel is shaded. For the reduced pass
+/// it is 1 / q, so the pixel centre of the small target lands on the full frame's coordinates; a pixel
+/// at rest there is not shaded but marked (alpha 1) for the full-resolution pass to shade, a loose one
+/// is shaded (alpha 0).
+@fragment fn fs_material(@builtin(position) frag: vec4f) -> @location(0) vec4f {
+  let p = frag.xy * u.qual.x;
+  if (u.qual.x > 1.0) {
+    if (rest_at(p)) { return vec4f(0.0, 0.0, 0.0, 1.0); }
+    return vec4f(shade(p), 0.0);
+  }
+  return vec4f(shade(p), 1.0);
+}
 
 /// Whether nothing is loose at `p`: no front, half-plane, burst or lens here, no looseness of its own,
-/// a picture's marks not showing. Such pixels are drawn at full resolution by the material itself, so a
-/// page at rest is exactly what quality 1 draws.
+/// a picture's marks not showing.
 fn rest_at(p: vec2f) -> bool {
   if (near_t(p).g > 0.05) { return pic_k(p) <= 0.0; }
   return kt(p) < 0.02 && burst_k(p) <= 0.0 && lens(p) < 0.02;
 }
-/// After the reduced pass: rest pixels are shaded here at full resolution, loose ones take the reduced
-/// pass's colour (filtered between its texels).
+/// After the reduced pass: where any of the reduced texels around this pixel was at rest, the
+/// pixel is shaded here at full resolution (so a page at rest is exactly what quality 1 draws, and the
+/// edge of a loose region is sharp); where all four were loose, it takes their filtered colour.
 @fragment fn fs_material_up(@builtin(position) frag: vec4f) -> @location(0) vec4f {
   let p = frag.xy;
-  if (rest_at(p)) { return vec4f(shade(p), 1.0); }
-  let uv = p * u.qual.y / u.qual.zw;
-  return vec4f(textureSampleLevel(lo, samp, uv, 0.0).rgb, 1.0);
+  // One filtered read: its alpha is above 0 exactly when a texel with weight here was at rest.
+  let c = textureSampleLevel(lo, samp, p * u.qual.y / u.qual.zw, 0.0);
+  if (c.a > 0.001) { return vec4f(shade(p), 1.0); }
+  return vec4f(c.rgb, 1.0);
 }
