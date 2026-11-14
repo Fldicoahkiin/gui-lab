@@ -178,6 +178,18 @@ pub struct Renderer {
     mesh: MeshGpu,
     /// Rows of the particle state textures.
     sim_rows: u32,
+    /// The boxes the frame being drawn is limited to.
+    region: crate::dirty::Region,
+    /// Draw only what changed (DESIGN.md §1.19): the frame is kept here between draws and copied to the
+    /// target; what the last frame was drawn from; zeroing a box of an image; the copy.
+    pub partial: bool,
+    frame_view: wgpu::TextureView,
+    prev: Option<crate::dirty::Inputs>,
+    zero: [wgpu::RenderPipeline; 2],
+    blit: wgpu::RenderPipeline,
+    blit_group: wgpu::BindGroup,
+    /// The last frame's two boxes (for the readout and the bench); `None`: all of it.
+    pub last_region: Option<([u32; 4], [u32; 4])>,
 }
 
 /// The mesh pass's uniforms (see `mesh.wgsl`).
@@ -265,6 +277,8 @@ impl Renderer {
         ];
         let tiles = Self::tiles(&device);
         let mesh = Self::mesh_gpu(&device);
+        let zero = [pipe("vs_full", "fs_zero", INK, None, false), pipe("vs_full", "fs_zero", out_format, None, false)];
+        let blit = pipe("vs_full", "fs_blit", out_format, None, false);
         let ubuf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: std::mem::size_of::<Uniforms>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         // Only the mark atlas has mip levels; for every other texture the mipmap filter does nothing.
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor { mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, mipmap_filter: wgpu::MipmapFilterMode::Linear, ..Default::default() });
@@ -292,12 +306,14 @@ impl Renderer {
         let blank = Self::target(&device, 1, 1, INK);
         let material = Self::bind(&device, &layout, &ubuf, &sampler, [&blank, &blank, &marks_view, &palette_view, &chars_view, &blank, &blank, &blank]);
         let annots = Self::instance_buffer(&device, 256);
+        let (blank_view, blank_group) = (blank.clone(), material.clone());
         let mut r = Self {
             device, queue, out_format, layout, ubuf, sampler, atlas, atlas_view, marks, marks_view, palette_view, chars, chars_view,
             before: blank.clone(), blank: blank.clone(), split_seen: 0, split: [0.0; 4], last_look: None, marks_ready: false, hide_glyphs: false,
             pictures: HashMap::new(), instances, capacity, pipes, annots, annot_capacity: 256, up_pipe: None, shader, pl,
             ink: blank.clone(), soft: blank.clone(), lo: blank.clone(), lo_key: (0, 0, 0), material_up: material.clone(), auto: Default::default(), always_lo: false,
             near: blank, material_first: material.clone(), material, size: (0, 0), tiles, mesh, sim_rows: 0,
+            region: crate::dirty::Region::All, partial: true, frame_view: blank_view.clone(), prev: None, zero, blit, blit_group: blank_group, last_region: None,
         };
         r.set_picture(u32::MAX, 1, 1, &[0, 0, 0, 255]);
         r.resize(w, h);
@@ -552,6 +568,13 @@ impl Renderer {
         self.material = Self::bind(&self.device, &self.layout, &self.ubuf, &self.sampler, [&self.ink, &self.near, &self.marks_view, &self.palette_view, &self.chars_view, &self.before, &self.soft, &self.blank]);
         self.material_first = Self::bind(&self.device, &self.layout, &self.ubuf, &self.sampler, [&self.ink, &self.near, &self.marks_view, &self.palette_view, &self.chars_view, &self.blank, &self.soft, &self.blank]);
         self.lo_key = (0, 0, 0);
+        let frame = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("frame"), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,
+            dimension: wgpu::TextureDimension::D2, format: self.out_format, usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC, view_formats: &[],
+        });
+        self.frame_view = frame.create_view(&Default::default());
+        self.blit_group = Self::bind(&self.device, &self.layout, &self.ubuf, &self.sampler, [&self.frame_view, &self.blank, &self.marks_view, &self.palette_view, &self.chars_view, &self.blank, &self.blank, &self.blank]);
+        self.prev = None;
         // The old frame is gone with the old size.
         self.split = [0.0; 4];
         let t = &mut self.tiles;
@@ -768,6 +791,9 @@ impl Renderer {
             self.split_seen = sp.id;
             if let Some(old) = self.last_look {
                 let before = self.before.clone();
+                // This draws the old scene into the shared images: the next frame is drawn whole.
+                self.prev = None;
+                self.region = crate::dirty::Region::All;
                 self.frame(&before, Frame { scene: &sp.scene, field: &sp.field, look: &old, lib: ui.meshes(), scale, t: sp.t, mt, split: [0.0; 4], tiles: None, grid: None }, false);
                 self.split = [sp.at[0], sp.at[1], sp.t, 1.0];
             }
@@ -794,7 +820,7 @@ impl Renderer {
                     self.upload(&sc);
                     let mut enc = self.device.create_command_encoder(&Default::default());
                     self.prepare_meshes(&mut enc, &sc, ui.meshes());
-                    self.stage1(&mut enc, &sc, &iv, &nv, None, 0);
+                    self.stage1(&mut enc, &sc, &iv, &nv, None, 0, None);
                     self.queue.submit([enc.finish()]);
                 }
             }
@@ -833,6 +859,15 @@ impl Renderer {
         let loose = tiles.is_some() || ui.loose_estimate(now, look.fx.lens) >= LO_MIN_AREA;
         let lo = (q < 1.0 && (loose || self.always_lo)).then(|| { let (w, h) = self.lo_for(q); [1.0 / q, q, w as f32, h as f32] });
         let pending = ui.perf().pending;
+        // What changed since the last frame (DESIGN.md §1.19).
+        let inputs = crate::dirty::Inputs {
+            instances: ui.scene().instances.clone(), annot: ui.scene().annot.clone(), meshes: ui.scene().meshes.iter().map(|m| m.scene.fingerprint() ^ (m.rect[2].to_bits() as u64) << 32 ^ m.rect[3].to_bits() as u64).collect(),
+            field: *ui.field(), look: *look, now, mclock: mt, size: self.size,
+            global: split[3] > 0.0 || tiles.is_some() || lo.is_some() || self.hide_glyphs,
+        };
+        let region = match (&self.prev, self.partial) { (Some(p), true) => crate::dirty::region(p, &inputs, scale), _ => crate::dirty::Region::All };
+        self.prev = Some(inputs);
+        self.region = region;
         self.frame_q(target, Frame { scene: ui.scene(), field: ui.field(), look, lib: ui.meshes(), scale, t: now, mt, split, tiles, grid }, true, lo);
         let submit = (crate::perf::now_ms() - started) as f32;
         let parts = ui.morph_run().map_or(0, |r| if r.clock(now).is_some() { r.grid.map_or(r.particles.len() as u32, |g| g.count()) } else { 0 });
@@ -860,10 +895,26 @@ impl Renderer {
 
     /// Stage 1: every instance into ink and near. The page first, then `tiles` morph tiles (if any),
     /// then the modal layer.
-    fn stage1(&self, enc: &mut wgpu::CommandEncoder, scene: &Scene, ink: &wgpu::TextureView, near: &wgpu::TextureView, soft: Option<&wgpu::TextureView>, tiles: u32) {
+    /// A stage-1 pass: cleared, or with `scissor` only that box zeroed and drawn (the rest is kept).
+    fn open<'a>(&self, enc: &'a mut wgpu::CommandEncoder, view: &'a wgpu::TextureView, scissor: Option<[u32; 4]>) -> wgpu::RenderPass<'a> {
+        match scissor {
+            None => clear(enc, view, wgpu::Color::TRANSPARENT),
+            Some([x, y, w, h]) => {
+                let mut pass = load(enc, view);
+                pass.set_scissor_rect(x, y, w, h);
+                pass.set_pipeline(&self.zero[0]);
+                pass.set_bind_group(0, self.pictures.get(&u32::MAX).expect("blank picture"), &[]);
+                pass.draw(0..3, 0..1);
+                pass
+            }
+        }
+    }
+    /// `scissor`: only this box (x, y, w, h device px) is drawn again; the rest of the images is kept.
+    #[allow(clippy::too_many_arguments)]
+    fn stage1(&self, enc: &mut wgpu::CommandEncoder, scene: &Scene, ink: &wgpu::TextureView, near: &wgpu::TextureView, soft: Option<&wgpu::TextureView>, tiles: u32, scissor: Option<[u32; 4]>) {
         let layer = scene.layer.unwrap_or(u32::MAX);
         for (k, (view, pipe, top)) in [(ink, &self.pipes[0], &self.pipes[6]), (near, &self.pipes[1], &self.pipes[2])].into_iter().enumerate() {
-            let mut pass = clear(enc, view, wgpu::Color::TRANSPARENT);
+            let mut pass = self.open(enc, view, scissor);
             let mut pending = tiles > 0;
             let draw_tiles = |pass: &mut wgpu::RenderPass<'_>| {
                 if let Some((group, n)) = &self.tiles.grid_now {
@@ -891,7 +942,7 @@ impl Renderer {
         }
         // The liquid's field, a third time, only when liquid is in use.
         if let Some(view) = soft {
-            let mut pass = clear(enc, view, wgpu::Color::TRANSPARENT);
+            let mut pass = self.open(enc, view, scissor);
             pass.set_vertex_buffer(0, self.instances.slice(..));
             pass.set_pipeline(&self.pipes[4]);
             // The modal layer is not liquid (see `fs_ink_top`).
@@ -942,7 +993,20 @@ impl Renderer {
         let mut enc = self.device.create_command_encoder(&Default::default());
         self.prepare_meshes(&mut enc, scene, f.lib);
         let (ink, near, soft) = (self.ink.clone(), self.near.clone(), self.soft.clone());
-        self.stage1(&mut enc, scene, &ink, &near, wants_soft.then_some(&soft), tiles);
+        // The main frame is drawn into the kept frame, only within what changed, then copied out.
+        let (w, h) = self.size;
+        let boxes = match (with_before, self.region) {
+            (true, crate::dirty::Region::Boxes { stage1, stage2 }) => Some((crate::dirty::scissor(stage1, w, h), crate::dirty::scissor(stage2, w, h))),
+            _ => None,
+        };
+        self.last_region = boxes.map(|(a, b)| (a.unwrap_or([0; 4]), b.unwrap_or([0; 4])));
+        let frame_view = self.frame_view.clone();
+        let out = if with_before { &frame_view } else { target };
+        match boxes {
+            None => self.stage1(&mut enc, scene, &ink, &near, wants_soft.then_some(&soft), tiles, None),
+            Some((Some(b), _)) => self.stage1(&mut enc, scene, &ink, &near, wants_soft.then_some(&soft), tiles, Some(b)),
+            Some((None, _)) => {}
+        }
         if lo.is_some() {
             let lo_view = self.lo.clone();
             let mut pass = clear(&mut enc, &lo_view, wgpu::Color::BLACK);
@@ -950,8 +1014,10 @@ impl Renderer {
             pass.set_bind_group(0, if with_before { &self.material } else { &self.material_first }, &[]);
             pass.draw(0..3, 0..1);
         }
-        {
-            let mut pass = clear(&mut enc, target, wgpu::Color::BLACK);
+        let stage2 = match boxes { None => Some(None), Some((_, Some(b))) => Some(Some(b)), Some((_, None)) => None };
+        if let Some(sc) = stage2 {
+            let mut pass = match sc { None => clear(&mut enc, out, wgpu::Color::BLACK), Some(_) => load(&mut enc, out) };
+            if let Some([x, y, sw, sh]) = sc { pass.set_scissor_rect(x, y, sw, sh); }
             if lo.is_some() {
                 pass.set_pipeline(self.up_pipe.as_ref().expect("made with the reduced target"));
                 pass.set_bind_group(0, &self.material_up, &[]);
@@ -967,6 +1033,12 @@ impl Renderer {
                 pass.set_vertex_buffer(0, self.annots.slice(..));
                 pass.draw(0..4, 0..annots);
             }
+        }
+        if with_before {
+            let mut pass = clear(&mut enc, target, wgpu::Color::BLACK);
+            pass.set_pipeline(&self.blit);
+            pass.set_bind_group(0, &self.blit_group, &[]);
+            pass.draw(0..3, 0..1);
         }
         self.queue.submit([enc.finish()]);
     }
@@ -998,6 +1070,13 @@ impl Renderer {
     }
 }
 
+/// A pass that keeps what the target holds.
+fn load<'a>(enc: &'a mut wgpu::CommandEncoder, view: &'a wgpu::TextureView) -> wgpu::RenderPass<'a> {
+    enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: None, depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None, multiview_mask: None,
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment { view, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store } })],
+    })
+}
 fn clear<'a>(enc: &'a mut wgpu::CommandEncoder, view: &'a wgpu::TextureView, color: wgpu::Color) -> wgpu::RenderPass<'a> {
     enc.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: None, depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None, multiview_mask: None,

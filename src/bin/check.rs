@@ -36,7 +36,11 @@
 //!     it spans (the object is convex) and, under the `near` material, every crease the CPU projects
 //!     has the outline drawn along it (with a control: a crease threshold above every angle draws none).
 //!
-//! usage: check [components | recompose | mesh]     (`components` runs only 10 and 11, `recompose` only 13, `mesh` only 14)
+//! 15. Drawing only what changed (§1.19): on the button page, through a hover, a press with its front
+//!     and the counter recomposing, under every material, each frame drawn with dirty boxes equals the
+//!     same frame drawn whole, byte for byte (with a control: the boxes were smaller than the window).
+//!
+//! usage: check [components | recompose | mesh | dirty]     (`components` runs only 10 and 11, `recompose` only 13, `mesh` only 14, `dirty` only 15)
 use lab::demo::{BUST, PICTURE_SIZES, SKY, SPHERE, TERRAIN};
 use lab::el::{El, Font, Paint, col, picture, row, space, text_lh};
 use lab::morph::MorphSpec;
@@ -68,6 +72,11 @@ fn main() {
     let fonts = || load_bundled("assets").expect("fonts");
     if std::env::args().nth(1).is_some_and(|a| a == "recompose") {
         let f = recompose(&mut o, &fonts);
+        if f > 0 { eprintln!("{f} checks failed"); std::process::exit(1); }
+        return eprintln!("all checks passed");
+    }
+    if std::env::args().nth(1).is_some_and(|a| a == "dirty") {
+        let f = dirty(&fonts);
         if f > 0 { eprintln!("{f} checks failed"); std::process::exit(1); }
         return eprintln!("all checks passed");
     }
@@ -451,6 +460,7 @@ fn main() {
 
     failed += recompose(&mut o, &fonts);
     failed += meshes(&mut o, &fonts);
+    failed += dirty(&fonts);
 
     if failed > 0 { eprintln!("{failed} checks failed"); std::process::exit(1); }
     eprintln!("all checks passed");
@@ -808,5 +818,56 @@ fn meshes(o: &mut Offscreen, fonts: &dyn Fn() -> Vec<lab::text::Face>) -> usize 
         }
     }
     eprintln!("14. meshes: {} failing", failed - before);
+    failed
+}
+
+// ── 15. Dirty boxes ──────────────────────────────────────────────────────────────────────────────
+fn dirty(fonts: &dyn Fn() -> Vec<lab::text::Face>) -> usize {
+    use lab::gallery::{self, Msg, Page};
+    let (w, h) = (900u32, 640u32);
+    // One renderer (it keeps the glyph atlas): each frame drawn in part from the previous one, then the
+    // same frame drawn whole to compare (which the next frame then starts from).
+    let mut part = Offscreen::new(w, h);
+    let mut failed = 0;
+    let (mut frames, mut small) = (0, 0);
+    // The button page under every material; the image page and the 3D page (the lens over a picture and
+    // a mesh) under three.
+    let runs: Vec<(&str, usize)> = (0..lab::style::MATERIALS.len()).map(|m| ("button", m)).chain([("image", 0), ("image", 1), ("three", 0), ("three", 1), ("three", 3)]).collect();
+    for (page, mi) in runs {
+        let (m, name) = lab::style::MATERIALS[mi];
+        let mut ui = gallery::new_ui(fonts(), w, h, 1.0);
+        gallery::update(&mut ui.state, Msg::Go(Page::from_hash(page).expect("page")));
+        gallery::update(&mut ui.state, Msg::Material(mi));
+        ui.relayout();
+        ui.pointer_leave();
+        let k = ui.nodes().iter().find(|n| n.pressable() && n.key.contains("live")).or_else(|| ui.nodes().iter().find(|n| n.key == "three/object" || n.kind() == "image")).map(|n| n.key.clone()).expect("something to press");
+        let (x, y) = ui.node(&k).expect("button").rect.center();
+        let mut t = 3.0;
+        ui.tick(t);
+        let mut bad = 0;
+        for step in 0..48 {
+            t += 1.0 / 60.0;
+            ui.tick(t);
+            match step { 6 => ui.pointer_move(x, y), 18 => ui.press(x, y), 21 => ui.release(x, y), 34 => ui.pointer_move(x + 200.0, y + 120.0), _ => {} }
+            let look = ui.state.look();
+            let a = part.render(&mut ui, &look);
+            let boxes = part.r.last_region;
+            part.r.partial = false;
+            ui.invalidate();
+            let b = part.render(&mut ui, &look);
+            part.r.partial = true;
+            frames += 1;
+            if let Some((_, b2)) = boxes && (b2[2] as u64) * (b2[3] as u64) < (w as u64 * h as u64) / 2 { small += 1; }
+            if a != b {
+                let n = a.chunks(4).zip(b.chunks(4)).filter(|(p, q)| p != q).count();
+                if bad == 0 { eprintln!("FAIL dirty {page} {name} ({m:?}) frame {step}: {n} pixels differ from the whole redraw (boxes {:?})", boxes); }
+                bad += 1;
+            }
+        }
+        if bad > 0 { failed += 1; }
+    }
+    // Control: most frames really were drawn in part.
+    if small * 2 < frames { eprintln!("FAIL control: only {small} of {frames} frames were drawn in boxes under half the window"); failed += 1; }
+    eprintln!("15. dirty boxes: {frames} frames compared, {small} drawn in part, {failed} failing");
     failed
 }

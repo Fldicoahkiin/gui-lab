@@ -7,9 +7,13 @@
 //!     1280 × 800, a full frame mid-flight (simulation step, stage 1, material) on the GPU, and the CPU
 //!     path at its 40k cap for comparison. Uses the GPU (lavapipe here: compare rows, not machines).
 //!
+//!  5. drawing only what changed (DESIGN.md §1.19): the gallery at 1280 × 800, the mean GPU frame (draw
+//!     and wait) of a hover onto a button, the caret blinking in a field, and one press of the counter,
+//!     drawn whole and drawn in boxes, plain and dot; with the share of the window the boxes cover.
+//!
 //! Each line is the mean over the runs, ms. Numbers are only comparable on one machine.
 //!
-//! usage: bench [runs] [gpu]     (`gpu` runs only the particle rows)
+//! usage: bench [runs] [gpu | dirty]     (`gpu` runs only the particle rows, `dirty` only 5)
 use lab::el::{El, Paint, col, row, space, text, text_lh};
 use lab::gallery::{self, Msg, Page};
 use lab::ui::Ui;
@@ -81,6 +85,7 @@ fn particles(runs: usize) {
 fn main() {
     let runs: usize = std::env::args().nth(1).and_then(|v| v.parse().ok()).unwrap_or(40);
     if std::env::args().nth(2).is_some_and(|a| a == "gpu") { particles(runs); return; }
+    if std::env::args().nth(2).is_some_and(|a| a == "dirty") { dirty(); return; }
     let (w, h) = (1280u32, 800u32);
 
     // 1. Gallery button page: press the live button.
@@ -108,6 +113,53 @@ fn main() {
     let ms = time(runs.min(30), |i| { ui.state.x = 160.0 + (i % 40) as f32 * 18.0; ui.relayout(); });
     println!("5000-char article reflow{ms:8.3} ms   (the obstacle moves; layout, line breaks, scene)");
     particles(runs);
+    dirty();
+}
+
+/// 5. Whole frames against frames drawn in boxes.
+fn dirty() {
+    let (w, h) = (1280u32, 800u32);
+    let Ok(mut o) = lab::offscreen::Offscreen::try_new(w, h) else { println!("dirty boxes             (no GPU adapter)"); return };
+    for material in [lab::style::Material::Plain, lab::style::Material::Dot] {
+        for (case, page) in [("hover a button", "button"), ("caret blink", "input"), ("counter press", "button")] {
+            let mut row = vec![];
+            for partial in [false, true] {
+                o.r.partial = partial;
+                let mut ui = gallery::new_ui(fonts(), w, h, 1.0);
+                gallery::update(&mut ui.state, Msg::Go(Page::from_hash(page).expect("page")));
+                gallery::update(&mut ui.state, Msg::Material(material as usize));
+                ui.relayout();
+                ui.pointer_leave();
+                let mut t = 3.0;
+                ui.tick(t);
+                let look = ui.state.look();
+                o.draw(&mut ui, &look);
+                let target = if page == "input" { ui.nodes().iter().find(|n| n.editable()).map(|n| n.key.clone()) } else { ui.nodes().iter().find(|n| n.pressable() && n.key.contains("live")).map(|n| n.key.clone()) };
+                let (x, y) = target.as_deref().and_then(|k| ui.node(k)).map_or((640.0, 400.0), |n| n.rect.center());
+                match case {
+                    "hover a button" => ui.pointer_move(x, y),
+                    "caret blink" => { ui.press(x, y); ui.release(x, y); ui.pointer_leave(); for _ in 0..90 { t += 1.0 / 60.0; ui.tick(t); let l = ui.state.look(); o.draw(&mut ui, &l); } }
+                    _ => { ui.press(x, y); ui.release(x, y); }
+                }
+                let (mut ms, mut n, mut area) = (0.0, 0, 0.0);
+                for _ in 0..if case == "caret blink" { 160 } else { 90 } {
+                    t += 1.0 / 60.0;
+                    ui.tick(t);
+                    if !ui.needs_frame(t) { continue; }
+                    let look = ui.state.look();
+                    let t0 = Instant::now();
+                    o.draw(&mut ui, &look);
+                    ms += t0.elapsed().as_secs_f64() * 1000.0;
+                    n += 1;
+                    area += o.r.last_region.map_or(1.0, |(_, b)| (b[2] * b[3]) as f64 / (w * h) as f64);
+                }
+                row.push((ms / n.max(1) as f64, n, area / n.max(1) as f64));
+            }
+            println!("dirty {:<6} {case:<15} whole {:8.2} ms   boxes {:8.2} ms   ({} frames, boxes cover {:.1}% of the window)",
+                format!("{material:?}").to_lowercase(), row[0].0, row[1].0, row[1].1, row[1].2 * 100.0);
+        }
+    }
+    o.r.partial = true;
 }
 
 /// The gallery's own 10,000-row page, if there is one: scrolled by the wheel.

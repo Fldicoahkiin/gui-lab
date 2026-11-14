@@ -1,6 +1,7 @@
 extern crate self as lab;
 
 pub mod demo;
+pub mod dirty;
 pub mod el;
 pub mod error;
 pub mod gallery;

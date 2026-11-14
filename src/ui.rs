@@ -705,6 +705,20 @@ impl<S, M: Clone> Ui<S, M> {
             || self.marks_moving || now < self.gaze_until || self.fling.is_some() || !self.over.is_empty()
             || self.static_loose || !self.recomps.is_empty() || !self.slides.is_empty()
     }
+    /// What moves the material clock: the field and what loosens (fronts, a commit, condensing, morphs,
+    /// flows, recomposition, a fling or a pull, loose things under a time material). Not the hover's
+    /// burst, the focus marks gliding or the annotation layer drawing on: those change a few pixels, and
+    /// a clock that moved would change the dot ground under the whole window (DESIGN.md §1.19).
+    fn field_moving_at(&self, now: f32) -> bool {
+        let tm = &self.timing;
+        let fronts = self.field.fronts.iter().any(|f| f[3] > 0.0 && now - f[2] < tm.wave_life);
+        let split = self.split.as_ref().is_some_and(|sp| {
+            let (w, h) = (self.size.0 * self.scale, self.size.1 * self.scale);
+            (now - sp.t) * tm.wave_speed * self.scale < (w * w + h * h).sqrt() + 1.0
+        });
+        fronts || split || now < self.latest_birth + tm.enter || self.run.is_some() || !self.flows.is_empty() || !self.ghosts.is_empty()
+            || self.fling.is_some() || !self.over.is_empty() || self.static_loose || !self.recomps.is_empty() || !self.slides.is_empty()
+    }
     /// About how much of the window (0..1) can be loose at `now`: all of it while a front lives, things
     /// condense, a morph or flow runs; otherwise the area of instances held loose, a burst, the lens over
     /// pictures and a compare wipe. The renderer uses it to decide whether a reduced material pass pays.
@@ -787,7 +801,7 @@ impl<S, M: Clone> Ui<S, M> {
         let scrolled = self.step_scrolling(dt);
         if repaint || scrolled { self.paint(); } else { self.finish(); }
         if self.marks_moving { self.dirty = true; }
-        self.moving = self.moving_at(t);
+        self.moving = self.field_moving_at(t);
     }
 
     /// A fling going on and pulls springing back (it paints what moved; the result is whether the caller
