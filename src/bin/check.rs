@@ -201,13 +201,21 @@ fn main() {
     let (t0, t1, t2) = (50.0f32, 50.25f32, 51.25f32);
     let landed = t2 - 1.0 / 64.0;
     let mut worst = 0;
+    let gpu_ok = o.r.particle_tier() != lab::render::ParticleTier::Cpu;
+    if !gpu_ok { eprintln!("   no GPU particle tier here: the GPU path is not checked"); }
     for (pair, name) in PAIR_NAMES.iter().enumerate() {
-        for material in [Material::Plain, Material::Dot] {
+        // Both paths: the CPU's tiles, and the GPU's simulated grid (every morph above 0 tiles).
+        for (material, gpu) in [(Material::Plain, false), (Material::Dot, false), (Material::Plain, true), (Material::Dot, true)] {
+            if gpu && !gpu_ok { continue; }
             let look = Look { theme: DARK, material, ..Look::default() };
             let new = |s: Stage| { let mut ui = Ui::new(s, stage, |_, _| {}, fonts(), W, H, 1.0); ui.pointer_leave(); ui };
-            let mut moving = new(Stage { pair, loose: [0.0, 0.0], shown: [true, false] });
+            let mut moving = Ui::new(Stage { pair, loose: [0.0, 0.0], shown: [true, false] }, stage, |_, _| {}, fonts(), W, H, 1.0)
+                .on_look(if gpu { |_: &Stage| Look { particles: lab::morph::Particles { gpu_above: 0.0, ..Default::default() }, ..Look::default() } } else { |_: &Stage| Look::default() });
+            moving.pointer_leave();
+            moving.set_particle_gpu(gpu);
             moving.tick(t0);
             moving.morph("a", "b", spec);
+            if moving.morph_run().is_some_and(|r| r.grid.is_some()) != gpu { eprintln!("FAIL morph {pair}: the {} path was not taken", if gpu { "GPU" } else { "CPU" }); failed += 1; }
             let (ra, rb) = (moving.node("a").expect("a").rect, moving.node("b").expect("b").rect);
             // (a) The hand-over.
             let mut src = new(Stage { pair, loose: [1.0, 0.0], shown: [true, false] });
@@ -220,7 +228,7 @@ fn main() {
             dst.tick(landed);
             moving.tick(landed);
             let e = diff(&o.render(&mut dst, &look), &o.render(&mut moving, &look), rb);
-            eprintln!("   morph {} {:?}: hand-over {d}/255, landing {e}/255", name, material);
+            eprintln!("   morph {} {:?} {}: hand-over {d}/255, landing {e}/255", name, material, if gpu { "gpu" } else { "cpu" });
             worst = worst.max(d).max(e);
             if d > 2 || e > 2 { eprintln!("FAIL morph {}: {:?} differs", name, material); failed += 1; }
         }
@@ -247,6 +255,23 @@ fn main() {
         let img = o.render(&mut rest, &look);
         let n = (0..H).flat_map(|y| (0..W).map(move |x| (x, y))).filter(|&(x, y)| out(ra, x, y) && out(rb, x, y) && far(px(&img, W, x, y))).count();
         if n > 0 { eprintln!("FAIL control: {n} far pixels outside the elements at rest"); failed += 1; }
+    }
+    // The GPU path is deterministic for a fixed clock: two runs give the same mid-flight frame.
+    if gpu_ok {
+        let mut frames = vec![];
+        for _ in 0..2 {
+            let mut m = Ui::new(Stage { pair: 0, loose: [0.0, 0.0], shown: [true, false] }, stage, |_, _| {}, fonts(), W, H, 1.0)
+                .on_look(|_: &Stage| Look { particles: lab::morph::Particles { gpu_above: 0.0, ..Default::default() }, ..Look::default() });
+            m.set_particle_gpu(true);
+            let mut t = t0;
+            m.tick(t);
+            m.morph("a", "b", spec);
+            m.pointer_move(300.0, 200.0);
+            let look = Look { theme: DARK, material: Material::Dot, ..Look::default() };
+            while t < t1 + 0.4 { t += 1.0 / 60.0; m.tick(t); let _ = o.render(&mut m, &look); }
+            frames.push(o.render(&mut m, &look));
+        }
+        if frames[0] != frames[1] { eprintln!("FAIL morph: the GPU path gave two different frames for the same clock"); failed += 1; }
     }
     eprintln!("4. morphs: largest difference {worst}/255, {} failing", failed - before);
 

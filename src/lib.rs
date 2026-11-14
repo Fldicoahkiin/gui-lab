@@ -50,14 +50,17 @@ mod web {
         let instance = wgpu::util::new_instance_with_webgpu_detection(wgpu::InstanceDescriptor::new_without_display_handle()).await;
         let surface = instance.create_surface(wgpu::SurfaceTarget::Canvas(canvas)).map_err(|e| e.to_string())?;
         let adapter = instance.request_adapter(&wgpu::RequestAdapterOptions { compatible_surface: Some(&surface), ..Default::default() }).await.map_err(|e| e.to_string())?;
+        // WebGPU gets compute (the particle simulation's tier); WebGL2 has none.
+        let base = if adapter.get_info().backend == wgpu::Backend::BrowserWebGpu { wgpu::Limits::downlevel_defaults() } else { wgpu::Limits::downlevel_webgl2_defaults() };
         let (device, queue) = adapter.request_device(&wgpu::DeviceDescriptor {
-            required_limits: wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits()), ..Default::default()
+            required_limits: base.using_resolution(adapter.limits()), ..Default::default()
         }).await.map_err(|e| e.to_string())?;
         let caps = surface.get_capabilities(&adapter);
         let format = caps.formats.iter().copied().find(|f| !f.is_srgb()).unwrap_or(caps.formats[0]);
         let config = surface.get_default_config(&adapter, w, h).map(|mut c| { c.format = format; c }).ok_or("surface not supported")?;
         surface.configure(&device, &config);
         let mut r = Renderer::new(device, queue, format, w, h);
+        r.set_particle_tier(crate::render::particle_tier(&adapter));
         for (id, pw, ph, px) in demo::pictures() { r.set_picture(id, pw, ph, &px); }
         let mut ui = gallery::new_ui(crate::text::bundled(sans, pixel, mono), w, h, scale);
         if ui.state.route(&hash) { ui.relayout(); }

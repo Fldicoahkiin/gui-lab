@@ -49,6 +49,8 @@ pub struct Perf {
     pub quality: f32,
     pub auto: bool,
     pub particles: u32,
+    /// How the last frame's particles were simulated (`ParticleTier::name`, or "cpu").
+    pub particle_path: &'static str,
 }
 impl Perf {
     /// A frame was drawn now: what was spent since the last one is its cost.

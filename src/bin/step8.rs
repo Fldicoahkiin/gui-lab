@@ -1,7 +1,9 @@
 //! Step 8's contact sheets (DESIGN.md §7):
 //!   mesh         the same low-poly object under every material, at rest and loosened, and drawn as a
 //!                picture under four mark sets → `mesh-materials.png`
-//! usage: step8 <out_dir> [mesh]
+//!   particles    the 粒子 page going mesh → text → picture → mesh at 200,000 tiles, six frames of each
+//!                change, with the pointer in the swarm → `particles.png`
+//! usage: step8 <out_dir> [mesh | particles]
 use lab::el::{El, Paint, col, scene3d, text};
 use lab::mesh::{Mat4, MeshId, Scene3d};
 use lab::offscreen::{Offscreen, crop, save_png, sheet};
@@ -31,6 +33,50 @@ fn main() {
     std::fs::create_dir_all(&out).expect("out dir");
     let what = a.get(2).map(String::as_str).unwrap_or("mesh");
     if what == "mesh" { mesh(&out); }
+    if what == "particles" { particles(&out); }
+}
+
+fn particles(out: &str) {
+    use lab::gallery::{self, Msg, Page, particles::PMsg};
+    let (w, h) = (1280u32, 800u32);
+    let mut o = Offscreen::new(w, h);
+    let mut ui = gallery::new_ui(lab::text::load_bundled("assets").expect("fonts"), w, h, 1.0);
+    gallery::update(&mut ui.state, Msg::Go(Page::Particles));
+    ui.relayout();
+    let mut t = 0.0f32;
+    let step = |ui: &mut gallery::GalleryUi, t: &mut f32, to: f32| { while *t < to - 1e-4 { *t += 1.0 / 60.0; ui.tick(*t); } };
+    step(&mut ui, &mut t, 1.0);
+    let look = ui.state.look();
+    let _ = o.render(&mut ui, &look);
+    let r = ui.node("parts/stage").expect("stage").rect;
+    let crop_r = [(r.x - 20.0) as u32, (r.y - 20.0) as u32, (r.right() + 20.0) as u32, (r.bottom() + 20.0) as u32];
+    let mut frames = vec![];
+    let mut info = vec![];
+    for k in 0..3 {
+        gallery::update(&mut ui.state, Msg::Parts(PMsg::Next));
+        ui.relayout();
+        // The pointer in the middle of the stage pushes the swarm.
+        ui.pointer_move(r.x + r.w * 0.55, r.y + r.h * 0.5);
+        let start = t;
+        for f in 0..6 {
+            step(&mut ui, &mut t, start + [0.05, 0.3, 0.6, 0.9, 1.25, 1.9][f]);
+            let look = ui.state.look();
+            let px = o.render(&mut ui, &look);
+            frames.push(crop(&px, w, h, crop_r));
+            if f == 2 { info.push(format!("change {k}: {} particles, {}", ui.perf().particles, ui.perf().particle_path)); }
+        }
+    }
+    let (sw, sh, px) = sheet(&frames, 6);
+    // Half size: the sheet is for looking at.
+    let (hw, hh) = (sw / 2, sh / 2);
+    let mut half = vec![0u8; (hw * hh * 4) as usize];
+    for y in 0..hh { for x in 0..hw { for c in 0..4 {
+        let s = |dx: u32, dy: u32| px[(((y * 2 + dy) * sw + x * 2 + dx) * 4 + c) as usize] as u32;
+        half[((y * hw + x) * 4 + c) as usize] = ((s(0, 0) + s(1, 0) + s(0, 1) + s(1, 1)) / 4) as u8;
+    } } }
+    save_png(&format!("{out}/particles.png"), hw, hh, &half);
+    for i in info { eprintln!("{i}"); }
+    eprintln!("wrote {out}/particles.png");
 }
 
 fn mesh(out: &str) {

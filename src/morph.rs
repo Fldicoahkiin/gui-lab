@@ -86,6 +86,56 @@ impl Default for Recompose {
     fn default() -> Self { Self { duration_ms: 160.0, stagger: 0.2, count_max: 600.0, slide_ms: 120.0 } }
 }
 
+/// The GPU particle path (DESIGN.md §1.10): when a morph would need more tiles than `gpu_above`, the
+/// tiles are a grid the GPU simulates (state in textures), not records the CPU builds. Forces act on
+/// each tile's offset from its eased path, so the ends of the flight stay exact. Lengths are logical px,
+/// accelerations logical px/s².
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Particles {
+    /// Above this many tiles a morph runs on the GPU (where the GPU can; else on the CPU, capped).
+    pub gpu_above: f32,
+    /// Curl noise: strength and scale.
+    pub curl: f32,
+    pub curl_scale: f32,
+    /// How fast an offset's speed dies (1/s), and how hard it is pulled back to the path (1/s²).
+    pub damping: f32,
+    pub spring: f32,
+    /// The pointer: strength (+ pulls, − pushes) and reach.
+    pub pointer: f32,
+    pub pointer_radius: f32,
+    /// How hard a passing front pushes.
+    pub front: f32,
+}
+impl Default for Particles {
+    fn default() -> Self { Self { gpu_above: 20000.0, curl: 1600.0, curl_scale: 110.0, damping: 2.5, spring: 6.0, pointer: -9000.0, pointer_radius: 140.0, front: 30000.0 } }
+}
+
+/// A morph on the GPU path: the same-sized grid over each element (device px: x0, y0, tile w, tile h),
+/// its columns and rows, and, once turned around, the flight clock it turned at and how long it goes back.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Grid { pub a: [f32; 4], pub b: [f32; 4], pub cols: u32, pub rows: u32, pub turned: Option<(f32, f32)> }
+impl Grid {
+    pub fn count(&self) -> u32 { self.cols * self.rows }
+    /// The grid for two elements' ink bounds at lattice `pitch` (device px): tiles of a whole number of
+    /// px, at least the pitch, big enough that there are at most `count_max`.
+    pub fn new(a: Bounds, b: Bounds, pitch: f32, count_max: f32) -> Self {
+        let s = SPREAD as f32;
+        let wide = |b: Bounds| [(b[0] - s).floor(), (b[1] - s).floor(), (b[2] + s).ceil(), (b[3] + s).ceil()];
+        let (a, b) = (wide(a), wide(b));
+        let (w, h) = ((a[2] - a[0]).max(b[2] - b[0]).max(1.0), (a[3] - a[1]).max(b[3] - b[1]).max(1.0));
+        let mut tile = pitch.round().max(1.0);
+        while (w / tile).ceil() * (h / tile).ceil() > count_max.max(1.0) { tile += 1.0; }
+        let (cols, rows) = ((w / tile).ceil() as u32, (h / tile).ceil() as u32);
+        Self { a: [a[0], a[1], tile, tile], b: [b[0], b[1], tile, tile], cols, rows, turned: None }
+    }
+    /// How many tiles the CPU would cut for these bounds at `pitch` (to choose the path).
+    pub fn estimate(a: Bounds, b: Bounds, pitch: f32) -> f32 {
+        let s = SPREAD as f32 * 2.0;
+        let area = |b: Bounds| ((b[2] - b[0] + s) * (b[3] - b[1] + s)).max(0.0);
+        area(a).max(area(b)) / (pitch * pitch).max(1.0)
+    }
+}
+
 /// What `update` asks the runtime to do; the application keeps a list in its state and the runtime
 /// takes it after every update (`Ui::on_commands`).
 #[derive(Clone, Debug, PartialEq)]
@@ -481,5 +531,25 @@ mod tests {
         assert!(t.tile >= 4.0);
         // Every picture cell flies; only the spread band around it is dust.
         assert!(t.particles.iter().filter(|p| p.misc[0] == kind::PRIMARY).count() >= (400.0 / t.tile).powi(2) as usize);
+    }
+
+    #[test]
+    fn the_gpu_grid_covers_both_elements_in_whole_pixels() {
+        let (a, b): (Bounds, Bounds) = ([10.3, 20.0, 410.0, 220.7], [600.0, 40.0, 700.0, 500.0]);
+        for cap in [1000.0, 50_000.0, 1e6] {
+            let g = Grid::new(a, b, 1.0, cap);
+            assert!(g.count() as f32 <= cap, "{} > {cap}", g.count());
+            assert_eq!(g.a[2].fract(), 0.0);
+            assert_eq!(g.a[2], g.b[2]);
+            for (o, bd) in [(g.a, a), (g.b, b)] {
+                // The grid starts on a whole pixel and reaches past the ink and its nearness.
+                assert_eq!(o[0].fract(), 0.0);
+                assert!(o[0] <= bd[0] - SPREAD as f32 && o[0] + g.cols as f32 * o[2] >= bd[2] + SPREAD as f32);
+                assert!(o[1] <= bd[1] - SPREAD as f32 && o[1] + g.rows as f32 * o[3] >= bd[3] + SPREAD as f32);
+            }
+        }
+        // Never finer than the lattice.
+        assert!(Grid::new(a, b, 5.0, 1e9).a[2] >= 5.0);
+        assert!(Grid::estimate(a, b, 1.0) > 90_000.0 && Grid::estimate(a, b, 2.0) < 30_000.0);
     }
 }

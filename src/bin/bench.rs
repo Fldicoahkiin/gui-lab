@@ -3,9 +3,13 @@
 //!  2. a list of 10,000 rows (text and a small switch), scrolled by the wheel;
 //!  3. a 5,000-character article flowing around a disc that moves (every step reflows).
 //!
+//!  4. particles (DESIGN.md §1.10): a morph between two boxes sized for about 50k, 200k and 1M tiles at
+//!     1280 × 800, a full frame mid-flight (simulation step, stage 1, material) on the GPU, and the CPU
+//!     path at its 40k cap for comparison. Uses the GPU (lavapipe here: compare rows, not machines).
+//!
 //! Each line is the mean over the runs, ms. Numbers are only comparable on one machine.
 //!
-//! usage: bench [runs]
+//! usage: bench [runs] [gpu]     (`gpu` runs only the particle rows)
 use lab::el::{El, Paint, col, row, space, text, text_lh};
 use lab::gallery::{self, Msg, Page};
 use lab::ui::Ui;
@@ -48,8 +52,35 @@ fn article_view(s: &Article) -> El<()> {
     col().key("root").pad(24.0, 24.0).child(ARTICLE.with(|t| text_lh(t.clone(), 15.0, 24.0, Paint::TEXT).key("body").fill_width().around(a)))
 }
 
+// ── Particles: two boxes in one place, morphing ─────────────────────────────────────────────────
+struct Pair { w: f32, h: f32, gpu: bool }
+fn pair_view(s: &Pair) -> El<()> {
+    lab::el::stack([space(s.w, s.h).fill(Paint::INK).key("a"), space(s.w, s.h).radius(40.0).fill(Paint::ACCENT).key("b").hidden_until_morphed(true)])
+        .key("root").fill_width().fill_height()
+}
+fn particles(runs: usize) {
+    let (w, h) = (1280u32, 800u32);
+    let Ok(mut o) = lab::offscreen::Offscreen::try_new(w, h) else { println!("particles               (no GPU adapter)"); return };
+    println!("particles               tier: {}", o.r.particle_tier().name());
+    for (n, bw, bh, gpu) in [(40_000usize, 176.0, 176.0, false), (50_000, 196.0, 196.0, true), (200_000, 410.0, 420.0, true), (1_000_000, 1224.0, 770.0, true)] {
+        let mut ui = Ui::new(Pair { w: bw, h: bh, gpu }, pair_view, |_, _| {}, fonts(), w, h, 1.0)
+            .on_look(|s| lab::style::Look { particles: lab::morph::Particles { gpu_above: if s.gpu { 0.0 } else { 1e9 }, ..Default::default() }, ..Default::default() });
+        ui.tick(1.0);
+        ui.set_particle_gpu(gpu);
+        ui.morph("a", "b", lab::morph::MorphSpec { lattice: 1.0, count_max: n as f32, duration_ms: 60_000.0, loosen_ms: 0.0, ..Default::default() });
+        let look = ui.look();
+        let mut t = 1.2;
+        ui.tick(t);
+        o.draw(&mut ui, &look);
+        let ms = time(runs.min(20), |_| { t += 1.0 / 60.0; ui.tick(t); o.draw(&mut ui, &look); });
+        let count = ui.morph_run().map_or(0, |r| r.grid.map_or(r.particles.len() as u32, |g| g.count()));
+        println!("particles {:>7} {:<5}{ms:8.3} ms   ({count} tiles, a frame mid-flight)", n, if gpu { "gpu" } else { "cpu" });
+    }
+}
+
 fn main() {
     let runs: usize = std::env::args().nth(1).and_then(|v| v.parse().ok()).unwrap_or(40);
+    if std::env::args().nth(2).is_some_and(|a| a == "gpu") { particles(runs); return; }
     let (w, h) = (1280u32, 800u32);
 
     // 1. Gallery button page: press the live button.
@@ -76,6 +107,7 @@ fn main() {
     ui.tick(1.0);
     let ms = time(runs.min(30), |i| { ui.state.x = 160.0 + (i % 40) as f32 * 18.0; ui.relayout(); });
     println!("5000-char article reflow{ms:8.3} ms   (the obstacle moves; layout, line breaks, scene)");
+    particles(runs);
 }
 
 /// The gallery's own 10,000-row page, if there is one: scrolled by the wheel.
