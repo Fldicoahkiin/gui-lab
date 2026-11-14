@@ -38,6 +38,8 @@ struct Uniforms {
     /// Every material's numbers, two vec4s each.
     mats: [[f32; 4]; 2 * MATERIAL_COUNT],
     calm: [[f32; 4]; 4],
+    /// The material resolution: 1 / q for the reduced pass (1 otherwise), q, and its size.
+    qual: [f32; 4],
 }
 
 const INK: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -97,7 +99,7 @@ pub struct Renderer {
     pictures: HashMap<u32, wgpu::BindGroup>,
     instances: wgpu::Buffer,
     capacity: usize,
-    pipes: [wgpu::RenderPipeline; 7], // ink, near, near for the modal layer, material, liquid field, annotations, ink for the modal layer
+    pipes: [wgpu::RenderPipeline; 8], // ink, near, near for the modal layer, material, liquid field, annotations, ink for the modal layer, material upsample
     ink: wgpu::TextureView,
     near: wgpu::TextureView,
     soft: wgpu::TextureView,
@@ -107,6 +109,15 @@ pub struct Renderer {
     material: wgpu::BindGroup,
     /// The same without the old frame, for drawing into it.
     material_first: wgpu::BindGroup,
+    /// The material at reduced resolution (DESIGN.md §1.12), its size and quality, and the bind group
+    /// that reads it (with the old frame).
+    lo: wgpu::TextureView,
+    lo_key: (u32, u32, u32),
+    material_up: wgpu::BindGroup,
+    /// Automatic quality, and the quality the last frame used.
+    pub auto: crate::perf::AutoQuality,
+    /// Draw the reduced pass even when nothing is loose (for checks that compare rest pixels).
+    pub always_lo: bool,
     size: (u32, u32),
     tiles: Tiles,
 }
@@ -125,7 +136,7 @@ impl Renderer {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: None, entries: &[
             wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::VERTEX_FRAGMENT, count: None, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None } },
             wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::FRAGMENT, count: None, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering) },
-            tex_entry(2), tex_entry(3), tex_entry(4), tex_entry(5), tex_entry(6), tex_entry(7), tex_entry(8),
+            tex_entry(2), tex_entry(3), tex_entry(4), tex_entry(5), tex_entry(6), tex_entry(7), tex_entry(8), tex_entry(9),
         ] });
         let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
         let inst_layout = wgpu::VertexBufferLayout {
@@ -154,6 +165,8 @@ impl Renderer {
             pipe("vs_soft", "fs_soft", INK, Some(wgpu::BlendState { color: add, alpha: add }), true),
             pipe("vs_annot", "fs_annot", out_format, Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING), true),
             pipe("vs_inst", "fs_ink_top", INK, Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING), true),
+            // After a reduced material pass: rest pixels at full resolution, loose ones from the reduced pass.
+            pipe("vs_full", "fs_material_up", out_format, None, false),
         ];
         let tiles = Self::tiles(&device);
         let ubuf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: std::mem::size_of::<Uniforms>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
@@ -181,13 +194,14 @@ impl Renderer {
         let capacity = 4096;
         let instances = Self::instance_buffer(&device, capacity);
         let blank = Self::target(&device, 1, 1, INK);
-        let material = Self::bind(&device, &layout, &ubuf, &sampler, [&blank, &blank, &marks_view, &palette_view, &chars_view, &blank, &blank]);
+        let material = Self::bind(&device, &layout, &ubuf, &sampler, [&blank, &blank, &marks_view, &palette_view, &chars_view, &blank, &blank, &blank]);
         let annots = Self::instance_buffer(&device, 256);
         let mut r = Self {
             device, queue, out_format, layout, ubuf, sampler, atlas, atlas_view, marks, marks_view, palette_view, chars, chars_view,
             before: blank.clone(), blank: blank.clone(), split_seen: 0, split: [0.0; 4], last_look: None, marks_ready: false, hide_glyphs: false,
             pictures: HashMap::new(), instances, capacity, pipes, annots, annot_capacity: 256,
-            ink: blank.clone(), soft: blank.clone(), near: blank, material_first: material.clone(), material, size: (0, 0), tiles,
+            ink: blank.clone(), soft: blank.clone(), lo: blank.clone(), lo_key: (0, 0, 0), material_up: material.clone(), auto: Default::default(), always_lo: false,
+            near: blank, material_first: material.clone(), material, size: (0, 0), tiles,
         };
         r.set_picture(u32::MAX, 1, 1, &[0, 0, 0, 255]);
         r.resize(w, h);
@@ -251,7 +265,7 @@ impl Renderer {
     /// Every pass uses one layout: uniforms, sampler, then six textures (stage 1: glyph atlas and a
     /// picture; stage 2: ink and near), the mark atlas, the palettes, the character tiles and the frame
     /// before the last commit.
-    fn bind(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, ubuf: &wgpu::Buffer, sampler: &wgpu::Sampler, t: [&wgpu::TextureView; 7]) -> wgpu::BindGroup {
+    fn bind(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, ubuf: &wgpu::Buffer, sampler: &wgpu::Sampler, t: [&wgpu::TextureView; 8]) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout, entries: &[
             wgpu::BindGroupEntry { binding: 0, resource: ubuf.as_entire_binding() },
             wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
@@ -262,6 +276,7 @@ impl Renderer {
             wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(t[4]) },
             wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::TextureView(t[5]) },
             wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::TextureView(t[6]) },
+            wgpu::BindGroupEntry { binding: 9, resource: wgpu::BindingResource::TextureView(t[7]) },
         ] })
     }
 
@@ -272,7 +287,7 @@ impl Renderer {
             dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba8Unorm, usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST, view_formats: &[],
         }, wgpu::util::TextureDataOrder::LayerMajor, rgba);
         let view = tex.create_view(&Default::default());
-        let group = Self::bind(&self.device, &self.layout, &self.ubuf, &self.sampler, [&self.atlas_view, &view, &self.marks_view, &self.palette_view, &self.chars_view, &self.blank, &self.blank]);
+        let group = Self::bind(&self.device, &self.layout, &self.ubuf, &self.sampler, [&self.atlas_view, &view, &self.marks_view, &self.palette_view, &self.chars_view, &self.blank, &self.blank, &self.blank]);
         self.pictures.insert(id, group);
     }
 
@@ -285,8 +300,9 @@ impl Renderer {
         self.near = Self::target(&self.device, w, h, NEAR);
         self.before = Self::target(&self.device, w, h, self.out_format);
         self.soft = Self::target(&self.device, w, h, INK);
-        self.material = Self::bind(&self.device, &self.layout, &self.ubuf, &self.sampler, [&self.ink, &self.near, &self.marks_view, &self.palette_view, &self.chars_view, &self.before, &self.soft]);
-        self.material_first = Self::bind(&self.device, &self.layout, &self.ubuf, &self.sampler, [&self.ink, &self.near, &self.marks_view, &self.palette_view, &self.chars_view, &self.blank, &self.soft]);
+        self.material = Self::bind(&self.device, &self.layout, &self.ubuf, &self.sampler, [&self.ink, &self.near, &self.marks_view, &self.palette_view, &self.chars_view, &self.before, &self.soft, &self.blank]);
+        self.material_first = Self::bind(&self.device, &self.layout, &self.ubuf, &self.sampler, [&self.ink, &self.near, &self.marks_view, &self.palette_view, &self.chars_view, &self.blank, &self.soft, &self.blank]);
+        self.lo_key = (0, 0, 0);
         // The old frame is gone with the old size.
         self.split = [0.0; 4];
         let t = &mut self.tiles;
@@ -316,7 +332,20 @@ impl Renderer {
         self.marks_ready = true;
     }
 
+    /// The reduced target for quality `q` (its size), made when the size or quality changes.
+    fn lo_for(&mut self, q: f32) -> (u32, u32) {
+        let (w, h) = ((self.size.0 as f32 * q).ceil() as u32, (self.size.1 as f32 * q).ceil() as u32);
+        let key = (w, h, (q * 1000.0) as u32);
+        if key != self.lo_key {
+            self.lo_key = key;
+            self.lo = Self::target(&self.device, w, h, self.out_format);
+            self.material_up = Self::bind(&self.device, &self.layout, &self.ubuf, &self.sampler, [&self.ink, &self.near, &self.marks_view, &self.palette_view, &self.chars_view, &self.before, &self.soft, &self.lo]);
+        }
+        (w, h)
+    }
+
     pub fn draw<S, M: Clone>(&mut self, target: &wgpu::TextureView, ui: &mut Ui<S, M>, look: &Look) {
+        let started = crate::perf::now_ms();
         self.resize(ui.device_size().0, ui.device_size().1);
         if !self.marks_ready {
             let face = if ui.text_mut().faces() > MONO as usize { MONO } else { 0 };
@@ -358,7 +387,7 @@ impl Renderer {
                     let mut sc = Scene::default();
                     for i in insts { sc.push(*i); }
                     let (iv, nv) = (self.tiles.snaps[ink].clone(), self.tiles.snaps[near].clone());
-                    self.uniforms(&Field::default(), look, scale, now, mt, [0.0; 4]);
+                    self.uniforms(&Field::default(), look, scale, now, mt, [0.0; 4], [1.0, 1.0, w, h]);
                     self.upload(&sc);
                     let mut enc = self.device.create_command_encoder(&Default::default());
                     self.stage1(&mut enc, &sc, &iv, &nv, None, 0);
@@ -380,7 +409,23 @@ impl Renderer {
             let len = run.flight.map_or(0.0, |f| f[1] - f[0]);
             tiles = run.clock(now).map(|c| [c, run.spec.curl * scale, run.spec.ease.index() as f32, pic, len]);
         }
-        self.frame(target, Frame { scene: ui.scene(), field: ui.field(), look, scale, t: now, mt, split, tiles }, true);
+        // The material's resolution: the look's level, or the automatic one. The reduced pass runs only
+        // when something can be loose (at rest every pixel is shaded at full resolution anyway).
+        let auto = look.quality <= 0.0;
+        let q = if auto { self.auto.quality() } else { crate::perf::LEVELS.iter().copied().min_by(|a, b| (a - look.quality).abs().total_cmp(&(b - look.quality).abs())).unwrap_or(1.0) };
+        let sc = ui.scene();
+        let f = ui.field();
+        let loose = ui.moving_at(now) || tiles.is_some() || f.wipe[1] > 0.0 || sc.instances.iter().any(|i| i.extra[2] > 0.0)
+            || (f.pointer[2] > 0.0 && sc.instances.iter().any(|i| i.paint[3] == crate::scene::PICTURE));
+        let lo = (q < 1.0 && (loose || self.always_lo)).then(|| { let (w, h) = self.lo_for(q); [1.0 / q, q, w as f32, h as f32] });
+        let pending = ui.perf().pending;
+        self.frame_q(target, Frame { scene: ui.scene(), field: ui.field(), look, scale, t: now, mt, split, tiles }, true, lo);
+        let submit = (crate::perf::now_ms() - started) as f32;
+        let parts = ui.morph_run().map_or(0, |r| if r.clock(now).is_some() { r.particles.len() as u32 } else { 0 });
+        let p = ui.perf_mut();
+        p.quality = q; p.auto = auto; p.particles = parts;
+        p.frame(submit);
+        if auto { self.auto.feed(pending.update_layout + pending.scene + submit); }
         ui.frame_drawn();
     }
 
@@ -438,9 +483,11 @@ impl Renderer {
 
     /// Both stages of one frame into `target`, submitted on its own so that each frame gets its own
     /// uniforms and instances. `with_before` binds the old frame (not when drawing into it).
-    fn frame(&mut self, target: &wgpu::TextureView, f: Frame<'_>, with_before: bool) {
+    fn frame(&mut self, target: &wgpu::TextureView, f: Frame<'_>, with_before: bool) { self.frame_q(target, f, with_before, None); }
+    /// `lo`: draw the material at reduced resolution first (`qual` for the uniforms), then upsample.
+    fn frame_q(&mut self, target: &wgpu::TextureView, f: Frame<'_>, with_before: bool, lo: Option<[f32; 4]>) {
         let scene = f.scene;
-        self.uniforms(f.field, f.look, f.scale, f.t, f.mt, f.split);
+        self.uniforms(f.field, f.look, f.scale, f.t, f.mt, f.split, lo.unwrap_or([1.0, 1.0, self.size.0 as f32, self.size.1 as f32]));
         self.upload(scene);
         let tiles = match f.tiles {
             Some([clock, curl, ease, pic, len]) if self.tiles.count > 0 => {
@@ -466,10 +513,22 @@ impl Renderer {
         let mut enc = self.device.create_command_encoder(&Default::default());
         let (ink, near, soft) = (self.ink.clone(), self.near.clone(), self.soft.clone());
         self.stage1(&mut enc, scene, &ink, &near, wants_soft.then_some(&soft), tiles);
-        {
-            let mut pass = clear(&mut enc, target, wgpu::Color::BLACK);
+        if lo.is_some() {
+            let lo_view = self.lo.clone();
+            let mut pass = clear(&mut enc, &lo_view, wgpu::Color::BLACK);
             pass.set_pipeline(&self.pipes[3]);
             pass.set_bind_group(0, if with_before { &self.material } else { &self.material_first }, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        {
+            let mut pass = clear(&mut enc, target, wgpu::Color::BLACK);
+            if lo.is_some() {
+                pass.set_pipeline(&self.pipes[7]);
+                pass.set_bind_group(0, &self.material_up, &[]);
+            } else {
+                pass.set_pipeline(&self.pipes[3]);
+                pass.set_bind_group(0, if with_before { &self.material } else { &self.material_first }, &[]);
+            }
             pass.draw(0..3, 0..1);
             // Stage 3: the annotations, exact, over the material.
             if annots > 0 {
@@ -482,7 +541,8 @@ impl Renderer {
         self.queue.submit([enc.finish()]);
     }
 
-    fn uniforms(&self, field: &Field, look: &Look, scale: f32, t: f32, mt: f32, split: [f32; 4]) {
+    #[allow(clippy::too_many_arguments)]
+    fn uniforms(&self, field: &Field, look: &Look, scale: f32, t: f32, mt: f32, split: [f32; 4], qual: [f32; 4]) {
         let (fx, th) = (&look.fx, &look.theme);
         let c = |v: [f32; 3]| [v[0], v[1], v[2], 1.0];
         let (bg, fg, accent) = (c(th.ground), c(th.ink), c(th.accent));
@@ -502,7 +562,7 @@ impl Renderer {
             fd: [look.material.id() as f32, flag(self.out_format.is_srgb()), SPREAD as f32, marks::PALETTES.len() as f32],
             bg, fg, accent, pointer: [field.pointer[0], field.pointer[1], field.pointer[2], fx.lens_hard], wipe: field.wipe, wipe_rect: field.wipe_rect, split, fronts: field.fronts, pics,
             ground2: [th.ground2[0], th.ground2[1], th.ground2[2], look.loose_scale], second: c(th.second), third: c(th.third),
-            burst: field.burst, burst_t: field.burst_t, mats, calm: field.calm,
+            burst: field.burst, burst_t: field.burst_t, mats, calm: field.calm, qual,
         };
         self.queue.write_buffer(&self.ubuf, 0, bytemuck::bytes_of(&u));
     }

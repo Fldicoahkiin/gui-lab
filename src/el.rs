@@ -23,7 +23,7 @@ impl Paint {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Key { Char(char), Enter, Backspace, Delete, Escape, Tab, Up, Down, Left, Right, Home, End, PageUp, PageDown }
+pub enum Key { Char(char), Enter, Backspace, Delete, Escape, Tab, Up, Down, Left, Right, Home, End, PageUp, PageDown, F(u8) }
 
 impl Key {
     /// From a DOM / winit style key name ("Enter", "ArrowUp", "a", " ").
@@ -33,6 +33,7 @@ impl Key {
             "Home" => Key::Home, "End" => Key::End,
             "ArrowUp" => Key::Up, "ArrowDown" => Key::Down, "ArrowLeft" => Key::Left, "ArrowRight" => Key::Right,
             "PageUp" => Key::PageUp, "PageDown" => Key::PageDown,
+            _ if name.len() >= 2 && name.starts_with('F') && name[1..].parse::<u8>().is_ok_and(|n| (1..=24).contains(&n)) => Key::F(name[1..].parse().unwrap_or(1)),
             _ => {
                 let mut cs = name.chars();
                 let c = cs.next()?;

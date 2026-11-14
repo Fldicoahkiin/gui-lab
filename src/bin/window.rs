@@ -71,6 +71,7 @@ impl App {
         for (id, pw, ph, px) in lab::demo::pictures() { r.set_picture(id, pw, ph, &px); }
         let faces = lab::text::load_bundled(concat!(env!("CARGO_MANIFEST_DIR"), "/assets")).map_err(|e| e.to_string())?;
         let mut ui = gallery::new_ui(faces, config.width, config.height, window.scale_factor() as f32);
+        ui.perf_mut().backend = format!("{:?}", info.backend);
         if let Some(p) = &self.page && ui.state.route(p) { ui.relayout(); }
         ui.restart(self.now());
         Ok(Running { window, frames: 0, skipped: 0, surface, config, r, ui })
@@ -84,7 +85,7 @@ fn key(k: &WKey) -> Vec<Key> {
             NamedKey::Enter => vec![Key::Enter], NamedKey::Backspace => vec![Key::Backspace], NamedKey::Delete => vec![Key::Delete],
             NamedKey::Escape => vec![Key::Escape], NamedKey::Tab => vec![Key::Tab], NamedKey::Space => vec![Key::Char(' ')],
             NamedKey::ArrowUp => vec![Key::Up], NamedKey::ArrowDown => vec![Key::Down], NamedKey::ArrowLeft => vec![Key::Left], NamedKey::ArrowRight => vec![Key::Right],
-            NamedKey::Home => vec![Key::Home], NamedKey::End => vec![Key::End], NamedKey::PageUp => vec![Key::PageUp], NamedKey::PageDown => vec![Key::PageDown],
+            NamedKey::F2 => vec![Key::F(2)], NamedKey::Home => vec![Key::Home], NamedKey::End => vec![Key::End], NamedKey::PageUp => vec![Key::PageUp], NamedKey::PageDown => vec![Key::PageDown],
             _ => vec![],
         },
         WKey::Character(s) => s.chars().map(Key::Char).collect(),
@@ -166,7 +167,7 @@ impl ApplicationHandler for App {
                     return;
                 }
                 // Nothing changed and nothing moves: no frame (the event loop waits for input or a wake).
-                if !s.ui.needs_frame(now) { s.skipped += 1; return; }
+                if !s.ui.needs_frame(now) { s.skipped += 1; s.ui.perf_mut().skipped += 1; return; }
                 let t0 = Instant::now();
                 let frame = match s.surface.get_current_texture() {
                     wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,

@@ -330,9 +330,16 @@ impl PicFx {
 /// (a collage page uses several materials at once); `loose_scale` scales all looseness of text and
 /// shapes (Normcore keeps it small).
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Look { pub fx: Fx, pub theme: Theme, pub material: Material, pub pics: [PicFx; 8], pub params: [MaterialParams; MATERIAL_COUNT], pub gaze: Gaze, pub loose_scale: f32 }
+pub struct Look {
+    pub fx: Fx, pub theme: Theme, pub material: Material, pub pics: [PicFx; 8], pub params: [MaterialParams; MATERIAL_COUNT], pub gaze: Gaze, pub loose_scale: f32,
+    /// The material pass's resolution as a fraction of the device's (`perf::LEVELS`: 1, 0.75, 0.5), or
+    /// 0 for automatic (DESIGN.md §1.12). Pixels at rest are always drawn at full resolution.
+    pub quality: f32,
+    /// Show the frame-time readout (drawn by the annotation layer).
+    pub overlay: bool,
+}
 impl Default for Look {
-    fn default() -> Self { Self { fx: Fx::default(), theme: DARK, material: Material::Dot, pics: [PicFx::default(); 8], params: MaterialParams::all(), gaze: Gaze::default(), loose_scale: 1.0 } }
+    fn default() -> Self { Self { fx: Fx::default(), theme: DARK, material: Material::Dot, pics: [PicFx::default(); 8], params: MaterialParams::all(), gaze: Gaze::default(), loose_scale: 1.0, quality: 1.0, overlay: false } }
 }
 
 /// A style preset (DESIGN.md §4): theme × material × its numbers × annotation × the type the theme

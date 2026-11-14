@@ -321,7 +321,9 @@ fn perf(w: u32, h: u32, scale: f32) {
         send(&mut ui, Msg::Go(Page::Material(m)));
         send(&mut ui, Msg::Num(gallery::Target::Loose, lab::widgets::Edit::Set(1.0)));
         settle(&mut ui, 1.0);
-        let look = ui.state.look();
+        let mut look = ui.state.look();
+        // QUALITY=0.5 (or 0.75, or 0 for automatic) times the material at reduced resolution.
+        look.quality = std::env::var("QUALITY").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0);
         o.draw(&mut ui, &look);
         let n = 10;
         let t0 = std::time::Instant::now();

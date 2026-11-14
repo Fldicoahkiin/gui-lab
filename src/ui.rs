@@ -254,18 +254,27 @@ pub struct Ui<S, M> {
     /// It only runs while something moves, so a page at rest is a still image.
     mclock: f32,
     moving: bool,
+    // ── Frame times and the readout (DESIGN.md §1.12) ──
+    perf: crate::perf::Perf,
+    /// Nesting of timed update / layout spans (only the outermost counts), and painting (so `finish`
+    /// inside `paint` is not counted twice).
+    span: u32,
+    painting: bool,
+    /// The readout is shown; when it was last drawn (it refreshes twice a second while shown).
+    overlay: bool,
+    overlay_at: f32,
 }
 
 /// What the runtime needs from the look to know whether anything is still moving: how long fronts live
 /// and how fast they travel, how long new instances condense, and whether the material (global, or
 /// any override) has a time term that moves loose things.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Timing { pub wave_life: f32, pub wave_speed: f32, pub enter: f32, pub material: u8 }
+pub struct Timing { pub wave_life: f32, pub wave_speed: f32, pub enter: f32, pub material: u8, pub overlay: bool }
 impl Default for Timing {
-    fn default() -> Self { let f = crate::scene::Fx::default(); Self { wave_life: f.wave_life, wave_speed: f.wave_speed, enter: f.enter, material: crate::style::Material::default().id() } }
+    fn default() -> Self { let f = crate::scene::Fx::default(); Self { wave_life: f.wave_life, wave_speed: f.wave_speed, enter: f.enter, material: crate::style::Material::default().id(), overlay: false } }
 }
 impl Timing {
-    pub fn of(l: &Look) -> Self { Self { wave_life: l.fx.wave_life, wave_speed: l.fx.wave_speed, enter: l.fx.enter, material: l.material.id() } }
+    pub fn of(l: &Look) -> Self { Self { wave_life: l.fx.wave_life, wave_speed: l.fx.wave_speed, enter: l.fx.enter, material: l.material.id(), overlay: l.overlay } }
 }
 
 /// Blink half-period of the caret, seconds.
@@ -323,6 +332,7 @@ impl<S, M: Clone> Ui<S, M> {
             gaze_of: None, gaze_seen: HashMap::new(), annots: vec![], hovered: None, ticked: None, unused_key: None, released: None, input: None,
             dirty: true, look_of: None, timing: Timing::default(), wake_of: None, latest_birth: f32::NEG_INFINITY, gaze_until: f32::NEG_INFINITY,
             marks_moving: false, caret: None, caret_on: true, static_loose: false, mclock: 0.0, moving: false,
+            perf: crate::perf::Perf { quality: 1.0, ..Default::default() }, span: 0, painting: false, overlay: false, overlay_at: 0.0,
         };
         ui.resize(w, h, scale);
         ui
@@ -377,6 +387,19 @@ impl<S, M: Clone> Ui<S, M> {
     pub fn invalidate(&mut self) { self.dirty = true; }
     /// The host drew a frame of the current scene.
     pub fn frame_drawn(&mut self) { self.dirty = false; }
+    /// Frame times and work counters (the renderer closes each frame with `perf_mut().frame(..)`).
+    pub fn perf(&self) -> &crate::perf::Perf { &self.perf }
+    pub fn perf_mut(&mut self) -> &mut crate::perf::Perf { &mut self.perf }
+    /// The work counters (layout passes, paragraphs shaped, views, scenes).
+    pub fn counters(&self) -> crate::perf::Counters { let mut c = self.perf.counters; c.shaped = self.text.shaped(); c }
+    fn span_begin(&mut self) -> (f64, f32) { self.span += 1; (crate::perf::now_ms(), self.perf.pending.scene) }
+    fn span_end(&mut self, (t0, scene0): (f64, f32)) {
+        self.span -= 1;
+        if self.span == 0 {
+            let spent = (crate::perf::now_ms() - t0) as f32 - (self.perf.pending.scene - scene0);
+            self.perf.pending.update_layout += spent.max(0.0);
+        }
+    }
     /// The clock that materials' time terms read: it runs only while something moves.
     pub fn material_clock(&self) -> f32 { self.mclock }
     /// Is anything animating at `now`? (Not counting input or timed wakes.)
@@ -396,7 +419,9 @@ impl<S, M: Clone> Ui<S, M> {
     fn wake_at(&self, now: f32) -> Option<f32> {
         let blink = self.caret.map(|(_, reset, _)| reset + ((now - reset) / BLINK).floor().max(0.0) * BLINK + BLINK);
         let asked = self.wake_of.and_then(|f| f(&self.state, now));
-        match (blink, asked) { (Some(a), Some(b)) => Some(a.min(b)), (a, b) => a.or(b) }
+        // The readout refreshes twice a second while it is shown, so its frame counts fall to 0 at rest.
+        let readout = self.overlay.then_some(self.overlay_at + 0.5);
+        [blink, asked, readout].into_iter().flatten().reduce(f32::min)
     }
 
     // ── Input ────────────────────────────────────────────────────────────────────────────────────
@@ -600,8 +625,10 @@ impl<S, M: Clone> Ui<S, M> {
 
     // ── Internals ────────────────────────────────────────────────────────────────────────────────
     fn send(&mut self, m: M) {
+        let sp = self.span_begin();
         (self.update)(&mut self.state, m);
         self.relayout();
+        self.span_end(sp);
     }
 
     /// Topmost node under a point, honouring clips. While a modal layer is open only it can be hit.
@@ -714,6 +741,11 @@ impl<S, M: Clone> Ui<S, M> {
 
     /// View → taffy tree → absolute rects → scene.
     pub fn relayout(&mut self) {
+        let sp = self.span_begin();
+        self.relayout_inner();
+        self.span_end(sp);
+    }
+    fn relayout_inner(&mut self) {
         // Commands are taken first: a flow needs the frame as it is before the new layout.
         let cmds = self.commands.map(|f| f(&mut self.state)).unwrap_or_default();
         let flow = cmds.iter().find_map(|c| if let Cmd::Flow(f) = c { Some(*f) } else { None });
@@ -735,6 +767,7 @@ impl<S, M: Clone> Ui<S, M> {
 
     fn layout(&mut self) {
         if let Some(f) = self.look_of { self.timing = Timing::of(&f(&self.state)); }
+        self.perf.counters.views += 1;
         let el = (self.view)(&self.state);
         let mut tree: TaffyTree<usize> = TaffyTree::new();
         let mut nodes = Vec::new();
@@ -771,6 +804,7 @@ impl<S, M: Clone> Ui<S, M> {
             }
         };
         let space = Size { width: AvailableSpace::Definite(self.size.0), height: AvailableSpace::Definite(self.size.1) };
+        self.perf.counters.layouts += 1;
         if tree.compute_layout_with_measure(root, space, measure).is_err() { return; }
 
         // How tall each scroll node's contents are, so stored offsets can be clamped before placing.
@@ -843,6 +877,14 @@ impl<S, M: Clone> Ui<S, M> {
 
     /// Nodes → instances. Identity is key + part (+ glyph id), so unchanged things keep their birth time.
     fn paint(&mut self) {
+        let t0 = crate::perf::now_ms();
+        self.painting = true;
+        self.paint_inner();
+        self.painting = false;
+        self.perf.counters.scenes += 1;
+        self.perf.pending.scene += (crate::perf::now_ms() - t0) as f32;
+    }
+    fn paint_inner(&mut self) {
         self.scene.clear();
         self.owners.clear();
         self.tags.clear();
@@ -987,9 +1029,52 @@ impl<S, M: Clone> Ui<S, M> {
 
     /// Apply what moves without a new layout (morph ramps, flows, the old page dissolving), then the marks.
     fn finish(&mut self) {
+        let t0 = crate::perf::now_ms();
         self.animate();
         self.paint_marks();
         self.paint_gaze();
+        self.paint_overlay();
+        if !self.painting { self.perf.pending.scene += (crate::perf::now_ms() - t0) as f32; }
+    }
+
+    /// The frame-time readout (DESIGN.md §1.12), drawn by the annotation layer in Departure Mono at the
+    /// window's bottom right: frames in the last second, last / mean / max ms of each part, what is
+    /// drawn, the quality, the backend and the device pixel ratio.
+    fn paint_overlay(&mut self) {
+        self.overlay = self.timing.overlay;
+        if !self.overlay { return; }
+        self.overlay_at = self.now;
+        let p = &self.perf;
+        let sm = p.summary(crate::perf::now_ms());
+        let row = |name: &str, v: [f32; 3]| format!("{name:<14}{:>7.2}{:>7.2}{:>7.2}", v[0], v[1], v[2]);
+        let parts = self.run.as_ref().map_or(0, |r| r.particles.len());
+        let lines = [
+            format!("F2 frames      {:>3}/s  drawn {} skipped {}", sm.fps, p.drawn, p.skipped),
+            format!("{:<14}{:>7}{:>7}{:>7}", "ms", "last", "avg", "max"),
+            row("update+layout", sm.update_layout),
+            row("scene build", sm.scene),
+            row("gpu submit", sm.submit),
+            row("total", sm.total),
+            format!("instances {}  particles {}  glyph atlas {:.0}%", self.scene.instances.len(), parts, self.text.atlas_use() * 100.0),
+            format!("layouts {}  shaped {}  views {}", p.counters.layouts, self.text.shaped(), p.counters.views),
+            format!("quality {}{}  {}  dpr {}", p.quality, if p.auto { " auto" } else { "" }, if p.backend.is_empty() { "?" } else { &p.backend }, self.scale),
+        ];
+        let look = self.look_of.map(|f| f(&self.state)).unwrap_or_default();
+        let col = [look.theme.ink[0], look.theme.ink[1], look.theme.ink[2], 0.0];
+        const SIZE: f32 = 11.0;
+        const LINE: f32 = 14.0;
+        let s = self.scale;
+        let width = lines.iter().map(|l| self.text.measure(l, MONO, SIZE, LINE, None).0).fold(0.0, f32::max);
+        let (x, y) = ((self.size.0 - width - 16.0).max(4.0).round(), (self.size.1 - LINE * lines.len() as f32 - 14.0).max(4.0).round());
+        let clip = [0.0, 0.0, self.size.0 * s, self.size.1 * s];
+        let plate = Rect::new(x - 6.0, y - 4.0, width + 12.0, LINE * lines.len() as f32 + 8.0);
+        self.scene.annot.push(Instance { rect: [(plate.x * s).round(), (plate.y * s).round(), (plate.w * s).round(), (plate.h * s).round()], paint: [0.0, 1.0, 0.92, SHAPE], clip, look: col, ..Default::default() });
+        for (k, l) in lines.iter().enumerate() {
+            let proto = Instance { paint: [0.0, 0.0, 1.0, 0.0], look: col, ..Default::default() };
+            let mut out = vec![];
+            self.text.emit(Para { s: l, face: MONO, size: SIZE, line: LINE, width: 1e5, print: 0.0, around: None }, (x, y + k as f32 * LINE), proto, s, |mut i, _| { i.clip = clip; out.push(i); });
+            self.scene.annot.extend(out);
+        }
     }
 
     fn animate(&mut self) {

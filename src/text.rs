@@ -77,6 +77,8 @@ pub struct Text {
     pub pixels: Vec<u8>,
     pub dirty: bool,
     pen: (u32, u32, u32),
+    /// Paragraphs shaped and broken by parley so far (cache misses), for the work counters.
+    shaped: u64,
 }
 
 impl Text {
@@ -93,11 +95,15 @@ impl Text {
         Self {
             fonts: FontContext { collection, source_cache: Default::default() },
             layouts: LayoutContext::new(), scaler: ScaleContext::new(), families, scale: 1.0,
-            slots: HashMap::new(), measured: HashMap::new(), pixels: vec![0; (ATLAS * ATLAS * 2) as usize], dirty: true, pen: (1, 1, 0),
+            slots: HashMap::new(), measured: HashMap::new(), pixels: vec![0; (ATLAS * ATLAS * 2) as usize], dirty: true, pen: (1, 1, 0), shaped: 0,
         }
     }
 
     pub fn faces(&self) -> usize { self.families.len() }
+    /// How many paragraphs have been shaped (parley layouts built) so far.
+    pub fn shaped(&self) -> u64 { self.shaped }
+    /// How much of the glyph atlas is used, 0..1 (by rows).
+    pub fn atlas_use(&self) -> f32 { ((self.pen.1 + self.pen.2) as f32 / ATLAS as f32).min(1.0) }
     pub fn is_pixel(&self, face: u8) -> bool { self.family(face).pixel.is_some() }
     /// Native size of a pixel face, px.
     pub fn native(&self, face: u8) -> Option<f32> { self.family(face).pixel }
@@ -119,6 +125,7 @@ impl Text {
     /// Shape and break `s` at `size` logical px. Measuring and drawing use this same call, so the
     /// line breaks on screen are exactly the ones layout planned for.
     fn layout(&mut self, s: &str, face: u8, size: f32, line: f32, max_width: Option<f32>, around: Option<&Around>) -> Layout<()> {
+        self.shaped += 1;
         let size = self.size_for(face, size);
         let fi = (face as usize).min(self.families.len() - 1);
         let mut b = self.layouts.ranged_builder(&mut self.fonts, s, 1.0, true);

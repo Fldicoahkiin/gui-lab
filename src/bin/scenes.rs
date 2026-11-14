@@ -257,12 +257,14 @@ fn perf() {
             5 => { d.click("snd/play"); d.wait(1.0); }
             _ => { d.click("st/s3"); d.wait(0.3); }
         }
-        let look = d.ui.state.look();
+        let q = std::env::var("QUALITY").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0);
+        let mut look = d.ui.state.look();
+        look.quality = q;
         d.o.draw(&mut d.ui, &look);
         let n = 8;
         let t0 = std::time::Instant::now();
         let mut t = d.ui.now();
-        for _ in 0..n { t += 1.0 / 60.0; d.ui.tick(t); let look = d.ui.state.look(); d.o.draw(&mut d.ui, &look); }
+        for _ in 0..n { t += 1.0 / 60.0; d.ui.tick(t); let mut look = d.ui.state.look(); look.quality = q; d.o.draw(&mut d.ui, &look); }
         eprintln!("{:<9} {:6.1} ms per frame (1280×800, layout and draw)", scene.0, t0.elapsed().as_secs_f64() * 1000.0 / n as f64);
     }
 }

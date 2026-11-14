@@ -39,6 +39,7 @@ struct U {
   burst_t: vec4f,  // its start time, strength, length (s)
   mats: array<vec4f, 24>, // every material's numbers, two vec4s each (style.rs MAT_PARAMS)
   calm: array<vec4f, 4>,  // boxes fronts pass by (x0, y0, x1, y1, device px)
+  qual: vec4f,     // the material resolution: 1 / q for the reduced pass (1 otherwise), q, its size w, h
 };
 @group(0) @binding(0) var<uniform> u: U;
 @group(0) @binding(1) var samp: sampler;
@@ -48,6 +49,7 @@ struct U {
 @group(0) @binding(5) var palettes: texture_2d<f32>; // 16 × rows
 @group(0) @binding(6) var chars: texture_2d<f32>;    // character tiles cut per device pitch (marks.rs char_tiles)
 @group(0) @binding(7) var before: texture_2d<f32>;   // the frame before the last commit
+@group(0) @binding(9) var lo: texture_2d<f32>;       // the material at reduced resolution (DESIGN.md §1.12)
 @group(0) @binding(8) var soft: texture_2d<f32>;     // the liquid's field
 
 const PLAIN: i32 = 0; const DOT: i32 = 1; const HALFTONE: i32 = 2; const ASCII: i32 = 3; const PRINT: i32 = 4;
@@ -977,9 +979,9 @@ fn m_near(p: vec2f) -> vec3f {
   return col;
 }
 
-@fragment fn fs_material(@builtin(position) frag: vec4f) -> @location(0) vec4f {
+/// The final colour of the pixel centred at `p` (device px of the full-resolution frame).
+fn shade(p: vec2f) -> vec3f {
   let s = u.res.z; let t = u.res.w;
-  let p = frag.xy;
   let here = near_t(p);
   let is_pic = here.g > 0.05;
   let m = eff_mat(here.a * 255.0);
@@ -1022,9 +1024,29 @@ fn m_near(p: vec2f) -> vec3f {
   // one (already encoded for the surface).
   if (u.split.w > 0.5) {
     let r = (t - u.split.z) * u.fb.x * s;
-    if (distance(frag.xy, u.split.xy) > r) {
-      col = textureLoad(before, vec2i(clamp(floor(frag.xy), vec2f(0.0), u.res.xy - 1.0)), 0).rgb;
+    if (distance(p, u.split.xy) > r) {
+      col = textureLoad(before, vec2i(clamp(floor(p), vec2f(0.0), u.res.xy - 1.0)), 0).rgb;
     }
   }
-  return vec4f(col, 1.0);
+  return col;
+}
+
+/// The material pass. At full resolution `qual.x` is 1; for the reduced pass it is 1 / q, so the
+/// pixel centre of the small target lands on the full frame's coordinates.
+@fragment fn fs_material(@builtin(position) frag: vec4f) -> @location(0) vec4f { return vec4f(shade(frag.xy * u.qual.x), 1.0); }
+
+/// Whether nothing is loose at `p`: no front, half-plane, burst or lens here, no looseness of its own,
+/// a picture's marks not showing. Such pixels are drawn at full resolution by the material itself, so a
+/// page at rest is exactly what quality 1 draws.
+fn rest_at(p: vec2f) -> bool {
+  if (near_t(p).g > 0.05) { return pic_k(p) <= 0.0; }
+  return kt(p) < 0.02 && burst_k(p) <= 0.0 && lens(p) < 0.02;
+}
+/// After the reduced pass: rest pixels are shaded here at full resolution, loose ones take the reduced
+/// pass's colour (filtered between its texels).
+@fragment fn fs_material_up(@builtin(position) frag: vec4f) -> @location(0) vec4f {
+  let p = frag.xy;
+  if (rest_at(p)) { return vec4f(shade(p), 1.0); }
+  let uv = p * u.qual.y / u.qual.zw;
+  return vec4f(textureSampleLevel(lo, samp, uv, 0.0).rgb, 1.0);
 }

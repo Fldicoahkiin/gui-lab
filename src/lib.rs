@@ -4,6 +4,7 @@ pub mod gallery;
 pub mod gaze;
 pub mod marks;
 pub mod morph;
+pub mod perf;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod offscreen;
 pub mod render;
@@ -26,7 +27,7 @@ mod web {
     use std::cell::RefCell;
     use wasm_bindgen::prelude::*;
 
-    struct State { ui: GalleryUi, r: Renderer, surface: wgpu::Surface<'static>, config: wgpu::SurfaceConfiguration, started: bool, drawn: u32, skipped: u32 }
+    struct State { ui: GalleryUi, r: Renderer, surface: wgpu::Surface<'static>, config: wgpu::SurfaceConfiguration, started: bool }
     thread_local! { static STATE: RefCell<Option<State>> = const { RefCell::new(None) }; }
 
     #[wasm_bindgen]
@@ -48,7 +49,8 @@ mod web {
         for (id, pw, ph, px) in demo::pictures() { r.set_picture(id, pw, ph, &px); }
         let mut ui = gallery::new_ui(crate::text::bundled(sans, pixel, mono), w, h, scale);
         if ui.state.route(&hash) { ui.relayout(); }
-        STATE.with(|s| *s.borrow_mut() = Some(State { ui, r, surface, config, started: false, drawn: 0, skipped: 0 }));
+        ui.perf_mut().backend = backend_name(adapter.get_info().backend).into();
+        STATE.with(|s| *s.borrow_mut() = Some(State { ui, r, surface, config, started: false }));
         Ok(())
     }
     fn with<R>(f: impl FnOnce(&mut State) -> R) -> Option<R> { STATE.with(|s| s.borrow_mut().as_mut().map(f)) }
@@ -80,7 +82,8 @@ mod web {
         with(|s| { s.ui.tick(t); s.ui.key_up(k) });
     }
     /// Frames drawn and wakes that found nothing to draw, since the start.
-    #[wasm_bindgen] pub fn frames() -> Vec<u32> { with(|s| vec![s.drawn, s.skipped]).unwrap_or_default() }
+    #[wasm_bindgen] pub fn frames() -> Vec<u32> { with(|s| vec![s.ui.perf().drawn as u32, s.ui.perf().skipped as u32]).unwrap_or_default() }
+    fn backend_name(b: wgpu::Backend) -> &'static str { match b { wgpu::Backend::BrowserWebGpu => "WebGPU", wgpu::Backend::Gl => "WebGL2", _ => "other" } }
     /// Draw a frame if one is needed. Returns when the next one is: 0 as soon as possible (keep the
     /// animation frame loop going), a delay in seconds (a timed wake), or -1 (only input can change
     /// anything: stop until then).
@@ -88,7 +91,7 @@ mod web {
         with(|s| {
             if !s.started { s.ui.restart(t); s.started = true; }
             s.ui.tick(t);
-            if s.ui.needs_frame(t) { draw(s); s.drawn += 1; } else { s.skipped += 1; }
+            if s.ui.needs_frame(t) { draw(s); } else { s.ui.perf_mut().skipped += 1; }
             s.ui.next_wake(t).map_or(-1.0, |w| (w - t).max(0.0))
         }).unwrap_or(-1.0)
     }

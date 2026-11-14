@@ -139,8 +139,11 @@ pub enum Msg {
     Ease(usize),
     /// Open a card of the page-change page, or go back to the list.
     Open(Option<usize>),
-    /// Open the theme (1), material (2) or style (3) menu, or close it (0).
+    /// Open the theme (1), material (2), style (3) or performance (4) menu, or close it (0).
     Menu(u8),
+    /// The performance menu's item `i`: the readout on or off (0), a quality (1: automatic, then the
+    /// levels of `perf::LEVELS`).
+    Perf(usize),
     /// Apply style preset `i` (theme, material, its numbers, annotation, type).
     Style(usize),
     /// The annotation page: mode, and one kind on or off.
@@ -215,6 +218,9 @@ pub struct Gallery {
     pub query: TextEdit,
     /// The showcase scenes' state.
     pub sc: Scenes,
+    /// The frame-time readout (F2, or the 性能 menu) and the material resolution (0 = automatic).
+    pub overlay: bool,
+    pub quality: f32,
 }
 
 impl Default for Gallery {
@@ -229,7 +235,7 @@ impl Default for Gallery {
             menu: 0, mats: MaterialParams::all(), loose: 0.0, style: None, gaze: Gaze::default(), loose_scale: 1.0, style_pic: PicFx::default(),
             gaze_page: Gaze { mode: GazeMode::All, kinds: gaze::FRAME | gaze::INDEX | gaze::SIZE, density: 12.0, ..Gaze::default() },
             hovered: None, clock: 0.0, choices: [0, 0, 0, 0, 0, 0, 0, 0], toggles: [true, false, true, false, true, false, false, false],
-            slides: [0.35, 0.4, 0.6, 14.0, 0.5, 2.0, 0.0, 0.5], query: TextEdit::new("lay"), sc: Scenes::default(),
+            slides: [0.35, 0.4, 0.6, 14.0, 0.5, 2.0, 0.0, 0.5], query: TextEdit::new("lay"), sc: Scenes::default(), overlay: false, quality: 1.0,
         }
     }
 }
@@ -264,7 +270,7 @@ impl Gallery {
         if let Page::Marks(s) = self.page { pics[MARK_SLOT as usize] = self.marks[s as usize]; }
         pics[STYLE_SLOT as usize] = self.style_pic;
         let gaze = if self.page == Page::Gaze { self.gaze_page } else { self.gaze };
-        let mut l = Look { fx: self.demo.fx, theme: self.theme(), material: self.material, pics, params: self.mats, gaze, loose_scale: self.loose_scale };
+        let mut l = Look { fx: self.demo.fx, theme: self.theme(), material: self.material, pics, params: self.mats, gaze, loose_scale: self.loose_scale, quality: self.quality, overlay: self.overlay };
         scenes::look(self, &mut l);
         l
     }
@@ -320,6 +326,8 @@ pub fn update(s: &mut Gallery, m: Msg) {
             s.enter(p);
         }
         Msg::Menu(k) => s.menu = k,
+        Msg::Perf(0) => { s.overlay = !s.overlay; s.menu = 0; }
+        Msg::Perf(i) => { s.quality = if i == 1 { 0.0 } else { crate::perf::LEVELS[(i - 2).min(2)] }; s.menu = 0; }
         Msg::Style(i) => { s.apply_style(i); s.menu = 0; }
         Msg::GazeMode(i) => s.gaze_page.mode = GAZE_MODES[i.min(GAZE_MODES.len() - 1)].0,
         Msg::GazeKind(k) => s.gaze_page.kinds ^= k,
@@ -417,6 +425,12 @@ pub fn view(s: &Gallery) -> El<Msg> {
     root
 }
 
+/// The performance menu: the readout (its label says what pressing it does), then the qualities.
+const PERF_ITEMS: [&str; 5] = ["", "质量 自动", "质量 1", "质量 0.75", "质量 0.5"];
+fn perf_item(s: &Gallery) -> usize {
+    if s.quality == 0.0 { 1 } else { 2 + crate::perf::LEVELS.iter().position(|&l| l == s.quality).unwrap_or(0) }
+}
+
 fn top_bar(s: &Gallery) -> El<Msg> {
     let theme_names: Vec<&str> = THEMES.iter().map(|t| t.name).collect();
     let material_names: Vec<&str> = MATERIALS.iter().map(|m| m.1).collect();
@@ -429,6 +443,8 @@ fn top_bar(s: &Gallery) -> El<Msg> {
         .child(name)
         .child(space(0.0, 0.0).grow(1.0))
         .child(row().key("top/controls").gap(16.0).wrap().align(AlignItems::CENTER)
+            .child(menu("perf", "性能", &PERF_ITEMS.map(|i| if i.is_empty() { if s.overlay { "隐藏读数" } else { "显示读数" } } else { i }),
+                Some(perf_item(s)), s.menu == 4, false, Msg::Menu(if s.menu == 4 { 0 } else { 4 }), Msg::Menu(0), Msg::Perf))
             .child(button_as("top/scenes", "场景", Variant::Quiet, Msg::Go(Page::Scenes)))
             .child(menu("theme", "主题", &theme_names, Some(s.theme), s.menu == 1, true, Msg::Menu(if s.menu == 1 { 0 } else { 1 }), Msg::Menu(0), Msg::Theme))
             .child(menu("material", "材质", &material_names, material_now, s.menu == 2, true, Msg::Menu(if s.menu == 2 { 0 } else { 2 }), Msg::Menu(0), Msg::Material))
@@ -507,7 +523,11 @@ pub fn new_ui(faces: Vec<Face>, w: u32, h: u32, scale: f32) -> GalleryUi {
             let board = (s.page == Page::Style(1)).then(|| t.floor() + 1.0);
             match (board, scenes::wake(s, t)) { (Some(a), Some(b)) => Some(a.min(b)), (a, b) => a.or(b) }
         })
-        .on_unused_key(scenes::key)
+        .on_unused_key(|s, k, shift| {
+            // F2 shows or hides the frame-time readout anywhere.
+            if k == crate::el::Key::F(2) { s.overlay = !s.overlay; return true; }
+            scenes::key(s, k, shift)
+        })
         .on_input(scenes::heard)
         .on_key_up(scenes::key_up)
 }

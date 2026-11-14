@@ -23,6 +23,10 @@
 //! 11. Selected and unselected states of the switch, the tabs and the choice (both kinds) differ by a
 //!     visible amount under every material.
 //!
+//! 12. The material pass at half resolution (`Look::quality` 0.5, the reduced pass forced on): every
+//!     material at rest equals its quality-1 frame exactly, and body text equals plain's as in 5; with
+//!     a control that loosened text does differ between the two resolutions.
+//!
 //! usage: check [components]     (`components` runs only 10 and 11)
 use lab::demo::{BUST, PICTURE_SIZES, SKY, SPHERE, TERRAIN};
 use lab::el::{El, Font, Paint, col, picture, row, space, text_lh};
@@ -366,6 +370,40 @@ fn main() {
     eprintln!("9. scenes at rest: {} failing", failed - before);
 
     failed += components(&fonts);
+
+    // ── 12. The material at half resolution leaves rest pixels exact ────────────────────────────────
+    let before = failed;
+    let mut ui = Ui::new(Rest { loose: 0.0 }, rest, |_, _| {}, fonts(), W, H, 1.0);
+    ui.pointer_leave();
+    ui.tick(100.0);
+    let r = ui.node("body").expect("body").rect;
+    let plain = o.render(&mut ui, &Look { material: Material::Plain, ..Look::default() });
+    let mut worst = 0;
+    for m in 0..MATERIAL_COUNT as u8 {
+        let mat = Material::from_id(m);
+        let full = o.render(&mut ui, &Look { material: mat, ..Look::default() });
+        // The reduced pass is drawn even though nothing is loose, so the upsample has to choose.
+        o.r.always_lo = true;
+        let half = o.render(&mut ui, &Look { material: mat, quality: 0.5, ..Look::default() });
+        let whole = diff(&full, &half, lab::ui::Rect::new(0.0, 0.0, W as f32, H as f32));
+        worst = worst.max(whole);
+        if whole > 0 { eprintln!("FAIL quality 0.5: {:?} at rest differs from quality 1 by {whole}/255", mat); failed += 1; }
+        if !matches!(mat, Material::Chrome | Material::Liquid | Material::Near) {
+            let d = if mat == Material::Dot { diff_ink(&plain, &half, r, rgb8(DARK.ground)) } else { diff(&plain, &half, r) };
+            let allowed = if mat == Material::Print { 8 } else { 0 };
+            if d > allowed { eprintln!("FAIL quality 0.5: {:?} body text is not plain's at rest ({d}/255)", mat); failed += 1; }
+        }
+        if matches!(mat, Material::Dot | Material::Halftone | Material::Ascii) {
+            // Control: loosened, half resolution is seen.
+            ui.state.loose = 1.0; ui.relayout(); ui.tick(100.0);
+            let a = o.render(&mut ui, &Look { material: mat, ..Look::default() });
+            let b = o.render(&mut ui, &Look { material: mat, quality: 0.5, ..Look::default() });
+            ui.state.loose = 0.0; ui.relayout(); ui.tick(100.0);
+            if diff(&a, &b, r) == 0 { eprintln!("FAIL control: {:?} loosened at quality 0.5 equals quality 1", mat); failed += 1; }
+        }
+        o.r.always_lo = false;
+    }
+    eprintln!("12. quality 0.5 at rest: largest difference {worst}/255, {} failing", failed - before);
 
     if failed > 0 { eprintln!("{failed} checks failed"); std::process::exit(1); }
     eprintln!("all checks passed");
