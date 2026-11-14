@@ -1,0 +1,29 @@
+# gui-lab
+
+> A self-drawn interface framework in Rust (wgpu, native and web). Views are plain trees of values; every glyph, shape and picture has a true outline that can loosen, morph and condense; looks are swappable materials. Built to be written and checked by models: a deterministic `render` tool gives a PNG and the laid-out tree as JSON.
+
+Start with AGENTS.md (the mental model, the ten things you write, the rules, how to verify). DESIGN.md is the contract; §1.15–§1.17 cover ripple rules, recomposition and the AI-facing surface.
+
+## Docs
+
+- [AGENTS.md](AGENTS.md): how to write and verify interfaces here
+- [DESIGN.md](docs/DESIGN.md): the design contract, every number and acceptance
+- [registry.json](registry.json): the widgets, their files, responses, recomposition and recipes
+- [README.md](README.md): what exists and how to run it
+
+## Recipes
+
+- [A form](docs/recipes/form.md): code in examples/form.rs
+- [A list with selection](docs/recipes/list.md): code in examples/list.rs
+- [A dialog](docs/recipes/dialog.md): code in examples/dialog.rs
+- [A page change with a shared part](docs/recipes/flow.md): code in examples/flow.rs
+- [Morph A into B](docs/recipes/morph.md): code in examples/morph.rs
+- [A custom material on one element](docs/recipes/material.md): code in examples/material.rs
+- [The annotation layer on a subtree](docs/recipes/annotate.md): code in examples/annotate.rs
+- [A counter with recomposition and a scoped ripple](docs/recipes/counter.md): code in examples/counter.rs
+
+## Optional
+
+- [src/el.rs](src/el.rs): the element tree and its builders
+- [src/ui.rs](src/ui.rs): the runtime
+- [src/drive.rs](src/drive.rs): scripted input and the render tool

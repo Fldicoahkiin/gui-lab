@@ -13,6 +13,10 @@ pub mod offscreen;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod drive;
 pub mod recipes;
+/// AGENTS.md, so `cargo test` compiles every example in it.
+#[cfg(doctest)]
+#[doc = include_str!("../AGENTS.md")]
+pub mod agents {}
 pub mod render;
 pub mod scene;
 pub mod style;

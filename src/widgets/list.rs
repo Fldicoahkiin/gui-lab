@@ -1,3 +1,13 @@
+//! list
+//!
+//! Purpose: Pick one row of a list (`list`), or of a very long one (`list_virtual`).
+//! Props: `key`, `rows` (label, note) or `count` + `row_of(i)`, `selected`, `row_h`, `height`,
+//!   `msg`.
+//! States: selected row highlighted; one focus stop; Up / Down / Home / End / Page keys move the
+//!   selection.
+//! Messages: `msg(i)` with the row index; rows are keyed `key:i`.
+//! Usage: `list("files", &ROWS, s.picked, 36.0, 220.0, Msg::Pick)`
+//!
 //! A list of rows, one of which can be selected; it scrolls when it holds more than it shows. The list
 //! is one focus stop: Up / Down / Home / End move the selection, and the selected row is scrolled into
 //! view. Rows are pressed with the pointer.

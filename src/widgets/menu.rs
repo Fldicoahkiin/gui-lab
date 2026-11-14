@@ -1,3 +1,13 @@
+//! menu
+//!
+//! Purpose: A drop-down of options.
+//! Props: `key`, `label`, `options`, `current`, `open`, `commit` (the choice is a commit: theme,
+//!   material), `toggle`, `close`, `pick`.
+//! States: closed (shows the current option) or open (a layer under the button).
+//! Messages: `toggle` on the button, `pick(i)` on an option, `close` outside or on Esc.
+//! Usage: `menu("theme", "主题", &names, Some(s.theme), s.menu, true, Msg::Menu, Msg::Close,
+//!   Msg::Theme)`
+//!
 //! A drop-down menu: a button that shows the current option; pressed, a list of the options opens
 //! just below it in a layer over everything else. Pressing an option sends `pick(i)`; pressing
 //! outside the list or Esc sends `close`. The application keeps whether it is open.

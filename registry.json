@@ -27,7 +27,10 @@
       ],
       "dependencies": [
         "base"
-      ]
+      ],
+      "response": "nudge (a control: pushed as one piece by fronts, held and condensing at most to Look::legible_cap)",
+      "recompose": "keyed labels recompose when their text changes",
+      "recipe": "docs/recipes/form.md"
     },
     {
       "name": "number",
@@ -41,7 +44,10 @@
       ],
       "dependencies": [
         "base"
-      ]
+      ],
+      "response": "nudge (a control: pushed as one piece by fronts, held and condensing at most to Look::legible_cap)",
+      "recompose": "its value text ({key}/shown) recomposes when the value changes",
+      "recipe": "docs/recipes/form.md"
     },
     {
       "name": "input",
@@ -56,7 +62,10 @@
       ],
       "dependencies": [
         "base"
-      ]
+      ],
+      "response": "nudge (a control: pushed as one piece by fronts, held and condensing at most to Look::legible_cap)",
+      "recompose": "never (typing is immediate)",
+      "recipe": "docs/recipes/form.md"
     },
     {
       "name": "switch",
@@ -71,7 +80,10 @@
       ],
       "dependencies": [
         "base"
-      ]
+      ],
+      "response": "nudge (a control: pushed as one piece by fronts, held and condensing at most to Look::legible_cap)",
+      "recompose": "keyed labels recompose when their text changes",
+      "recipe": "docs/recipes/form.md"
     },
     {
       "name": "slider",
@@ -86,7 +98,9 @@
       "dependencies": [
         "base",
         "number"
-      ]
+      ],
+      "response": "nudge (a control: pushed as one piece by fronts, held and condensing at most to Look::legible_cap)",
+      "recompose": "keyed labels recompose when their text changes"
     },
     {
       "name": "tabs",
@@ -100,7 +114,9 @@
       ],
       "dependencies": [
         "base"
-      ]
+      ],
+      "response": "nudge (a control: pushed as one piece by fronts, held and condensing at most to Look::legible_cap)",
+      "recompose": "keyed labels recompose when their text changes"
     },
     {
       "name": "choice",
@@ -115,7 +131,9 @@
       ],
       "dependencies": [
         "base"
-      ]
+      ],
+      "response": "nudge (a control: pushed as one piece by fronts, held and condensing at most to Look::legible_cap)",
+      "recompose": "keyed labels recompose when their text changes"
     },
     {
       "name": "list",
@@ -129,7 +147,10 @@
       ],
       "dependencies": [
         "base"
-      ]
+      ],
+      "response": "nudge (a control: pushed as one piece by fronts, held and condensing at most to Look::legible_cap)",
+      "recompose": "keyed labels recompose when their text changes",
+      "recipe": "docs/recipes/list.md"
     },
     {
       "name": "menu",
@@ -143,7 +164,9 @@
       ],
       "dependencies": [
         "base"
-      ]
+      ],
+      "response": "nudge (a control: pushed as one piece by fronts, held and condensing at most to Look::legible_cap)",
+      "recompose": "keyed labels recompose when their text changes"
     },
     {
       "name": "card",
@@ -157,7 +180,10 @@
       ],
       "dependencies": [
         "base"
-      ]
+      ],
+      "response": "inherits (text inside is nudged and legible)",
+      "recompose": "keyed labels recompose when their text changes",
+      "recipe": "docs/recipes/flow.md"
     },
     {
       "name": "dialog",
@@ -172,7 +198,10 @@
       "dependencies": [
         "base",
         "button"
-      ]
+      ],
+      "response": "nudge (a control: pushed as one piece by fronts, held and condensing at most to Look::legible_cap)",
+      "recompose": "keyed labels recompose when their text changes",
+      "recipe": "docs/recipes/dialog.md"
     },
     {
       "name": "image",
@@ -186,7 +215,9 @@
       ],
       "dependencies": [
         "base"
-      ]
+      ],
+      "response": "loosen (decoration)",
+      "recompose": "keyed labels recompose when their text changes"
     },
     {
       "name": "divider",
@@ -201,7 +232,9 @@
       ],
       "dependencies": [
         "base"
-      ]
+      ],
+      "response": "loosen (decoration)",
+      "recompose": "keyed labels recompose when their text changes"
     },
     {
       "name": "scroll-area",
@@ -215,7 +248,9 @@
       ],
       "dependencies": [
         "base"
-      ]
+      ],
+      "response": "inherits (text inside is nudged and legible)",
+      "recompose": "keyed labels recompose when their text changes"
     }
   ]
 }

@@ -1,3 +1,12 @@
+//! tabs
+//!
+//! Purpose: Switch between panels.
+//! Props: `key`, `labels`, `current`, `gap`, `mark` (underline thickness), `msg`, `panel` (the
+//!   current one).
+//! States: current tab underlined; one focus stop, Left / Right move.
+//! Messages: `msg(i)`; tabs are keyed `key:i`.
+//! Usage: `tabs("t", &["概览", "设置"], s.tab, 24.0, 2.0, Msg::Tab, panel)`
+//!
 //! Tabs: a row of labels over the panel of the current one. The row is one focus stop; Left / Right
 //! move between tabs. Tabs are keyed `key:i`.
 use super::{LABEL, LINE};

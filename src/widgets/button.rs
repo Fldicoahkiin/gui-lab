@@ -1,3 +1,13 @@
+//! button
+//!
+//! Purpose: Run one action.
+//! Props: `key`, `label`, `v: Variant` (Default outlined, Quiet, Accent filled), `msg`.
+//! States: rest, hovered, focused, pressed (held at the legibility cap, condenses back from it),
+//!   disabled (`.disabled(true)`).
+//! Messages: sends `msg` on press, Enter or Space; its front reaches only itself unless
+//!   `.ripple(..)` says otherwise.
+//! Usage: `button_as("save", "保存", Variant::Accent, Msg::Save)`
+//!
 //! A button: a label that sends a message when pressed (pointer, Enter or Space). To make it
 //! unavailable, call `.disabled(true)` on what this returns: it then takes no input and is drawn faint.
 use super::{CONTROL_H, LABEL, LINE, RADIUS};

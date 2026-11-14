@@ -1013,7 +1013,7 @@ impl<S, M: Clone> Ui<S, M> {
         }
         if let Some(i) = hit.and_then(|i| self.up(i, |n| n.on_drag.is_some())) {
             let n = &self.nodes[i];
-            let handler = n.on_drag.clone().expect("drag handler");
+            let Some(handler) = n.on_drag.clone() else { return };
             self.capture = Some(Capture { key: n.key.clone(), handler, start: (x, y), rect: n.rect });
             self.drag(Phase::Start, x, y);
             return;
@@ -1629,7 +1629,7 @@ impl<S, M: Clone> Ui<S, M> {
                 }
                 None => {
                     changed = true;
-                    if leaf { self.tree.new_leaf_with_context(style, i) } else { self.tree.new_with_children(style, &kids) }.expect("taffy node")
+                    if leaf { self.tree.new_leaf_with_context(style, i) } else { self.tree.new_with_children(style, &kids) }.expect("taffy creates a node for every element (it only fails when out of memory)")
                 }
             };
             used.insert(tid);
@@ -1671,7 +1671,7 @@ impl<S, M: Clone> Ui<S, M> {
         } else {
             self.perf.counters.layouts_skipped += 1;
         }
-        for n in nodes.iter_mut() { n.local = *self.tree.layout(n.tid).expect("node in tree"); }
+        for n in nodes.iter_mut() { if let Ok(l) = self.tree.layout(n.tid) { n.local = *l; } }
         self.nodes = nodes;
         self.place();
         self.modal_at = self.nodes.iter().rposition(|n| n.modal.is_some());
@@ -1889,7 +1889,7 @@ impl<S, M: Clone> Ui<S, M> {
             match &n.content {
                 Content::Text { line, paint, caret, weight, select, mark, .. } => {
                     let proto = Instance { paint: [paint.tone, paint.accent, paint.alpha, 0.0], look: [mat, paint.hue as f32, (n.inner.y * s).round(), (line * s).round().max(1.0)], ..Default::default() };
-                    let para = n.para().expect("text");
+                    let Some(para) = n.para() else { continue };
                     let wpx = weight * s;
                     let focused = caret_at.is_some_and(|f| within(&self.nodes, i, f));
                     // Lines the clip hides are not made into instances at all.
