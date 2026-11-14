@@ -23,6 +23,8 @@ Start with AGENTS.md (the mental model, the ten things you write, the rules, how
 - [A counter with recomposition and a scoped ripple](docs/recipes/counter.md): code in examples/counter.rs
 - [A 3D object in a card](docs/recipes/mesh.md): code in examples/mesh.rs
 - [A custom preset with its own transition](docs/recipes/preset.md): code in examples/preset.rs
+- [A chapter: one scene with actors that flow in](docs/recipes/chapter.md): code in examples/chapter.rs
+- [The film](src/gallery/film.rs): twelve chapters, the landing page (`#film`)
 
 ## Optional
 

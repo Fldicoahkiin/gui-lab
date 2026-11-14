@@ -130,7 +130,7 @@ fn interactions(out: &str) {
                 let (x, y) = center(&ui, "film/c01/count/more"); ui.press(x, y); ui.release(x, y);
                 shoot(&mut o, &mut ui, 0.08, &mut strip);
                 // Put the sentence back for the chapters after.
-                for _ in 0..3 { ui.key(Key::Backspace, false); }
+                send(&mut ui, FMsg::Sentence(lab::widgets::TextEdit::new("松开，再合上")));
                 let (x, y) = center(&ui, "film/c01/motion"); ui.press(x, y); ui.release(x, y);
             }
             1 => {
