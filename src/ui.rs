@@ -540,11 +540,100 @@ impl<S, M: Clone> Ui<S, M> {
             if inst.paint[2] <= 0.0 { return 0.0; }
             let born = ((now - inst.extra[3]) / tm.enter.max(1e-3)).clamp(0.0, 1.0);
             let own = inst.extra[2].max(1.0 - born);
-            let c = [inst.rect[0] + inst.rect[2] * 0.5, inst.rect[1] + inst.rect[3] * 0.5];
+            let c = if inst.resp[1] > 1.5 { [inst.resp[2], inst.resp[3]] } else { [inst.rect[0] + inst.rect[2] * 0.5, inst.rect[1] + inst.rect[3] * 0.5] };
             let add = if inst.resp[0] > 0.0 { self.field.wave_at(c, c, now, &tm.fx, self.scale, 0.6).clamp(0.0, (inst.resp[0] - own).max(0.0)) } else { 0.0 };
             (own + add).min(tm.loose_max)
         }).fold(0.0, f32::max)
     }
+    /// The look the state asks for (`on_look`), or the default one.
+    pub fn look(&self) -> Look { self.look_of.map_or_else(Look::default, |f| f(&self.state)) }
+
+    /// The laid-out tree as data (DESIGN.md §1.17): every element's key, kind, role and name, rect, text,
+    /// material, response, input state, scroll offset and looseness. What a model reads instead of a
+    /// screenshot; `serde_json::to_string_pretty(&ui.export_tree())` for JSON.
+    pub fn export_tree(&self) -> crate::tree::TreeNode {
+        let mirror: HashMap<String, (Role, String)> = self.a11y().into_iter().map(|n| (n.key, (n.role, n.name))).collect();
+        let now = self.now;
+        let mut made: Vec<crate::tree::TreeNode> = self.nodes.iter().map(|n| {
+            let m = mirror.get(&n.key);
+            let mat = if n.mat >= 127.5 { crate::style::Material::from_id((n.mat.round() as u32 % 16) as u8).name() } else { "global" };
+            let ripple = n.ripple.as_ref().map(|r| match r {
+                Scope::Own => "own".to_owned(), Scope::Container(None) => "container".to_owned(),
+                Scope::Container(Some(k)) => format!("container:{k}"), Scope::Global => "global".to_owned(), Scope::Off => "off".to_owned(),
+            });
+            let seen = n.rect.intersect(&n.clip);
+            crate::tree::TreeNode {
+                key: n.key.clone(), keyed: n.keyed, kind: n.kind(), role: m.map(|(r, _)| r.aria()), label: m.map(|(_, name)| name.clone()).filter(|s| !s.is_empty()),
+                rect: [n.rect.x, n.rect.y, n.rect.w, n.rect.h], visible: [seen.x, seen.y, seen.w, seen.h],
+                text: n.text().map(str::to_owned), material: mat, response: n.respond.name(), legible: n.legible, ripple, recompose: n.recompose,
+                focusable: n.focusable, focused: self.focus.as_deref() == Some(&n.key), hovered: self.hover.as_deref() == Some(&n.key),
+                pressed: self.pressed.as_deref() == Some(&n.key), disabled: n.disabled,
+                scroll: n.scroll.then(|| [self.scroll.get(&n.key).copied().unwrap_or(0.0), n.extent]),
+                loose: 0.0, children: vec![],
+            }
+        }).collect();
+        // Looseness per node from its own instances only (a parent's would repeat its children's).
+        let mut loose = vec![0.0f32; self.nodes.len()];
+        let tm = &self.timing;
+        for i in 0..self.page_len {
+            let inst = &self.scene.instances[*self.lifted.get(&i).unwrap_or(&i)];
+            if inst.paint[2] <= 0.0 { continue; }
+            let born = ((now - inst.extra[3]) / tm.enter.max(1e-3)).clamp(0.0, 1.0);
+            let own = inst.extra[2].max(1.0 - born);
+            let c = if inst.resp[1] > 1.5 { [inst.resp[2], inst.resp[3]] } else { [inst.rect[0] + inst.rect[2] * 0.5, inst.rect[1] + inst.rect[3] * 0.5] };
+            let add = if inst.resp[0] > 0.0 { self.field.wave_at(c, c, now, &tm.fx, self.scale, 0.6).clamp(0.0, (inst.resp[0] - own).max(0.0)) } else { 0.0 };
+            let o = self.owners[i].0;
+            loose[o] = loose[o].max((own + add).min(tm.loose_max));
+        }
+        for (n, l) in made.iter_mut().zip(loose) { n.loose = (l * 1000.0).round() / 1000.0; }
+        // Children come after their parents: fold from the back.
+        for i in (1..made.len()).rev() {
+            let Some(p) = self.nodes[i].parent else { continue };
+            let child = std::mem::replace(&mut made[i], crate::tree::TreeNode::empty());
+            made[p].children.insert(0, child);
+        }
+        made.into_iter().next().unwrap_or_else(crate::tree::TreeNode::empty)
+    }
+
+    /// What the runtime had to guess at in the current view (duplicate keys, a flow id used twice, an
+    /// anchor or ripple container that is not there), each with what to write instead. Empty when the
+    /// view is clean.
+    pub fn problems(&self) -> Vec<crate::error::ViewProblem> {
+        use crate::error::ViewProblem as P;
+        let mut out = vec![];
+        let path = |i: usize| -> String {
+            let mut parts = vec![];
+            let mut at = Some(i);
+            while let Some(k) = at { parts.push(self.nodes[k].key.rsplit('/').next().unwrap_or("").to_owned()); at = self.nodes[k].parent; }
+            parts.reverse();
+            parts.join(" › ")
+        };
+        let mut first: HashMap<&str, usize> = HashMap::new();
+        for (i, n) in self.nodes.iter().enumerate() {
+            match first.get(n.key.as_str()) {
+                Some(&j) => out.push(P::DuplicateKey { key: n.key.clone(), first: path(j), second: path(i) }),
+                None => { first.insert(&n.key, i); }
+            }
+        }
+        let mut flows: HashMap<&str, usize> = HashMap::new();
+        for (i, n) in self.nodes.iter().enumerate() {
+            if let Some((f, root)) = &n.flow && *root == i {
+                match flows.get(&**f) {
+                    Some(&j) if !self.within(i, j) => out.push(P::FlowTwice { flow: f.to_string(), first: path(j), second: path(i) }),
+                    Some(_) => {}
+                    None => { flows.insert(f, i); }
+                }
+            }
+        }
+        for (i, n) in self.nodes.iter().enumerate() {
+            if let Some(a) = &n.anchor && !self.nodes[..i].iter().any(|m| &m.key == a) { out.push(P::UnknownAnchor { key: n.key.clone(), anchor: a.clone() }); }
+            if let Some(Scope::Container(Some(c))) = &n.ripple && (n.parent.is_none_or(|p| self.nodes[p].ripple != n.ripple)) && !first.contains_key(c.as_str()) {
+                out.push(P::UnknownContainer { key: n.key.clone(), container: c.clone() });
+            }
+        }
+        out
+    }
+
     /// How many instances of an old page are still dissolving.
     pub fn dissolving(&self) -> usize { self.ghosts.len() }
     /// Whether any part of a node is in a flow right now.
@@ -1452,7 +1541,7 @@ impl<S, M: Clone> Ui<S, M> {
         let mut h = DefaultHasher::new();
         self.nodes[i].key.hash(&mut h);
         let source = h.finish() | 1;
-        self.field.front_in(x * s, y * s, self.now, strength, rect, source, self.timing.wave_life);
+        self.field.front_in([x * s, y * s], self.now, strength, rect, source, self.timing.wave_life);
     }
 
     /// View → taffy tree → absolute rects → scene.
@@ -1696,6 +1785,8 @@ impl<S, M: Clone> Ui<S, M> {
         self.field.calm = [[0.0; 4]; 4];
         let mut calms = 0;
         let mut held = vec![false; self.nodes.len()];
+        // The outermost control each node is in: legible things are pushed as one piece with it.
+        let mut unit: Vec<Option<usize>> = vec![None; self.nodes.len()];
         // Everything beneath an open modal layer is held partly loose.
         let beneath = self.modal_at.and_then(|m| self.nodes[m].modal.as_ref()).map_or(0.0, |m| m.beneath);
         let caret_at = self.focus.as_deref().and_then(|f| self.nodes.iter().position(|n| n.key == f));
@@ -1735,6 +1826,7 @@ impl<S, M: Clone> Ui<S, M> {
             let n = &self.nodes[i];
             if Some(i) == self.modal_at { self.scene.begin_layer(); }
             held[i] = self.pressed.as_deref() == Some(n.key.as_str()) || n.parent.is_some_and(|p| held[p]);
+            unit[i] = n.parent.and_then(|p| unit[p]).or(n.active().then_some(i));
             let seen = n.rect.intersect(&n.clip);
             if seen.w <= 0.0 || seen.h <= 0.0 { continue; }
             let role = self.roles[i];
@@ -1750,7 +1842,14 @@ impl<S, M: Clone> Ui<S, M> {
             let under = self.modal_at.is_some_and(|m| i < m);
             // What the field may do to it (DESIGN.md §1.15): fronts add at most `front_cap`; a press held
             // and a pull past a scroll end at most `own_cap`.
-            let (_, own_cap, resp) = response_caps(n, self.timing.legible_cap);
+            let (_, own_cap, mut resp) = response_caps(n, self.timing.legible_cap);
+            // Text to read and controls are pushed as one piece (the control they are in, or the text
+            // element itself), so a front never pulls a word apart: the push is measured at that
+            // piece's centre (device px), carried in the spare numbers.
+            if n.legible && resp[1] > 0.0 {
+                let (cx, cy) = unit[i].map_or(n.rect, |u| self.nodes[u].rect).center();
+                resp = [resp[0], 2.0, cx * s, cy * s];
+            }
             let loose = if held[i] { own_cap } else if under { n.loose.max(n.loosen).max(beneath) } else { n.loose.max(n.loosen) };
             let loose = loose.max(pulled(&self.nodes, i).min(own_cap));
             let mat = n.mat;
@@ -1758,9 +1857,9 @@ impl<S, M: Clone> Ui<S, M> {
             let mut sink = Sink { scene: &mut self.scene, owners: &mut self.owners, tags: &mut self.tags, unseen: &mut self.unseen, counters: &mut counters, latest: &mut latest, loose: &mut any_loose };
             let mut put = |sink: &mut Sink, mut inst: Instance, id: u64, glyph: Option<u32>| {
                 inst.clip = clip;
-                // A negative spare number marks what fronts pass by whatever its element says (the caret,
-                // a selection's halo).
-                inst.resp = if inst.resp[2] < 0.0 { [0.0; 4] } else { resp };
+                // A negative push marks what fronts pass by whatever its element says (the caret, a
+                // selection's halo).
+                inst.resp = if inst.resp[1] < 0.0 { [0.0; 4] } else { resp };
                 inst.paint[2] *= dim;
                 inst.extra[2] = loose;
                 // Hidden instances are kept for sampling only: they get no birth time, so a view that
@@ -1862,7 +1961,6 @@ impl<S, M: Clone> Ui<S, M> {
                 }
             }
         }
-        let mut births = births;
         // Text whose string changed: the changed glyphs recompose, the others keep their birth and slide.
         if !jobs.is_empty() || !self.recs.is_empty() {
             self.recompose_jobs(jobs, &mut births);
@@ -2105,12 +2203,16 @@ impl<S, M: Clone> Ui<S, M> {
         let spec = self.timing.recompose;
         for job in jobs {
             let key = self.nodes[job.node].key.clone();
-            let new = job.rec;
-            let Some(old) = self.recs.insert(key.clone(), TextRec { glyphs: vec![], ..new.clone_head() }) else { self.recs.get_mut(&key).map(|r| r.glyphs = new.glyphs.clone()); continue };
-            if let Some(r) = self.recs.get_mut(&key) { r.glyphs = new.glyphs.clone(); }
+            let mut new = job.rec;
+            // The glyphs as they were put in the scene (clip, looseness, response, birth).
+            let index: HashMap<u64, usize> = (0..self.scene.instances.len()).filter(|&k| self.owners.get(k).is_some_and(|o| o.0 == job.node)).map(|k| (self.owners[k].1, k)).collect();
+            for (id, inst) in new.glyphs.iter_mut() { if let Some(&k) = index.get(id) { *inst = self.scene.instances[k]; } }
+            let kept = TextRec { glyphs: new.glyphs.clone(), ..new.clone_head() };
+            let Some(old) = self.recs.insert(key.clone(), kept) else { continue };
             if old.s == new.s { continue; }
             // Common prefix and suffix, in whole graphemes.
-            let (og, ng): (Vec<(usize, &str)>, Vec<(usize, &str)>) = (old.s.grapheme_indices(true).collect(), new.s.grapheme_indices(true).collect());
+            let og: Vec<(usize, &str)> = old.s.grapheme_indices(true).collect();
+            let ng: Vec<(usize, &str)> = new.s.grapheme_indices(true).collect();
             let pre = og.iter().zip(&ng).take_while(|(a, b)| a.1 == b.1).count();
             let suf = og[pre..].iter().rev().zip(ng[pre..].iter().rev()).take_while(|(a, b)| a.1 == b.1).count();
             let cut = |g: &[(usize, &str)], len: usize, k: usize| if k < g.len() { g[k].0 } else { len };
@@ -2130,8 +2232,6 @@ impl<S, M: Clone> Ui<S, M> {
             let (opart, npart) = (parts(&old, op, os), parts(&new, np, ns));
             let run = self.recomps.remove(&key);
             let hidden_before: HashSet<u64> = run.as_ref().map(|r| r.hide.clone()).unwrap_or_default();
-            // Where each glyph of the page is now, by identity (a slide in progress moves it).
-            let index: HashMap<u64, usize> = (0..self.scene.instances.len()).filter(|&k| self.owners.get(k).is_some_and(|o| o.0 == job.node)).map(|k| (self.owners[k].1, k)).collect();
             let shown = |id: u64, inst: &Instance, slides: &HashMap<u64, Slide>| -> Instance {
                 let mut i = *inst;
                 if let Some(sl) = slides.get(&id) {
@@ -2150,7 +2250,7 @@ impl<S, M: Clone> Ui<S, M> {
                 for (k, (nid, ninst)) in n.iter().enumerate() {
                     match o.get(k) {
                         // A glyph that was still recomposing is part of the tiles: it recomposes on.
-                        Some((oid, _)) if hidden_before.contains(oid) => { new_changed.push(*nid); dst.push(*ninst); }
+                        Some((oid, _)) if hidden_before.contains(oid) => { new_changed.push(*nid); dst.push(Instance { extra: [ninst.extra[0], ninst.extra[1], ninst.extra[2], -1e4], ..*ninst }); }
                         Some((oid, oinst)) => {
                             let born = births.get(oid).copied().unwrap_or(oinst.extra[3]);
                             births.insert(*nid, born);
@@ -2159,13 +2259,13 @@ impl<S, M: Clone> Ui<S, M> {
                             let moved = (0..4).any(|c| (from.rect[c] - ninst.rect[c]).abs() > 0.25);
                             if moved && spec.slide_ms > 0.0 { new_slides.push((*nid, Slide { from: from.rect, clip: from.clip, start: now, dur: spec.slide_ms / 1000.0 })); }
                         }
-                        None => { new_changed.push(*nid); dst.push(*ninst); }
+                        None => { new_changed.push(*nid); dst.push(Instance { extra: [ninst.extra[0], ninst.extra[1], ninst.extra[2], -1e4], ..*ninst }); }
                     }
                 }
                 for (oid, oinst) in o.iter().skip(n.len()) { if !hidden_before.contains(oid) { src.push(shown(*oid, oinst, &self.slides)); } }
             }
             for ((oid, oinst), p) in old.glyphs.iter().zip(&opart) { if *p == 1 && !hidden_before.contains(oid) { src.push(shown(*oid, oinst, &self.slides)); } }
-            for ((nid, ninst), p) in new.glyphs.iter().zip(&npart) { if *p == 1 { new_changed.push(*nid); dst.push(*ninst); } }
+            for ((nid, ninst), p) in new.glyphs.iter().zip(&npart) { if *p == 1 { new_changed.push(*nid); dst.push(Instance { extra: [ninst.extra[0], ninst.extra[1], ninst.extra[2], -1e4], ..*ninst }); } }
             for (id, sl) in new_slides { self.slides.insert(id, sl); }
             // The new glyphs are there all along (under their tiles): they do not condense.
             for id in &new_changed {
@@ -2174,7 +2274,10 @@ impl<S, M: Clone> Ui<S, M> {
             }
             if src.is_empty() && dst.is_empty() { continue; }
             let glyphs = src.len().max(dst.len()).max(1) as f32;
-            let mspec = MorphSpec { duration_ms: spec.duration_ms, stagger: spec.stagger, count_max: spec.count_max * glyphs, curl: 0.0, threshold: 0.5, ease: Ease::InOutCubic, ..MorphSpec::default() };
+            // A retarget lands when the run it replaces would have (but takes at least a third of a
+            // flight), so a quick run of changes keeps arriving instead of starting over each time.
+            let dur_ms = match &run { Some(r) => ((r.end - now) * 1000.0).max(spec.duration_ms * 0.35).min(spec.duration_ms), None => spec.duration_ms };
+            let mspec = MorphSpec { duration_ms: dur_ms, stagger: spec.stagger, count_max: spec.count_max * glyphs, curl: 0.0, threshold: 0.5, ease: Ease::InOutCubic, ..MorphSpec::default() };
             let tiles = morph::tiles(&src, &dst, 1.0, &mspec, &self.text.pixels);
             let tile = tiles.tile;
             let pieces = |insts: &[Instance], x: f32, y: f32| -> Vec<Instance> {
@@ -2186,7 +2289,7 @@ impl<S, M: Clone> Ui<S, M> {
                 let dst = if k == morph::kind::SRC_DUST { vec![] } else { pieces(&dst, p.ab[2], p.ab[3]) };
                 (!src.is_empty() || !dst.is_empty()).then_some(RTile { p, src, dst })
             }).collect();
-            let dur = spec.duration_ms / 1000.0;
+            let dur = dur_ms / 1000.0;
             self.recomps.insert(key, Recomp { tiles: rtiles, start: now, end: now + dur, hide: new_changed.into_iter().collect() });
             self.animating = true;
         }
@@ -2401,9 +2504,9 @@ impl Inherit {
     fn code(&self) -> f32 { self.mat.map_or(0.0, |m| crate::style::override_code(self.level, m)) }
 }
 
-/// An instance's `resp` that fronts pass by (see `Instance::resp`; the negative spare number tells `paint`
-/// to keep it).
-const IGNORE: [f32; 4] = [0.0, 0.0, -1.0, 0.0];
+/// An instance's `resp` that fronts pass by (see `Instance::resp`; the negative push tells `paint` to
+/// keep it).
+const IGNORE: [f32; 4] = [0.0, -1.0, 0.0, 0.0];
 
 /// What the field may do to a node (DESIGN.md §1.15): how much looseness fronts may add (0 when it is
 /// ignored or only nudged; `legible_cap` for legible elements that loosen; else 1), how loose a press held
@@ -2433,18 +2536,21 @@ fn piece(i: &Instance, b: [f32; 4]) -> Option<Instance> {
     Some(p)
 }
 
-/// What a recomposition tile draws `clock` seconds into its run: the old glyphs' pieces fading out and
-/// the new glyphs' fading in, both where the tile is (`morph::progress` and `morph::position`, in a
-/// straight line). At progress 0 that is exactly the old glyphs, at 1 exactly the new ones. With
-/// `settled`, only the side that shows more, at full opacity (where a retarget starts from).
+/// What a recomposition tile draws `clock` seconds into its run: the old glyphs' pieces, then (past the
+/// tile's switch point) the new glyphs' pieces, where the tile is (`morph::progress` and
+/// `morph::position`, in a straight line). At progress 0 that is exactly the old glyphs, at 1 exactly the
+/// new ones. With `settled`, fades are rounded to on or off (where a retarget starts from).
 fn tile_pieces(t: &RTile, clock: f32, settled: bool) -> Vec<Instance> {
     use morph::kind;
     let u = morph::progress(&t.p, clock, Ease::InOutCubic);
     let at = morph::position(&t.p, u, 0.0);
     let k = t.p.misc[0];
     let gate = morph::alpha(k, u);
-    let (sa, da) = if k == kind::SRC_DUST { (gate, 0.0) } else if k == kind::DST_DUST { (0.0, gate) } else { ((1.0 - u) * gate, u * gate) };
-    let (sa, da) = if settled { (if sa >= da && sa > 0.0 { 1.0 } else { 0.0 }, if da > sa { 1.0 } else { 0.0 }) } else { (sa, da) };
+    // A flying tile shows the old pieces until its own switch point (`misc[3]`, 0.3–0.7), then the new
+    // ones, at full strength: pixels move and swap rather than fade, so the text stays crisp.
+    let gate = if settled { if gate > 0.5 { 1.0 } else { 0.0 } } else { gate };
+    let (sa, da) = if k == kind::SRC_DUST { (gate, 0.0) } else if k == kind::DST_DUST { (0.0, gate) }
+                   else if u < t.p.misc[3] { (gate, 0.0) } else { (0.0, gate) };
     let mut out = vec![];
     for (list, a) in [(&t.src, sa), (&t.dst, da)] {
         if a < 1.0 / 512.0 { continue; }

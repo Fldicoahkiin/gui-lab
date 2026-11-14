@@ -25,8 +25,9 @@ pub struct Instance {
     /// measure against: top and height, device px (a text line, or the shape itself).
     pub look: [f32; 4],
     /// How the field may move it (DESIGN.md §1.15): the most looseness fronts may add (0 for `Ignore`
-    /// and `Nudge`, `Look::legible_cap` for legible `Loosen`, else 1), whether fronts push it (0 / 1),
-    /// and two spare numbers.
+    /// and `Nudge`, `Look::legible_cap` for legible `Loosen`, else 1); how fronts push it (0: not at all,
+    /// 1: by its own centre, 2: as one piece with the point in z, w — the centre of the control or text
+    /// it belongs to, device px — so a word is never pulled apart).
     pub resp: [f32; 4],
 }
 
@@ -99,11 +100,12 @@ impl Default for Field {
 }
 impl Field {
     /// A front over the whole window, from no element in particular.
-    pub fn front(&mut self, x: f32, y: f32, t: f32, strength: f32) { self.front_in(x, y, t, strength, EVERYWHERE, 0, f32::INFINITY); }
-    /// A front that reaches only instances whose centre is inside `scope` (device px box), sent by
+    pub fn front(&mut self, x: f32, y: f32, t: f32, strength: f32) { self.front_in([x, y], t, strength, EVERYWHERE, 0, f32::INFINITY); }
+    /// A front from `at` (device px) that reaches only instances whose centre is inside `scope` (device px box), sent by
     /// `source` (0: none). While a front from the same source is still alive (younger than `life`
     /// seconds) it is restarted from here, not added to: fronts from one element never stack.
-    pub fn front_in(&mut self, x: f32, y: f32, t: f32, strength: f32, scope: [f32; 4], source: u64, life: f32) {
+    pub fn front_in(&mut self, at: [f32; 2], t: f32, strength: f32, scope: [f32; 4], source: u64, life: f32) {
+        let [x, y] = at;
         let alive = (0..self.fronts.len()).find(|&j| source != 0 && self.sources[j] == source && self.fronts[j][3] > 0.0 && t - self.fronts[j][2] < life);
         let j = match alive { Some(j) => j, None => { let j = self.next; self.next = (self.next + 1) % self.fronts.len(); j } };
         self.fronts[j] = [x, y, t, strength];

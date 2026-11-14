@@ -1,5 +1,6 @@
 pub mod demo;
 pub mod el;
+pub mod error;
 pub mod gallery;
 pub mod gaze;
 pub mod marks;
@@ -11,6 +12,7 @@ pub mod render;
 pub mod scene;
 pub mod style;
 pub mod text;
+pub mod tree;
 pub mod ui;
 pub mod widgets;
 pub mod wrap;

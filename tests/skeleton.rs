@@ -104,7 +104,7 @@ fn number_takes_typed_digits() {
     ui.press(x, y);
     assert_eq!(ui.focus(), Some("param/0/value"));
     for c in "7.5".chars() { ui.key(Key::Char(c), false); }
-    assert_eq!(ui.node("param/0/value/0").and_then(|n| n.text()), Some("7.5"));
+    assert_eq!(ui.node("param/0/shown").and_then(|n| n.text()), Some("7.5"));
     ui.key(Key::Enter, false);
     assert_eq!(ui.state.fx.pitch, 7.5);
     ui.key(Key::Up, true);
