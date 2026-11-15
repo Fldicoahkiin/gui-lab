@@ -1586,9 +1586,9 @@ fn post_bloom(p: vec2f) -> vec3f {
 }
 fn to_srgb(c: vec3f) -> vec3f { return select(1.055 * pow(c, vec3f(1.0 / 2.4)) - 0.055, c * 12.92, c <= vec3f(0.0031308)); }
 fn from_srgb(c: vec3f) -> vec3f { return select(pow((c + 0.055) / 1.055, vec3f(2.4)), c / 12.92, c <= vec3f(0.04045)); }
-fn bayer_t(p: vec2f, n: u32) -> f32 {
+// `levels` is log2(n), given rather than counted: GLSL ES 3.0 (WebGL2) has no findLSB.
+fn bayer_t(p: vec2f, n: u32, levels: u32) -> f32 {
   let x = u32(p.x); let y = u32(p.y);
-  let levels = countTrailingZeros(n);
   var v = 0u;
   for (var i = 0u; i < levels; i++) {
     let bx = (x >> i) & 1u; let by = (y >> i) & 1u;
@@ -1599,11 +1599,11 @@ fn bayer_t(p: vec2f, n: u32) -> f32 {
 }
 fn dither_t(kind: f32, p: vec2f) -> f32 {
   let k = i32(round(kind));
-  if (k == 1) { return bayer_t(p, 2u); }
-  if (k == 2) { return bayer_t(p, 4u); }
-  if (k == 3) { return bayer_t(p, 8u); }
+  if (k == 1) { return bayer_t(p, 2u, 1u); }
+  if (k == 2) { return bayer_t(p, 4u, 2u); }
+  if (k == 3) { return bayer_t(p, 8u, 3u); }
   if (k == 4) { return fract(p.x * 0.7548777 + p.y * 0.5698403); }
-  if (k == 5) { return 0.125 + 0.75 * bayer_t(p, 4u); }
+  if (k == 5) { return 0.125 + 0.75 * bayer_t(p, 4u, 2u); }
   return 0.5;
 }
 @fragment fn fs_post(@builtin(position) frag: vec4f) -> @location(0) vec4f {
