@@ -1,5 +1,6 @@
 //! Text flowing around the zine's sign (DESIGN.md §1.9): at twenty places of the sign, no two glyphs
-//! of the paragraph overlap, none is under the sign, and a sub-pixel nudge does not move a line break.
+//! of the paragraph overlap, none is under the sign, the text keeps the same distance from the outline
+//! on its left and its right in every band, and a sub-pixel nudge does not move a line break.
 use lab::gallery::film::{self, FMsg};
 use lab::gallery::{self, GalleryUi, Msg};
 
@@ -60,3 +61,55 @@ fn a_subpixel_nudge_keeps_every_line_break() {
         last = Some(g);
     }
 }
+
+/// Per line band of the paragraph: the outline's widest extent over the band's full height, and the
+/// lines (fragments) on each side of it. (band top, left clearance, right clearance) for every band
+/// with text on both sides; the clearance is from the outline to the fragment's set text.
+fn clearances(ui: &mut GalleryUi) -> Vec<(f32, f32, f32)> {
+    let s = ui.node("film/c06/sign").expect("sign").rect;
+    let body = ui.node("film/c06/body").expect("body").inner;
+    let d = s.w / film::SIGN_W;
+    let sil = film::sign_outline(s.x - body.x, s.y - body.y, d);
+    let lines = ui.line_boxes("film/c06/body");
+    assert!(lines.len() > 4, "{} lines", lines.len());
+    let mut out = vec![];
+    let mut seen = vec![];
+    for l in &lines {
+        if seen.iter().any(|&y: &f32| (y - l.y).abs() < 0.5) { continue; }
+        seen.push(l.y);
+        let Some((a, b)) = sil.span(l.y - body.y, l.bottom() - body.y) else { continue };
+        let (a, b) = (a + body.x, b + body.x);
+        let band: Vec<_> = lines.iter().filter(|m| (m.y - l.y).abs() < 0.5 && m.w > 0.0).collect();
+        let left = band.iter().filter(|m| m.right() <= a + 0.5).map(|m| m.right()).fold(f32::NEG_INFINITY, f32::max);
+        let right = band.iter().filter(|m| m.x >= b - 0.5).map(|m| m.x).fold(f32::INFINITY, f32::min);
+        for m in &band { assert!(m.right() <= a + 0.5 || m.x >= b - 0.5, "a line at y {} ({}..{}) runs over the outline {a}..{b}", m.y, m.x, m.right()); }
+        if left.is_finite() && right.is_finite() { out.push((l.y, a - left, right - b)); }
+    }
+    out
+}
+
+#[test]
+fn the_clearance_is_the_same_on_both_sides() {
+  for locale in lab::i18n::Locale::ALL {
+    let mut ui = open();
+    gallery::update(&mut ui.state, Msg::Locale(locale));
+    let mut t = 3.0;
+    let mut both = 0;
+    for i in 0..20 {
+        let (x, y) = (40.0 + (i % 5) as f32 * 60.0, -30.0 + (i / 5) as f32 * 70.0);
+        gallery::update(&mut ui.state, Msg::Film(FMsg::Obj(x, y)));
+        ui.relayout();
+        for _ in 0..30 { t += 1.0 / 60.0; ui.tick(t); ui.frame_drawn(); }
+        let (w, h) = ui.logical_size(); let gap = ui.state.film.gap * film::geo(w, h).k;
+        for (y0, l, r) in clearances(&mut ui) {
+            both += 1;
+            assert!((l - r).abs() <= 2.0, "position {i} ({x}, {y}), band at {y0:.0}: {l:.1} px from the outline on the left, {r:.1} on the right");
+            // On the wrap's grid the obstacle sits up to a step from the drawn sign.
+            assert!((r - gap).abs() <= crate_step() + 0.5, "position {i}, band at {y0:.0}: the right piece starts {r:.1} px from the outline, gap {gap:.1}");
+        }
+    }
+    assert!(both > 20, "{locale:?}: {both} bands with text on both sides");
+  }
+}
+
+fn crate_step() -> f32 { lab::wrap::STEP }
