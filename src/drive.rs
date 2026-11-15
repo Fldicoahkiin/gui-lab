@@ -3,7 +3,7 @@
 //! frame (PNG) and the laid-out tree (JSON). Same arguments, same bytes.
 use crate::error::{DriveError, LookError, SurfaceError, ViewProblem};
 use crate::el::{Key, Mods};
-use crate::offscreen::{Offscreen, png_bytes};
+use crate::offscreen::{Offscreen, png_bytes_with};
 use crate::style::{Look, MATERIALS, Material, THEMES};
 use crate::tree::TreeNode;
 use crate::ui::{PointerKind, Ui};
@@ -47,6 +47,21 @@ pub trait Driven {
     fn problems(&self) -> Vec<ViewProblem>;
     fn needs_frame(&self, t: f32) -> bool;
     fn draw(&mut self, o: &mut Offscreen, look: &Look) -> Vec<u8>;
+    /// The look as a recipe string (`Preset::recipe`), when the page has one.
+    fn recipe(&self) -> Option<String> { None }
+}
+/// A gallery page: driven as any page, and its preset is its recipe.
+struct Gallery(crate::gallery::GalleryUi);
+impl Driven for Gallery {
+    fn now(&self) -> f32 { self.0.now() }
+    fn tick(&mut self, t: f32) { self.0.tick(t) }
+    fn apply(&mut self, input: &Input) -> Result<(), DriveError> { self.0.apply(input) }
+    fn look(&self) -> Look { Driven::look(&self.0) }
+    fn tree(&self) -> TreeNode { self.0.export_tree() }
+    fn problems(&self) -> Vec<ViewProblem> { self.0.problems() }
+    fn needs_frame(&self, t: f32) -> bool { self.0.needs_frame(t) }
+    fn draw(&mut self, o: &mut Offscreen, look: &Look) -> Vec<u8> { o.render(&mut self.0, look) }
+    fn recipe(&self) -> Option<String> { Some(self.0.state.recipe()) }
 }
 
 impl<S, M: Clone> Driven for Ui<S, M> {
@@ -135,7 +150,7 @@ pub fn open_in(page: &str, faces: Vec<crate::text::Face>, (w, h, scale): (u32, u
         if let Some(m) = material { gallery::update(&mut ui.state, Msg::Material(m.id() as usize)); }
         if let Some(t) = theme { gallery::update(&mut ui.state, Msg::Theme(t)); }
         ui.relayout();
-        return Ok(Box::new(ui));
+        return Ok(Box::new(Gallery(ui)));
     }
     let name = page.strip_prefix("recipe-").unwrap_or(page);
     match crate::recipes::open(name, faces, w, h, scale) {
@@ -197,5 +212,7 @@ pub fn render(spec: &RenderSpec, faces: Vec<crate::text::Face>, o: Option<&mut O
     let o = match o { Some(o) => o, None => { own = Offscreen::try_new(spec.w, spec.h)?; &mut own } };
     if (o.w, o.h) != (spec.w, spec.h) { return Err(SurfaceError::SizeMismatch { w: spec.w, h: spec.h, have_w: o.w, have_h: o.h }.into()); }
     let px = d.draw(o, &look);
-    Ok(Rendered { png: png_bytes(spec.w, spec.h, &px), tree: d.tree(), problems: d.problems() })
+    let recipe = d.recipe();
+    let texts: Vec<(&str, &str)> = recipe.as_deref().map(|r| ("lab-recipe", r)).into_iter().collect();
+    Ok(Rendered { png: png_bytes_with(spec.w, spec.h, &px, &texts), tree: d.tree(), problems: d.problems() })
 }

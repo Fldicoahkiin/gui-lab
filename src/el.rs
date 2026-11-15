@@ -174,6 +174,9 @@ pub struct Ripple {
     pub container: bool,
     /// Text whose string changes recomposes glyph by glyph (on by default for keyed text).
     pub recompose: Option<bool>,
+    /// The focus marks do not frame this element when the pointer is over it (its box is not its
+    /// shape: text runs around its true outline, and corners at its box would sit in the text).
+    pub unframed: bool,
 }
 
 /// An element that opens a layer over everything else (a dialog). While it is there, only it can be
@@ -400,6 +403,8 @@ impl<M> El<M> {
     pub fn wipe(mut self, x: f32) -> Self { self.wipe = Some(x); self }
     /// Fronts do not push or loosen anything in this element's box.
     pub fn calm(mut self) -> Self { self.calm = true; self }
+    /// The focus marks frame it only when it has keyboard focus, never on hover.
+    pub fn unframed(mut self) -> Self { self.ripple.unframed = true; self }
     /// Give this subtree an identity across pages (see `flow`).
     pub fn flow(mut self, id: impl Into<String>) -> Self { self.flow = Some(id.into()); self }
     /// Lay this out but do not draw it until a morph shows it.

@@ -158,6 +158,39 @@ impl Preset {
         l
     }
     pub fn to_json(&self) -> String { serde_json::to_string_pretty(self).unwrap_or_default() }
+    /// The preset as a recipe: what differs from the built-in preset it started from (by `hash`; the
+    /// first one when it has no built-in), as `look:v1:` + base64url of `{"base": hash, "set": {path:
+    /// value}}`. Short enough for a URL hash; every PNG the render tool writes carries one.
+    pub fn recipe(&self) -> String {
+        let all = presets();
+        let base = all.iter().find(|p| p.hash == self.hash).unwrap_or(&all[0]);
+        let (a, b) = (leaves(&serde_json::to_value(self).unwrap_or_default()), leaves(&serde_json::to_value(base).unwrap_or_default()));
+        let set: serde_json::Map<String, serde_json::Value> = a.into_iter().filter(|(k, v)| b.get(k) != Some(v)).collect();
+        let doc = serde_json::json!({ "base": base.hash, "set": set });
+        format!("{RECIPE_PREFIX}{}", b64url(serde_json::to_string(&doc).unwrap_or_default().as_bytes()))
+    }
+    /// The preset a recipe describes: its base with every path set.
+    pub fn from_recipe(s: &str) -> Result<Self, crate::error::PresetError> {
+        let bad = |m: &str| crate::error::PresetError::Recipe(m.to_owned());
+        let body = s.trim().trim_start_matches('#').strip_prefix(RECIPE_PREFIX).ok_or_else(|| bad("it does not start with look:v1:"))?;
+        let bytes = un_b64url(body).ok_or_else(|| bad("its body is not base64url"))?;
+        let doc: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| bad(&e.to_string()))?;
+        let all = presets();
+        let hash = doc.get("base").and_then(|v| v.as_str()).ok_or_else(|| bad("it names no base"))?;
+        let base = all.into_iter().find(|p| p.hash == hash).ok_or_else(|| bad(&format!("no preset is called {hash}")))?;
+        let mut v = serde_json::to_value(&base).map_err(|e| bad(&e.to_string()))?;
+        if let Some(set) = doc.get("set").and_then(|v| v.as_object()) {
+            for (path, x) in set {
+                let mut at = &mut v;
+                for k in path.split('.') {
+                    at = match at { serde_json::Value::Object(m) => m.get_mut(k), serde_json::Value::Array(a) => k.parse::<usize>().ok().and_then(|i| a.get_mut(i)), _ => None }
+                        .ok_or_else(|| bad(&format!("no field at {path}")))?;
+                }
+                *at = x.clone();
+            }
+        }
+        serde_json::from_value(v).map_err(|e| bad(&e.to_string()))
+    }
     pub fn from_json(s: &str) -> Result<Self, crate::error::PresetError> { serde_json::from_str(s).map_err(|e| crate::error::PresetError::Json(e.to_string())) }
     /// Every number in the preset, by its path in the JSON (`transition.steps.0.a`), for number controls
     /// made from the data itself.
@@ -180,6 +213,43 @@ impl Preset {
         *self = serde_json::from_value(v).map_err(|e| crate::error::PresetError::Json(e.to_string()))?;
         Ok(())
     }
+}
+/// What starts every look recipe (the version is part of it: a later format gets a new prefix).
+pub const RECIPE_PREFIX: &str = "look:v1:";
+/// Every leaf of a JSON value (numbers, strings, booleans) by its dotted path.
+fn leaves(v: &serde_json::Value) -> std::collections::BTreeMap<String, serde_json::Value> {
+    fn go(v: &serde_json::Value, path: String, out: &mut std::collections::BTreeMap<String, serde_json::Value>) {
+        let join = |k: &str| if path.is_empty() { k.to_owned() } else { format!("{path}.{k}") };
+        match v {
+            serde_json::Value::Object(m) => for (k, x) in m { go(x, join(k), out); },
+            serde_json::Value::Array(a) => for (i, x) in a.iter().enumerate() { go(x, join(&i.to_string()), out); },
+            _ => { out.insert(path, v.clone()); }
+        }
+    }
+    let mut out = std::collections::BTreeMap::new();
+    go(v, String::new(), &mut out);
+    out
+}
+const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+/// Base64url without padding (RFC 4648 §5).
+pub fn b64url(data: &[u8]) -> String {
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for c in data.chunks(3) {
+        let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
+        for i in 0..c.len() + 1 { out.push(B64[(n >> (18 - 6 * i) & 63) as usize] as char); }
+    }
+    out
+}
+/// The bytes of base64url text (padding and whitespace ignored), or `None` when it is not base64url.
+pub fn un_b64url(s: &str) -> Option<Vec<u8>> {
+    let vals: Vec<u32> = s.bytes().filter(|b| !b.is_ascii_whitespace() && *b != b'=').map(|b| B64.iter().position(|x| *x == b).map(|p| p as u32)).collect::<Option<_>>()?;
+    let mut out = Vec::with_capacity(vals.len() * 3 / 4);
+    for c in vals.chunks(4) {
+        if c.len() == 1 { return None; }
+        let n = c.iter().enumerate().fold(0u32, |n, (i, v)| n | v << (18 - 6 * i));
+        for i in 0..c.len() - 1 { out.push((n >> (16 - 8 * i)) as u8); }
+    }
+    Some(out)
 }
 fn walk(v: &serde_json::Value, path: String, out: &mut Vec<(String, f32)>) {
     let join = |k: &str| if path.is_empty() { k.to_owned() } else { format!("{path}.{k}") };

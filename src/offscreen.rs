@@ -95,6 +95,26 @@ pub fn png_bytes(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
     out
 }
 
+/// The same with text chunks (`tEXt`, Latin-1 keywords): the render tool puts the look's recipe in
+/// `lab-recipe`, so any image it wrote reproduces itself.
+pub fn png_bytes_with(w: u32, h: u32, rgba: &[u8], texts: &[(&str, &str)]) -> Vec<u8> {
+    let mut out = Vec::new();
+    {
+        let mut e = png::Encoder::new(&mut out, w, h);
+        e.set_color(png::ColorType::Rgba);
+        e.set_depth(png::BitDepth::Eight);
+        for (k, v) in texts { let _ = e.add_text_chunk((*k).to_owned(), (*v).to_owned()); }
+        if let Ok(mut wr) = e.write_header() { let _ = wr.write_image_data(rgba); }
+    }
+    out
+}
+/// The `tEXt` chunk `key` of a PNG, if it has one.
+pub fn png_text(png: &[u8], key: &str) -> Option<String> {
+    let d = png::Decoder::new(std::io::Cursor::new(png));
+    let r = d.read_info().ok()?;
+    r.info().uncompressed_latin1_text.iter().find(|c| c.keyword == key).map(|c| c.text.clone())
+}
+
 pub fn save_png(path: &str, w: u32, h: u32, rgba: &[u8]) {
     let file = std::fs::File::create(path).unwrap_or_else(|e| panic!("create {path}: {e}"));
     let mut e = png::Encoder::new(std::io::BufWriter::new(file), w, h);

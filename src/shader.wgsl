@@ -446,7 +446,7 @@ fn unit(d: vec2f, r: f32) -> f32 {
 }
 
 // ── Pictures into marks (DESIGN.md §1.6.1) ────────────────────────────────────────────────────────
-const SETS: f32 = 12.0;
+const SETS: f32 = 20.0;
 const CHAR_MIN: f32 = 4.0;
 const CHAR_MAX: f32 = 40.0;
 /// A character tile read texel for texel at the pitch it was cut for (no resampling, so it stays sharp).

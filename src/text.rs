@@ -33,6 +33,12 @@ pub const SANS_FILE: &str = "NotoSansSC-Regular.otf";
 pub const PIXEL_FILE: &str = "FusionPixel-12px-Proportional-zh_hans.otf";
 pub const MONO_FILE: &str = "DepartureMono-Regular.otf";
 
+/// Geist Pixel's five shapes (Latin only, outline faces): Square, Grid, Circle, Triangle, Line, after
+/// the three above. Selectable as `Font::Face(GEIST_PIXEL[i])`.
+pub const GEIST_PIXEL: [u8; 5] = [3, 4, 5, 6, 7];
+pub const GEIST_NAMES: [&str; 5] = ["Square", "Grid", "Circle", "Triangle", "Line"];
+pub const GEIST_FILES: [&str; 5] = ["GeistPixel-Square.otf", "GeistPixel-Grid.otf", "GeistPixel-Circle.otf", "GeistPixel-Triangle.otf", "GeistPixel-Line.otf"];
+
 /// A font file to register. `pixel` is the native size (px) of a pixel face.
 pub struct Face { pub data: Vec<u8>, pub pixel: Option<f32> }
 impl Face {
@@ -43,11 +49,23 @@ impl Face {
 pub fn bundled(sans: Vec<u8>, pixel: Vec<u8>, mono: Vec<u8>) -> Vec<Face> {
     vec![Face::outline(sans), Face::pixel(pixel, 12.0), Face::pixel(mono, 11.0)]
 }
-/// Read the bundled faces from a directory (native only; the web page passes the bytes in).
+/// The bundled faces with Geist Pixel's five shapes after them (`GEIST_PIXEL`).
+pub fn with_geist(mut faces: Vec<Face>, geist: impl IntoIterator<Item = Vec<u8>>) -> Vec<Face> {
+    faces.extend(geist.into_iter().map(Face::outline));
+    faces
+}
+/// Read the bundled faces from a directory, Geist Pixel included (native only; the web page passes
+/// the three main faces' bytes in and carries Geist Pixel in the module).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn load_bundled(dir: &str) -> Result<Vec<Face>, crate::error::FontError> {
     let r = |f: &str| { let path = format!("{dir}/{f}"); std::fs::read(&path).map_err(|source| crate::error::FontError::Missing { path, source }) };
-    Ok(bundled(r(SANS_FILE)?, r(PIXEL_FILE)?, r(MONO_FILE)?))
+    let geist = GEIST_FILES.iter().map(|f| r(f)).collect::<Result<Vec<_>, _>>()?;
+    Ok(with_geist(bundled(r(SANS_FILE)?, r(PIXEL_FILE)?, r(MONO_FILE)?), geist))
+}
+/// Geist Pixel's five faces, compiled in (the web build).
+pub fn geist_bytes() -> [Vec<u8>; 5] {
+    [include_bytes!("../assets/GeistPixel-Square.otf").to_vec(), include_bytes!("../assets/GeistPixel-Grid.otf").to_vec(), include_bytes!("../assets/GeistPixel-Circle.otf").to_vec(),
+     include_bytes!("../assets/GeistPixel-Triangle.otf").to_vec(), include_bytes!("../assets/GeistPixel-Line.otf").to_vec()]
 }
 
 /// A paragraph to draw: text, face, font size, line height and the width it was laid out at
@@ -68,6 +86,7 @@ struct Family { name: String, pixel: Option<f32>, data: Arc<Vec<u8>>, blob: u64 
 pub struct Raster { pub data: Vec<u8>, pub w: u32, pub h: u32, pub left: i32, pub top: i32, pub advance: f32, pub ascent: f32, pub descent: f32 }
 
 pub struct Text {
+    shape_ms: f64,
     fonts: FontContext,
     layouts: LayoutContext<()>,
     scaler: ScaleContext,
@@ -108,7 +127,7 @@ impl Text {
         Self {
             fonts: FontContext { collection, source_cache: Default::default() },
             layouts: LayoutContext::new(), scaler: ScaleContext::new(), families, scale: 1.0,
-            slots: HashMap::new(), full: false, measured: HashMap::new(), cache: [HashMap::new(), HashMap::new()], pixels: vec![0; (ATLAS * ATLAS * 2) as usize], dirty: true, pen: (1, 1, 0), shaped: 0, log_shapes: false, shape_log: vec![],
+            slots: HashMap::new(), full: false, measured: HashMap::new(), cache: [HashMap::new(), HashMap::new()], pixels: vec![0; (ATLAS * ATLAS * 2) as usize], dirty: true, pen: (1, 1, 0), shaped: 0, shape_ms: 0.0, log_shapes: false, shape_log: vec![],
         }
     }
 
@@ -177,6 +196,16 @@ impl Text {
     /// line breaks on screen are exactly the ones layout planned for.
     fn shape(&mut self, s: &str, face: u8, size: f32, line: f32, max_width: Option<f32>, around: Option<&Around>) -> Layout<()> {
         self.shaped += 1;
+        let t0 = crate::perf::now_ms();
+        let l = self.shape_inner(s, face, size, line, max_width, around);
+        self.shape_ms += crate::perf::now_ms() - t0;
+        l
+    }
+    /// Time spent shaping, ms, since the start (the readout takes differences).
+    pub fn shape_ms(&self) -> f64 { self.shape_ms }
+    /// Paragraph layouts held in the cache.
+    pub fn cached(&self) -> usize { self.cache[0].len() + self.cache[1].len() }
+    fn shape_inner(&mut self, s: &str, face: u8, size: f32, line: f32, max_width: Option<f32>, around: Option<&Around>) -> Layout<()> {
         if self.log_shapes { self.shape_log.push(s.to_owned()); }
         let size = self.size_for(face, size);
         let fi = (face as usize).min(self.families.len() - 1);
@@ -190,7 +219,7 @@ impl Text {
         let mut l: Layout<()> = b.build(s);
         match around {
             None => l.break_all_lines(max_width),
-            Some(a) => flow_around(&mut l, a, max_width.unwrap_or(1e5), line),
+            Some(a) => flow_around(&mut l, a, max_width.unwrap_or(1e5), line, if a.min > 0.0 { a.min } else { crate::wrap::MIN_EM * size }),
         }
         l
     }
@@ -353,7 +382,7 @@ pub fn word_range(s: &str, at: usize) -> (usize, usize) {
 /// Break `l` into lines that keep out of the obstacles in `a`: down the column a line height at a
 /// time, each band's free pieces (left to right) take a line each; a band with no free piece is
 /// skipped a few px at a time.
-fn flow_around(l: &mut Layout<()>, a: &Around, width: f32, line: f32) {
+fn flow_around(l: &mut Layout<()>, a: &Around, width: f32, line: f32, min: f32) {
     let mut br = l.break_lines();
     br.state_mut().set_layout_max_advance(width);
     let mut y = 0.0f32;
@@ -362,7 +391,7 @@ fn flow_around(l: &mut Layout<()>, a: &Around, width: f32, line: f32) {
     while !br.is_done() && guard < 100_000 {
         guard += 1;
         if pieces.is_empty() {
-            pieces = a.free(width, y, y + line).into();
+            pieces = a.free(width, y, y + line, min).into();
             if pieces.is_empty() { y += 4.0; continue; }
         }
         let (x0, x1) = pieces.pop_front().expect("a free piece");

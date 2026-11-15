@@ -77,6 +77,24 @@ impl Silhouette {
         let s = self.rows.get(a..b)?.iter().fold(EMPTY, |s, r| (s.0.min(r.0), s.1.max(r.1)));
         (s.0 <= s.1).then_some(s)
     }
+    /// The span the ink grown by `g` all round (a disc of radius `g` swept along the outline) covers in
+    /// the band `y0..y1`: rows inside the band grow by `g` sideways, rows above or below it by what is
+    /// left of `g` at their distance, so the gap is the same all round the true outline.
+    pub fn span_grown(&self, y0: f32, y1: f32, g: f32) -> Option<(f32, f32)> {
+        let a = ((y0 - g - self.top).floor().max(0.0)) as usize;
+        let b = ((y1 + g - self.top).ceil().max(0.0) as usize).min(self.rows.len());
+        let mut s = EMPTY;
+        for i in a..b {
+            let r = self.rows[i];
+            if r.0 > r.1 { continue; }
+            let (ra, rb) = (self.top + i as f32, self.top + i as f32 + 1.0);
+            let dy = (y0 - rb).max(ra - y1).max(0.0);
+            if dy > g { continue; }
+            let e = (g * g - dy * dy).max(0.0).sqrt();
+            s = (s.0.min(r.0 - e), s.1.max(r.1 + e));
+        }
+        (s.0 <= s.1).then_some(s)
+    }
     /// Whether the ink covers the point (x, y).
     pub fn covers(&self, x: f32, y: f32) -> bool {
         let i = (y - self.top).floor();
@@ -85,12 +103,18 @@ impl Silhouette {
 }
 
 /// What a paragraph flows around: obstacles, the gap kept from their ink, and the narrowest piece of
-/// a line worth setting text in (logical px).
+/// a line worth setting text in (logical px; 0 = three times the type size, `MIN_EM`).
+/// The narrowest piece of a line worth setting text in, in ems, when `Around::min` is 0: a sliver
+/// narrower than this gets no text.
+pub const MIN_EM: f32 = 3.0;
+/// Obstacles are placed on a grid this fine (logical px) before lines are broken around them, so a
+/// sub-pixel move never moves a break: the lines change only when the outline has moved a whole step.
+pub const STEP: f32 = 2.0;
 #[derive(Clone, Debug, PartialEq)]
 pub struct Around { pub obstacles: Vec<Silhouette>, pub gap: f32, pub min: f32 }
 
 impl Around {
-    pub fn new(obstacles: Vec<Silhouette>, gap: f32) -> Self { Self { obstacles, gap, min: 48.0 } }
+    pub fn new(obstacles: Vec<Silhouette>, gap: f32) -> Self { Self { obstacles, gap, min: 0.0 } }
     /// A key for caches: the same outlines and gap give the same lines.
     pub fn id(&self) -> u64 {
         let mut h = std::hash::DefaultHasher::new();
@@ -103,9 +127,10 @@ impl Around {
         h.finish()
     }
     /// The free pieces `(x0, x1)` of the band `y0..y1` across `0..width`, left to right.
-    pub fn free(&self, width: f32, y0: f32, y1: f32) -> Vec<(f32, f32)> {
+    /// `min` is the narrowest piece kept (logical px).
+    pub fn free(&self, width: f32, y0: f32, y1: f32, min: f32) -> Vec<(f32, f32)> {
         let g = self.gap;
-        let mut blocked: Vec<(f32, f32)> = self.obstacles.iter().filter_map(|o| o.span(y0 - g, y1 + g)).map(|(a, b)| (a - g, b + g)).collect();
+        let mut blocked: Vec<(f32, f32)> = self.obstacles.iter().filter_map(|o| o.span_grown(y0, y1, g)).collect();
         blocked.sort_by(|a, b| a.0.total_cmp(&b.0));
         let mut out = vec![];
         let mut x = 0.0f32;
@@ -115,7 +140,7 @@ impl Around {
             if x >= width { break; }
         }
         if x < width { out.push((x, width)); }
-        out.retain(|&(a, b)| b - a >= self.min);
+        out.retain(|&(a, b)| b - a >= min);
         out
     }
 }
