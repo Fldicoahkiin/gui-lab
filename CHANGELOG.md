@@ -2,6 +2,15 @@
 
 按 DESIGN.md §7 的步骤记。Each step of DESIGN.md §7.
 
+## 11 — 序章、展示而不是标语、引导、文字绕排、读数、配方 · The prologue, display not slogans, guidance, wrap, readout, recipes
+
+- 影片的序章：同一个小界面左边原样、右边一种材质，分界线能拖，材质名一排。The prologue: one small interface, as it is and in a material, a divider and chips.
+- 不再有标语：章名是一个元素，换章时一个字一个字地重组；第 9、10、11 章重做。No slogan: the chapter's title recomposes across cuts; chapters 9, 10, 11 redone.
+- 底栏的引导：上一章 / 下一章、自动播放的进度、只到第一次输入为止的提示、括号提示、看不见的边。Guidance in the bottom bar and on the stage.
+- 文字绕排按真实的距离、不留碎片、拖动时不跳；正文不会一个字一个字地凝聚；330 px 宽时没有文字被截掉。Wrap by true distance, no slivers, no hopping; text condenses as a whole; nothing cut at 330 px.
+- F2 读数：一行和全部两种，带火花线，空闲时不要帧。The F2 readout: one line or every number, a sparkline, no frames at rest.
+- `look:v1:` 配方（网址、PNG 的文本块）；八种新记号，按家族分组；Geist Pixel 的五种字面；`<lab-view>` 自定义元素。Recipes; eight new mark sets; Geist Pixel; the `<lab-view>` element.
+
 ## 10 — 滚动、标志与机件、多语言、组件与文档 · Scrolling, the sign and the mechanism, languages, components and docs
 
 - 慢速滚动是整像素移动的图，快速滚动每种材质有自己的痕迹（§1.8.3，`check` 第 18 条）。Slow scrolling is a picture moved by whole pixels; fast, each material leaves its own trace.

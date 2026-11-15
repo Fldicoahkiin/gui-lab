@@ -4,7 +4,7 @@
 use crate::error::{DriveError, LookError, SurfaceError, ViewProblem};
 use crate::el::{Key, Mods};
 use crate::offscreen::{Offscreen, png_bytes_with};
-use crate::style::{Look, MATERIALS, Material, THEMES};
+use crate::style::{Look, Material, THEMES};
 use crate::tree::TreeNode;
 use crate::ui::{PointerKind, Ui};
 use serde::Deserialize;
@@ -102,18 +102,7 @@ fn near_keys<S, M: Clone>(ui: &Ui<S, M>, k: &str) -> String {
     out.join(", ")
 }
 
-/// The material with this name or number.
-pub fn material(id: &str) -> Result<Material, LookError> {
-    let found = MATERIALS.iter().position(|(_, n)| *n == id).or_else(|| id.parse::<usize>().ok().filter(|&i| i < MATERIALS.len()));
-    found.map(|i| MATERIALS[i].0).ok_or_else(|| LookError::UnknownMaterial { given: id.to_owned(), known: MATERIALS.iter().map(|m| m.1).collect::<Vec<_>>().join(", "), last: MATERIALS.len() - 1 })
-}
-/// Short ASCII ids of the themes, in `style::THEMES` order.
-pub const THEME_IDS: [&str; 15] = ["dark", "light", "pixel", "paper", "cream", "cool", "manual", "normcore", "cyber", "bauhaus", "y2k", "led", "gaze", "glitch", "kraft"];
-/// The theme index with this id, name or number.
-pub fn theme(id: &str) -> Result<usize, LookError> {
-    THEME_IDS.iter().position(|t| *t == id).or_else(|| THEMES.iter().position(|t| t.name == id)).or_else(|| id.parse::<usize>().ok().filter(|&i| i < THEMES.len()))
-        .ok_or_else(|| LookError::UnknownTheme { given: id.to_owned(), known: THEME_IDS.join(", "), last: THEMES.len() - 1 })
-}
+pub use crate::style::{THEME_IDS, material_named as material, theme_named as theme};
 
 /// A page with the look's material and theme replaced (for recipes, whose look comes from their state).
 struct Styled { inner: Box<dyn Driven>, material: Option<Material>, theme: Option<usize> }

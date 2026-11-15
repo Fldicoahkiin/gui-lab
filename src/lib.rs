@@ -129,6 +129,19 @@ mod web {
     #[wasm_bindgen] pub fn route(hash: &str) -> bool {
         with(|s| { let ok = s.ui.state.route(hash); if ok { s.ui.relayout(); } ok }).unwrap_or(false)
     }
+    /// Theme and material by name (as the render tool takes them; empty leaves one as it is), from a
+    /// host such as `<lab-view theme="dark" material="dot">`.
+    #[wasm_bindgen] pub fn set_look(theme: &str, material: &str) {
+        with(|s| {
+            if let Ok(t) = crate::style::theme_named(theme) { gallery::update(&mut s.ui.state, gallery::Msg::Theme(t)); }
+            if let Ok(m) = crate::style::material_named(material) { gallery::update(&mut s.ui.state, gallery::Msg::Material(m.id() as usize)); }
+            s.ui.relayout();
+        });
+    }
+    /// The language by tag (`zh-Hans`, `en`); an unknown tag changes nothing.
+    #[wasm_bindgen] pub fn set_locale(tag: &str) {
+        with(|s| { if let Some(l) = crate::i18n::Locale::from_tag(tag) { gallery::update(&mut s.ui.state, gallery::Msg::Locale(l)); s.ui.relayout(); } });
+    }
     /// The current page's hash name, for the page to put in `location.hash`.
     #[wasm_bindgen] pub fn hash() -> String { with(|s| s.ui.state.page.hash()).unwrap_or_default() }
     /// A DOM key name and Shift. Returns whether the page should not act on it itself.
