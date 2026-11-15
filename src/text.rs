@@ -263,6 +263,15 @@ impl Text {
         let sel = parley::Selection::new(parley::Cursor::from_byte_index(&l, a, parley::Affinity::Downstream), parley::Cursor::from_byte_index(&l, b, parley::Affinity::Upstream));
         sel.geometry(&l).into_iter().map(|(bb, _)| crate::ui::Rect::new(origin.0 + bb.x0 as f32, origin.1 + bb.y0 as f32, (bb.x1 - bb.x0) as f32, (bb.y1 - bb.y0) as f32)).collect()
     }
+    /// Each laid-out line's box, logical px from `origin`: from the line's start to the end of its last
+    /// visible character (trailing spaces hang and are left out), over the line's full height.
+    pub fn line_boxes(&mut self, p: Para<'_>, origin: (f32, f32)) -> Vec<crate::ui::Rect> {
+        let l = self.layout(p.s, p.face, p.size, p.line, Some(p.width), p.around);
+        l.lines().map(|ln| {
+            let m = ln.metrics();
+            crate::ui::Rect::new(origin.0 + m.offset + m.inline_min_coord, origin.1 + m.block_min_coord, (m.advance - m.hanging_advance).max(0.0), m.block_max_coord - m.block_min_coord)
+        }).collect()
+    }
     /// Where the caret goes from byte `at` by the layout: a line up or down (keeping its x), or the start
     /// or end of its visual line.
     pub fn nav(&mut self, p: Para<'_>, at: usize, to: Nav) -> usize {
@@ -391,15 +400,34 @@ fn flow_around(l: &mut Layout<()>, a: &Around, width: f32, line: f32, min: f32) 
     while !br.is_done() && guard < 100_000 {
         guard += 1;
         if pieces.is_empty() {
-            pieces = a.free(width, y, y + line, min).into();
+            // The band as the line box will be: parley puts a line's top on a whole px.
+            pieces = a.free(width, y.round(), (y + line).round(), min).into();
             if pieces.is_empty() { y += 4.0; continue; }
         }
         let (x0, x1) = pieces.pop_front().expect("a free piece");
+        let before = br.state().clone();
         let st = br.state_mut();
         st.set_line_x(x0);
         st.set_line_max_advance((x1 - x0).min(width));
         st.set_line_y(y as f64);
-        if br.break_next().is_none() { break; }
+        let Some(done) = br.break_next() else { break };
+        // A piece with an obstacle after it in its band is set flush against that obstacle, so the
+        // text keeps the same distance (the gap) from the outline on its left and on its right: the
+        // line is broken again from its start, moved right by what it left unused.
+        if !pieces.is_empty() && let parley::YieldData::LineBreak(d) = done {
+            let used = d.metrics.advance - d.metrics.hanging_advance;
+            let slack = (x1 - x0).min(width) - used;
+            // A word too long for the piece would run into the obstacle: leave the piece empty.
+            if slack < -0.25 { br.revert_to(before); continue; }
+            if slack > 0.25 && !matches!(d.reason, parley::BreakReason::None | parley::BreakReason::Explicit) {
+                br.revert_to(before);
+                let st = br.state_mut();
+                st.set_line_x(x0 + slack);
+                st.set_line_max_advance(used + 0.01);
+                st.set_line_y(y as f64);
+                if br.break_next().is_none() { break; }
+            }
+        }
         if pieces.is_empty() { y += line; }
     }
     br.finish();

@@ -622,6 +622,13 @@ impl<S, M: Clone> Ui<S, M> {
     /// How many recomposition tiles are alive now, over the whole window (bounded by
     /// `Recompose::max_tiles`).
     pub fn recompose_tiles(&self) -> usize { self.recomps.values().map(|r| r.tiles.len()).sum() }
+    /// The line boxes of a text element, window coordinates (logical px): `Text::line_boxes`.
+    pub fn line_boxes(&mut self, key: &str) -> Vec<Rect> {
+        let Some(n) = self.nodes.iter().find(|n| n.key == key) else { return vec![] };
+        let Some(p) = n.para() else { return vec![] };
+        let o = n.origin();
+        self.text.line_boxes(p, o)
+    }
     pub fn instances_of(&self, key: &str) -> Vec<Instance> {
         let Some(root) = self.nodes.iter().position(|n| n.key == key) else { return vec![] };
         (0..self.page_len).filter(|&i| within(&self.nodes, self.owners[i].0, root)).map(|i| self.scene.instances[*self.lifted.get(&i).unwrap_or(&i)]).collect()

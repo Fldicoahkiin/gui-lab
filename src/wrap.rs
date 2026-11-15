@@ -77,10 +77,13 @@ impl Silhouette {
         let s = self.rows.get(a..b)?.iter().fold(EMPTY, |s, r| (s.0.min(r.0), s.1.max(r.1)));
         (s.0 <= s.1).then_some(s)
     }
-    /// The span the ink grown by `g` all round (a disc of radius `g` swept along the outline) covers in
-    /// the band `y0..y1`: rows inside the band grow by `g` sideways, rows above or below it by what is
-    /// left of `g` at their distance, so the gap is the same all round the true outline.
+    /// The span the band `y0..y1` must keep clear of for a gap `g`: the widest extent of the ink over
+    /// the band's full height, grown by `g` on each side, so text beside the outline keeps exactly `g`
+    /// from it on the left and on the right whatever part of the outline the band crosses. A band the
+    /// ink does not reach but which comes within `g` of it above or below is blocked where a disc of
+    /// radius `g` swept along the outline covers it, so the gap holds vertically too.
     pub fn span_grown(&self, y0: f32, y1: f32, g: f32) -> Option<(f32, f32)> {
+        if let Some((a, b)) = self.span(y0, y1) { return (a - g <= b + g).then_some((a - g, b + g)); }
         let a = ((y0 - g - self.top).floor().max(0.0)) as usize;
         let b = ((y1 + g - self.top).ceil().max(0.0) as usize).min(self.rows.len());
         let mut s = EMPTY;

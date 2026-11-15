@@ -1,5 +1,6 @@
 //! Text flowing around the true outline of other things (`wrap`), without a GPU: the free pieces of a
-//! band, and every inked texel of every glyph at least `gap - 1` px from the obstacle's ink.
+//! band, and every inked texel of every glyph at least `gap - 1` px from the obstacle's ink: across
+//! its line's band from the obstacle's widest extent over that band, or straight to it above and below.
 use lab::el::{El, Paint, col, space, text_lh};
 use lab::scene::GLYPH;
 use lab::text::{ATLAS, SPREAD};
@@ -53,6 +54,7 @@ fn nearest(ui: &mut Ui<S, ()>) -> f32 {
     assert!((body.x - 20.0).abs() < 0.01);
     let glyphs: Vec<_> = ui.instances_of("body").into_iter().filter(|i| i.paint[3] == GLYPH).collect();
     assert!(glyphs.len() > 200, "{} glyphs", glyphs.len());
+    let bands = ui.line_boxes("body");
     let px = &ui.text_mut().pixels;
     let mut best = f32::INFINITY;
     for g in glyphs {
@@ -61,7 +63,12 @@ fn nearest(ui: &mut Ui<S, ()>) -> f32 {
             for tx in 0..g.rect[2] as i64 {
                 if px[(((ay + ty) * ATLAS as i64 + ax + tx) * 2) as usize] < 128 { continue; }
                 let (x, y) = (g.rect[0] + tx as f32 + 0.5, g.rect[1] + ty as f32 + 0.5);
-                best = best.min(((x - cx).powi(2) + (y - cy).powi(2)).sqrt() - r);
+                // Beside the disc, the distance across the line's band to the disc's widest extent
+                // over that band; above or below it, the distance to the disc.
+                let band = bands.iter().find(|b| y >= b.y && y < b.bottom());
+                let dy = band.map(|b| if cy < b.y { b.y - cy } else if cy > b.bottom() { cy - b.bottom() } else { 0.0 });
+                let d = match dy { Some(dy) if dy < r => { let w = (r * r - dy * dy).sqrt(); (cx - w - x).max(x - cx - w) } _ => ((x - cx).powi(2) + (y - cy).powi(2)).sqrt() - r };
+                best = best.min(d);
             }
         }
     }
