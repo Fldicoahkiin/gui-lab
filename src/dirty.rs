@@ -139,6 +139,15 @@ pub fn region(prev: &Inputs, cur: &Inputs, scale: f32) -> Region {
     for f in &acting { st2 = union(st2, grow(*f, rch)); }
     st2 = union(st2, grow(lenses, rch));
     st2 = union(st2, grow(bursts, rch));
+    // Scroll nodes whose content moved (the lattices follow it) or whose trace shows (DESIGN.md §1.8.3).
+    for j in 0..8 {
+        for f in [&prev.field, &cur.field] {
+            if prev.field.scrolls[j] != cur.field.scrolls[j] || prev.field.scrollo[j] != cur.field.scrollo[j] || f.scrollo[j][2] > 0.0 {
+                let r = f.scrolls[j];
+                if r[2] > r[0] { st2 = union(st2, grow(r, rch + look.scroll.trail * s + look.scroll.slip * s)); }
+            }
+        }
+    }
     if prev.field.wipe != cur.field.wipe || prev.field.wipe_rect != cur.field.wipe_rect {
         for f in [&prev.field, &cur.field] { if f.wipe[1] > 0.0 { st2 = union(st2, grow(f.wipe_rect, rch)); } }
     }

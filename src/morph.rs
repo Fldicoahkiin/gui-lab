@@ -89,11 +89,16 @@ pub struct Recompose {
     /// would need more is replaced at once.
     #[serde(default = "default_max_tiles")]
     pub max_tiles: f32,
+    /// The tiles' size to start from (logical px, whole device px): 1 px tiles in flight read as noise,
+    /// 2 px as the glyph's own pixels changing places.
+    #[serde(default = "default_tile")]
+    pub tile: f32,
 }
+fn default_tile() -> f32 { 2.0 }
 fn default_min_interval() -> f32 { 80.0 }
 fn default_max_tiles() -> f32 { 24000.0 }
 impl Default for Recompose {
-    fn default() -> Self { Self { duration_ms: 160.0, stagger: 0.2, count_max: 600.0, slide_ms: 120.0, min_interval_ms: default_min_interval(), max_tiles: default_max_tiles() } }
+    fn default() -> Self { Self { duration_ms: 160.0, stagger: 0.2, count_max: 600.0, slide_ms: 120.0, min_interval_ms: default_min_interval(), max_tiles: default_max_tiles(), tile: default_tile() } }
 }
 
 /// The GPU particle path (DESIGN.md §1.10): when a morph would need more tiles than `gpu_above`, the

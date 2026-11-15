@@ -328,6 +328,43 @@ impl PicFx {
     }
 }
 
+/// How scrolling looks (DESIGN.md §1.8.3). At rest and below `calm_speed` what scrolls is a picture
+/// moved by whole device pixels: crisp, with the materials' lattices fixed to the content, nothing loose.
+/// Above it each material shows a deliberate, directional trace of the motion whose strength eases in
+/// (smoothstep from `calm_speed` to `full_speed`) and settles `settle_ms` after the motion stops. Whole
+/// lines move as one; text to read is never loosened by it. Speeds are logical px a second, lengths
+/// logical px.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct Scroll {
+    /// Below this speed nothing but the motion itself shows.
+    pub calm_speed: f32,
+    /// At this speed and above the trace is at full strength.
+    pub full_speed: f32,
+    /// How long the trace takes to settle once the motion stops.
+    pub settle_ms: f32,
+    /// How far behind the motion the trailing edge reaches at full strength (plain's soft edge, dot's
+    /// phosphor, ascii's character trail, lino's carved echo, liquid's smear).
+    pub trail: f32,
+    /// How far the second colour falls out of register at full strength (halftone, print).
+    pub misreg: f32,
+    /// Glitch: how far a band slips, how tall a band is, and at least how long between two slips.
+    pub slip: f32,
+    pub band: f32,
+    pub slip_ms: f32,
+}
+impl Default for Scroll {
+    fn default() -> Self { Self { calm_speed: 600.0, full_speed: 2600.0, settle_ms: 140.0, trail: 28.0, misreg: 3.0, slip: 22.0, band: 36.0, slip_ms: 120.0 } }
+}
+impl Scroll {
+    /// How strong the trace is at `speed` (px/s, either sign).
+    pub fn strength(&self, speed: f32) -> f32 {
+        let (a, b) = (self.calm_speed.max(0.0), self.full_speed.max(self.calm_speed + 1.0));
+        let x = ((speed.abs() - a) / (b - a)).clamp(0.0, 1.0);
+        x * x * (3.0 - 2.0 * x)
+    }
+}
+
 /// Everything stages 2 and 3 need that is not in the scene. `params` holds every material's numbers
 /// (a collage page uses several materials at once); `loose_scale` scales all looseness of text and
 /// shapes (Normcore keeps it small).
@@ -354,9 +391,11 @@ pub struct Look {
     pub press_ms: f32,
     pub roles: [crate::el::Response; 2],
     pub transition: crate::preset::Transition,
+    /// How scrolling looks (DESIGN.md §1.8.3).
+    pub scroll: Scroll,
 }
 impl Default for Look {
-    fn default() -> Self { Self { fx: Fx::default(), theme: DARK, material: Material::Dot, pics: [PicFx::default(); 8], params: MaterialParams::all(), gaze: Gaze::default(), loose_scale: 1.0, quality: 1.0, overlay: false, legible_cap: LEGIBLE_CAP, loose_max: 1.0, recompose: crate::morph::Recompose::default(), particles: crate::morph::Particles::default(), press_ms: 350.0, roles: [crate::el::Response::Nudge, crate::el::Response::Loosen], transition: crate::preset::Transition { duration_ms: 0.0, steps: [crate::preset::Step { kind: crate::preset::StepKind::None, from: 0.0, to: 0.0, a: 0.0, b: 0.0, c: 0.0, d: 0.0, e: 0.0 }; 4] } } }
+    fn default() -> Self { Self { fx: Fx::default(), theme: DARK, material: Material::Dot, pics: [PicFx::default(); 8], params: MaterialParams::all(), gaze: Gaze::default(), loose_scale: 1.0, quality: 1.0, overlay: false, legible_cap: LEGIBLE_CAP, loose_max: 1.0, recompose: crate::morph::Recompose::default(), particles: crate::morph::Particles::default(), press_ms: 350.0, roles: [crate::el::Response::Nudge, crate::el::Response::Loosen], transition: crate::preset::Transition { duration_ms: 0.0, steps: [crate::preset::Step { kind: crate::preset::StepKind::None, from: 0.0, to: 0.0, a: 0.0, b: 0.0, c: 0.0, d: 0.0, e: 0.0 }; 4] }, scroll: Scroll::default() } }
 }
 /// The default `Look::legible_cap`.
 pub const LEGIBLE_CAP: f32 = 0.15;

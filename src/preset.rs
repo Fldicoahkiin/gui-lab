@@ -106,9 +106,12 @@ pub struct Interaction {
     pub text: Response,
     pub decoration: Response,
     pub recompose: Recompose,
+    /// How scrolling looks (DESIGN.md §1.8.3).
+    #[serde(default)]
+    pub scroll: crate::style::Scroll,
 }
 impl Default for Interaction {
-    fn default() -> Self { Self { press_ms: 350.0, front_speed: 760.0, front_width: 26.0, front_life: 1.4, text: Response::Nudge, decoration: Response::Loosen, recompose: Recompose::default() } }
+    fn default() -> Self { Self { press_ms: 350.0, front_speed: 760.0, front_width: 26.0, front_life: 1.4, text: Response::Nudge, decoration: Response::Loosen, recompose: Recompose::default(), scroll: crate::style::Scroll::default() } }
 }
 
 /// A style preset as data.
@@ -150,6 +153,7 @@ impl Preset {
         l.recompose = i.recompose;
         l.press_ms = i.press_ms;
         l.roles = [i.text, i.decoration];
+        l.scroll = i.scroll;
         l.transition = self.transition;
         l
     }
@@ -219,6 +223,18 @@ pub fn presets() -> Vec<Preset> {
             // The old layer tears along a noisy edge and peels away.
             _ => (Interaction { press_ms: 360.0, ..base }, Transition::of(820.0, &[step(Peel, 0.0, 1.0, [20.0, 26.0, 40.0, 0.0, 0.0])])),
         };
+        // How scrolling looks in each: the same speeds, the trace sized to the preset's character.
+        let mut interaction = interaction;
+        let sc = &mut interaction.scroll;
+        match st.hash {
+            "normcore" => sc.trail = 0.0,
+            "cyberminimal" => sc.trail = 14.0,
+            "dotmatrix" => sc.trail = 40.0,
+            "lofi-print" => sc.misreg = 4.0,
+            "glitch" => { sc.slip = 34.0; sc.slip_ms = 90.0; }
+            "linocut" => sc.trail = 34.0,
+            _ => {}
+        }
         Preset {
             name: st.name.into(), hash: st.hash.into(), theme: th.name.into(), faces: th.roles(), material: st.material, params: st.params.0, gaze: st.gaze,
             loose_scale: st.loose_scale, pitch: st.pitch, pic: st.pic, interaction, transition,

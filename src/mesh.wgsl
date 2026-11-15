@@ -32,11 +32,11 @@ struct MIn {
 };
 struct MOut {
   @builtin(position) pos: vec4f,
-  @location(0) @interpolate(flat) n: vec3f,
+  @location(0) n: vec3f,
   @location(1) z: f32,
   @location(2) @interpolate(flat) paint: vec4f,
   @location(3) @interpolate(flat) id: vec4f,
-  @location(4) @interpolate(flat) shade: f32,
+  @location(4) nw: vec3f,
 };
 
 @vertex fn vs_mesh(i: MIn) -> MOut {
@@ -49,15 +49,17 @@ struct MOut {
   o.z = -v.z;
   o.paint = i.paint;
   o.id = i.id;
-  o.shade = mu.light.w + (1.0 - mu.light.w) * max(dot(nw, normalize(mu.light.xyz)), 0.0);
+  o.nw = nw;
   return o;
 }
 
 struct GOut { @location(0) c: vec4f, @location(1) g: vec4f, @location(2) k: vec4f };
 @fragment fn fs_mesh(i: MOut, @builtin(front_facing) front: bool) -> GOut {
   // The inside of an open mesh (a plane seen from below) faces the other way.
-  let n = select(-i.n, i.n, front);
-  var shade = i.shade;
+  let n = select(-normalize(i.n), normalize(i.n), front);
+  var shade = mu.light.w + (1.0 - mu.light.w) * max(dot(normalize(i.nw), normalize(mu.light.xyz)), 0.0);
+  // Two-tone: the lit side one flat tone, the shadow side another (Mesh3d::tones), a hard terminator.
+  if (mu.spread.y > 0.5) { shade = select(mu.light.w + (1.0 - mu.light.w) * 0.42, 1.0, shade > mu.light.w + (1.0 - mu.light.w) * mu.spread.z); }
   if (!front) { shade = mu.light.w; }
   let d = clamp((i.z - mu.misc.x) / max(mu.misc.y - mu.misc.x, 1e-4), 0.0, 1.0);
   let hi = floor(d * 255.0);
