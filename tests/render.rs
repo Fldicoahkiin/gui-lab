@@ -5,7 +5,7 @@ use lab::error::{DriveError, LookError};
 use lab::offscreen::Offscreen;
 
 fn fonts() -> Vec<lab::text::Face> { lab::text::load_bundled(concat!(env!("CARGO_MANIFEST_DIR"), "/assets")).expect("fonts") }
-fn spec(page: &str) -> RenderSpec { RenderSpec { page: page.into(), w: 480, h: 360, scale: 1.0, material: Some("dot".into()), theme: Some("light".into()), at_ms: 700.0, events: vec![] } }
+fn spec(page: &str) -> RenderSpec { RenderSpec { page: page.into(), w: 480, h: 360, scale: 1.0, material: Some("dot".into()), theme: Some("light".into()), at_ms: 700.0, events: vec![], locale: None } }
 
 #[test]
 fn the_same_arguments_give_the_same_bytes() {

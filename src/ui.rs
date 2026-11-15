@@ -303,6 +303,8 @@ pub struct Ui<S, M> {
     dirty: bool,
     /// The look, for the timings that decide whether anything is still moving.
     look_of: Option<fn(&S) -> Look>,
+    /// The locale the state is in (DESIGN.md §1.20): made the current one while the view is built.
+    locale_of: Option<fn(&S) -> crate::i18n::Locale>,
     timing: Timing,
     /// When the state next wants a tick (a clock, a running demonstration), asked after every tick.
     wake_of: Option<fn(&S, f32) -> Option<f32>>,
@@ -510,6 +512,9 @@ impl<S, M: Clone> Ui<S, M> {
     pub fn on_tick(mut self, f: fn(&mut S, f32) -> bool) -> Self { self.ticked = Some(f); self }
     /// Read the look from the state, for the timings `needs_frame` uses (front life and speed, how long
     /// new things condense, whether the material moves by itself).
+    /// Read the locale from the state (DESIGN.md §1.20): before every view it becomes the current one
+    /// (`i18n::current`), which widgets and `i18n::tr` use for their own text.
+    pub fn on_locale(mut self, f: fn(&S) -> crate::i18n::Locale) -> Self { self.locale_of = Some(f); self.relayout(); self }
     pub fn on_look(mut self, f: fn(&S) -> Look) -> Self { self.look_of = Some(f); self.timing = Timing::of(&f(&self.state)); self }
     /// Ask the state, after every tick, when it next wants one (`Some(now)`: every frame; a later time:
     /// a timed wake; `None`: only on input). Without it, `on_tick` subscribers only tick when something
@@ -545,7 +550,7 @@ impl<S, M: Clone> Ui<S, M> {
             keyboard: false, marks: Marks::default(), sized: None, commands: None, unseen: vec![], base: vec![], tags: vec![], roles: vec![],
             run: None, painted_phase: 0, flows: HashMap::new(), ghosts: vec![], body_len: 0, animating: false, lifted: HashMap::new(),
             gaze_of: None, gaze_seen: HashMap::new(), annots: vec![], hovered: None, pointer_of: None, scripted: false, ticked: None, unused_key: None, released: None, input: None,
-            dirty: true, look_of: None, timing: Timing::default(), wake_of: None, latest_birth: f32::NEG_INFINITY, gaze_until: f32::NEG_INFINITY,
+            dirty: true, look_of: None, locale_of: None, timing: Timing::default(), wake_of: None, latest_birth: f32::NEG_INFINITY, gaze_until: f32::NEG_INFINITY,
             marks_moving: false, caret: None, caret_on: true, static_loose: false, mclock: 0.0, moving: false, gclock: 0.0, ground_moving: false,
             perf: crate::perf::Perf { quality: 1.0, ..Default::default() }, span: 0, painting: false, overlay: false, overlay_at: 0.0,
             text_capture: None, sel: None, sel_drag: false, clicks: (f32::NEG_INFINITY, 0.0, 0.0, 0), a11y_sent: HashMap::new(), a11y_focus: None,
@@ -1802,6 +1807,7 @@ impl<S, M: Clone> Ui<S, M> {
     fn layout(&mut self) {
         if let Some(f) = self.look_of { self.timing = Timing::of(&f(&self.state)); }
         self.perf.counters.views += 1;
+        if let Some(f) = self.locale_of { crate::i18n::set_current(f(&self.state)); }
         let el = (self.view)(&self.state);
         let mut nodes = Vec::new();
         // The root is the window, whatever its contents would like.
@@ -2848,10 +2854,12 @@ struct Inherit {
     respond: Option<Response>, legible: Option<bool>, scope: Option<Scope>, recompose: Option<bool>, control: bool, field: bool,
     /// What text and controls, and what everything else, do when nothing above says (the look's roles).
     roles: [Response; 2],
+    /// Right to left (`El::rtl`).
+    rtl: bool,
 }
 impl Default for Inherit {
     fn default() -> Self {
-        Self { level: 0, mat: None, loosen: 0.0, select: false, respond: None, legible: None, scope: None, recompose: None, control: false, field: false, roles: [Response::Nudge, Response::Loosen] }
+        Self { level: 0, mat: None, loosen: 0.0, select: false, respond: None, legible: None, scope: None, recompose: None, control: false, field: false, roles: [Response::Nudge, Response::Loosen], rtl: false }
     }
 }
 impl Inherit {
@@ -3087,7 +3095,11 @@ fn measure_key(c: &Content) -> u64 {
 /// A virtual list's rows are built here, for what its viewport shows.
 #[allow(clippy::too_many_arguments)]
 fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], off: (bool, bool), flow: Option<(Rc<str>, usize)>, inh: Inherit, vx: &mut VirtCtx, built: &mut Built, nodes: &mut Vec<Node<M>>) -> usize {
-    let El { key, style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, annotate, gaze_scope, material, loosen, anchor, clips, calm, mut on_text, multiline, selectable, cursor, virt, access, ripple, mut on_pick, mut on_wheel, mut children } = el;
+    let El { key, style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, annotate, gaze_scope, material, loosen, anchor, clips, calm, mut on_text, multiline, selectable, cursor, virt, access, ripple, mut on_pick, mut on_wheel, rtl, mut children } = el;
+    let mut style = style;
+    let mut inh = inh;
+    if let Some(r) = rtl { inh.rtl = r; }
+    style.direction = if inh.rtl { taffy::Direction::Rtl } else { taffy::Direction::Ltr };
     let keyed = !key.is_empty();
     let key = if key.is_empty() { path } else { key };
     let roles = fonts.unwrap_or(roles);

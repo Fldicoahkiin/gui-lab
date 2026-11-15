@@ -121,10 +121,16 @@ impl Driven for Styled {
 /// Open a gallery page (its hash: `button`, `material-dot`, `scene-morph`…) or a recipe (`recipe-form`, or
 /// just `form`), at `w` × `h` device px and `scale`, with the material and theme given (else the page's).
 pub fn open(page: &str, faces: Vec<crate::text::Face>, w: u32, h: u32, scale: f32, material: Option<Material>, theme: Option<usize>) -> Result<Box<dyn Driven>, LookError> {
+    open_in(page, faces, (w, h, scale), (material, theme, None))
+}
+/// `open` with the look and the language given together: (material, theme, locale). Recipes keep
+/// their own language.
+pub fn open_in(page: &str, faces: Vec<crate::text::Face>, (w, h, scale): (u32, u32, f32), (material, theme, locale): (Option<Material>, Option<usize>, Option<crate::i18n::Locale>)) -> Result<Box<dyn Driven>, LookError> {
     use crate::gallery::{self, Msg, Page};
     if let Some(p) = Page::from_hash(page) {
         let mut ui = gallery::new_ui(faces, w, h, scale);
         ui.pointer_leave();
+        if let Some(l) = locale { gallery::update(&mut ui.state, Msg::Locale(l)); }
         gallery::update(&mut ui.state, Msg::Go(p));
         if let Some(m) = material { gallery::update(&mut ui.state, Msg::Material(m.id() as usize)); }
         if let Some(t) = theme { gallery::update(&mut ui.state, Msg::Theme(t)); }
@@ -172,6 +178,8 @@ pub struct RenderSpec {
     pub theme: Option<String>,
     pub at_ms: f32,
     pub events: Vec<Event>,
+    /// The language (`en`, `zh-Hans`), else the page's own (DESIGN.md §1.20).
+    pub locale: Option<String>,
 }
 /// The result of a render: the PNG bytes, the tree, and what the view got wrong.
 pub struct Rendered { pub png: Vec<u8>, pub tree: TreeNode, pub problems: Vec<ViewProblem> }
@@ -181,7 +189,8 @@ pub fn render(spec: &RenderSpec, faces: Vec<crate::text::Face>, o: Option<&mut O
     let material = spec.material.as_deref().map(material).transpose()?;
     let theme = spec.theme.as_deref().map(theme).transpose()?;
     if spec.w == 0 || spec.h == 0 { return Err(SurfaceError::ZeroSize { w: spec.w, h: spec.h }.into()); }
-    let mut d = open(&spec.page, faces, spec.w, spec.h, spec.scale.max(0.25), material, theme)?;
+    let locale = match spec.locale.as_deref() { Some(t) => Some(crate::i18n::Locale::from_tag(t).ok_or_else(|| LookError::UnknownLocale { given: t.to_owned(), known: crate::i18n::Locale::ALL.iter().map(|l| l.tag()).collect::<Vec<_>>().join(", ") })?), None => None };
+    let mut d = open_in(&spec.page, faces, (spec.w, spec.h, spec.scale.max(0.25)), (material, theme, locale))?;
     play(d.as_mut(), &spec.events, spec.at_ms)?;
     let look = d.look();
     let mut own;

@@ -253,6 +253,8 @@ pub struct El<M> {
     pub on_pick: Option<OnPick<M>>,
     /// The wheel over this element (taken before scrolling).
     pub on_wheel: Option<OnWheel<M>>,
+    /// Lines and rows run right to left in this subtree (inherited; `None` follows the parent).
+    pub rtl: Option<bool>,
     pub children: Vec<El<M>>,
 }
 
@@ -301,7 +303,7 @@ impl<M> El<M> {
     fn new(style: Style, content: Content) -> Self {
         // Nothing shrinks unless asked: fixed sizes stay fixed inside columns and scroll areas.
         let style = Style { flex_shrink: 0.0, ..style };
-        Self { key: String::new(), style, content, fill: None, border: None, radius: 0.0, on_press: None, on_key: None, on_drag: None, on_blur: None, focusable: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, modal: None, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, clips: false, calm: false, on_text: None, multiline: false, selectable: false, cursor: None, virt: None, access: None, ripple: Ripple::default(), on_pick: None, on_wheel: None, children: vec![] }
+        Self { key: String::new(), style, content, fill: None, border: None, radius: 0.0, on_press: None, on_key: None, on_drag: None, on_blur: None, focusable: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, modal: None, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, clips: false, calm: false, on_text: None, multiline: false, selectable: false, cursor: None, virt: None, access: None, ripple: Ripple::default(), on_pick: None, on_wheel: None, rtl: None, children: vec![] }
     }
     pub fn key(mut self, k: impl Into<String>) -> Self { self.key = k.into(); self }
     pub fn gap(mut self, g: f32) -> Self { self.style.gap = Size { width: length(g), height: length(g) }; self }
@@ -339,6 +341,9 @@ impl<M> El<M> {
     pub fn cursor(mut self, c: Cursor) -> Self { self.cursor = Some(c); self }
     fn access_mut(&mut self) -> &mut Access { self.access.get_or_insert_with(Access::default) }
     /// Its accessible name (what a screen reader says), when the text inside does not say it.
+    /// This subtree runs right to left (DESIGN.md §1.20): a row's first child is at its right, its
+    /// start alignment is the right edge, padding and margins mirror. Inherited.
+    pub fn rtl(mut self, on: bool) -> Self { self.rtl = Some(on); self }
     pub fn label(mut self, name: impl Into<String>) -> Self { self.access_mut().label = Some(name.into()); self }
     /// Its role in the accessibility mirror.
     pub fn role(mut self, r: Role) -> Self { self.access_mut().role = Some(r); self }
@@ -440,7 +445,7 @@ impl<M> El<M> {
 
     /// The same tree sending other messages: lets one application embed another's view.
     pub fn map<N: 'static>(self, f: Rc<dyn Fn(M) -> N>) -> El<N> where M: 'static {
-        let El { key, style, content, fill, border, radius, on_press, on_key, on_drag, on_blur, focusable, scroll, horizontal, bar, reveal, disabled, commit, modal, fonts, loose, wipe, flow, hidden, annotate, gaze_scope, material, loosen, anchor, clips, calm, on_text, multiline, selectable, cursor, virt, access, ripple, on_pick, on_wheel, children } = self;
+        let El { key, style, content, fill, border, radius, on_press, on_key, on_drag, on_blur, focusable, scroll, horizontal, bar, reveal, disabled, commit, modal, fonts, loose, wipe, flow, hidden, annotate, gaze_scope, material, loosen, anchor, clips, calm, on_text, multiline, selectable, cursor, virt, access, ripple, on_pick, on_wheel, rtl, children } = self;
         let virt = virt.map(|v| { let f = f.clone(); let b = v.build; Virtual { count: v.count, row_h: v.row_h, overscan: v.overscan, selected: v.selected, build: Rc::new(move |i: usize| b(i).map(f.clone())) as Rc<dyn Fn(usize) -> El<N>> } });
         let on_key = on_key.map(|k| { let f = f.clone(); Rc::new(move |key: Key, shift: bool| k(key, shift).map(|m| f(m))) as OnKey<N> });
         let on_text = on_text.map(|t| { let f = f.clone(); Rc::new(move |i: TextInput| t(i).map(|m| f(m))) as OnText<N> });
@@ -450,7 +455,7 @@ impl<M> El<M> {
         El {
             key, style, content, fill, border, radius, on_press: on_press.map(|m| f(m)), on_key, on_drag, on_blur: on_blur.map(|m| f(m)),
             focusable, scroll, horizontal, bar, reveal, disabled, commit, modal: modal.map(|m| Modal { dismiss: f(m.dismiss), beneath: m.beneath }),
-            fonts, loose, wipe, flow, hidden, annotate, gaze_scope, material, loosen, anchor, clips, calm, on_text, multiline, selectable, cursor, virt, access, ripple, on_pick, on_wheel, children: children.into_iter().map(|c| c.map(f.clone())).collect(),
+            fonts, loose, wipe, flow, hidden, annotate, gaze_scope, material, loosen, anchor, clips, calm, on_text, multiline, selectable, cursor, virt, access, ripple, on_pick, on_wheel, rtl, children: children.into_iter().map(|c| c.map(f.clone())).collect(),
         }
     }
 }
@@ -461,7 +466,6 @@ pub fn space<M>(w: f32, h: f32) -> El<M> { El::new(Style { size: Size { width: l
 pub fn text<M>(s: impl Into<String>, size: f32, paint: Paint) -> El<M> {
     El::new(Style::default(), Content::Text { s: s.into(), size, line: (size * 1.6).round(), paint, font: Font::Body, print: 0.0, caret: None, weight: 0.0, around: None, select: None, mark: None, nowrap: false })
 }
-/// A text leaf with an explicit line height.
 /// Scale one taffy length by `k` (lengths only; percentages, auto and the rest stay).
 fn zoom_lp(v: LengthPercentage, k: f32) -> LengthPercentage { match v.expand() { taffy::style::ExpandedLengthPercentage::Length(x) => LengthPercentage::length(x * k), _ => v } }
 fn zoom_lpa(v: LengthPercentageAuto, k: f32) -> LengthPercentageAuto { match v.expand() { taffy::style::ExpandedLengthPercentageAuto::Length(x) => LengthPercentageAuto::length(x * k), _ => v } }
@@ -490,6 +494,7 @@ impl<M> El<M> {
     }
 }
 
+/// A text leaf with an explicit line height.
 pub fn text_lh<M>(s: impl Into<String>, size: f32, line: f32, paint: Paint) -> El<M> {
     El::new(Style::default(), Content::Text { s: s.into(), size, line, paint, font: Font::Body, print: 0.0, caret: None, weight: 0.0, around: None, select: None, mark: None, nowrap: false })
 }

@@ -110,7 +110,7 @@ pub fn orbit<M: 'static>(key: &str, mut scene: Scene3d, o: &Orbit, msg: impl Fn(
     scene.camera = o.camera(scene.camera);
     let msg = Rc::new(msg);
     let (a, b, c) = (msg.clone(), msg.clone(), msg);
-    scene3d(scene).key(key).focusable(true).cursor(crate::el::Cursor::Grab).label("三维视图")
+    scene3d(scene).key(key).focusable(true).cursor(crate::el::Cursor::Grab).label(crate::i18n::tr("widget.orbit.label"))
         .on_drag_with(move |d| Some(a(OrbitMsg::Drag(d))))
         .on_wheel(move |_, dy| Some(b(OrbitMsg::Wheel(dy))))
         .on_key(move |k, shift| matches!(k, Key::Left | Key::Right | Key::Up | Key::Down).then(|| c(OrbitMsg::Key(k, shift))))

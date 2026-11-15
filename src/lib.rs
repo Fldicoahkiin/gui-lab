@@ -6,6 +6,7 @@ pub mod el;
 pub mod error;
 pub mod gallery;
 pub mod gaze;
+pub mod i18n;
 pub mod marks;
 pub mod mesh;
 pub mod morph;
