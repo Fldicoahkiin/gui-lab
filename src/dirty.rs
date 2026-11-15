@@ -23,6 +23,14 @@ pub fn is_empty(a: Bx) -> bool { a[2] <= a[0] || a[3] <= a[1] }
 fn meet(a: Bx, b: Bx) -> Bx { [a[0].max(b[0]), a[1].max(b[1]), a[2].min(b[2]), a[3].min(b[3])] }
 fn rect(r: [f32; 4]) -> Bx { [r[0], r[1], r[0] + r[2], r[1] + r[3]] }
 
+/// How many lens radii from the pointer the lens can still change a pixel: `exp(-r²)` there is under
+/// 0.01, which moves no picture cell off pitch 1 (at pitch 64 the pitch's ramp is 0.07 of a step) and
+/// lights no dot of the dot ground (its threshold is 0.05).
+pub const LENS_REACH: f32 = 2.2;
+/// The same for the dot ground, where the lens adds to the drift: any trace of it moves the edge of a
+/// dot the drift has lit, so it reaches as far as the bell is above 1e-5.
+pub const LENS_REACH_DOT: f32 = 3.5;
+
 /// What a frame is drawn from, as far as which pixels it touches goes.
 #[derive(Clone)]
 pub struct Inputs {
@@ -113,7 +121,9 @@ pub fn region(prev: &Inputs, cur: &Inputs, scale: f32) -> Region {
     let mut acting: Vec<Bx> = fronts(&prev.field, &prev.look, prev.now, s);
     acting.extend(fronts(&cur.field, look, cur.now, s));
     let lens_moved = prev.field.pointer != cur.field.pointer;
-    let lens = |f: &Field| { let r = 3.5 * look.fx.lens.max(0.0) * s; if f.pointer[2] > 0.0 && look.fx.lens >= 0.5 { [f.pointer[0] - r, f.pointer[1] - r, f.pointer[0] + r, f.pointer[1] + r] } else { EMPTY } };
+    // The lens is a bell: past `LENS_REACH` radii it is too weak to change a cell's pitch or a dot.
+    let reach_r = if mats.contains(&Material::Dot) { LENS_REACH_DOT } else { LENS_REACH };
+    let lens = |f: &Field| { let r = reach_r * look.fx.lens.max(0.0) * s; if f.pointer[2] > 0.0 && look.fx.lens >= 0.5 { [f.pointer[0] - r, f.pointer[1] - r, f.pointer[0] + r, f.pointer[1] + r] } else { EMPTY } };
     let lenses = if lens_moved { union(lens(&prev.field), lens(&cur.field)) } else { EMPTY };
     let burst = |f: &Field, t: f32| if f.burst_at(t) > 0.0 { f.burst } else { EMPTY };
     let bursts = if prev.field.burst != cur.field.burst || prev.field.burst_t != cur.field.burst_t || burst(&cur.field, cur.now) != EMPTY || burst(&prev.field, prev.now) != EMPTY {
@@ -133,11 +143,14 @@ pub fn region(prev: &Inputs, cur: &Inputs, scale: f32) -> Region {
         if i.paint[3] == PICTURE && !is_empty(meet(lenses, r)) { st2 = union(st2, meet(lenses, r)); }
     }
     // Stage 2: what stage 1 changed, as far as the materials read around it, and the field on the ground.
+    // Pictures' marks read their own cells (and the parallax its depth): only where a picture changed.
+    let pic_changed = b.iter().chain(a.iter()).any(|i| i.paint[3] == PICTURE && !is_empty(meet(grow(rect(i.rect), pad), st1)));
     let rch = mats.iter().map(|m| reach(*m, look, s)).fold(0.0, f32::max)
-        + look.pics.iter().map(|p| 2.0 * p.pitch * s + p.depth * s).fold(0.0, f32::max);
+        + if pic_changed { look.pics.iter().map(|p| 2.0 * p.pitch * s + p.depth * s).fold(0.0, f32::max) } else { 0.0 };
     st2 = union(st2, grow(st1, rch));
     for f in &acting { st2 = union(st2, grow(*f, rch)); }
-    st2 = union(st2, grow(lenses, rch));
+    // The lens acts on pictures and 3D elements (above) and on the dot ground; elsewhere it shows nothing.
+    if mats.contains(&Material::Dot) { st2 = union(st2, grow(lenses, rch)); }
     st2 = union(st2, grow(bursts, rch));
     // Scroll nodes whose content moved (the lattices follow it) or whose trace shows (DESIGN.md §1.8.3).
     for j in 0..8 {
@@ -151,13 +164,13 @@ pub fn region(prev: &Inputs, cur: &Inputs, scale: f32) -> Region {
     if prev.field.wipe != cur.field.wipe || prev.field.wipe_rect != cur.field.wipe_rect {
         for f in [&prev.field, &cur.field] { if f.wipe[1] > 0.0 { st2 = union(st2, grow(f.wipe_rect, rch)); } }
     }
-    // The annotation layer is drawn over the material in the same pass.
-    let (a, b) = (&prev.annot, &cur.annot);
-    for k in 0..a.len().max(b.len()) {
-        match (a.get(k), b.get(k)) {
-            (Some(x), Some(y)) if x == y => {}
-            (x, y) => { for i in [x, y].into_iter().flatten() { st2 = union(st2, grow(rect(i.rect), 2.0)); } }
-        }
+    // The annotation layer is drawn over the material in the same pass: the marks that are new or gone
+    // (as a set, so a label that grows by a glyph does not move every mark after it in the list).
+    if prev.annot != cur.annot {
+        let key = |i: &Instance| -> Vec<u32> { i.rect.iter().chain(&i.uv).chain(&i.paint).chain(&i.clip).chain(&i.extra).chain(&i.look).map(|v| v.to_bits()).collect() };
+        let had: std::collections::HashSet<Vec<u32>> = prev.annot.iter().map(key).collect();
+        let has: std::collections::HashSet<Vec<u32>> = cur.annot.iter().map(key).collect();
+        for i in prev.annot.iter().filter(|i| !has.contains(&key(i))).chain(cur.annot.iter().filter(|i| !had.contains(&key(i)))) { st2 = union(st2, grow(rect(i.rect), 2.0)); }
     }
     let screen = [0.0, 0.0, cur.size.0 as f32, cur.size.1 as f32];
     Region::Boxes { stage1: meet(st1, screen), stage2: meet(st2, screen) }
