@@ -251,8 +251,25 @@ pub mod set {
     pub const LINES: u8 = 9;
     pub const GLOW: u8 = 10;
     pub const STROKE: u8 = 11;
-    pub const COUNT: usize = 12;
-    pub const NAMES: [&str; COUNT] = ["字符", "抖动", "像素画", "马赛克", "积木", "圆点", "十字", "斜线", "菱形", "横线", "光点", "笔触"];
+    pub const LED: u8 = 12;
+    pub const BRAILLE: u8 = 13;
+    pub const CUBES: u8 = 14;
+    pub const HEX: u8 = 15;
+    pub const STIPPLE: u8 = 16;
+    pub const HATCH: u8 = 17;
+    pub const TRUCHET: u8 = 18;
+    pub const TOPO: u8 = 19;
+    pub const COUNT: usize = 20;
+    pub const NAMES: [&str; COUNT] = ["字符", "抖动", "像素画", "马赛克", "积木", "圆点", "十字", "斜线", "菱形", "横线", "光点", "笔触", "LED 点阵", "盲文", "体素", "六角", "点刻", "交叉线", "特鲁谢", "等高线"];
+    /// The families the gallery groups the sets in (DESIGN.md §1.6.1): characters; pixels and blocks;
+    /// print and paper; geometry; signal and light.
+    pub const FAMILIES: [(&str, &[u8]); 5] = [
+        ("字符", &[CHARS, BRAILLE]),
+        ("像素与方块", &[PIXEL, DITHER, MOSAIC, BRICK, CUBES, LED]),
+        ("印刷与纸", &[DOTS, STIPPLE, HATCH, LINES, STROKE]),
+        ("几何", &[CROSS, DIAGONAL, DIAMOND, HEX, TRUCHET, TOPO]),
+        ("光", &[GLOW]),
+    ];
 }
 
 /// Ink colour of a picture's marks.
@@ -375,7 +392,8 @@ pub struct Look {
     /// 0 for automatic (DESIGN.md §1.12). Pixels at rest are always drawn at full resolution.
     pub quality: f32,
     /// Show the frame-time readout (drawn by the annotation layer).
-    pub overlay: bool,
+    /// The performance readout: 0 off, 1 one line, 2 every number (F2 steps through them).
+    pub overlay: u8,
     /// The most looseness field effects (fronts, the lens, a pull past a scroll end, a press held) may
     /// give text to read and controls (DESIGN.md §1.15). Morphs, flows and recomposition are exempt.
     pub legible_cap: f32,
@@ -395,7 +413,7 @@ pub struct Look {
     pub scroll: Scroll,
 }
 impl Default for Look {
-    fn default() -> Self { Self { fx: Fx::default(), theme: DARK, material: Material::Dot, pics: [PicFx::default(); 8], params: MaterialParams::all(), gaze: Gaze::default(), loose_scale: 1.0, quality: 1.0, overlay: false, legible_cap: LEGIBLE_CAP, loose_max: 1.0, recompose: crate::morph::Recompose::default(), particles: crate::morph::Particles::default(), press_ms: 350.0, roles: [crate::el::Response::Nudge, crate::el::Response::Loosen], transition: crate::preset::Transition { duration_ms: 0.0, steps: [crate::preset::Step { kind: crate::preset::StepKind::None, from: 0.0, to: 0.0, a: 0.0, b: 0.0, c: 0.0, d: 0.0, e: 0.0 }; 4] }, scroll: Scroll::default() } }
+    fn default() -> Self { Self { fx: Fx::default(), theme: DARK, material: Material::Dot, pics: [PicFx::default(); 8], params: MaterialParams::all(), gaze: Gaze::default(), loose_scale: 1.0, quality: 1.0, overlay: 0, legible_cap: LEGIBLE_CAP, loose_max: 1.0, recompose: crate::morph::Recompose::default(), particles: crate::morph::Particles::default(), press_ms: 350.0, roles: [crate::el::Response::Nudge, crate::el::Response::Loosen], transition: crate::preset::Transition { duration_ms: 0.0, steps: [crate::preset::Step { kind: crate::preset::StepKind::None, from: 0.0, to: 0.0, a: 0.0, b: 0.0, c: 0.0, d: 0.0, e: 0.0 }; 4] }, scroll: Scroll::default() } }
 }
 /// The default `Look::legible_cap`.
 pub const LEGIBLE_CAP: f32 = 0.15;

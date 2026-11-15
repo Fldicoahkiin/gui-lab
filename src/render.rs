@@ -706,6 +706,9 @@ impl Renderer {
         let Some(sim) = &mut self.tiles.sim else { return };
         if sim.run != ids { if fresh { sim.cur = 0; } sim.steps = 0; sim.run = ids; }
         let target = (clock / SIM_DT + 1e-3).floor().max(0.0) as u32;
+        // A scrubbed run going back: the state is only the swirl's offset from each tile's place on its
+        // path (the place itself is computed from the clock), so it carries on from there.
+        if target < sim.steps { sim.steps = target; }
         // A host that fell far behind skips ahead rather than stalling.
         if target > sim.steps + 8 { sim.steps = target - 8; }
         while self.tiles.sim.as_ref().is_some_and(|s| s.steps < target) {
@@ -921,7 +924,21 @@ impl Renderer {
         let submit = (crate::perf::now_ms() - started) as f32;
         let parts = ui.morph_run().map_or(0, |r| if r.clock(now).is_some() { r.grid.map_or(r.particles.len() as u32, |g| g.count()) } else { 0 });
         let path = ui.morph_run().map_or(self.tiles.tier.name(), |r| if r.grid.is_some() { self.tiles.tier.name() } else { "cpu" });
+        // The readout's share of the screen redrawn and the passes recorded (stage 1, the material, the
+        // annotation layer, plus the reduced pass and the particles when they run).
+        let (sw, sh) = (self.size.0.max(1) as f32, self.size.1.max(1) as f32);
+        let dirty = match self.region {
+            crate::dirty::Region::All => 1.0,
+            crate::dirty::Region::Boxes { stage1, stage2 } => {
+                let b = crate::dirty::union(stage1, stage2);
+                if crate::dirty::is_empty(b) { 0.0 } else { ((b[2].min(sw) - b[0].max(0.0)).max(0.0) * (b[3].min(sh) - b[1].max(0.0)).max(0.0) / (sw * sh)).min(1.0) }
+            }
+        };
+        let passes = 3 + lo.is_some() as u32 + tiles.is_some() as u32 + grid.is_some() as u32;
+        // Full-size targets: ink, near, before, soft (8 bytes a pixel or less) and the glyph atlas.
+        let tex_mb = (sw * sh * 4.0 * 6.0 + (crate::text::ATLAS * crate::text::ATLAS * 2) as f32) / 1_048_576.0;
         let p = ui.perf_mut();
+        p.dirty = dirty; p.passes = passes; p.tex_mb = tex_mb;
         p.quality = q; p.auto = auto; p.particles = parts; p.particle_path = path;
         p.frame(submit);
         if auto { self.auto.feed(pending.update_layout + pending.scene + submit); }

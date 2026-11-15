@@ -203,6 +203,81 @@ fn sample(s: u8, t: f32, u: f32, v: f32, x: usize, y: usize) -> (f32, f32) {
             let m = on(t > 0.0 && (px * px + dy * dy).sqrt() < w);
             (m, m)
         }
+        // A lamp: a rounded square, lit by the level; an unlit lamp stays as a faint seat, so the
+        // matrix reads even in the dark.
+        set::LED => {
+            let k = 0.36;
+            let d = ((dx.abs() - k * 0.6).max(0.0).powi(2) + (dy.abs() - k * 0.6).max(0.0).powi(2)).sqrt();
+            let lamp = on(d < k * 0.4);
+            let m = lamp * (0.08 + 0.92 * t);
+            (m, lamp * (1.0 - (r / 0.5).min(1.0)))
+        }
+        // Braille: up to eight dots in two columns of four, lit in a fixed order as the level rises.
+        set::BRAILLE => {
+            const ORDER: [(usize, usize); 8] = [(0, 0), (1, 1), (0, 2), (1, 3), (1, 0), (0, 1), (1, 2), (0, 3)];
+            let n = (t * 8.0).round() as usize;
+            let mut m = 0.0f32;
+            for &(c, rr) in ORDER.iter().take(n) {
+                let (cx, cy) = (0.32 + 0.36 * c as f32, 0.14 + 0.24 * rr as f32);
+                if ((u - cx).powi(2) + (v - cy).powi(2)).sqrt() < 0.085 { m = 1.0; }
+            }
+            (m, m)
+        }
+        // An isometric cube centred in the cell, larger with the level: the top face full, the left at
+        // two thirds, the right at a third (the height channel keeps the faces apart for relief).
+        set::CUBES => {
+            let s = 0.08 + 0.36 * t;
+            if t <= 0.0 { return (0.0, 0.0); }
+            let (px, py) = (dx / s, dy / s);
+            // Hexagon outline of the cube, then its three faces.
+            let inside = py.abs() <= 1.0 && (py.abs() * 0.5 + px.abs() * 0.866) <= 1.0;
+            if !inside { return (0.0, 0.0); }
+            let top = py < 0.0 && (py + px.abs() * 0.577) < 0.0;
+            let face = if top { 1.0 } else if px < 0.0 { 0.68 } else { 0.38 };
+            (face, face)
+        }
+        // A hexagon inset in its cell, growing with the level; a fine seam all round.
+        set::HEX => {
+            let rr = 0.08 + 0.4 * t;
+            let hx = dx.abs() * 0.866 + dy.abs() * 0.5;
+            let m = on(t > 0.0 && hx.max(dy.abs()) < rr);
+            (m, m * (1.0 - hx.max(dy.abs()) / rr.max(1e-3)).sqrt())
+        }
+        // Stippling: sixteen fixed scattered places, a dot at the first n of them.
+        set::STIPPLE => {
+            let n = (t * 16.0).round() as u32;
+            let mut m = 0.0f32;
+            for i in 0..n {
+                let hh = |k: u32| ((i.wrapping_mul(2_654_435_761).wrapping_add(k.wrapping_mul(40_503)) >> 8) & 0xffff) as f32 / 65535.0;
+                let (cx, cy) = (0.12 + 0.76 * hh(1), 0.12 + 0.76 * hh(7));
+                if ((u - cx).powi(2) + (v - cy).powi(2)).sqrt() < 0.07 { m = 1.0; }
+            }
+            (m, m)
+        }
+        // Cross-hatching: one to four directions of line as the level rises, like pen hatching.
+        set::HATCH => {
+            let k = (t * 4.0).round() as u32;
+            let w = 0.07;
+            let d1 = ((u + v).rem_euclid(0.5) - 0.25).abs();
+            let lines = [dy.abs() < w, d1 < w * 0.8, dx.abs() < w, ((u - v).rem_euclid(0.5) - 0.25).abs() < w * 0.8];
+            let m = on(lines.iter().take(k as usize).any(|b| *b));
+            (m, m)
+        }
+        // Truchet: two quarter arcs round opposite corners; neighbouring cells join into curves.
+        set::TRUCHET => {
+            let w = 0.03 + 0.14 * t;
+            let a = ((u * u + v * v).sqrt() - 0.5).abs();
+            let b = (((1.0 - u).powi(2) + (1.0 - v).powi(2)).sqrt() - 0.5).abs();
+            let m = on(t > 0.0 && a.min(b) < w);
+            (m, m)
+        }
+        // Contour rings about the centre, thicker with the level.
+        set::TOPO => {
+            let w = 0.02 + 0.09 * t;
+            let ring = ((r * 3.0).fract() - 0.5).abs() / 3.0;
+            let m = on(t > 0.0 && ring < w);
+            (m, m)
+        }
         _ => (0.0, 0.0),
     }
 }

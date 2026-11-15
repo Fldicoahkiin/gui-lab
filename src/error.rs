@@ -94,6 +94,8 @@ pub enum PresetError {
     Json(String),
     #[error("the preset has no number at `{0}`. Paths are the JSON keys joined by dots, array places by their index: `transition.steps.0.a`, `interaction.press_ms`.")]
     NoSuchNumber(String),
+    #[error("not a look recipe ({0}). A recipe is `look:v1:` and then base64url of a small JSON object: `base` (a preset's hash, such as \"normcore\") and `set` (paths as `numbers` names them, with their values). Copy one from the 风格 page, or from a PNG the render tool wrote (its `lab-recipe` text chunk).")]
+    Recipe(String),
 }
 
 /// A message catalog (`assets/i18n/<tag>.txt`) could not be used.

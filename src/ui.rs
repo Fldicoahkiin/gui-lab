@@ -95,6 +95,11 @@ pub struct Node<M> {
     pub ripple: Option<Scope>,
     pub ripple_scope: bool,
     pub recompose: bool,
+    /// It asked to recompose itself (`.recompose(true)` on the text): it recomposes even across a page
+    /// change with a flow, where keyed text is otherwise replaced (a title that changes word to word).
+    pub recompose_always: bool,
+    /// Not framed by the marks on hover (`El::unframed`).
+    pub unframed: bool,
     /// Its key was written by the view (not derived from its path).
     pub keyed: bool,
     /// A `scene3d` element's pointer handler, and a wheel handler.
@@ -245,6 +250,10 @@ pub struct Ui<S, M> {
     field: Field,
     scroll: HashMap<String, f32>,
     births: HashMap<u64, f32>,
+    /// Each text node's birth (by key): a glyph new to a text that was already there (its lines broke
+    /// differently) takes the text's birth, so a paragraph never shows some glyphs condensing among
+    /// crisp neighbours. A text is crisp or it condenses as a whole.
+    text_births: HashMap<u64, f32>,
     hover: Option<String>,
     focus: Option<String>,
     pressed: Option<String>,
@@ -337,8 +346,14 @@ pub struct Ui<S, M> {
     span: u32,
     painting: bool,
     /// The readout is shown; when it was last drawn (it refreshes twice a second while shown).
-    overlay: bool,
+    overlay: u8,
     overlay_at: f32,
+    /// The shaping time at the last frame, so the readout shows what this frame spent.
+    shape_seen: f64,
+    /// The readout last said the page is idle (so it does not ask for another frame).
+    hud_idle: bool,
+    /// Nodes the last view rebuilt and laid out (a view builds every node).
+    rebuilt: usize,
     // ── Text (DESIGN.md §1.8.1) ──
     /// The text field the pointer pressed in, while the press lasts (its drag selects).
     text_capture: Option<String>,
@@ -468,7 +483,7 @@ enum TouchMode { Pending, Scroll(String), Direct, Cancelled }
 /// any override) has a time term that moves loose things.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Timing {
-    pub wave_life: f32, pub wave_speed: f32, pub enter: f32, pub material: u8, pub overlay: bool,
+    pub wave_life: f32, pub wave_speed: f32, pub enter: f32, pub material: u8, pub overlay: u8,
     /// The field numbers the CPU's model of looseness needs, and the ripple and recomposition settings.
     pub fx: crate::scene::Fx, pub legible_cap: f32, pub loose_max: f32, pub recompose: crate::morph::Recompose,
     /// The preset's interaction character (DESIGN.md §4.1): a press's burst (s), the default responses of
@@ -557,14 +572,14 @@ impl<S, M: Clone> Ui<S, M> {
     pub fn new(state: S, view: fn(&S) -> El<M>, update: fn(&mut S, M), faces: Vec<Face>, w: u32, h: u32, scale: f32) -> Self {
         let mut ui = Self {
             state, view, update, text: Text::new(faces), size: (0.0, 0.0), scale, now: 0.0, nodes: vec![], scene: Scene::default(),
-            owners: vec![], page_len: 0, field: Field::default(), scroll: HashMap::new(), births: HashMap::new(),
+            owners: vec![], page_len: 0, field: Field::default(), scroll: HashMap::new(), births: HashMap::new(), text_births: HashMap::new(),
             hover: None, focus: None, pressed: None, capture: None, modal_at: None, modal_key: None, return_focus: None, split: None, splits: 0,
             keyboard: false, marks: Marks::default(), sized: None, commands: None, unseen: vec![], base: vec![], tags: vec![], roles: vec![],
             run: None, painted_phase: 0, flows: HashMap::new(), ghosts: vec![], body_len: 0, animating: false, lifted: HashMap::new(),
             gaze_of: None, gaze_seen: HashMap::new(), annots: vec![], hovered: None, pointer_of: None, scripted: false, ticked: None, unused_key: None, shortcut: None, scrolled_of: None, released: None, input: None,
             dirty: true, look_of: None, locale_of: None, timing: Timing::default(), wake_of: None, latest_birth: f32::NEG_INFINITY, gaze_until: f32::NEG_INFINITY,
             marks_moving: false, caret: None, caret_on: true, static_loose: false, mclock: 0.0, moving: false, gclock: 0.0, ground_moving: false,
-            perf: crate::perf::Perf { quality: 1.0, ..Default::default() }, span: 0, painting: false, overlay: false, overlay_at: 0.0,
+            perf: crate::perf::Perf { quality: 1.0, ..Default::default() }, span: 0, painting: false, overlay: 0, overlay_at: 0.0, shape_seen: 0.0, hud_idle: false, rebuilt: 0,
             text_capture: None, sel: None, sel_drag: false, clicks: (f32::NEG_INFINITY, 0.0, 0.0, 0), a11y_sent: HashMap::new(), a11y_focus: None,
             tree: TaffyTree::new(), tids: HashMap::new(), mkeys: HashMap::new(), virt_views: HashMap::new(), virt_made: HashMap::new(),
             scrolling: Scrolling::default(), touch: None, touches: HashSet::new(), touching: false, fling: None, over: HashMap::new(), motion: HashMap::new(), scroll_paint: false, event_t: None,
@@ -751,6 +766,9 @@ impl<S, M: Clone> Ui<S, M> {
         if self.span == 0 {
             let spent = (crate::perf::now_ms() - t0) as f32 - (self.perf.pending.scene - scene0);
             self.perf.pending.update_layout += spent.max(0.0);
+            let sm = self.text.shape_ms();
+            self.perf.pending.text += (sm - self.shape_seen) as f32;
+            self.shape_seen = sm;
         }
     }
     /// The clock that materials' time terms read: it runs only while something moves.
@@ -874,8 +892,9 @@ impl<S, M: Clone> Ui<S, M> {
     fn wake_at(&self, now: f32) -> Option<f32> {
         let blink = self.caret.map(|(_, reset, _)| reset + ((now - reset) / BLINK).floor().max(0.0) * BLINK + BLINK);
         let asked = self.wake_of.and_then(|f| f(&self.state, now));
-        // The readout refreshes twice a second while it is shown, so its frame counts fall to 0 at rest.
-        let readout = self.overlay.then_some(self.overlay_at + 0.5);
+        // The readout never keeps frames coming: it changes only when a frame is drawn anyway, and once,
+        // a second after the last one, to say the page is idle.
+        let readout = (self.overlay > 0 && !self.hud_idle).then_some(self.overlay_at + 1.05);
         [blink, asked, readout].into_iter().flatten().reduce(f32::min)
     }
 
@@ -901,8 +920,9 @@ impl<S, M: Clone> Ui<S, M> {
         self.now = t;
         if let Some(f) = self.look_of { self.timing = Timing::of(&f(&self.state)); }
         if let Some(f) = self.ticked && f(&mut self.state, t) { self.relayout(); }
-        let target = if self.keyboard { self.focus.clone() } else { self.hover.clone().or_else(|| self.focus.clone()) };
-        let target = target.and_then(|k| self.node(&k).map(|n| (n.rect, n.clip)));
+        // While something is dragged the marks stand aside; on hover they skip what is `unframed`.
+        let target = if self.capture.is_some() { None } else if self.keyboard { self.focus.clone() } else { self.hover.clone().or_else(|| self.focus.clone()) };
+        let target = target.and_then(|k| self.node(&k).filter(|n| self.keyboard || !n.unframed).map(|n| (n.rect, n.clip)));
         let k = 1.0 - (-dt * 16.0).exp();
         let before = (self.marks.at, self.marks.alpha);
         match target {
@@ -935,7 +955,9 @@ impl<S, M: Clone> Ui<S, M> {
         self.recomps.retain(|_, r| t < r.end);
         self.slides.retain(|_, sl| t < sl.start + sl.dur);
         let scrolled = self.step_scrolling(dt);
-        if repaint || scrolled { self.paint(); } else { self.finish(); }
+        // The readout: switched on or off, or a second past the last frame (it then says idle, once).
+        let hud = self.timing.overlay != self.overlay || (self.overlay > 0 && !self.hud_idle && t >= self.overlay_at + 1.05);
+        if repaint || scrolled || hud { self.paint(); } else { self.finish(); }
         self.track_motion(dt);
         if self.marks_moving { self.dirty = true; }
         self.moving = self.field_moving_at(t);
@@ -1799,10 +1821,14 @@ impl<S, M: Clone> Ui<S, M> {
                 // A morph still loosening its source jumps to its flight.
                 let len = r.flight.map_or(r.spec.duration_ms / 1000.0, |f| f[1] - f[0]);
                 if r.flight.is_none() { r.flight = Some([now, now + len]); }
+                let first = r.scrub.is_none();
                 r.scrub = Some(u.clamp(0.0, 1.0));
                 r.src_until = now.min(r.src_until);
                 r.dst_from = NEVER;
                 r.end = NEVER;
+                // Moving a held morph only moves its clock: the tiles stay as they were uploaded, so a
+                // scrub costs a uniform, not a new particle set.
+                if !first { self.dirty = true; return; }
             }
             None => {
                 let Some(u) = r.scrub.take() else { return };
@@ -1851,9 +1877,11 @@ impl<S, M: Clone> Ui<S, M> {
         // ancestors dirty). Children come after their parents in `nodes`, so going backwards every
         // node's children have their taffy nodes already.
         let mut changed = false;
+        let mut touched = 0usize;
         let mut used: HashSet<NodeId> = HashSet::with_capacity(nodes.len());
         let mut tids: HashMap<String, NodeId> = HashMap::with_capacity(nodes.len());
         for i in (0..nodes.len()).rev() {
+            let was = std::mem::replace(&mut changed, false);
             let leaf = !matches!(nodes[i].content, Content::None);
             let style = std::mem::take(&mut built.styles[i]);
             let mk = measure_key(&nodes[i].content);
@@ -1877,6 +1905,8 @@ impl<S, M: Clone> Ui<S, M> {
                     if leaf { self.tree.new_leaf_with_context(style, i) } else { self.tree.new_with_children(style, &kids) }.expect("taffy creates a node for every element (it only fails when out of memory)")
                 }
             };
+            if changed { touched += 1; }
+            changed |= was;
             used.insert(tid);
             self.mkeys.insert(tid, mk);
             nodes[i].tid = tid;
@@ -1935,6 +1965,7 @@ impl<S, M: Clone> Ui<S, M> {
         }
         for n in nodes.iter_mut() { if let Ok(l) = self.tree.layout(n.tid) { n.local = *l; } }
         self.nodes = nodes;
+        self.rebuilt = touched;
         self.place();
         self.modal_at = self.nodes.iter().rposition(|n| n.modal.is_some());
         self.layer_changed();
@@ -2079,6 +2110,7 @@ impl<S, M: Clone> Ui<S, M> {
             [x0, y0, x1 - x0, y1 - y0]
         };
         let mut births = HashMap::with_capacity(self.births.len());
+        let mut text_births: HashMap<u64, f32> = HashMap::with_capacity(self.text_births.len());
         self.field.wipe = [0.0; 4];
         self.field.calm = [[0.0; 4]; 4];
         let mut calms = 0;
@@ -2153,6 +2185,8 @@ impl<S, M: Clone> Ui<S, M> {
             let mat = n.mat;
             let dim = if n.disabled { 0.4 } else { 1.0 };
             let mut sink = Sink { scene: &mut self.scene, owners: &mut self.owners, tags: &mut self.tags, unseen: &mut self.unseen, counters: &mut counters, latest: &mut latest, loose: &mut any_loose };
+            let nk = { use std::hash::{Hash, Hasher}; let mut h = std::hash::DefaultHasher::new(); n.key.hash(&mut h); h.finish() };
+            let text_born = self.text_births.get(&nk).copied();
             let mut put = |sink: &mut Sink, mut inst: Instance, id: u64, glyph: Option<u32>| {
                 inst.clip = clip;
                 // A negative push marks what fronts pass by whatever its element says (the caret, a
@@ -2165,7 +2199,8 @@ impl<S, M: Clone> Ui<S, M> {
                 if hidden { inst.extra[3] = -1e4; sink.unseen.push((i, inst)); return; }
                 // What a morph shows has been there all along: it must not condense on top of its ramp.
                 let born = if role != 0 { *births.entry(id).or_insert(-1e4) }
-                           else { *births.entry(id).or_insert_with(|| self.births.get(&id).copied().unwrap_or(if self.scroll_paint { -1e4 } else { now })) };
+                           else { *births.entry(id).or_insert_with(|| self.births.get(&id).copied().or(if glyph.is_some() { text_born } else { None }).unwrap_or(if self.scroll_paint { -1e4 } else { now })) };
+                if glyph.is_some() { let e = text_births.entry(nk).or_insert(born); *e = e.min(born); }
                 inst.extra[3] = born;
                 *sink.latest = sink.latest.max(born);
                 // Loose under a material that moves loose things by itself (its own override or the global one).
@@ -2212,7 +2247,7 @@ impl<S, M: Clone> Ui<S, M> {
                         }
                     }
                     // Text that recomposes remembers its glyphs, to see what changes in the next view.
-                    if n.recompose && role == 0 && !hidden && !under && !self.no_recompose {
+                    if n.recompose && role == 0 && !hidden && !under && (!self.no_recompose || n.recompose_always) {
                         let ids = glyphs.iter().enumerate().map(|(seq, (inst, glyph))| (ident(&n.key, seq as u32, *glyph), *inst)).collect();
                         seen_recs.insert(n.key.clone());
                         jobs.push(RecJob { node: i, rec: TextRec { s: para.s.to_owned(), face: para.face, size: para.size, line: para.line, width: para.width, print: para.print, origin: n.origin(), glyphs: ids, changed: f32::NEG_INFINITY } });
@@ -2274,6 +2309,7 @@ impl<S, M: Clone> Ui<S, M> {
             latest = self.scene.instances.iter().map(|i| i.extra[3]).fold(f32::NEG_INFINITY, f32::max);
         }
         self.births = births;
+        self.text_births = text_births;
         self.latest_birth = latest;
         self.static_loose = any_loose;
         // The caret blinks from where it last moved to: a new place starts it again, shown.
@@ -2301,43 +2337,96 @@ impl<S, M: Clone> Ui<S, M> {
         if !self.painting { self.perf.pending.scene += (crate::perf::now_ms() - t0) as f32; }
     }
 
-    /// The frame-time readout (DESIGN.md §1.12), drawn by the annotation layer in Departure Mono at the
-    /// window's bottom right: frames in the last second, last / mean / max ms of each part, what is
-    /// drawn, the quality, the backend and the device pixel ratio.
+    /// The performance readout (DESIGN.md §1.12), drawn by the annotation layer in Departure Mono at the
+    /// window's bottom right, in the slate's manner: a hairline plate, small capitals, one accent. Mode 1
+    /// is one line; mode 2 every number, with the last 120 frames as a sparkline split by part. It costs
+    /// a few hundred glyph instances, changes only when a frame is drawn anyway, and once more a second
+    /// after the last frame to say the page is idle; it never keeps frames coming.
     fn paint_overlay(&mut self) {
         self.overlay = self.timing.overlay;
-        if !self.overlay { return; }
+        if self.overlay == 0 { return; }
         self.overlay_at = self.now;
         let p = &self.perf;
-        let sm = p.summary(crate::perf::now_ms());
-        let row = |name: &str, v: [f32; 3]| format!("{name:<14}{:>7.2}{:>7.2}{:>7.2}", v[0], v[1], v[2]);
+        let now_ms = crate::perf::now_ms();
+        let sm = p.summary(now_ms);
+        let idle = p.frames.back().is_none_or(|(t, _)| now_ms - t > 1000.0);
+        self.hud_idle = idle;
+        let inst_fps = p.interval().map_or(0.0, |d| 1000.0 / d.max(0.1));
+        let fps = if idle { "idle".to_owned() } else { format!("{:>3.0} fps  {:>3}/s", inst_fps.min(999.0), sm.fps) };
         let parts = self.run.as_ref().map_or(0, |r| r.grid.map_or(r.particles.len() as u32, |g| g.count()));
-        let lines = [
-            format!("F2 frames      {:>3}/s  drawn {} skipped {}", sm.fps, p.drawn, p.skipped),
-            format!("{:<14}{:>7}{:>7}{:>7}", "ms", "last", "avg", "max"),
-            row("update+layout", sm.update_layout),
-            row("scene build", sm.scene),
-            row("gpu submit", sm.submit),
-            row("total", sm.total),
-            format!("instances {}  particles {} {}  glyph atlas {:.0}%", self.scene.instances.len(), parts, if p.particle_path.is_empty() { "cpu" } else { p.particle_path }, self.text.atlas_use() * 100.0),
-            format!("layouts {}  shaped {}  views {}", p.counters.layouts, self.text.shaped(), p.counters.views),
-            format!("quality {}{}  {}  dpr {}", p.quality, if p.auto { " auto" } else { "" }, if p.backend.is_empty() { "?" } else { &p.backend }, self.scale),
-        ];
+        let path = if parts == 0 { "-" } else if p.particle_path.is_empty() { "cpu" } else { p.particle_path };
+        // Instances by kind.
+        let mut kinds = [0usize; 4];
+        for i in &self.scene.instances { let k = i.paint[3]; let k = if k < 0.5 { 0 } else if k < 1.5 { 1 } else if k < 2.5 { 2 } else { 3 }; kinds[k] += 1; }
+        let fronts = self.field.fronts.iter().filter(|f| f[3] > 0.0 && self.now - f[2] < self.timing.wave_life).count();
+        let mat = crate::style::Material::from_id(self.timing.material).name();
+        let backend = if p.backend.is_empty() { "?" } else { &p.backend };
+        let last = p.frames.back().map(|f| f.1).unwrap_or_default();
+        let lines: Vec<String> = if self.overlay == 1 {
+            vec![format!("{fps}  {:>5.1} ms  dirty {:>3.0}%  {} inst  {mat}  {backend}", sm.total[0], p.dirty * 100.0, self.scene.instances.len())]
+        } else {
+            let row = |name: &str, v: [f32; 3]| format!("{name:<13}{:>7.2}{:>7.2}{:>7.2}", v[0], v[1], v[2]);
+            vec![
+                format!("PERFORMANCE   {fps}"),
+                format!("frames        drawn {}  idle-skipped {}  dropped {}", p.drawn, p.skipped, p.dropped),
+                format!("{:<13}{:>7}{:>7}{:>7}", "ms", "last", "avg", "max"),
+                row("update+layout", sm.update_layout),
+                format!("{:<13}{:>7.2}", " of it text", last.text),
+                row("scene", sm.scene),
+                row("gpu submit", sm.submit),
+                row("total", sm.total),
+                format!("dirty         {:>5.1}% of {}x{}  passes {}", p.dirty * 100.0, (self.size.0 * self.scale) as u32, (self.size.1 * self.scale) as u32, p.passes),
+                format!("instances     glyph {}  shape {}  picture {}  mesh {}", kinds[0], kinds[1], kinds[2], kinds[3]),
+                format!("particles     {parts}  {path}"),
+                format!("tree          {} nodes  changed {}  layouts {}", self.nodes.len(), self.rebuilt, p.counters.layouts),
+                format!("text          {} cached  {} shaped  atlas {:.0}%", self.text.cached(), self.text.shaped(), self.text.atlas_use() * 100.0),
+                format!("textures      ~{:.0} MB  fronts {fronts}", p.tex_mb),
+                format!("look          {mat}  quality {}{}", p.quality, if p.auto { " auto" } else { "" }),
+                format!("device        {backend}  {}", if p.adapter.is_empty() { "-" } else { &p.adapter }),
+                format!("surface       {:.0}x{:.0} @{}  {}", self.size.0, self.size.1, self.scale, crate::i18n::current().tag()),
+            ]
+        };
         let look = self.look_of.map(|f| f(&self.state)).unwrap_or_default();
-        let col = [look.theme.ink[0], look.theme.ink[1], look.theme.ink[2], 0.0];
+        let ink = [look.theme.ink[0], look.theme.ink[1], look.theme.ink[2], 0.0];
         const SIZE: f32 = 11.0;
         const LINE: f32 = 14.0;
+        let spark_h = if self.overlay == 2 { 34.0 } else { 0.0 };
         let s = self.scale;
-        let width = lines.iter().map(|l| self.text.measure(l, MONO, SIZE, LINE, None).0).fold(0.0, f32::max);
-        let (x, y) = ((self.size.0 - width - 16.0).max(4.0).round(), (self.size.1 - LINE * lines.len() as f32 - 14.0).max(4.0).round());
+        let width = lines.iter().map(|l| self.text.measure(l, MONO, SIZE, LINE, None).0).fold(0.0, f32::max).max(if self.overlay == 2 { 240.0 } else { 0.0 });
+        let h = LINE * lines.len() as f32 + spark_h + if spark_h > 0.0 { 8.0 } else { 0.0 };
+        let (x, y) = ((self.size.0 - width - 18.0).max(4.0).round(), (self.size.1 - h - 16.0).max(4.0).round());
         let clip = [0.0, 0.0, self.size.0 * s, self.size.1 * s];
-        let plate = Rect::new(x - 6.0, y - 4.0, width + 12.0, LINE * lines.len() as f32 + 8.0);
-        self.scene.annot.push(Instance { rect: [(plate.x * s).round(), (plate.y * s).round(), (plate.w * s).round(), (plate.h * s).round()], paint: [0.0, 1.0, 0.92, SHAPE], clip, look: col, ..Default::default() });
+        let plate = Rect::new(x - 8.0, y - 6.0, width + 16.0, h + 12.0);
+        let r = |r: Rect| [(r.x * s).round(), (r.y * s).round(), (r.w * s).round().max(1.0), (r.h * s).round().max(1.0)];
+        // The plate: the ground nearly opaque, a hairline round it.
+        self.scene.annot.push(Instance { rect: r(plate), paint: [0.0, 0.0, 0.94, SHAPE], clip, look: [look.theme.ground[0], look.theme.ground[1], look.theme.ground[2], 0.0], ..Default::default() });
+        self.scene.annot.push(Instance { rect: r(plate), uv: [0.0; 4], paint: [1.0, 0.0, 0.35, SHAPE], clip, look: ink, extra: [1.0 * s, 0.0, 0.0, -1e4], ..Default::default() });
         for (k, l) in lines.iter().enumerate() {
-            let proto = Instance { paint: [0.0, 0.0, 1.0, 0.0], look: col, ..Default::default() };
+            // The first line in the accent, as the slate's title is.
+            let proto = Instance { paint: [0.0, if k == 0 { 1.0 } else { 0.0 }, if k == 0 { 1.0 } else { 0.85 }, 0.0], look: ink, ..Default::default() };
             let mut out = vec![];
             self.text.emit(Para { s: l, face: MONO, size: SIZE, line: LINE, width: 1e5, print: 0.0, around: None }, (x, y + k as f32 * LINE), proto, s, |mut i, _| { i.clip = clip; out.push(i); });
             self.scene.annot.extend(out);
+        }
+        if spark_h > 0.0 {
+            // The last 120 frames, one bar each, its height the frame's cost (16.7 ms is the full height,
+            // marked by a hairline), stacked: update and layout, scene, submit.
+            let base = y + LINE * lines.len() as f32 + 8.0 + spark_h;
+            let n = 120usize;
+            let bw = width / n as f32;
+            let frames: Vec<crate::perf::FrameCost> = self.perf.frames.iter().rev().take(n).map(|f| f.1).collect();
+            let k = spark_h / crate::perf::PERIOD_MS as f32;
+            self.scene.annot.push(Instance { rect: r(Rect::new(x, base - spark_h, width, 1.0)), paint: [1.0, 0.0, 0.25, SHAPE], clip, look: ink, ..Default::default() });
+            for (j, f) in frames.iter().enumerate() {
+                let bx = x + width - (j + 1) as f32 * bw;
+                let mut top = base;
+                for (v, accent, alpha) in [(f.update_layout, 0.0, 0.9), (f.scene, 0.0, 0.5), (f.submit, 1.0, 0.9)] {
+                    let hh = (v * k).min(top - (base - spark_h * 1.5)).max(0.0);
+                    if hh < 0.25 { continue; }
+                    top -= hh;
+                    self.scene.annot.push(Instance { rect: [((bx) * s).round(), (top * s).round(), (bw * s * 0.7).max(1.0).round(), (hh * s).max(1.0).round()], paint: [1.0, accent, alpha, SHAPE], clip, look: ink, ..Default::default() });
+                }
+            }
         }
     }
 
@@ -3204,7 +3293,7 @@ fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], of
         key, parent, rect: Rect::default(), clip: Rect::default(), inner: Rect::default(), scroll, horizontal, focusable, disabled: off, extent: 0.0,
         content, fill, border, radius, on_press, on_key, on_drag, on_blur, loose, wipe, bar, reveal, commit, modal, hidden, flow: flow.clone(),
         mat: inh.code(), loosen: inh.loosen, annotate, scope: gaze_scope, anchor, clips, calm, on_text, multiline, selectable: inh.select, cursor,
-        virt: virt_info, access, respond, legible, ripple: inh.scope.clone(), ripple_scope: ripple.container, recompose, keyed,
+        virt: virt_info, access, respond, legible, ripple: inh.scope.clone(), ripple_scope: ripple.container, recompose, recompose_always: is_text && ripple.recompose == Some(true), unframed: ripple.unframed, keyed,
         on_pick, on_wheel, local: taffy::Layout::new(), tid: placeholder,
     });
     built.styles.push(style);

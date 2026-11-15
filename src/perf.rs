@@ -16,7 +16,7 @@ pub fn now_ms() -> f64 {
 /// What one drawn frame cost on the CPU, ms: updating the state and laying out, building the scene
 /// (instances), and recording and submitting the GPU work.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct FrameCost { pub update_layout: f32, pub scene: f32, pub submit: f32 }
+pub struct FrameCost { pub update_layout: f32, pub scene: f32, pub submit: f32, /** Of `update_layout`: shaping and breaking text. */ pub text: f32 }
 impl FrameCost { pub fn total(&self) -> f32 { self.update_layout + self.scene + self.submit } }
 
 /// Work counters, for tests and the readout: they only go up.
@@ -51,17 +51,32 @@ pub struct Perf {
     pub particles: u32,
     /// How the last frame's particles were simulated (`ParticleTier::name`, or "cpu").
     pub particle_path: &'static str,
+    /// The adapter's name, as the host reports it.
+    pub adapter: String,
+    /// The last frame: the share of the screen redrawn (0..1), render passes recorded, an estimate of
+    /// the renderer's texture memory (MB).
+    pub dirty: f32,
+    pub passes: u32,
+    pub tex_mb: f32,
+    /// Frames that came more than 1.5 frame periods (at 60 Hz) after the one before while frames were
+    /// coming one after another (a gap over 250 ms is a pause, not a drop).
+    pub dropped: u64,
 }
+/// The frame period the drop count measures against, ms.
+pub const PERIOD_MS: f64 = 1000.0 / 60.0;
 impl Perf {
     /// A frame was drawn now: what was spent since the last one is its cost.
     pub fn frame(&mut self, submit_ms: f32) {
         let mut c = std::mem::take(&mut self.pending);
         c.submit = submit_ms;
         let now = now_ms();
+        if let Some((t, _)) = self.frames.back() { let d = now - t; if d > PERIOD_MS * 1.5 && d < 250.0 { self.dropped += 1; } }
         self.frames.push_back((now, c));
-        while self.frames.front().is_some_and(|(t, _)| now - t > 2000.0) { self.frames.pop_front(); }
+        while self.frames.len() > 240 || self.frames.front().is_some_and(|(t, _)| now - t > 4000.0) { self.frames.pop_front(); }
         self.drawn += 1;
     }
+    /// The interval between the last two frames, ms (the instant frame rate is 1000 over it).
+    pub fn interval(&self) -> Option<f64> { let n = self.frames.len(); (n >= 2).then(|| self.frames[n - 1].0 - self.frames[n - 2].0) }
     /// Frames drawn in the last second (to `now` ms), and the last, mean and largest cost of each part.
     pub fn summary(&self, now: f64) -> Summary {
         let last: Vec<FrameCost> = self.frames.iter().filter(|(t, _)| now - t <= 1000.0).map(|f| f.1).collect();

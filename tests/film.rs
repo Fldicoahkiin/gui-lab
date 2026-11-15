@@ -1,5 +1,6 @@
-//! The film (DESIGN.md §6), without a GPU: thirteen chapters, each comes to rest; the three actors are
-//! in every flat chapter with the same flow ids (the sentence and the number in the mechanism too); the
+//! The film (DESIGN.md §6), without a GPU: a prologue and thirteen chapters, each comes to rest; the
+//! title word is one element that recomposes across cuts; the number and the sign are in every flat
+//! chapter with the same flow ids (the number in the mechanism too); the
 //! keyboard walks it; autoplay yields to input in the same frame; a burst of cuts leaves nothing
 //! flying; the mechanism turns, picks, explodes and loosens a part.
 use lab::el::Key;
@@ -27,16 +28,17 @@ fn carrier<'a>(ui: &'a GalleryUi, id: &str) -> Option<&'a lab::ui::Node<Msg>> {
 }
 
 #[test]
-fn thirteen_chapters_in_order_with_their_presets() {
-    assert_eq!(CHAPTERS, 13);
-    assert_eq!(film::CH.len(), 13);
+fn a_prologue_and_thirteen_chapters_in_order_with_their_presets() {
+    assert_eq!(CHAPTERS, 14);
+    assert_eq!(film::CH.len(), 14);
     let names: Vec<&str> = film::CH.iter().map(|c| c.name).collect();
-    assert_eq!(names[0], "Normcore");
-    assert_eq!(names[11], "Mixed media");
-    assert_eq!(names[12], "Mechanism");
+    assert_eq!(names[0], "Prologue");
+    assert_eq!(names[1], "Normcore");
+    assert_eq!(names[12], "Mixed media");
+    assert_eq!(names[13], "Mechanism");
     let ui = open();
     assert_eq!(ui.state.page, Page::Film);
-    for c in film::CH.iter().take(12) { assert_eq!(ui.state.presets[c.style].name, c.name, "chapter in its own preset"); }
+    for c in film::CH.iter().skip(1).take(12) { assert_eq!(ui.state.presets[c.style].name, c.name, "chapter in its own preset"); }
 }
 
 #[test]
@@ -47,11 +49,14 @@ fn the_actors_are_in_every_chapter_and_every_chapter_rests() {
         film::go(&mut ui.state, c, None);
         ui.relayout();
         run(&mut ui, 0.05);
-        let ids: &[&str] = if c < 12 { &["film-sentence", "film-number", "film-sign"] } else { &["film-sentence", "film-number"] };
+        let ids: &[&str] = if c < 13 { &["film-number", "film-sign"] } else { &["film-number"] };
+        let st = ui.node(&format!("film/stage/{c:02}")).expect("stage").rect;
+        let word = ui.node("film/word").expect("the title word");
+        assert!(st.contains(word.rect.x + 1.0, word.rect.y + 1.0), "chapter {c}: the title outside the stage");
+        assert_eq!(ui.export_tree().find("film/word").and_then(|n| n.text.clone()), Some(film::Chapter::word(c)));
         for &id in ids {
             let n = carrier(&ui, id).unwrap_or_else(|| panic!("chapter {}: no {id}", c + 1));
-            assert!(n.key.starts_with(&format!("film/c{:02}/", c + 1)), "chapter {}: {id} is {}", c + 1, n.key);
-            let st = ui.node(&format!("film/stage/{:02}", c + 1)).expect("stage").rect;
+            assert!(n.key.starts_with(&format!("film/c{c:02}/")), "chapter {c}: {id} is {}", n.key);
             let (x, y) = n.rect.center();
             assert!(st.contains(x, y), "chapter {}: {id} outside the stage", c + 1);
         }
@@ -69,14 +74,14 @@ fn the_keyboard_walks_the_film() {
     pause(&mut ui);
     for c in 1..=CHAPTERS {
         // The palette's field keeps ← and →; Escape-free: Tab away from it first.
-        if ui.state.film.ch == 1 { ui.key(Key::Tab, false); }
+        if ui.state.film.ch == 2 { ui.key(Key::Tab, false); }
         ui.key(Key::Right, false);
         run(&mut ui, 0.3);
         assert_eq!(ui.state.film.ch, c % CHAPTERS, "→ moved on");
     }
     // Number keys jump; every chapter has something to focus.
-    for (k, c) in [('5', 4), ('0', 9), ('-', 10), ('=', 11), ('1', 0)] {
-        if ui.state.film.ch == 1 { ui.key(Key::Tab, false); }
+    for (k, c) in [('5', 5), ('0', 10), ('-', 11), ('=', 12), ('1', 1)] {
+        if ui.state.film.ch == 2 { ui.key(Key::Tab, false); }
         ui.key(Key::Char(k), false);
         run(&mut ui, 0.3);
         assert_eq!(ui.state.film.ch, c, "{k}");
@@ -107,7 +112,7 @@ fn autoplay_moves_on_and_yields_to_input_at_once() {
     run(&mut ui, dwell + 0.2);
     assert_eq!(ui.state.film.ch, 1, "autoplay went on to the next chapter");
     // A press: autoplay stops in the same frame, before any tick.
-    let (x, y) = ui.node("film/c02/n-label").expect("label").rect.center();
+    let (x, y) = ui.node("film/c01/preview-label").expect("label").rect.center();
     ui.press(x, y);
     assert!(!ui.state.film.playing, "input pauses autoplay at once");
     ui.release(x, y);
@@ -127,7 +132,7 @@ fn rapid_cuts_leave_nothing_flying() {
     let mut ui = open();
     pause(&mut ui);
     // Into the linocut poster, start its morph, then thirty cuts a frame apart.
-    film::go(&mut ui.state, 6, None);
+    film::go(&mut ui.state, 7, None);
     ui.relayout();
     run(&mut ui, 1.0);
     gallery::update(&mut ui.state, Msg::Film(FMsg::Form));
@@ -147,7 +152,7 @@ fn rapid_cuts_leave_nothing_flying() {
     assert!(!ui.needs_frame(t), "the film did not come to rest after the cuts");
     // The ghost presses do not count as a person's input.
     let mut ui = open();
-    film::go(&mut ui.state, 0, None);
+    film::go(&mut ui.state, 1, None);
     ui.relayout();
     run(&mut ui, 3.0);
     assert!(ui.state.film.playing && ui.state.film.inverted, "the ghost turned the switch on and still plays");
@@ -160,7 +165,7 @@ fn the_mechanism_turns_picks_explodes_and_loosens() {
     pause(&mut ui);
     ui.key(Key::End, false);
     run(&mut ui, 1.0);
-    assert_eq!(ui.state.film.ch, 12);
+    assert_eq!(ui.state.film.ch, 13);
     let r = ui.node("film/c13/machine/view").expect("the mechanism's view").rect;
     // Somewhere on the machine is a gear: dragging it turns the whole train at its ratios.
     let m = &ui.state.film.mech;
@@ -208,7 +213,7 @@ fn the_mechanism_turns_picks_explodes_and_loosens() {
     ui.pointer_leave();
     ui.state.film.mech.hover = None;
     let k = "film/c13/machine/view";
-    gallery::update(&mut ui.state, Msg::Film(FMsg::Go(12)));
+    gallery::update(&mut ui.state, Msg::Film(FMsg::Go(13)));
     ui.relayout();
     run(&mut ui, 1.0);
     let (vx, vy) = ui.node(k).expect("view").rect.center();
@@ -225,4 +230,24 @@ fn the_mechanism_turns_picks_explodes_and_loosens() {
     run(&mut ui, 4.0);
     let t = ui.now();
     assert!(!ui.needs_frame(t), "the mechanism comes to rest");
+}
+
+#[test]
+fn scrubbing_a_morph_moves_its_clock_only() {
+    let mut ui = open();
+    pause(&mut ui);
+    film::go(&mut ui.state, 7, None);
+    ui.relayout();
+    run(&mut ui, 2.0);
+    let (x, y) = ui.node("film/c07/forms").expect("poster").rect.center();
+    ui.press(x, y);
+    ui.pointer_move(x + 6.0, y);
+    run(&mut ui, 1.0 / 60.0);
+    let first = ui.morph_run().map(|r| (r.id, r.upload, r.particles.len())).expect("the scrub started a morph");
+    for i in 0..40 { ui.pointer_move(x + 6.0 + i as f32 * 5.0, y + (i % 3) as f32); run(&mut ui, 1.0 / 60.0); }
+    let after = ui.morph_run().map(|r| (r.id, r.upload, r.particles.len())).expect("still held");
+    assert_eq!(first, after, "pointer moves rebuilt the particle set");
+    ui.release(x + 200.0, y);
+    run(&mut ui, 4.0);
+    assert!(ui.morph_run().is_none());
 }

@@ -169,3 +169,4 @@ python3 web/build.py
 - Noto Sans SC。
 - Departure Mono 1.500（Helena Zhang），取自它的发布包。
 - Fusion Pixel 12px 比例宽度简体中文版（TakWolf，上游版本 2026.08.11），由 npm 包 `@vp-tw/cjk-web-fonts-fusion-pixel-font` 里按 Unicode 区块切开的 WOFF2 合并回一个 OTF（这里连不上 GitHub 的发布下载）。它包含的上游字体 Ark Pixel、Cubic 11、Galmuri 的许可证也一并收了。
+- Geist Pixel（Vercel 与 basement.studio）的五种形状：Square、Grid、Circle、Triangle、Line，取自 npm 包 `geist` 1.9.2（许可证字段 “SIL OPEN FONT LICENSE”）里的 WOFF2，用 fontTools 只换成 OTF 容器（不改字形、不改名字），许可证在 `assets/licenses/geist-pixel/OFL.txt`。只有西文，是选得到的像素字面（`text::GEIST_PIXEL`）。
