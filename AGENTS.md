@@ -177,6 +177,7 @@ cargo run --release --bin check              # pixel acceptance on the GPU (lava
 cargo run --release --bin render -- --help   # one frame + tree
 cargo run --release --bin film -- out ripple # filmstrips of ripples and recomposition
 cargo run --release --bin window -- button   # a native window
+cargo run --release --bin lab -- add dialog --to ../my-app   # copy a component (and what it needs) into a project
 ```
 
 ## Where things live

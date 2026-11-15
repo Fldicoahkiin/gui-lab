@@ -106,3 +106,14 @@ pub enum I18nError {
     #[error("line {line} of the catalog gives `{key}` a second time; keep one of them")]
     Duplicate { line: usize, key: String },
 }
+
+/// `lab add` could not do what it was asked.
+#[derive(Debug, Error, PartialEq)]
+pub enum AddError {
+    #[error("`{name}` is not a component in registry.json. Did you mean `{near}`? The components are: {known}.")]
+    Unknown { name: String, near: String, known: String },
+    #[error("registry.json could not be read: {0}")]
+    Registry(String),
+    #[error("{path}: {msg}")]
+    Io { path: String, msg: String },
+}

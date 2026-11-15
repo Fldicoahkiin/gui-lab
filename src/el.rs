@@ -349,6 +349,14 @@ impl<M> El<M> {
     pub fn cursor(mut self, c: Cursor) -> Self { self.cursor = Some(c); self }
     fn access_mut(&mut self) -> &mut Access { self.access.get_or_insert_with(Access::default) }
     /// Its accessible name (what a screen reader says), when the text inside does not say it.
+    /// The same subtree with every key written under `prefix` (`prefix/key`), anchors too: one example
+    /// shown several times on a page keeps its keys unique.
+    pub fn rekey(mut self, prefix: &str) -> Self {
+        if !self.key.is_empty() { self.key = format!("{prefix}/{}", self.key); }
+        if let Some(a) = &self.anchor { self.anchor = Some(format!("{prefix}/{a}")); }
+        self.children = std::mem::take(&mut self.children).into_iter().map(|c| c.rekey(prefix)).collect();
+        self
+    }
     /// This subtree runs right to left (DESIGN.md §1.20): a row's first child is at its right, its
     /// start alignment is the right edge, padding and margins mirror. Inherited.
     pub fn rtl(mut self, on: bool) -> Self { self.rtl = Some(on); self }
