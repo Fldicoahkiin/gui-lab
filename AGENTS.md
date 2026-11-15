@@ -142,6 +142,11 @@ the film, `src/gallery/film.rs`, is twelve of them). `Ui::on_pointer` tells the 
 A style preset is data: `preset::presets()`, change a number (`Preset::set_number("transition.steps.0.a", 3.0)`)
 or read JSON (`Preset::from_json`), then `preset.apply(&look)`; a commit (`El::commit`) that applies it
 plays its transition (`docs/recipes/preset.md`).
+A preset's `post` is the finishing pass (bloom, chromatic offset, scanlines, grain, vignette, curvature, then a
+dither and a palette — `lab::post`, all off by default, DESIGN.md §1.21) and its `marks` make marks on 3D elements
+follow depth. `El::shed(Shed)` makes a moving element drop marks, `El::flow_field(FlowField)` carries marks along a
+noise field over a box (speed 0: still), and `El::shift(dx, dy)` moves a subtree after layout (pointer parallax
+without a layout).
 
 ## The rules
 

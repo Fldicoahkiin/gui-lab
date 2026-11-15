@@ -67,6 +67,8 @@ pub struct Node<M> {
     pub hidden: bool,
     /// Moved after layout (`El::shift`).
     shift: (f32, f32),
+    shed: Option<crate::motes::Shed>,
+    flow_field: Option<crate::motes::FlowField>,
     /// The nearest flow id at or above this node, and the node that carries it.
     flow: Option<(Rc<str>, usize)>,
     /// The material override of this subtree as the instance code (0 = none, see `style::override_code`).
@@ -404,6 +406,13 @@ pub struct Ui<S, M> {
     /// Every mesh `scene3d` elements can name; which copy the pointer was last over (element key, hit).
     meshes: crate::mesh::Library,
     mesh_hover: Option<(String, Option<crate::mesh::MeshHit>)>,
+    /// Shed marks in flight, where each shedding element was, the fraction of a mark it still owes, the
+    /// flow fields' marks by element (box-relative), and how many marks were ever made (their seed).
+    motes: Vec<crate::motes::Mote>,
+    shed_at: HashMap<String, (f32, f32)>,
+    shed_owed: HashMap<String, f32>,
+    field_marks: HashMap<String, Vec<(f32, f32)>>,
+    motes_made: u32,
     /// The renderer can simulate particles on the GPU (it says so on every draw).
     particle_gpu: bool,
 }
@@ -586,7 +595,7 @@ impl<S, M: Clone> Ui<S, M> {
             tree: TaffyTree::new(), tids: HashMap::new(), mkeys: HashMap::new(), virt_views: HashMap::new(), virt_made: HashMap::new(),
             scrolling: Scrolling::default(), touch: None, touches: HashSet::new(), touching: false, fling: None, over: HashMap::new(), motion: HashMap::new(), scroll_paint: false, event_t: None,
             recs: HashMap::new(), recomps: HashMap::new(), slides: HashMap::new(), no_recompose: false,
-            meshes: crate::mesh::Library::default(), mesh_hover: None, particle_gpu: false,
+            meshes: crate::mesh::Library::default(), mesh_hover: None, particle_gpu: false, motes: vec![], shed_at: HashMap::new(), shed_owed: HashMap::new(), field_marks: HashMap::new(), motes_made: 0,
         };
         ui.resize(w, h, scale);
         ui
@@ -811,6 +820,7 @@ impl<S, M: Clone> Ui<S, M> {
             || self.run.is_some() || !self.flows.is_empty() || !self.ghosts.is_empty() || self.animating
             || self.marks_moving || now < self.gaze_until || self.fling.is_some() || !self.over.is_empty()
             || self.static_loose || !self.recomps.is_empty() || !self.slides.is_empty() || self.motion_alive(now)
+            || self.motes_moving()
     }
     /// Whether some scroll node's trace (DESIGN.md §1.8.3) is still showing or settling at `now`.
     fn motion_alive(&self, now: f32) -> bool {
@@ -978,6 +988,7 @@ impl<S, M: Clone> Ui<S, M> {
         self.recomps.retain(|_, r| t < r.end);
         self.slides.retain(|_, sl| t < sl.start + sl.dur);
         let scrolled = self.step_scrolling(dt);
+        if self.step_motes(dt) { self.dirty = true; }
         // The readout: switched on or off, or a second past the last frame (it then says idle, once).
         let hud = self.timing.overlay != self.overlay || (self.overlay > 0 && !self.hud_idle && t >= self.overlay_at + 1.05);
         if repaint || scrolled || hud { self.paint(); } else { self.finish(); }
@@ -2350,10 +2361,88 @@ impl<S, M: Clone> Ui<S, M> {
         self.finish();
     }
 
+    /// Whether motes are moving: shed marks in flight, or a flow field with speed.
+    pub fn motes_moving(&self) -> bool { !self.motes.is_empty() || self.nodes.iter().any(|n| n.flow_field.is_some_and(|f| f.speed > 0.0) && !n.hidden) }
+    /// Shed marks in flight now (for tests and the readout).
+    pub fn motes(&self) -> &[crate::motes::Mote] { &self.motes }
+    /// Move the motes by `dt` s (DESIGN.md §1.22); whether anything changed.
+    fn step_motes(&mut self, dt: f32) -> bool {
+        use crate::motes::{FlowField, Mote, hash};
+        let now = self.now;
+        let mut changed = false;
+        // Shedding: an element that moved since the last tick leaves marks along the way it went.
+        let mut seen: Vec<String> = vec![];
+        for n in self.nodes.iter().filter(|n| n.shed.is_some_and(|s| s.rate > 0.0) && !n.hidden) {
+            let sh = n.shed.expect("filtered");
+            let c = n.rect.center();
+            seen.push(n.key.clone());
+            let Some(&last) = self.shed_at.get(&n.key) else { self.shed_at.insert(n.key.clone(), c); continue };
+            let d = ((c.0 - last.0).powi(2) + (c.1 - last.1).powi(2)).sqrt();
+            self.shed_at.insert(n.key.clone(), c);
+            if d < 0.25 { continue; }
+            let owed = self.shed_owed.get(&n.key).copied().unwrap_or(0.0) + sh.rate * d / 100.0;
+            let k = owed.floor() as u32;
+            self.shed_owed.insert(n.key.clone(), owed - k as f32);
+            let paint = n.fill.unwrap_or(crate::el::Paint::INK);
+            for j in 0..k.min(400) {
+                let m = self.motes_made.wrapping_add(j);
+                // Somewhere on the element's edge, between where it was and where it is.
+                let (u, v, f) = (hash(m * 3 + 1), hash(m * 3 + 2), hash(m * 3 + 3));
+                let side = (u * 4.0) as u32;
+                let (ex, ey) = match side { 0 => (n.rect.x + v * n.rect.w, n.rect.y), 1 => (n.rect.right(), n.rect.y + v * n.rect.h), 2 => (n.rect.x + v * n.rect.w, n.rect.bottom()), _ => (n.rect.x, n.rect.y + v * n.rect.h) };
+                let back = (last.0 - c.0, last.1 - c.1);
+                self.motes.push(Mote { x: ex + back.0 * f, y: ey + back.1 * f, vx: (hash(m * 7 + 5) - 0.5) * 2.0 * sh.drift, vy: (hash(m * 7 + 6) - 0.5) * sh.drift, born: now, life: sh.life_ms / 1000.0, size: sh.size, gravity: sh.gravity, paint });
+            }
+            self.motes_made = self.motes_made.wrapping_add(k);
+            changed |= k > 0;
+        }
+        self.shed_at.retain(|k, _| seen.contains(k));
+        if !self.motes.is_empty() {
+            for m in &mut self.motes { m.vy += m.gravity * dt; m.x += m.vx * dt; m.y += m.vy * dt; }
+            self.motes.retain(|m| now - m.born < m.life);
+            changed = true;
+        }
+        // Flow fields: their marks are made once per box size and move while the speed is above 0.
+        let mut fields: Vec<String> = vec![];
+        for n in self.nodes.iter().filter(|n| n.flow_field.is_some() && !n.hidden) {
+            let f: FlowField = n.flow_field.expect("filtered");
+            fields.push(n.key.clone());
+            let (w, h) = (n.rect.w, n.rect.h);
+            let want = f.count(w, h);
+            let marks = self.field_marks.entry(n.key.clone()).or_default();
+            if marks.len() != want { *marks = (0..want).map(|i| FlowField::seed(i, w, h)).collect(); changed = true; }
+            if f.speed > 0.0 && dt > 0.0 { for p in marks.iter_mut() { *p = f.advect(*p, w, h, dt); } changed = true; }
+        }
+        self.field_marks.retain(|k, _| fields.contains(k));
+        changed
+    }
+    /// The motes as instances, over the page (shapes in the ink, under the annotation layer).
+    fn paint_motes(&mut self) {
+        if self.motes.is_empty() && self.field_marks.is_empty() { return; }
+        let s = self.scale;
+        let screen = [0.0, 0.0, self.size.0 * s, self.size.1 * s];
+        let now = self.now;
+        let mote = |x: f32, y: f32, size: f32, p: crate::el::Paint, alpha: f32, clip: [f32; 4]| Instance {
+            rect: [((x - size * 0.5) * s).round(), ((y - size * 0.5) * s).round(), (size * s).round().max(1.0), (size * s).round().max(1.0)],
+            uv: [size * s * 0.5, 0.0, 0.0, 0.0], paint: [p.tone, p.accent, alpha, SHAPE], clip, extra: [0.0, 0.0, 0.0, -1e4], look: [0.0, p.hue as f32, (y * s).round(), (size * s).max(1.0)], resp: IGNORE,
+        };
+        for n in self.nodes.iter().filter(|n| n.flow_field.is_some() && !n.hidden) {
+            let (f, Some(marks)) = (n.flow_field.expect("filtered"), self.field_marks.get(&n.key)) else { continue };
+            let clip = [n.clip.x.max(n.rect.x) * s, n.clip.y.max(n.rect.y) * s, n.clip.right().min(n.rect.right()) * s, n.clip.bottom().min(n.rect.bottom()) * s];
+            for &(x, y) in marks { self.scene.push(mote(n.rect.x + x, n.rect.y + y, f.size, crate::el::Paint::INK, f.alpha, clip)); }
+        }
+        for m in &self.motes {
+            let fade = (1.0 - (now - m.born) / m.life.max(1e-3)).clamp(0.0, 1.0);
+            self.scene.push(mote(m.x, m.y, m.size, m.paint, m.paint.alpha * fade, screen));
+        }
+    }
     /// Apply what moves without a new layout (morph ramps, flows, the old page dissolving), then the marks.
     fn finish(&mut self) {
         let t0 = crate::perf::now_ms();
         self.animate();
+        self.paint_motes();
+        // The page as animated, with its motes: what the hover marks are drawn over.
+        self.body_len = self.scene.instances.len();
         self.paint_marks();
         self.paint_gaze();
         self.paint_overlay();
@@ -3260,7 +3349,7 @@ fn measure_key(c: &Content) -> u64 {
 /// A virtual list's rows are built here, for what its viewport shows.
 #[allow(clippy::too_many_arguments)]
 fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], off: (bool, bool), flow: Option<(Rc<str>, usize)>, inh: Inherit, vx: &mut VirtCtx, built: &mut Built, nodes: &mut Vec<Node<M>>) -> usize {
-    let El { key, style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, shift, annotate, gaze_scope, material, loosen, anchor, clips, calm, mut on_text, multiline, selectable, cursor, virt, access, ripple, mut on_pick, mut on_wheel, rtl, mut children } = el;
+    let El { key, style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, annotate, gaze_scope, material, loosen, anchor, clips, calm, mut on_text, multiline, selectable, cursor, virt, access, ripple, mut on_pick, mut on_wheel, rtl, mut children } = el;
     let mut style = style;
     let mut inh = inh;
     if let Some(r) = rtl { inh.rtl = r; }
@@ -3314,7 +3403,7 @@ fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], of
     let placeholder = NodeId::from(0u64);
     nodes.push(Node {
         key, parent, rect: Rect::default(), clip: Rect::default(), inner: Rect::default(), scroll, horizontal, focusable, disabled: off, extent: 0.0,
-        content, fill, border, radius, on_press, on_key, on_drag, on_blur, loose, wipe, bar, reveal, commit, modal, hidden, shift, flow: flow.clone(),
+        content, fill, border, radius, on_press, on_key, on_drag, on_blur, loose, wipe, bar, reveal, commit, modal, hidden, shift, shed, flow_field, flow: flow.clone(),
         mat: inh.code(), loosen: inh.loosen, annotate, scope: gaze_scope, anchor, clips, calm, on_text, multiline, selectable: inh.select, cursor,
         virt: virt_info, access, respond, legible, ripple: inh.scope.clone(), ripple_scope: ripple.container, recompose, recompose_always: is_text && ripple.recompose == Some(true), unframed: ripple.unframed, keyed,
         on_pick, on_wheel, local: taffy::Layout::new(), tid: placeholder,

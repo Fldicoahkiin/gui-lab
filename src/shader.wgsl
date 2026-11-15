@@ -48,6 +48,8 @@ struct U {
   scrollo: array<vec4f, 8>, // their content offsets (x, y, whole device px), trace strength, the way the content moves (±1 down/up, ±2 right/left)
   scrp: vec4f,     // the trace's lengths (device px): trail, misregistration, glitch slip, glitch band
   scrq: vec4f,     // the least time between two glitch slips (s)
+  post: array<vec4f, 6>, // the finishing pass (post.rs Post::pack): dither kind, levels, palette size, on; bloom strength, threshold, radius, dither strength; chroma offset, scanline strength, period, grain; vignette strength, radius, curvature, grain cell
+  pal: array<vec4f, 16>, // the palette, sRGB 0–1
 };
 @group(0) @binding(0) var<uniform> u: U;
 @group(0) @binding(1) var samp: sampler;
@@ -1559,6 +1561,101 @@ fn tr_eval(p: vec2f, x: f32) -> TS {
 @fragment fn fs_zero() -> @location(0) vec4f { return vec4f(0.0); }
 /// Copy the kept frame to the target.
 @fragment fn fs_blit(@builtin(position) frag: vec4f) -> @location(0) vec4f { return textureLoad(tex0, vec2i(floor(frag.xy)), 0); }
+
+// ── The finishing pass (DESIGN.md §1.21): the kept frame on its way to the screen. In this order:
+// bloom → chromatic offset → scanlines → grain → vignette → curvature, then dither and the palette.
+// Curvature is the last thing done to the image, so its warp is worked out first and everything
+// before it is read where it lands; the dither is on the screen's own pixels.
+fn post_src(p: vec2f) -> vec3f { return textureSampleLevel(tex0, samp, p / u.res.xy, 0.0).rgb; }
+fn post_bloom(p: vec2f) -> vec3f {
+  var c = post_src(p);
+  let s = u.post[1].x;
+  if (s > 0.0) {
+    let r = u.post[1].z;
+    let th = u.post[1].y;
+    var acc = vec3f(0.0);
+    // Two rings of six taps (at the radius and half of it, turned half a step): a soft glow in one pass.
+    for (var i = 0; i < 12; i++) {
+      let inner = (i & 1) == 1;
+      let a = f32(i >> 1) * 1.0471976 + select(0.0, 0.5235988, inner);
+      acc += max(post_src(p + vec2f(cos(a), sin(a)) * r * select(1.0, 0.5, inner)) - vec3f(th), vec3f(0.0));
+    }
+    c += acc * (s / 6.0);
+  }
+  return c;
+}
+fn to_srgb(c: vec3f) -> vec3f { return select(1.055 * pow(c, vec3f(1.0 / 2.4)) - 0.055, c * 12.92, c <= vec3f(0.0031308)); }
+fn from_srgb(c: vec3f) -> vec3f { return select(pow((c + 0.055) / 1.055, vec3f(2.4)), c / 12.92, c <= vec3f(0.04045)); }
+fn bayer_t(p: vec2f, n: u32) -> f32 {
+  let x = u32(p.x); let y = u32(p.y);
+  let levels = countTrailingZeros(n);
+  var v = 0u;
+  for (var i = 0u; i < levels; i++) {
+    let bx = (x >> i) & 1u; let by = (y >> i) & 1u;
+    let d = select(select(3u, 1u, bx == 1u), select(0u, 2u, bx == 1u), by == 0u);
+    v += d << (2u * (levels - 1u - i));
+  }
+  return (f32(v) + 0.5) / f32(n * n);
+}
+fn dither_t(kind: f32, p: vec2f) -> f32 {
+  let k = i32(round(kind));
+  if (k == 1) { return bayer_t(p, 2u); }
+  if (k == 2) { return bayer_t(p, 4u); }
+  if (k == 3) { return bayer_t(p, 8u); }
+  if (k == 4) { return fract(p.x * 0.7548777 + p.y * 0.5698403); }
+  if (k == 5) { return 0.125 + 0.75 * bayer_t(p, 4u); }
+  return 0.5;
+}
+@fragment fn fs_post(@builtin(position) frag: vec4f) -> @location(0) vec4f {
+  let res = u.res.xy;
+  let ctr = res * 0.5;
+  let half = length(ctr);
+  var p = frag.xy;
+  let bend = u.post[3].z;
+  if (bend != 0.0) {
+    let d = (p - ctr) / half;
+    p = ctr + d * (1.0 + bend * dot(d, d)) * half;
+    if (p.x < 0.0 || p.y < 0.0 || p.x >= res.x || p.y >= res.y) { return vec4f(0.0, 0.0, 0.0, 1.0); }
+  }
+  var c: vec3f;
+  let off = u.post[2].x;
+  if (off != 0.0) {
+    let dir = (p - ctr) / max(length(p - ctr), 1.0);
+    c = vec3f(post_bloom(p + dir * off).r, post_bloom(p).g, post_bloom(p - dir * off).b);
+  } else { c = post_bloom(p); }
+  let sl = u.post[2].y;
+  if (sl > 0.0) { c *= 1.0 - sl * (0.5 + 0.5 * cos(6.2831853 * (floor(p.y) + 0.5) / u.post[2].z)); }
+  let ga = u.post[2].w;
+  if (ga > 0.0) { c += (h1(floor(p / u.post[3].w) + 0.5) - 0.5) * ga; }
+  let vs = u.post[3].x;
+  if (vs > 0.0) { c *= 1.0 - vs * smoothstep(u.post[3].y, 1.0, length(p - ctr) / half); }
+  c = clamp(c, vec3f(0.0), vec3f(1.0));
+  let kind = u.post[0].x;
+  let n = i32(round(u.post[0].z));
+  if (kind > 0.5 || n > 0) {
+    let srgb = u.fd.y > 0.5;
+    var s = select(c, to_srgb(c), srgb);
+    let t = select(0.5, dither_t(kind, frag.xy), kind > 0.5);
+    let amp = u.post[1].w;
+    if (n > 0) {
+      // Spread by about one palette step, then the nearest colour (the eye's weights).
+      s = s + (t - 0.5) * amp / max(f32(n - 1), 1.0);
+      var best = u.pal[0].rgb; var bd = 1e9;
+      for (var i = 0; i < 16; i++) {
+        if (i >= n) { break; }
+        let e = (u.pal[i].rgb - s) * vec3f(0.30, 0.59, 0.11);
+        let d = dot(e, u.pal[i].rgb - s);
+        if (d < bd) { bd = d; best = u.pal[i].rgb; }
+      }
+      s = best;
+    } else {
+      let lv = max(u.post[0].y - 1.0, 1.0);
+      s = clamp(floor(s * lv + 0.5 + (t - 0.5) * amp), vec3f(0.0), vec3f(lv)) / lv;
+    }
+    c = select(s, from_srgb(s), srgb);
+  }
+  return vec4f(c, 1.0);
+}
 
 /// The material pass. At full resolution `qual.x` is 1 and every pixel is shaded. For the reduced pass
 /// it is 1 / q, so the pixel centre of the small target lands on the full frame's coordinates; a pixel

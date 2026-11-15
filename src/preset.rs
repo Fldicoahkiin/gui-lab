@@ -132,6 +132,12 @@ pub struct Preset {
     pub pic: PicFx,
     pub interaction: Interaction,
     pub transition: Transition,
+    /// The finishing pass (post effects, dither, palette), off unless a preset says.
+    #[serde(default)]
+    pub post: crate::post::PostSpec,
+    /// Marks on 3D elements by depth.
+    #[serde(default)]
+    pub marks: crate::style::Marks,
 }
 impl Preset {
     pub fn theme(&self) -> Theme {
@@ -155,6 +161,8 @@ impl Preset {
         l.roles = [i.text, i.decoration];
         l.scroll = i.scroll;
         l.transition = self.transition;
+        l.post = self.post.look();
+        l.marks = self.marks;
         l
     }
     pub fn to_json(&self) -> String { serde_json::to_string_pretty(self).unwrap_or_default() }
@@ -209,7 +217,8 @@ impl Preset {
                 .ok_or_else(|| crate::error::PresetError::NoSuchNumber(path.to_owned()))?;
         }
         if !at.is_number() { return Err(crate::error::PresetError::NoSuchNumber(path.to_owned())); }
-        *at = serde_json::json!(x);
+        // Whole numbers as integers, so integer fields (a dither's levels) take them too.
+        *at = if x.fract() == 0.0 && x.abs() < 1e9 { serde_json::json!(x as i64) } else { serde_json::json!(x) };
         *self = serde_json::from_value(v).map_err(|e| crate::error::PresetError::Json(e.to_string()))?;
         Ok(())
     }
@@ -307,9 +316,21 @@ pub fn presets() -> Vec<Preset> {
         }
         Preset {
             name: st.name.into(), hash: st.hash.into(), theme: th.name.into(), faces: th.roles(), material: st.material, params: st.params.0, gaze: st.gaze,
-            loose_scale: st.loose_scale, pitch: st.pitch, pic: st.pic, interaction, transition,
+            loose_scale: st.loose_scale, pitch: st.pitch, pic: st.pic, interaction, transition, post: post_of(st.hash), marks: crate::style::Marks::default(),
         }
     }).collect()
+}
+
+/// Each preset's finishing pass: Neo-Dotmatrix is quantised to an amber palette through a 4×4
+/// dither; Glitch and Lo-Fi Print carry screen and print artefacts; the rest have none.
+fn post_of(hash: &str) -> crate::post::PostSpec {
+    use crate::post::*;
+    match hash {
+        "dotmatrix" => PostSpec { dither: Dither { kind: DitherKind::Bayer4, levels: 4, strength: 0.8 }, palette: Palette { kind: PaletteKind::Amber, colors: vec![] }, bloom: Bloom { strength: 0.35, threshold: 0.6, radius: 6.0 }, ..PostSpec::default() },
+        "glitch" => PostSpec { chroma: Chroma { offset: 1.5 }, scanlines: Scanlines { strength: 0.22, period: 3.0 }, grain: Grain { amount: 0.05, size: 1.0 }, vignette: Vignette { strength: 0.35, radius: 0.6 }, curvature: Curvature { amount: 0.03 }, ..PostSpec::default() },
+        "lofi-print" => PostSpec { grain: Grain { amount: 0.06, size: 1.5 }, vignette: Vignette { strength: 0.18, radius: 0.7 }, ..PostSpec::default() },
+        _ => PostSpec::default(),
+    }
 }
 
 #[cfg(test)]
@@ -329,5 +350,16 @@ mod tests {
             assert!(q.set_number("transition.nothing", 1.0).is_err());
         }
         assert!(Preset::from_json("{\"name\": 3}").is_err());
+        // The finishing pass is data in the recipe too.
+        let mut p = presets()[0].clone();
+        p.set_number("post.dither.levels", 3.0).expect("a post number");
+        p.set_number("post.scanlines.strength", 0.25).expect("a post number");
+        let q = Preset::from_recipe(&p.recipe()).expect("the recipe reads");
+        assert_eq!(q.post, p.post);
+        assert!(presets().iter().any(|p| p.post.palette.kind != crate::post::PaletteKind::Off && p.post.dither.kind != crate::post::DitherKind::None));
+        // An older preset without the field reads with everything off.
+        let mut v: serde_json::Value = serde_json::from_str(&presets()[7].to_json()).expect("json");
+        v.as_object_mut().expect("object").remove("post");
+        assert_eq!(Preset::from_json(&v.to_string()).expect("parses").post, crate::post::PostSpec::default());
     }
 }
