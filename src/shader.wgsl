@@ -1020,6 +1020,14 @@ fn chrome_shade(p: vec2f, ly: f32, k: f32) -> vec3f {
   let hv = normalize(vec3f(-0.45, -0.6, 0.66) + vec3f(0.0, 0.0, 1.0));
   let sp = pow(max(dot(n, hv), 0.0), 60.0) * a0.z * 0.9;
   c = mix(c, vec3f(1.0), clamp(rim + sp, 0.0, 1.0));
+  // A broad reflection that follows the pointer: a soft band of light, slanted a little, strongest on
+  // the faces that look at the viewer and riding up the bevels.
+  if (u.pointer.x > -1e4) {
+    let bw = 70.0 * u.res.z;
+    let dx = ((p.x - u.pointer.x) + 0.45 * (p.y - u.pointer.y) - n.x * bw * 0.6) / bw;
+    let band = exp(-dx * dx) * (0.35 + 0.65 * n.z) * a0.z * (1.0 - soft);
+    c = mix(c, mix(vec3f(0.92, 0.97, 1.0), vec3f(1.0), smoothstep(0.6, 1.0, band)), clamp(band * 0.8, 0.0, 0.85));
+  }
   // A dark rim right at the outline keeps the letterform crisp.
   c *= mix(0.25, 1.0, smoothstep(0.0, 1.2 * u.res.z, sdist(p)));
   c = mix(c, c * (u.accent.rgb * 1.6 + 0.2), a1.x);

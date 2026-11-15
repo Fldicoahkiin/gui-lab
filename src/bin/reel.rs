@@ -1,5 +1,5 @@
 //! Sheets of the film (DESIGN.md §6), drawn off-screen with a fixed 60 Hz clock: every chapter at rest
-//! with its stage at 2390 × 1000 device px (`stills.png`), five frames across each of the twelve cuts
+//! with its stage at 2390 × 1000 device px (`stills.png`), five frames across each of the thirteen cuts
 //! (`cuts.png`), four frames of each chapter's own interaction (`interactions.png`), and the window at
 //! 1280 × 800 and 800 × 1200 with the stage letterboxed (`window-1280x800.png`, `window-800x1200.png`).
 //!
@@ -125,13 +125,13 @@ fn interactions(out: &str) {
                 let (x, y) = center(&ui, "film/c01/title"); ui.press(x, y); ui.release(x, y);
                 for ch in "，一直".chars() { ui.text_input(&ch.to_string()); }
                 shoot(&mut o, &mut ui, 0.1, &mut strip);
-                let (x, y) = center(&ui, "film/c01/motion"); ui.press(x, y); ui.release(x, y);
+                let (x, y) = center(&ui, "film/c01/invert"); ui.press(x, y); ui.release(x, y);
                 shoot(&mut o, &mut ui, 0.8, &mut strip);
                 let (x, y) = center(&ui, "film/c01/count/more"); ui.press(x, y); ui.release(x, y);
                 shoot(&mut o, &mut ui, 0.08, &mut strip);
                 // Put the sentence back for the chapters after.
                 send(&mut ui, FMsg::Sentence(lab::widgets::TextEdit::new("松开，再合上")));
-                let (x, y) = center(&ui, "film/c01/motion"); ui.press(x, y); ui.release(x, y);
+                let (x, y) = center(&ui, "film/c01/invert"); ui.press(x, y); ui.release(x, y);
             }
             1 => {
                 shoot(&mut o, &mut ui, 0.05, &mut strip);
@@ -145,10 +145,10 @@ fn interactions(out: &str) {
             }
             2 => {
                 shoot(&mut o, &mut ui, 0.05, &mut strip);
-                let (x, y) = center(&ui, "film/c03/object");
+                let (x, y) = center(&ui, "film/c03/sign");
                 ui.press(x, y);
-                for i in 1..=10 { ui.pointer_move(x + i as f32 * 14.0, y - i as f32 * 3.0); { let t = ui.now() + 1.0 / 60.0; run(&mut o, &mut ui, t) }; }
-                ui.release(x + 140.0, y - 30.0);
+                for i in 1..=10 { ui.pointer_move(x + i as f32 * 8.0, y); { let t = ui.now() + 1.0 / 60.0; run(&mut o, &mut ui, t) }; }
+                ui.release(x + 80.0, y);
                 shoot(&mut o, &mut ui, 0.05, &mut strip);
                 let (x, y) = center(&ui, "film/c03/part2"); ui.pointer_move(x, y);
                 shoot(&mut o, &mut ui, 0.4, &mut strip);
@@ -158,33 +158,34 @@ fn interactions(out: &str) {
             3 => {
                 let (x, y) = center(&ui, "film/c04/sentence"); ui.pointer_move(x, y);
                 shoot(&mut o, &mut ui, 0.5, &mut strip);
-                let (x, y) = center(&ui, "film/c04/object"); ui.pointer_move(x, y);
-                shoot(&mut o, &mut ui, 0.5, &mut strip);
-                ui.press(x, y);
-                shoot(&mut o, &mut ui, 0.4, &mut strip);
-                ui.release(x, y);
-                shoot(&mut o, &mut ui, 0.6, &mut strip);
+                let (x, y) = center(&ui, "film/c04/sign"); ui.pointer_move(x, y);
+                ui.press(x, y); ui.release(x, y);
+                shoot(&mut o, &mut ui, 0.25, &mut strip);
+                shoot(&mut o, &mut ui, 0.45, &mut strip);
+                shoot(&mut o, &mut ui, 1.0, &mut strip);
             }
             4 => {
                 shoot(&mut o, &mut ui, 0.05, &mut strip);
                 send(&mut ui, FMsg::Play);
                 shoot(&mut o, &mut ui, 1.05, &mut strip);
-                shoot(&mut o, &mut ui, 0.12, &mut strip);
-                shoot(&mut o, &mut ui, 0.6, &mut strip);
                 send(&mut ui, FMsg::Play);
+                let (x, y) = center(&ui, "film/c05/sign"); ui.pointer_move(x, y);
+                shoot(&mut o, &mut ui, 0.1, &mut strip);
+                shoot(&mut o, &mut ui, 0.6, &mut strip);
             }
             5 => {
                 shoot(&mut o, &mut ui, 0.05, &mut strip);
-                let (x, y) = center(&ui, "film/c06/object");
+                let (x, y) = center(&ui, "film/c06/sign");
                 ui.press(x, y);
                 for i in 1..=12 { ui.pointer_move(x - i as f32 * 10.0, y + i as f32 * 3.0); { let t = ui.now() + 1.0 / 60.0; run(&mut o, &mut ui, t) }; }
                 shoot(&mut o, &mut ui, 0.02, &mut strip);
                 for i in 1..=12 { ui.pointer_move(x + i as f32 * 14.0 - 120.0, y + 36.0 - i as f32 * 8.0); { let t = ui.now() + 1.0 / 60.0; run(&mut o, &mut ui, t) }; }
                 ui.release(x + 48.0, y - 60.0);
                 shoot(&mut o, &mut ui, 0.05, &mut strip);
-                send(&mut ui, FMsg::Contrast(lab::widgets::Edit::Set(220.0)));
+                send(&mut ui, FMsg::Gap(lab::widgets::Edit::Set(36.0)));
                 shoot(&mut o, &mut ui, 0.3, &mut strip);
-                send(&mut ui, FMsg::Contrast(lab::widgets::Edit::Set(100.0)));
+                send(&mut ui, FMsg::Gap(lab::widgets::Edit::Set(14.0)));
+                send(&mut ui, FMsg::Obj(330.0, 40.0));
             }
             6 => {
                 shoot(&mut o, &mut ui, 0.05, &mut strip);
@@ -217,14 +218,14 @@ fn interactions(out: &str) {
             }
             9 => {
                 shoot(&mut o, &mut ui, 0.05, &mut strip);
-                send(&mut ui, FMsg::Size(0.95));
+                send(&mut ui, FMsg::Knob(0.95));
                 shoot(&mut o, &mut ui, 0.3, &mut strip);
                 send(&mut ui, FMsg::Squares);
                 send(&mut ui, FMsg::Plane(1));
                 shoot(&mut o, &mut ui, 0.6, &mut strip);
                 send(&mut ui, FMsg::Plane(2));
                 shoot(&mut o, &mut ui, 0.8, &mut strip);
-                send(&mut ui, FMsg::Plane(0)); send(&mut ui, FMsg::Squares); send(&mut ui, FMsg::Size(0.55));
+                send(&mut ui, FMsg::Plane(0)); send(&mut ui, FMsg::Squares); send(&mut ui, FMsg::Knob(0.55));
             }
             10 => {
                 shoot(&mut o, &mut ui, 0.05, &mut strip);
@@ -234,6 +235,24 @@ fn interactions(out: &str) {
                 shoot(&mut o, &mut ui, 0.2, &mut strip);
                 shoot(&mut o, &mut ui, 0.8, &mut strip);
                 send(&mut ui, FMsg::MenuSel(1));
+            }
+            12 => {
+                use lab::gallery::mechanism::MMsg;
+                shoot(&mut o, &mut ui, 0.05, &mut strip);
+                // Turn the train by dragging the big gear, then hover a part, explode, ascii.
+                let r = ui.node("film/c13/machine/view").expect("view").rect;
+                let (gx, gy) = (r.x + r.w * 0.36, r.y + r.h * 0.52);
+                ui.press(gx, gy);
+                for i in 1..=10 { ui.pointer_move(gx + i as f32 * 9.0, gy); { let t = ui.now() + 1.0 / 60.0; run(&mut o, &mut ui, t) }; }
+                ui.release(gx + 90.0, gy);
+                ui.pointer_move(r.x + r.w * 0.6, r.y + r.h * 0.4);
+                shoot(&mut o, &mut ui, 0.3, &mut strip);
+                send(&mut ui, FMsg::Mech(MMsg::Explode(1.0)));
+                shoot(&mut o, &mut ui, 1.0, &mut strip);
+                send(&mut ui, FMsg::Mech(MMsg::Material(1)));
+                shoot(&mut o, &mut ui, 0.3, &mut strip);
+                send(&mut ui, FMsg::Mech(MMsg::Material(0)));
+                send(&mut ui, FMsg::Mech(MMsg::Explode(0.0)));
             }
             _ => {
                 shoot(&mut o, &mut ui, 0.05, &mut strip);
@@ -282,7 +301,7 @@ fn main() {
         Some("cuts") => cuts(&out),
         Some("interactions") => interactions(&out),
         Some("window") => window(&out),
-        Some("one") => { for c in a[3..].iter().filter_map(|v| v.parse::<usize>().ok()) { one(&out, c.clamp(1, 12) - 1); } }
+        Some("one") => { for c in a[3..].iter().filter_map(|v| v.parse::<usize>().ok()) { one(&out, c.clamp(1, film::CHAPTERS) - 1); } }
         _ => { stills(&out); cuts(&out); interactions(&out); window(&out); }
     }
 }

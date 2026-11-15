@@ -462,6 +462,34 @@ pub fn text<M>(s: impl Into<String>, size: f32, paint: Paint) -> El<M> {
     El::new(Style::default(), Content::Text { s: s.into(), size, line: (size * 1.6).round(), paint, font: Font::Body, print: 0.0, caret: None, weight: 0.0, around: None, select: None, mark: None, nowrap: false })
 }
 /// A text leaf with an explicit line height.
+/// Scale one taffy length by `k` (lengths only; percentages, auto and the rest stay).
+fn zoom_lp(v: LengthPercentage, k: f32) -> LengthPercentage { match v.expand() { taffy::style::ExpandedLengthPercentage::Length(x) => LengthPercentage::length(x * k), _ => v } }
+fn zoom_lpa(v: LengthPercentageAuto, k: f32) -> LengthPercentageAuto { match v.expand() { taffy::style::ExpandedLengthPercentageAuto::Length(x) => LengthPercentageAuto::length(x * k), _ => v } }
+fn zoom_dim(v: Dimension, k: f32) -> Dimension { match v.expand() { taffy::style::ExpandedDimension::Length(x) => Dimension::length(x * k), _ => v } }
+fn zoom_style(s: &mut Style, k: f32) {
+    s.size = Size { width: zoom_dim(s.size.width, k), height: zoom_dim(s.size.height, k) };
+    s.min_size = Size { width: zoom_lpa(s.min_size.width, k), height: zoom_lpa(s.min_size.height, k) };
+    s.max_size = Size { width: zoom_lpa(s.max_size.width, k), height: zoom_lpa(s.max_size.height, k) };
+    s.flex_basis = zoom_dim(s.flex_basis, k);
+    s.gap = Size { width: zoom_lp(s.gap.width, k), height: zoom_lp(s.gap.height, k) };
+    for r in [&mut s.padding, &mut s.border] { *r = Rect { left: zoom_lp(r.left, k), right: zoom_lp(r.right, k), top: zoom_lp(r.top, k), bottom: zoom_lp(r.bottom, k) }; }
+    for r in [&mut s.margin, &mut s.inset] { *r = Rect { left: zoom_lpa(r.left, k), right: zoom_lpa(r.right, k), top: zoom_lpa(r.top, k), bottom: zoom_lpa(r.bottom, k) }; }
+}
+impl<M> El<M> {
+    /// Every length in this subtree times `k`: sizes, gaps, padding, margins, insets, corner radii,
+    /// borders (never thinner than a hairline) and type. A widget made for one size shown at another
+    /// (the film scales its controls with the stage, so a small window does not overflow).
+    pub fn zoom(mut self, k: f32) -> Self {
+        if (k - 1.0).abs() < 1e-4 || k <= 0.0 { return self; }
+        zoom_style(&mut self.style, k);
+        self.radius *= k;
+        if let Some((w, p)) = self.border { self.border = Some(((w * k).max(w.min(1.0)), p)); }
+        if let Content::Text { size, line, weight, .. } = &mut self.content { *size *= k; *line *= k; *weight *= k; }
+        self.children = std::mem::take(&mut self.children).into_iter().map(|c| c.zoom(k)).collect();
+        self
+    }
+}
+
 pub fn text_lh<M>(s: impl Into<String>, size: f32, line: f32, paint: Paint) -> El<M> {
     El::new(Style::default(), Content::Text { s: s.into(), size, line, paint, font: Font::Body, print: 0.0, caret: None, weight: 0.0, around: None, select: None, mark: None, nowrap: false })
 }
