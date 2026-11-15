@@ -363,6 +363,11 @@ pub struct Ui<S, M> {
     fling: Option<(String, f32)>,
     /// How far each scroll node is pulled past its end (negative: past the start), logical px.
     over: HashMap<String, f32>,
+    /// How fast each scroll node's content moves (DESIGN.md §1.8.3), by key.
+    motion: HashMap<String, Motion>,
+    /// Painting because something scrolled: what comes into view has been there all along (it does
+    /// not condense as if it were new).
+    scroll_paint: bool,
     /// When the pointer event being handled happened (the host's timestamp), if it says: a finger's
     /// speed is measured by these, not by when the events were handled.
     event_t: Option<f32>,
@@ -436,6 +441,14 @@ pub fn rubber_band(over: f32, d: f32, rubber: f32, max: f32) -> f32 {
     (over + d * r).clamp(-max, max)
 }
 
+/// A scroll node's motion (DESIGN.md §1.8.3): its offset at the last tick, its speed (logical px a
+/// second, smoothed, signed: positive is the offset growing) while it moves, and when it last moved.
+#[derive(Clone, Copy, Debug, Default)]
+struct Motion { off: f32, v: f32, last: f32 }
+/// How quickly the measured scroll speed follows the motion (s): long enough that one wheel notch in one
+/// frame does not read as a fling, short enough that a fling reads at once.
+const SPEED_TAU: f32 = 0.06;
+
 /// The finger that is down: where it started, its last positions (for the velocity), and what it is
 /// doing: not yet decided (a press shown but not sent), scrolling node `key`, handled as a mouse press
 /// (a drag, a text field, nothing to scroll), or cancelled (a second finger).
@@ -454,6 +467,8 @@ pub struct Timing {
     /// The preset's interaction character (DESIGN.md §4.1): a press's burst (s), the default responses of
     /// text and controls and of everything else, and how long a commit's transition lasts (s; 0: the front).
     pub press: f32, pub roles: [Response; 2], pub transition: f32,
+    /// How scrolling looks (DESIGN.md §1.8.3): the speeds the trace eases in between and how it settles.
+    pub scroll: crate::style::Scroll,
 }
 impl Default for Timing {
     fn default() -> Self { Self::of(&Look::default()) }
@@ -462,7 +477,7 @@ impl Timing {
     pub fn of(l: &Look) -> Self {
         Self { wave_life: l.fx.wave_life, wave_speed: l.fx.wave_speed, enter: l.fx.enter, material: l.material.id(), overlay: l.overlay,
                fx: l.fx, legible_cap: l.legible_cap, loose_max: l.loose_max, recompose: l.recompose,
-               press: l.press_ms / 1000.0, roles: l.roles, transition: l.transition.duration_ms / 1000.0 }
+               press: l.press_ms / 1000.0, roles: l.roles, transition: l.transition.duration_ms / 1000.0, scroll: l.scroll }
     }
 }
 
@@ -535,7 +550,7 @@ impl<S, M: Clone> Ui<S, M> {
             perf: crate::perf::Perf { quality: 1.0, ..Default::default() }, span: 0, painting: false, overlay: false, overlay_at: 0.0,
             text_capture: None, sel: None, sel_drag: false, clicks: (f32::NEG_INFINITY, 0.0, 0.0, 0), a11y_sent: HashMap::new(), a11y_focus: None,
             tree: TaffyTree::new(), tids: HashMap::new(), mkeys: HashMap::new(), virt_views: HashMap::new(), virt_made: HashMap::new(),
-            scrolling: Scrolling::default(), touch: None, touches: HashSet::new(), touching: false, fling: None, over: HashMap::new(), event_t: None,
+            scrolling: Scrolling::default(), touch: None, touches: HashSet::new(), touching: false, fling: None, over: HashMap::new(), motion: HashMap::new(), scroll_paint: false, event_t: None,
             recs: HashMap::new(), recomps: HashMap::new(), slides: HashMap::new(), no_recompose: false,
             meshes: crate::mesh::Library::default(), mesh_hover: None, particle_gpu: false,
         };
@@ -737,7 +752,62 @@ impl<S, M: Clone> Ui<S, M> {
         fronts || split || self.field.burst_at(now) > 0.0 || now < self.latest_birth + tm.enter
             || self.run.is_some() || !self.flows.is_empty() || !self.ghosts.is_empty() || self.animating
             || self.marks_moving || now < self.gaze_until || self.fling.is_some() || !self.over.is_empty()
-            || self.static_loose || !self.recomps.is_empty() || !self.slides.is_empty()
+            || self.static_loose || !self.recomps.is_empty() || !self.slides.is_empty() || self.motion_alive(now)
+    }
+    /// Whether some scroll node's trace (DESIGN.md §1.8.3) is still showing or settling at `now`.
+    fn motion_alive(&self, now: f32) -> bool {
+        let settle = self.timing.scroll.settle_ms.max(0.0) / 1000.0;
+        self.motion.values().any(|m| m.v != 0.0 && now - m.last <= settle + 1.0 / 60.0)
+    }
+    /// How fast scroll node `key` moves now (logical px a second, smoothed; 0 at rest) and how strong its
+    /// trace is (0..1: eased in from `Scroll::calm_speed` to `full_speed`, settled `settle_ms` after it stops).
+    pub fn scroll_motion(&self, key: &str) -> (f32, f32) {
+        let Some(m) = self.motion.get(key) else { return (0.0, 0.0) };
+        let sc = &self.timing.scroll;
+        let settle = sc.settle_ms.max(1.0) / 1000.0;
+        let since = (self.now - m.last).max(0.0);
+        if since > settle { return (0.0, 0.0); }
+        let x = since / settle;
+        (m.v, sc.strength(m.v) * (1.0 - x * x * (3.0 - 2.0 * x)))
+    }
+    /// Follow every scroll node's motion over `dt` seconds (its speed from how far its offset went).
+    fn track_motion(&mut self, dt: f32) {
+        if dt <= 0.0 { return; }
+        let now = self.now;
+        let a = 1.0 - (-dt / SPEED_TAU).exp();
+        let settle = self.timing.scroll.settle_ms.max(0.0) / 1000.0;
+        for n in self.nodes.iter().filter(|n| n.scroll) {
+            let off = self.scroll.get(&n.key).copied().unwrap_or(0.0);
+            let m = self.motion.entry(n.key.clone()).or_insert(Motion { off, v: 0.0, last: -1e9 });
+            let raw = (off - m.off) / dt;
+            m.off = off;
+            if raw != 0.0 { m.v += (raw - m.v) * a; m.last = now; }
+            else if now - m.last > settle { m.v = 0.0; }
+        }
+        let nodes = &self.nodes;
+        self.motion.retain(|k, _| nodes.iter().any(|n| n.scroll && &n.key == k));
+        self.scroll_field();
+    }
+    /// The scroll nodes the materials see (DESIGN.md §1.8.3): up to eight visible ones, the largest
+    /// first, each its viewport (device px), its content offset (device px, whole pixels: the lattices
+    /// are fixed to the content), how strong its trace is and which way its content moves on screen.
+    fn scroll_field(&mut self) {
+        let s = self.scale;
+        let mut v: Vec<(f32, [f32; 4], [f32; 4])> = vec![];
+        for n in self.nodes.iter().filter(|n| n.scroll) {
+            let r = n.clip.intersect(&n.rect);
+            if r.w <= 0.0 || r.h <= 0.0 { continue; }
+            let off = (self.scroll.get(&n.key).copied().unwrap_or(0.0) * s).round();
+            let (speed, k) = self.scroll_motion(&n.key);
+            // The content moves against the offset: a growing offset moves it up (or left).
+            let dir = if speed > 0.0 { -1.0 } else { 1.0 };
+            let (ox, oy, d) = if n.horizontal { (off, 0.0, dir * 2.0) } else { (0.0, off, dir) };
+            v.push((r.w * r.h, [r.x * s, r.y * s, r.right() * s, r.bottom() * s], [ox, oy, k, d]));
+        }
+        v.sort_by(|a, b| b.0.total_cmp(&a.0));
+        self.field.scrolls = [[0.0; 4]; 8];
+        self.field.scrollo = [[0.0; 4]; 8];
+        for (j, (_, r, o)) in v.into_iter().take(8).enumerate() { self.field.scrolls[j] = r; self.field.scrollo[j] = o; }
     }
     /// Whether a commit is still showing: its transition is running, or (without one) its front is still
     /// crossing the window.
@@ -849,6 +919,7 @@ impl<S, M: Clone> Ui<S, M> {
         self.slides.retain(|_, sl| t < sl.start + sl.dur);
         let scrolled = self.step_scrolling(dt);
         if repaint || scrolled { self.paint(); } else { self.finish(); }
+        self.track_motion(dt);
         if self.marks_moving { self.dirty = true; }
         self.moving = self.field_moving_at(t);
         self.ground_moving = self.ground_moving_at(t);
@@ -1856,7 +1927,8 @@ impl<S, M: Clone> Ui<S, M> {
             let l = nodes[i].local;
             let (origin, clip) = match nodes[i].parent {
                 Some(p) => {
-                    let off = if nodes[p].scroll { self.scroll.get(&nodes[p].key).copied().unwrap_or(0.0) } else { 0.0 };
+                    // Content moves by whole device pixels, so a scroll never resamples it (DESIGN.md §1.8.3).
+                    let off = if nodes[p].scroll { (self.scroll.get(&nodes[p].key).copied().unwrap_or(0.0) * self.scale).round() / self.scale } else { 0.0 };
                     let (ox, oy) = if nodes[p].horizontal { (off, 0.0) } else { (0.0, off) };
                     ((nodes[p].rect.x - ox, nodes[p].rect.y - oy), inside[p])
                 }
@@ -1889,7 +1961,9 @@ impl<S, M: Clone> Ui<S, M> {
             let (first, last) = visible_rows(off, n.rect.h, v.0, v.1);
             first < a || last > b
         });
+        self.scroll_paint = true;
         if past { self.relayout(); } else { self.place(); self.paint(); }
+        self.scroll_paint = false;
     }
 
     /// A modal layer opened or closed: focus moves into it (remembering where it was), or back.
@@ -1929,6 +2003,7 @@ impl<S, M: Clone> Ui<S, M> {
         let t0 = crate::perf::now_ms();
         self.painting = true;
         self.paint_inner();
+        self.scroll_field();
         self.painting = false;
         self.perf.counters.scenes += 1;
         self.perf.pending.scene += (crate::perf::now_ms() - t0) as f32;
@@ -2030,7 +2105,7 @@ impl<S, M: Clone> Ui<S, M> {
                 if hidden { inst.extra[3] = -1e4; sink.unseen.push((i, inst)); return; }
                 // What a morph shows has been there all along: it must not condense on top of its ramp.
                 let born = if role != 0 { *births.entry(id).or_insert(-1e4) }
-                           else { *births.entry(id).or_insert_with(|| self.births.get(&id).copied().unwrap_or(now)) };
+                           else { *births.entry(id).or_insert_with(|| self.births.get(&id).copied().unwrap_or(if self.scroll_paint { -1e4 } else { now })) };
                 inst.extra[3] = born;
                 *sink.latest = sink.latest.max(born);
                 // Loose under a material that moves loose things by itself (its own override or the global one).
@@ -2114,7 +2189,7 @@ impl<S, M: Clone> Ui<S, M> {
                     let k = sink.scene.meshes.len();
                     let r = dev(n.inner);
                     sink.scene.meshes.push(crate::scene::MeshDraw { scene: sc.clone(), rect: r });
-                    let inst = Instance { rect: r, uv: [0.0, 0.0, 1.0, 1.0], paint: [1.0, sc.picture.unwrap_or(0) as f32, 1.0, MESH], clip, extra: [sc.picture.map_or(0.0, |_| 1.0), k as f32, 0.0, 0.0], look: [mat, 0.0, r[1], r[3].max(1.0)], resp };
+                    let inst = Instance { rect: r, uv: [0.0, 0.0, 1.0, 1.0], paint: [sc.spec.outline.max(0.0) * s, sc.picture.unwrap_or(0) as f32, 1.0, MESH], clip, extra: [sc.picture.map_or(0.0, |_| 1.0), k as f32, 0.0, 0.0], look: [mat, 0.0, r[1], r[3].max(1.0)], resp };
                     put(&mut sink, inst, ident(&n.key, u32::MAX - 5, 0), None);
                 }
                 Content::None => {}
@@ -2546,7 +2621,7 @@ impl<S, M: Clone> Ui<S, M> {
             // A retarget lands when the run it replaces would have (but takes at least a third of a
             // flight), so a quick run of changes keeps arriving instead of starting over each time.
             let dur_ms = match &run { Some(r) => ((r.end - now) * 1000.0).max(spec.duration_ms * 0.35).min(spec.duration_ms), None => spec.duration_ms };
-            let mspec = MorphSpec { duration_ms: dur_ms, stagger: spec.stagger, count_max: spec.count_max * glyphs, curl: 0.0, threshold: 0.5, ease: Ease::InOutCubic, ..MorphSpec::default() };
+            let mspec = MorphSpec { duration_ms: dur_ms, stagger: spec.stagger, count_max: spec.count_max * glyphs, curl: 0.0, threshold: 0.5, ease: Ease::InOutCubic, lattice: (spec.tile * self.scale).round().max(1.0), ..MorphSpec::default() };
             let mut rtiles = recompose_tiles(prev, &src, &dst, &mspec, &self.text.pixels);
             // Never more than the window's budget (what is left of it after the other texts).
             let budget = (spec.max_tiles - live as f32).max(0.0) as usize;
@@ -2827,7 +2902,7 @@ fn tile_now(t: &RTile, clock: f32) -> Option<Unit> {
 /// until each side has at most `spec.count_max` cells.
 fn recompose_tiles(prev: Vec<Unit>, src: &[Instance], dst: &[Instance], spec: &MorphSpec, atlas: &[u8]) -> Vec<RTile> {
     use morph::kind;
-    let mut tile = 1.0f32;
+    let mut tile = spec.lattice.max(1.0);
     let (a, b) = loop {
         let (a, b) = (morph::cells(src, tile, atlas), morph::cells(dst, tile, atlas));
         let n = (a.len() + prev.len()).max(b.len()) as f32;

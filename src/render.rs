@@ -47,6 +47,10 @@ struct Uniforms {
     /// A preset's transition (`preset::Transition::pack`) and the elements its boxes find.
     tr: [[f32; 4]; 9],
     boxes: [[f32; 4]; 16],
+    scrolls: [[f32; 4]; 8],
+    scrollo: [[f32; 4]; 8],
+    scrp: [f32; 4],
+    scrq: [f32; 4],
 }
 
 const INK: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -441,7 +445,7 @@ impl Renderer {
                 view: cam.view().0, proj: cam.proj(rw / rh).0,
                 light: [sc.light.dir[0], sc.light.dir[1], sc.light.dir[2], sc.light.ambient.clamp(0.0, 1.0)],
                 misc: [cam.near.max(1e-3), cam.far.max(cam.near + 1e-3), sc.spec.edge_depth.max(0.0), sc.spec.edge_normal.clamp(0.0, 180.0).to_radians().cos()],
-                size: [size.0 as f32, size.1 as f32, px, radius], spread: [SPREAD as f32, 0.0, 0.0, 0.0],
+                size: [size.0 as f32, size.1 as f32, px, radius], spread: [SPREAD as f32, sc.spec.tones, sc.spec.terminator.clamp(0.0, 1.0), 0.0],
             };
             let mut copies: Vec<MeshCopy> = Vec::with_capacity(sc.count());
             let mut draws: Vec<(u32, u32, u32, u32)> = vec![];
@@ -1103,6 +1107,9 @@ impl Renderer {
             burst: field.burst, burst_t: [field.burst_t[0], field.burst_t[1], field.burst_t[2], look.legible_cap], mats, calm: field.calm, qual, scopes: field.scopes,
             rip: [look.loose_max, if split[3] > 0.0 { self.tr_loose } else { 0.0 }, if split[3] > 0.0 { look.transition.steps.iter().rposition(|st| st.kind != crate::preset::StepKind::None).map_or(0.0, |i| i as f32 + 1.0) } else { 0.0 }, mt[1]],
             tr: if split[3] > 0.0 { self.tr } else { [[0.0; 4]; 9] }, boxes: self.boxes,
+            scrolls: field.scrolls, scrollo: field.scrollo,
+            scrp: [look.scroll.trail * scale, look.scroll.misreg * scale, look.scroll.slip * scale, look.scroll.band.max(4.0) * scale],
+            scrq: [look.scroll.slip_ms.max(16.0) / 1000.0, 0.0, 0.0, 0.0],
         };
         self.queue.write_buffer(&self.ubuf, 0, bytemuck::bytes_of(&u));
     }

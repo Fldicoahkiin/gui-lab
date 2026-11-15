@@ -104,11 +104,16 @@ pub struct Field {
     pub scopes: [[f32; 4]; 8],
     pub sources: [u64; 8],
     pub next: usize,
+    /// Up to eight scroll nodes (DESIGN.md §1.8.3): each viewport (x0, y0, x1, y1, device px) and its
+    /// content offset (x, y, whole device px), the strength of its trace (0..1) and the way its content
+    /// moves (±1 down / up, ±2 right / left).
+    pub scrolls: [[f32; 4]; 8],
+    pub scrollo: [[f32; 4]; 8],
 }
 /// The scope box of a global front: everything.
 pub const EVERYWHERE: [f32; 4] = [-1e6, -1e6, 1e6, 1e6];
 impl Default for Field {
-    fn default() -> Self { Self { fronts: [[0.0; 4]; 8], pointer: [-1e5, -1e5, 0.0, 0.0], wipe: [0.0; 4], wipe_rect: [0.0; 4], burst: [0.0; 4], burst_t: [0.0, 0.0, 0.0, 0.0], calm: [[0.0; 4]; 4], scopes: [EVERYWHERE; 8], sources: [0; 8], next: 0 } }
+    fn default() -> Self { Self { fronts: [[0.0; 4]; 8], pointer: [-1e5, -1e5, 0.0, 0.0], wipe: [0.0; 4], wipe_rect: [0.0; 4], burst: [0.0; 4], burst_t: [0.0, 0.0, 0.0, 0.0], calm: [[0.0; 4]; 4], scopes: [EVERYWHERE; 8], sources: [0; 8], next: 0, scrolls: [[0.0; 4]; 8], scrollo: [[0.0; 4]; 8] } }
 }
 impl Field {
     /// A front over the whole window, from no element in particular.
@@ -186,6 +191,6 @@ pub struct Fx {
 }
 impl Default for Fx {
     fn default() -> Self {
-        Self { pitch: 5.0, jitter: 0.0, glitch: 0.4, wave_speed: 760.0, wave_life: 1.4, wave_width: 26.0, wave_tail: 150.0, push: 5.0, lens: 84.0, lens_hard: 0.0, enter: 0.45, square: false }
+        Self { pitch: 5.0, jitter: 0.0, glitch: 0.2, wave_speed: 760.0, wave_life: 1.4, wave_width: 26.0, wave_tail: 150.0, push: 5.0, lens: 84.0, lens_hard: 0.35, enter: 0.45, square: false }
     }
 }

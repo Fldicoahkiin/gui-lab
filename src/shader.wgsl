@@ -44,6 +44,10 @@ struct U {
   rip: vec4f,      // looseness per pixel is clamped to x (Look::loose_max) after summing; y: everything loosened by a transition; z: its last step; w: the ground clock (s)
   tr: array<vec4f, 9>,     // a transition (preset.rs Transition::pack): duration (s), origin, start; two vec4s per step
   boxes: array<vec4f, 16>, // the elements a transition's boxes find (x0, y0, x1, y1, device px)
+  scrolls: array<vec4f, 8>, // scroll nodes' viewports (x0, y0, x1, y1, device px), DESIGN.md §1.8.3
+  scrollo: array<vec4f, 8>, // their content offsets (x, y, whole device px), trace strength, the way the content moves (±1 down/up, ±2 right/left)
+  scrp: vec4f,     // the trace's lengths (device px): trail, misregistration, glitch slip, glitch band
+  scrq: vec4f,     // the least time between two glitch slips (s)
 };
 @group(0) @binding(0) var<uniform> u: U;
 @group(0) @binding(1) var samp: sampler;
@@ -95,7 +99,20 @@ struct VOut {
   @location(7) @interpolate(flat) look: vec4f,
   // How the field may move it (scene.rs Instance::resp): looseness cap, push gain; and its centre.
   @location(8) @interpolate(flat) resp: vec4f,
+  // Where the instance's box starts on screen (device px, after any push): its local coordinates are
+  // the pixel's position less this, exactly, wherever it is (DESIGN.md §1.8.3: a box moved by a pixel
+  // draws the same pixels).
+  @location(9) @interpolate(flat) org: vec2f,
+  @location(10) @interpolate(flat) uvr: vec4f,
 };
+/// The fragment's local coordinates and texture coordinates from its exact position and the flat box,
+/// not from interpolation (which rounds differently at every place on screen).
+fn exact_i(iv: VOut) -> VOut {
+  var i = iv;
+  i.local = i.pos.xy - i.org;
+  if (i.paint.w < 0.5 || i.paint.w > 1.5) { i.uv = i.uvr.xy + i.local / i.size * (i.uvr.zw - i.uvr.xy); }
+  return i;
+}
 
 @vertex fn vs_inst(i: VIn) -> VOut { return vs_pad(i, u.fd.z); }
 // The liquid's field reaches further than the nearness, as far as shapes fuse.
@@ -111,13 +128,15 @@ fn vs_pad(i: VIn, spad: f32) -> VOut {
   let centre = select(i.rect.xy + i.rect.zw * 0.5, i.resp.zw, i.resp.y > 1.5);
   let w = u.fb.z * 1.3 * u.res.z;
   let still = calm_at(centre) || i.resp.y < 0.5;
+  var push = vec2f(0.0);
   for (var k = 0; k < 8; k++) {
     if (still) { break; }
     if (!in_scope(centre, k)) { continue; }
     let f = front_at(centre, u.fronts[k]);
     let dir = normalize(centre - u.fronts[k].xy + vec2f(1e-4));
-    p += dir * exp(-(f.y * f.y) / (w * w)) * f.x * u.fc.x * u.res.z;
+    push += dir * exp(-(f.y * f.y) / (w * w)) * f.x * u.fc.x * u.res.z;
   }
+  p += push;
   var o: VOut;
   o.pos = vec4f(p.x / u.res.x * 2.0 - 1.0, 1.0 - p.y / u.res.y * 2.0, 0.0, 1.0);
   o.local = c * r.zw - vec2f(pad);
@@ -125,6 +144,8 @@ fn vs_pad(i: VIn, spad: f32) -> VOut {
   o.uv = select(i.uv.xy + o.local / i.rect.zw * (i.uv.zw - i.uv.xy), mix(i.uv.xy, i.uv.zw, c), i.paint.w < 0.5);
   o.paint = i.paint; o.clip = i.clip; o.extra = i.extra; o.radius = i.uv.x; o.look = i.look;
   o.resp = vec4f(i.resp.x, i.resp.y, centre);
+  o.org = i.rect.xy + push;
+  o.uvr = i.uv;
   return o;
 }
 
@@ -226,10 +247,10 @@ fn own_loose(i: VOut) -> f32 {
   return k + clamp(w, 0.0, max(i.resp.x - k, 0.0));
 }
 
-@fragment fn fs_ink(i: VOut) -> @location(0) vec4f { return ink_of(i, false); }
+@fragment fn fs_ink(i: VOut) -> @location(0) vec4f { return ink_of(exact_i(i), false); }
 // The modal layer: the same, but an outline-drawn (xray) panel still covers what is beneath it, with
 // the ground inside its outline, so a dialog stays readable over the page.
-@fragment fn fs_ink_top(i: VOut) -> @location(0) vec4f { return ink_of(i, true); }
+@fragment fn fs_ink_top(i: VOut) -> @location(0) vec4f { return ink_of(exact_i(i), true); }
 fn ink_of(i: VOut, solid: bool) -> vec4f {
   let s = inst(i);
   var a = s.x * i.paint.z;
@@ -264,6 +285,11 @@ fn ink_of(i: VOut, solid: bool) -> vec4f {
       let tw = mix(r, c.g * (1.0 - c.b), wire);
       let gw = mix(g, c.b, wire);
       return vec4f(tw * aw, gw * aw, code * aw, aw);
+    }
+    // A drawn outline on the silhouette and the creases (Mesh3d::outline, device px in paint.x).
+    if (i.paint.x > 0.0) {
+      let line = clamp(i.paint.x + 0.5 - abs(s.w), 0.0, 1.0) * step(0.02, s.x);
+      return vec4f(mix(r, 1.0, line) * a, mix(g, 0.0, line) * a, code * a, a);
     }
     return vec4f(r * a, g * a, code * a, a);
   }
@@ -313,7 +339,8 @@ fn near_of(i: VOut) -> vec4f {
 }
 // The liquid's field: half at the outline, falling to nothing `fuse` px outside (glyphs only know their
 // nearness that far), so two outlines closer than `fuse` add up past the threshold and join.
-@fragment fn fs_soft(i: VOut) -> @location(0) vec4f {
+@fragment fn fs_soft(iv: VOut) -> @location(0) vec4f {
+  let i = exact_i(iv);
   let s = inst(i);
   if (!is_big(i) || eff_mat(i.look.x) != LIQUID) { discard; }
   var reach = max(mp(LIQUID, 0).x * u.res.z, 1.0);
@@ -333,6 +360,8 @@ fn near_of(i: VOut) -> vec4f {
   var o: VOut;
   o.pos = vec4f(p.x / u.res.x * 2.0 - 1.0, 1.0 - p.y / u.res.y * 2.0, 0.0, 1.0);
   o.local = c * i.rect.zw;
+  o.org = i.rect.xy;
+  o.uvr = i.uv;
   o.size = i.rect.zw;
   o.uv = mix(i.uv.xy, i.uv.zw, c);
   o.paint = i.paint; o.clip = i.clip; o.extra = i.extra; o.radius = 0.0; o.look = i.look;
@@ -347,11 +376,12 @@ fn near_of(i: VOut) -> vec4f {
   if (u.fd.y > 0.5) { c = pow(c, vec3f(2.2)); }
   return vec4f(c * a, a);
 }
-@fragment fn fs_near(i: VOut) -> @location(0) vec4f { return near_of(i); }
+@fragment fn fs_near(i: VOut) -> @location(0) vec4f { return near_of(exact_i(i)); }
 
 // The modal layer (and parts in flight), drawn without blending: wherever it has any ink it replaces what is beneath, so beneath's
 // looseness and picture flag stop at its outline.
-@fragment fn fs_near_top(i: VOut) -> @location(0) vec4f {
+@fragment fn fs_near_top(iv: VOut) -> @location(0) vec4f {
+  let i = exact_i(iv);
   let s = inst(i);
   if (s.x < 0.02 || i.paint.z < 0.01) { discard; }
   // A glyph's faint outer edge leaves the panel's nearness under it, so the materials that read the
@@ -435,13 +465,45 @@ fn bayer8(cell: vec2f) -> f32 {
   let v = ((a & 1u) << 5u) | ((y & 1u) << 4u) | ((a & 2u) << 2u) | ((y & 2u) << 1u) | ((a & 4u) >> 1u) | ((y & 4u) >> 2u);
   return (f32(v) + 0.5) / 64.0;
 }
-/// Average of the ink in one cell (premultiplied), from 4 texels, or 9 when cells are large.
+// ── Scrolling (DESIGN.md §1.8.3) ─────────────────────────────────────────────────────────────────
+/// Inside a scroll node the lattices of the materials are fixed to the content: `anc` is the content's
+/// offset here (whole device px), and every lattice and noise is taken at `p + anc`. Set once per pixel
+/// by `shade_new`.
+var<private> anc: vec2f;
+/// The scroll trace here: its strength, the way the content moves on screen (a unit vector), the axis.
+struct Sc { o: vec2f, k: f32, d: vec2f };
+fn scroll_here(p: vec2f) -> Sc {
+  var r: Sc; r.o = vec2f(0.0); r.k = 0.0; r.d = vec2f(0.0, 1.0);
+  for (var j = 0; j < 8; j++) {
+    let b = u.scrolls[j];
+    if (b.z <= b.x || p.x < b.x || p.y < b.y || p.x >= b.z || p.y >= b.w) { continue; }
+    let o = u.scrollo[j];
+    r.o += o.xy;
+    if (o.z > r.k) {
+      r.k = o.z;
+      r.d = select(vec2f(0.0, sign(o.w)), vec2f(sign(o.w), 0.0), abs(o.w) > 1.5);
+    }
+  }
+  return r;
+}
+/// Rows of content held to a lattice of `P` while it moves: where to read so that the content shows at
+/// its offset rounded to `P` along the axis it moves on.
+fn latch(p: vec2f, sc: Sc, P: f32) -> vec2f {
+  if (sc.k <= 0.02) { return p; }
+  let ax = abs(sc.d);
+  let o = dot(sc.o, ax);
+  return p + ax * (round(o / P) * P - o);
+}
+fn lat(p: vec2f) -> vec2f { return p + anc; }
+
+/// Average of the ink in one cell (premultiplied), from 4 texels, or 9 when cells are large. Cells are
+/// on the lattice fixed to the content (`lat`).
 fn cell_avg(cell: vec2f, P: f32) -> vec4f {
   let n = select(2, 3, P > 16.0);
   var acc = vec4f(0.0);
   for (var j = 0; j < n; j++) {
     for (var i = 0; i < n; i++) {
-      acc += ink_t(floor((cell + (vec2f(f32(i), f32(j)) + 0.5) / f32(n)) * P));
+      acc += ink_t(floor((cell + (vec2f(f32(i), f32(j)) + 0.5) / f32(n)) * P - anc));
     }
   }
   return acc / f32(n * n);
@@ -484,7 +546,7 @@ fn picture(frag: vec2f, slot: i32) -> vec3f {
   let levels = clamp(round(a0.y), 2.0, 16.0);
   // Looseness is read at the centre of the cell the point falls in, so a cell is all one pitch.
   let p0 = pic_p(pic_k(frag), pitch);
-  let k = pic_k((floor(frag / p0) + 0.5) * p0);
+  let k = pic_k((floor(lat(frag) / p0) + 0.5) * p0 - anc);
   // 1. Not loose: the picture itself.
   if (k <= 0.0) { return straight(ink_t(frag)); }
   let P = pic_p(k, pitch);
@@ -498,7 +560,7 @@ fn picture(frag: vec2f, slot: i32) -> vec3f {
     p += dir * lum(straight(ink_t(frag))) * a2.x * u.res.z * w;
   }
   // 2–3. One lattice for the whole screen; the cell's colour is the average under it.
-  let cell = floor(p / P);
+  let cell = floor(lat(p) / P);
   var cc = cell_avg(cell, P);
   if (cc.a < 0.5) { cc = ink_t(frag); }
   let c = straight(cc);
@@ -513,7 +575,7 @@ fn picture(frag: vec2f, slot: i32) -> vec3f {
   var ms = a0.z;
   if (a3.y >= 1.0 && a3.w >= 1.0) {
     let rp = P * round(a3.y);
-    let big = floor(p / rp);
+    let big = floor(lat(p) / rp);
     let cnt = min(a3.w, 4.0);
     var idx = floor(h1(big + 3.7) * cnt);
     if (a3.z >= 0.5) { idx = floor(clamp(lum(straight(cell_avg(big, rp))), 0.0, 0.999) * cnt); }
@@ -521,7 +583,7 @@ fn picture(frag: vec2f, slot: i32) -> vec3f {
   }
   ms = clamp(round(ms), 0.0, SETS - 1.0);
   // 5. Inside the cell; marks turn to lie along the contours (the gradient turned a quarter).
-  var uv = fract(p / P);
+  var uv = fract(lat(p) / P);
   if (a1.w > 0.0) {
     // Central differences of the neighbouring cells' averages, so the direction flows smoothly; where
     // the picture is flat the marks stay unturned rather than pointing at noise.
@@ -564,9 +626,9 @@ fn picture(frag: vec2f, slot: i32) -> vec3f {
     for (var j = -1; j <= 1; j++) {
       for (var i = -1; i <= 1; i++) {
         let nb = cell + vec2f(f32(i), f32(j));
-        let nc = straight(ink_t((nb + 0.5) * P));
+        let nc = straight(ink_t((nb + 0.5) * P - anc));
         let nl = pow(clamp(lum(nc), 0.0, 1.0), clamp(a1.y, 0.3, 3.0));
-        let d = (p - (nb + 0.5) * P) / (P * (0.35 + 0.5 * nl));
+        let d = (lat(p) - (nb + 0.5) * P) / (P * (0.35 + 0.5 * nl));
         var gc = nc;
         if (mode == 1.0) { gc = u.fg.rgb; } else if (mode == 2.0) { gc = mix(pv(slot, 4).rgb, pv(slot, 5).rgb, nl); } else if (mode == 3.0) { gc = pv(slot, 4).rgb; }
         glow += gc * nl * nl * exp(-dot(d, d) * 2.0);
@@ -585,7 +647,10 @@ fn vnoise(p: vec2f) -> f32 {
 }
 fn rot(p: vec2f, a: f32) -> vec2f { let c = cos(a); let s = sin(a); return vec2f(c * p.x - s * p.y, s * p.x + c * p.y); }
 /// The page ground here (a gradient from top to bottom when the theme has one).
-fn gnd(p: vec2f) -> vec3f { return mix(u.bg.rgb, u.ground2.rgb, clamp(p.y / u.res.y, 0.0, 1.0)); }
+fn gnd(p: vec2f) -> vec3f {
+  if (all(u.ground2.rgb == u.bg.rgb)) { return u.bg.rgb; }
+  return mix(u.bg.rgb, u.ground2.rgb, clamp(p.y / u.res.y, 0.0, 1.0));
+}
 
 /// Text and shape ink, decoded: straight colour and coverage, whether it is a shape, and for what the
 /// height materials shade, its height coordinate (`ly` ≥ 0; −1 for everything else).
@@ -658,15 +723,15 @@ fn m_dot(frag: vec2f) -> vec3f {
   let s = u.res.z; let t = u.res.w;
   var p = frag;
   // While a front is passing, some thin horizontal bands slip sideways.
-  let bh = 5.0 * s; let band = floor(p.y / bh);
-  let w0 = wave(vec2f(p.x, (band + 0.5) * bh), 0.6);
+  let bh = 5.0 * s; let band = floor(lat(p).y / bh);
+  let w0 = wave(vec2f(p.x, (band + 0.5) * bh - anc.y), 0.6);
   let pick = step(0.55, h1(vec2f(band, floor(t * 9.0))));
   // Only what is really loose slips: nudged text, and text held at the legibility cap, stays in place.
   p.x += (h1(vec2f(band, floor(t * 17.0))) - 0.5) * 70.0 * s * u.fa.w * pick * smoothstep(0.2, 0.9, w0) * smoothstep(0.2, 0.45, near_t(frag).b);
   let here = near_t(frag);
   let pitch = max(1.5, u.fa.x * s);
-  let cell = floor(p / pitch);
-  let block = (cell + 0.5) * pitch;
+  let cell = floor(lat(p) / pitch);
+  let block = (cell + 0.5) * pitch - anc;
   let centre = block + (h2(cell) - 0.5) * u.fa.z * pitch;
   let loose = min((half_plane(centre) + near(centre).b + (h1(cell + 7.0) - 0.5) * 0.22) * loose_scale(), u.rip.x);
   let printed = select(0.0, here.a * 255.0 * 0.5, here.a < 0.5);
@@ -684,7 +749,7 @@ fn m_dot(frag: vec2f) -> vec3f {
     // Printed type: the glyph seen through a coarse lattice, each cell filled when more than half of
     // it is covered.
     let pp = max(1.0, round(max(printed, printed_b) * s));
-    let cc = cell_avg(floor(p / pp), pp);
+    let cc = cell_avg(floor(lat(p) / pp), pp);
     let d = dec_at(cc, frag);
     col = d.rgb; alpha = step(0.5, cc.a);
   } else {
@@ -694,7 +759,7 @@ fn m_dot(frag: vec2f) -> vec3f {
   // Ground: units that follow the fronts and the pointer, drift slowly at rest, and shrink away from
   // ink by its true outline (the nearness image), never by a rectangle.
   var g = gnd(frag);
-  let gp = 9.0 * s; let gc = floor(frag / gp); let gcen = (gc + 0.5) * gp;
+  let gp = 9.0 * s; let gc = floor(lat(frag) / gp); let gcen = (gc + 0.5) * gp - anc;
   // The ground drifts on the ground clock, which runs only with what moves the whole window (a commit,
   // a front that reaches everywhere, a morph, a flow): a local press does not move the whole ground.
   let mt = u.rip.w;
@@ -714,9 +779,9 @@ fn m_halftone(p: vec2f) -> vec3f {
   let g = gnd(p);
   let ex = exact(p);
   if (split <= 0.0) {
-    let q = rot(p, ang);
+    let q = rot(lat(p), ang);
     let cell = floor(q / pitch);
-    let c = rot((cell + 0.5) * pitch, -ang);
+    let c = rot((cell + 0.5) * pitch, -ang) - anc;
     if (kt(c) <= 0.12 + 0.5 * h1(cell + vec2f(ang * 7.0, 3.0))) { return ex; }
     let e = pitch * 0.25;
     let avg = (ink_t(c + vec2f(-e, -e)) + ink_t(c + vec2f(e, -e)) + ink_t(c + vec2f(-e, e)) + ink_t(c + vec2f(e, e))) * 0.25;
@@ -729,9 +794,9 @@ fn m_halftone(p: vec2f) -> vec3f {
   let angs = vec3f(radians(15.0), radians(75.0), 0.0) + vec3f(ang - radians(45.0));
   for (var j = 0; j < 3; j++) {
     let off = vec2f(cos(f32(j) * 2.094), sin(f32(j) * 2.094)) * split;
-    let q = rot(p, angs[j]);
+    let q = rot(lat(p), angs[j]);
     let cell = floor(q / pitch);
-    let c = rot((cell + 0.5) * pitch, -angs[j]);
+    let c = rot((cell + 0.5) * pitch, -angs[j]) - anc;
     if (kt(c) <= 0.12 + 0.5 * h1(cell + vec2f(angs[j] * 7.0, 3.0))) { continue; }
     let e = pitch * 0.25;
     let avg = (ink_t(c + off + vec2f(-e, -e)) + ink_t(c + off + vec2f(e, -e)) + ink_t(c + off + vec2f(-e, e)) + ink_t(c + off + vec2f(e, e))) * 0.25;
@@ -752,14 +817,14 @@ fn m_ascii(p: vec2f) -> vec3f {
   let a0 = mp(ASCII, 0);
   let P0 = clamp(round(a0.x * s), CHAR_MIN, CHAR_MAX);
   let levels = clamp(round(a0.y), 2.0, 16.0);
-  let coarse = floor(p / P0);
-  let kc = kt((coarse + 0.5) * P0);
+  let coarse = floor(lat(p) / P0);
+  let kc = kt((coarse + 0.5) * P0 - anc);
   if (kc <= 0.0 && kt(p) <= 0.0) { return exact(p); }
   let P = select(P0, max(CHAR_MIN, round(P0 * 0.5)), kc < 0.6);
-  let cell = floor(p / P);
-  if (kt((cell + 0.5) * P) <= 0.1 + 0.4 * h1(cell + 1.3)) { return exact(p); }
+  let cell = floor(lat(p) / P);
+  if (kt((cell + 0.5) * P - anc) <= 0.1 + 0.4 * h1(cell + 1.3)) { return exact(p); }
   let avg = cell_avg(cell, P);
-  let centre = (cell + 0.5) * P;
+  let centre = (cell + 0.5) * P - anc;
   let d = dec_at(avg, centre);
   var n = clamp(floor(avg.a * levels), 0.0, levels - 1.0);
   var m = -1.0;
@@ -784,12 +849,12 @@ fn m_ascii(p: vec2f) -> vec3f {
       // The nearest of the four families, drawn as a line through the cell one stroke wide.
       let fam = round(fract(ang / 3.14159265) * 4.0) % 4.0;
       let dir = vec2f(cos(fam * 0.7853982), sin(fam * 0.7853982));
-      let q = fract(p / P) - 0.5;
+      let q = fract(lat(p) / P) - 0.5;
       let dist = abs(q.x * dir.y - q.y * dir.x) * P;
       m = clamp(max(1.0, P * 0.14) - dist + 0.5, 0.0, 1.0) * step(abs(dot(q, dir)), 0.42) * step(0.02, avg.a);
     }
   }
-  if (m < 0.0) { m = char_mark(round(n * 15.0 / (levels - 1.0)), fract(p / P), P); }
+  if (m < 0.0) { m = char_mark(round(n * 15.0 / (levels - 1.0)), fract(lat(p) / P), P); }
   let colour = select(d.rgb, u.fg.rgb, a0.z >= 0.5);
   return mix(gnd(p), colour, m);
 }
@@ -801,7 +866,8 @@ fn m_print(p: vec2f) -> vec3f {
   let a0 = mp(PRINT, 0);
   let grain = a0.x; let mis = a0.y * s; let speckle = a0.z; let spread = a0.w * s;
   let k = kt(p);
-  var g = gnd(p) * (1.0 - grain * (0.035 * (vnoise(p * 0.45 / s) - 0.5) + 0.02 * (h1(floor(p)) - 0.5)));
+  let pa = lat(p);
+  var g = gnd(p) * (1.0 - grain * (0.035 * (vnoise(pa * 0.45 / s) - 0.5) + 0.02 * (h1(floor(pa)) - 0.5)));
   let paper = lum(g) > 0.5;
   // Key (tone) ink from here, accent ink from slightly off register.
   var dk = dec(p);
@@ -816,7 +882,7 @@ fn m_print(p: vec2f) -> vec3f {
   var acc_rgb = hue_col(da.hue);
   if (k > 0.0) {
     // Ink spreads out past its outline, raggedly, and thresholds like a photocopy.
-    let n = vnoise(p * 0.18 / s);
+    let n = vnoise(pa * 0.18 / s);
     let sd = sdist(p);
     let grow = spread * k * (0.5 + n);
     if (dk.a < 0.5 && sd + grow > 0.0) {
@@ -826,13 +892,13 @@ fn m_print(p: vec2f) -> vec3f {
       if (w.acc > 0.5) { cov_a = max(cov_a, c); acc_rgb = w.rgb; }
       dk = w;
     }
-    let th = 0.5 + (vnoise(p * 0.6 / s) - 0.5) * 0.7 * k;
+    let th = 0.5 + (vnoise(pa * 0.6 / s) - 0.5) * 0.7 * k;
     cov_k = mix(cov_k, step(th, cov_k), smoothstep(0.0, 0.5, k));
     cov_a = mix(cov_a, step(th, cov_a), smoothstep(0.0, 0.5, k));
     // Toner specks on the paper and drop-outs in the ink.
-    let cs = floor(p / max(1.0, round(1.4 * s)));
+    let cs = floor(pa / max(1.0, round(1.4 * s)));
     let hh = h1(cs);
-    if (hh > 1.0 - speckle * k * 0.07 * (0.4 + vnoise(p * 0.05 / s))) { cov_k = 1.0; dk.tone = 1.0; }
+    if (hh > 1.0 - speckle * k * 0.07 * (0.4 + vnoise(pa * 0.05 / s))) { cov_k = 1.0; dk.tone = 1.0; }
     if (h1(cs + 5.1) < speckle * k * 0.22) { cov_k *= 0.15; cov_a *= 0.15; }
   }
   // The key plate's tone (the ink stores it without the accent part).
@@ -856,16 +922,16 @@ fn m_lino(p: vec2f) -> vec3f {
   let w = ink_inward(p);
   if (w.a < 0.02 && sd < -u.fd.z + 0.6) { return gnd(p); }
   // The cut edge: a slow wander of the knife and small chips.
-  let n = vnoise(p / (slen * 2.0)) - 0.5;
-  let chip = vnoise(p / (slen * 0.35) + 3.0) - 0.5;
+  let n = vnoise(lat(p) / (slen * 2.0)) - 0.5;
+  let chip = vnoise(lat(p) / (slen * 0.35) + 3.0) - 0.5;
   let cut = sd + (n * 2.0 + chip * 0.8) * carve * (1.0 + 1.5 * k) * s;
   var inked = smoothstep(-0.6, 0.6, cut);
   if (abs(sd) < band && abs(sd) < u.fd.z - 0.5) {
     let g = sgrad(p);
     let nrm = g / max(length(g), 1e-3);
     let tng = vec2f(-nrm.y, nrm.x);
-    let wv = wob * spitch * (vnoise(p / slen + 7.0) - 0.5);
-    let along = dot(p, tng) / spitch + wv / spitch;
+    let wv = wob * spitch * (vnoise(lat(p) / slen + 7.0) - 0.5);
+    let along = dot(lat(p), tng) / spitch + wv / spitch;
     let lane = floor(along);
     if (sd > 0.0) {
       // Gouges: white wedges cut in from the edge, each of its own length.
@@ -877,7 +943,7 @@ fn m_lino(p: vec2f) -> vec3f {
       // Ridges of ink left standing outside, echoing the edge, in long broken lines.
       let echo = -sd / (spitch * 1.6) + wv / spitch * 0.4;
       let on_line = smoothstep(0.6 * s, 0.0, abs(fract(echo + 0.5) - 0.5) * spitch * 1.6 - 0.4 * s) * step(0.6, -sd / spitch);
-      let dash = step(0.35, vnoise(vec2f(dot(p, tng) / (slen * 1.5), floor(echo + 0.5) * 3.1)));
+      let dash = step(0.35, vnoise(vec2f(dot(lat(p), tng) / (slen * 1.5), floor(echo + 0.5) * 3.1)));
       inked = max(inked, on_line * dash);
     }
   }
@@ -891,15 +957,15 @@ fn m_glitch(p: vec2f, pic: bool) -> vec3f {
   let s = u.res.z;
   let a0 = mp(GLITCH, 0); let a1 = mp(GLITCH, 1);
   let slice = max(a0.x * s, 1.0); let shift = a0.y * s; let split = a0.z * s; let hold = max(a0.w, 16.0); let block = max(a1.x * s, 2.0);
-  let row = floor(p.y / slice);
-  let rc = vec2f(p.x, (row + 0.5) * slice);
+  let row = floor(lat(p).y / slice);
+  let rc = vec2f(p.x, (row + 0.5) * slice - anc.y);
   let kr = clamp(kt(rc) + burst_k(rc), 0.0, 1.0);
   let here = select(exact(p), scene_at(p), pic);
   if (kr <= 0.0) { return here; }
   let tq = floor(u.fa.y * 1000.0 / hold);
   var q = p;
   if (h1(vec2f(row, tq)) < kr * 0.7) { q.x += (h1(vec2f(row * 1.7, tq + 3.0)) - 0.5) * 2.0 * shift * kr; }
-  let bc = floor(p / block);
+  let bc = floor(lat(p) / block);
   if (h1(bc + vec2f(tq * 0.37, 1.0)) < kr * 0.16) { q.x -= block * (1.0 + floor(h1(bc + 9.0) * 2.0)); }
   let sp = vec2f(split * kr, 0.0);
   // A picture keeps to itself: a sample that would leave it stays where it is.
@@ -976,8 +1042,8 @@ fn m_chrome(p: vec2f) -> vec3f {
   let s = u.res.z;
   if (k > 0.6) {
     let pitch = max(1.5, u.fa.x * s * 1.4);
-    let cell = floor(p / pitch);
-    let centre = (cell + 0.5) * pitch;
+    let cell = floor(lat(p) / pitch);
+    let centre = (cell + 0.5) * pitch - anc;
     let kc = kt(centre);
     if (kc > 0.62 + 0.35 * h1(cell + 2.2)) {
       let e = pitch * 0.25;
@@ -1075,16 +1141,17 @@ fn m_collage(p: vec2f) -> vec3f {
   if (!w.shape || (d.a > 0.02 && d.txt)) { return exact(p); }
   // The torn edge grows out of the shape and bites into it by less than a pixel, so a thin track or a
   // hairline outline stays whole.
-  var nsd = sd + max((vnoise(p / (22.0 * s)) - 0.5) * 2.0 * tear + (vnoise(p / (4.0 * s)) - 0.5) * tear * 0.35 - tear * 0.2, -0.4 * s);
+  let pa = lat(p);
+  var nsd = sd + max((vnoise(pa / (22.0 * s)) - 0.5) * 2.0 * tear + (vnoise(pa / (4.0 * s)) - 0.5) * tear * 0.35 - tear * 0.2, -0.4 * s);
   // A 3D object is cut from several papers, one per face: loosened, the creases open into torn gaps
   // (the nearness of a mesh is its silhouette and its creases), each with its lip of fibre.
   let ng = near_t(p).g;
   if (ng > 0.5 / 255.0 && ng < 0.05 && k > 0.0) {
-    nsd -= k * (3.0 + 4.0 * vnoise(p / (9.0 * s))) * s;
+    nsd -= k * (3.0 + 4.0 * vnoise(pa / (9.0 * s))) * s;
   }
   // Shadow, from the same edge a little up and to the left.
   let ps = p - vec2f(2.0, 3.0) * s;
-  let sh = sdist(ps) + (vnoise(ps / (22.0 * s)) - 0.5) * 2.0 * tear - tear * 0.2;
+  let sh = sdist(ps) + (vnoise(lat(ps) / (22.0 * s)) - 0.5) * 2.0 * tear - tear * 0.2;
   var g = gnd(p) * (1.0 - 0.16 * smoothstep(-3.0 * s, 1.0, sh) * step(nsd, 0.0));
   let paper = mix(u.third.rgb, vec3f(1.0), 0.4);
   g = mix(g, paper, smoothstep(-lip - 0.6, -lip + 0.6, nsd) * step(nsd, 0.0));
@@ -1115,9 +1182,138 @@ fn m_near(p: vec2f) -> vec3f {
   return col;
 }
 
+/// How much of what is at `q` leaves a scroll trace: text, and shapes drawn in the ink itself (rules,
+/// strokes); not panels, fills in the ground's tone, accent planes or pictures, which would smear whole
+/// areas.
+fn trace_w(e: Ink, q: vec2f) -> f32 {
+  if (near_t(q).g > 0.05) { return 0.0; }
+  return e.a * select(smoothstep(0.55, 0.9, e.tone), 1.0, e.txt);
+}
+/// The scroll trace over a material's colour at `p` (DESIGN.md §1.8.3): whole lines as one, behind the
+/// motion, never over the ink itself, so text stays exactly what it is. `q` is where the material read
+/// (a latched or slipped point), `m` the material.
+fn scroll_trace(col: vec3f, q: vec2f, m: i32, sc: Sc) -> vec3f {
+  let k = sc.k;
+  if (k <= 0.0) { return col; }
+  let s = u.res.z;
+  let own = dec(q);
+  if (own.a > 0.5) { return col; }
+  let d = sc.d;
+  var c = col;
+  if (m == DOT) {
+    // A phosphor trail: the rows the content has just left glow on as dots of the lattice, fading.
+    let pitch = max(1.5, u.fa.x * s);
+    let cell = floor(lat(q) / pitch);
+    let centre = (cell + 0.5) * pitch - anc;
+    let n = max(1.0, round(u.scrp.x * k / pitch));
+    var best = 0.0; var bc = vec3f(0.0);
+    for (var j = 1; j <= 6; j++) {
+      if (f32(j) > n) { break; }
+      let e = pitch * 0.25;
+      let at = centre + d * f32(j) * pitch;
+      let a = (ink(at + vec2f(-e, -e)) + ink(at + vec2f(e, -e)) + ink(at + vec2f(-e, e)) + ink(at + vec2f(e, e))) * 0.25;
+      let da = dec_at(a, at);
+      let w = trace_w(da, at) * (1.0 - (f32(j) - 0.5) / (n + 0.5));
+      if (w > best) { best = w; bc = da.rgb; }
+    }
+    let r = pitch * 0.34 * sqrt(best);
+    let dotm = unit(q - centre, r) * step(0.12, best);
+    return mix(c, mix(bc, u.accent.rgb, 0.35), dotm * 0.55 * k);
+  }
+  if (m == ASCII) {
+    // A trail of light characters on the character grid.
+    let a0 = mp(ASCII, 0);
+    let P = clamp(round(a0.x * s), CHAR_MIN, CHAR_MAX);
+    let cell = floor(lat(q) / P);
+    let centre = (cell + 0.5) * P - anc;
+    let n = max(1.0, round(u.scrp.x * k / P));
+    var best = 0.0;
+    for (var j = 1; j <= 5; j++) {
+      if (f32(j) > n) { break; }
+      let at = (cell + d * f32(j) + 0.5) * P - anc;
+      let a = cell_avg(cell + d * f32(j), P);
+      best = max(best, trace_w(dec_at(a, at), at) * (1.0 - (f32(j) - 0.5) / (n + 0.5)));
+    }
+    let lv = clamp(floor(best * 7.0), 0.0, 6.0);
+    if (lv < 1.0) { return c; }
+    let mk = char_mark(lv, fract(lat(q) / P), P);
+    return mix(c, mix(gnd(q), u.fg.rgb, 0.55), mk * k);
+  }
+  if (m == HALFTONE || m == PRINT) {
+    // The second colour out of register along the motion: a screened ghost of the key ink, behind it.
+    let off = d * u.scrp.y * k;
+    let at = q + off;
+    if (near_t(at).g > 0.05) { return c; }
+    if (m == HALFTONE) {
+      let pitch = max(2.0, mp(HALFTONE, 0).x * s * 0.5);
+      let ang = radians(mp(HALFTONE, 0).y + 30.0);
+      let rq = rot(lat(at), ang);
+      let cell = floor(rq / pitch);
+      let cc = rot((cell + 0.5) * pitch, -ang) - anc;
+      let e = pitch * 0.3;
+      let a = min(1.2 * 0.25 * (trace_w(dec(cc + vec2f(-e, -e)), cc) + trace_w(dec(cc + vec2f(e, -e)), cc) + trace_w(dec(cc + vec2f(-e, e)), cc) + trace_w(dec(cc + vec2f(e, e)), cc)), 1.0);
+      let r = pitch * 0.5 * sqrt(a);
+      let dm = smoothstep(r + 0.5, r - 0.5, length(rq - (cell + 0.5) * pitch)) * step(0.08, a);
+      return mix(c, u.accent.rgb, dm * 0.6 * k);
+    }
+    let a = trace_w(dec(at), at);
+    // On paper the second plate prints over (multiplies); on a dark ground it shows as its own colour.
+    if (lum(gnd(q)) > 0.5) { return mix(c, c * mix(vec3f(1.0), u.accent.rgb / max(gnd(q), vec3f(0.05)), 0.7), a * k); }
+    return mix(c, u.accent.rgb, a * k * 0.5);
+  }
+  if (m == LINO) {
+    // A carved echo: broken lines of ink behind each edge, ink or ground.
+    let L = u.scrp.x * k;
+    var hit = 0.0;
+    for (var j = 1; j <= 4; j++) {
+      let t = f32(j) / 4.0;
+      hit = max(hit, step(0.5, trace_w(dec(q + d * L * t), q + d * L * t)) * step(fract(dot(lat(q), d) / (3.0 * s) + t * 0.5), 0.45) * step(0.5 * t, vnoise(lat(q) * vec2f(0.05, 0.3) / s)));
+    }
+    return mix(c, u.fg.rgb, hit);
+  }
+  if (m == XRAY) {
+    // The outline once more, a little behind: a layer lagging under the motion.
+    let at = q + d * u.scrp.x * 0.5 * k;
+    let line = max(mp(XRAY, 0).x * s, 0.75);
+    let o = clamp(line + 0.5 - abs(sdist(at)), 0.0, 1.0) * step(0.02, near_t(at).r);
+    return mix(c, u.accent.rgb, o * 0.7 * k);
+  }
+  if (m == GLITCH || m == NEAR || m == CHROME) { return c; }
+  // plain (and collage, liquid): a soft trailing edge, at most.
+  let L = u.scrp.x * k * select(0.45, 1.0, m == LIQUID);
+  var a = 0.0; var tc = vec3f(0.0);
+  for (var j = 1; j <= 3; j++) {
+    let t = f32(j) / 3.0;
+    let e = dec(q + d * L * t);
+    let w = trace_w(e, q + d * L * t) * (1.0 - t * 0.85) * select(0.14, 0.4, m == LIQUID);
+    if (w > a) { a = w; tc = e.rgb; }
+  }
+  return mix(c, tc, a * k);
+}
+
 /// The final colour of the pixel centred at `p` (device px of the full-resolution frame).
-fn shade_new(p: vec2f) -> vec3f {
+fn shade_new(pf: vec2f) -> vec3f {
   let s = u.res.z; let t = u.res.w;
+  // Inside a scroll node: the lattices follow the content; moving fast, dot and ascii hold their rows
+  // to their lattice and glitch slips a band now and then (DESIGN.md §1.8.3).
+  let sc = scroll_here(pf);
+  anc = sc.o;
+  var p = pf;
+  let m0 = eff_mat(near_t(pf).a * 255.0);
+  if (sc.k > 0.0) {
+    if (m0 == DOT) { p = latch(pf, sc, max(1.5, u.fa.x * s)); }
+    else if (m0 == ASCII) { p = latch(pf, sc, clamp(round(mp(ASCII, 0).x * s), CHAR_MIN, CHAR_MAX)); }
+    else if (m0 == GLITCH) {
+      // One band at a time, no more often than every `slip_ms`, and only as fast as the motion asks.
+      let tq = floor(t / u.scrq.x);
+      let ax = abs(sc.d);
+      let across = vec2f(ax.y, ax.x);
+      let bh = u.scrp.w;
+      let band = floor(dot(pf, ax) / bh);
+      let pick = floor(h1(vec2f(tq, 1.7)) * dot(u.res.xy, ax) / bh);
+      if (band == pick && h1(vec2f(tq, 4.1)) < sc.k) { p = pf + across * (h1(vec2f(tq, 8.3)) - 0.5) * 2.0 * u.scrp.z * sc.k; }
+    }
+  }
   let here = near_t(p);
   let is_pic = here.g > 0.05;
   let m = eff_mat(here.a * 255.0);
@@ -1154,6 +1350,7 @@ fn shade_new(p: vec2f) -> vec3f {
       case 11: { col = m_near(p); }
       default: { col = m_plain(p); }
     }
+    col = scroll_trace(col, p, m, sc);
   }
   if (u.fd.y > 0.5) { col = pow(col, vec3f(2.2)); }
   return col;

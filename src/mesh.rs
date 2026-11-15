@@ -62,23 +62,56 @@ pub fn norm(a: [f32; 3]) -> [f32; 3] { let l = dot(a, a).sqrt(); if l > 0.0 { mu
 
 // ── Meshes ───────────────────────────────────────────────────────────────────────────────────────
 
-/// A flat-shaded mesh: triangles, counter-clockwise seen from outside.
+/// A mesh: triangles, counter-clockwise seen from outside. Flat-shaded (each triangle its face normal)
+/// unless `normals` gives every corner its own: then curved surfaces shade smoothly and only the creases
+/// between them, where the corners' normals differ, are edges.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct Mesh { pub tris: Vec<[[f32; 3]; 3]> }
+pub struct Mesh { pub tris: Vec<[[f32; 3]; 3]>, pub normals: Vec<[[f32; 3]; 3]> }
 impl Mesh {
     /// From shared corners and index triples.
     pub fn indexed(pos: &[[f32; 3]], idx: &[[u32; 3]]) -> Self {
-        Self { tris: idx.iter().map(|t| [pos[t[0] as usize], pos[t[1] as usize], pos[t[2] as usize]]).collect() }
+        Self { tris: idx.iter().map(|t| [pos[t[0] as usize], pos[t[1] as usize], pos[t[2] as usize]]).collect(), normals: vec![] }
     }
     pub fn normal(t: &[[f32; 3]; 3]) -> [f32; 3] { norm(cross(sub(t[1], t[0]), sub(t[2], t[0]))) }
-    /// The vertex buffer: position and face normal per corner (six floats).
+    /// The vertex buffer: position and normal per corner (six floats).
     pub fn vertices(&self) -> Vec<[f32; 6]> {
         let mut v = Vec::with_capacity(self.tris.len() * 3);
-        for t in &self.tris {
-            let n = Self::normal(t);
-            for p in t { v.push([p[0], p[1], p[2], n[0], n[1], n[2]]); }
+        for (i, t) in self.tris.iter().enumerate() {
+            let f = Self::normal(t);
+            for (j, p) in t.iter().enumerate() {
+                let n = self.normals.get(i).map_or(f, |n| n[j]);
+                v.push([p[0], p[1], p[2], n[0], n[1], n[2]]);
+            }
         }
         v
+    }
+    /// Smooth normals across edges whose faces meet at less than `crease_deg`; sharper edges stay
+    /// creases (each side keeps its own face's normal).
+    pub fn creased(mut self, crease_deg: f32) -> Self {
+        let cos = crease_deg.to_radians().cos();
+        let key = |p: [f32; 3]| [(p[0] * 1e4).round() as i64, (p[1] * 1e4).round() as i64, (p[2] * 1e4).round() as i64];
+        let faces: Vec<[f32; 3]> = self.tris.iter().map(Self::normal).collect();
+        let mut at: std::collections::HashMap<[i64; 3], Vec<usize>> = std::collections::HashMap::new();
+        for (i, t) in self.tris.iter().enumerate() { for p in t { at.entry(key(*p)).or_default().push(i); } }
+        self.normals = self.tris.iter().enumerate().map(|(i, t)| std::array::from_fn(|j| {
+            let mut n = [0.0; 3];
+            for &k in &at[&key(t[j])] { if dot(faces[k], faces[i]) >= cos { n = add(n, faces[k]); } }
+            norm(n)
+        })).collect();
+        self
+    }
+    /// The same mesh moved by `m` (positions and normals).
+    pub fn transformed(&self, m: &Mat4) -> Self {
+        Self { tris: self.tris.iter().map(|t| t.map(|p| m.point(p))).collect(), normals: self.normals.iter().map(|t| t.map(|n| norm(m.vector(n)))).collect() }
+    }
+    /// Both meshes in one.
+    pub fn merged(mut self, o: &Mesh) -> Self {
+        let flat = |m: &Mesh| -> Vec<[[f32; 3]; 3]> { if m.normals.len() == m.tris.len() { m.normals.clone() } else { m.tris.iter().map(|t| { let n = Self::normal(t); [n, n, n] }).collect() } };
+        let (mut a, b) = (flat(&self), flat(o));
+        a.extend(b);
+        self.tris.extend(o.tris.iter().copied());
+        self.normals = a;
+        self
     }
     /// The radius of the smallest origin-centred ball holding it.
     pub fn radius(&self) -> f32 { self.tris.iter().flatten().map(|p| dot(*p, *p)).fold(0.0, f32::max).sqrt() }
@@ -206,8 +239,94 @@ pub fn cone(seg: u32) -> Mesh { lathe(seg, 0.0) }
 /// A unit square in x–z, facing up (+y).
 pub fn plane() -> Mesh {
     let (a, b, c, d) = ([-0.5, 0.0, 0.5], [0.5, 0.0, 0.5], [0.5, 0.0, -0.5], [-0.5, 0.0, -0.5]);
-    orient(Mesh { tris: vec![[a, b, c], [a, c, d]] }, |c| [c[0], -1.0, c[2]])
+    orient(Mesh { tris: vec![[a, b, c], [a, c, d]], normals: vec![] }, |c| [c[0], -1.0, c[2]])
 }
+
+/// A closed 2D profile (x, y, counter-clockwise) extruded along z from −depth/2 to depth/2: the two
+/// caps and the side walls. The caps are triangulated as a fan from `centre` (the profile must be
+/// star-shaped around it, as gears, rings' spokes and cams are). Normals: the caps flat, the walls smooth
+/// where consecutive wall faces turn by less than `crease_deg`.
+pub fn extrude(profile: &[[f32; 2]], centre: [f32; 2], depth: f32, crease_deg: f32) -> Mesh {
+    let n = profile.len();
+    let (z0, z1) = (-depth * 0.5, depth * 0.5);
+    let mut m = Mesh::default();
+    let mut walls = Mesh::default();
+    for i in 0..n {
+        let (a, b) = (profile[i], profile[(i + 1) % n]);
+        // Caps: front (+z) counter-clockwise, back reversed.
+        m.tris.push([[centre[0], centre[1], z1], [a[0], a[1], z1], [b[0], b[1], z1]]);
+        m.tris.push([[centre[0], centre[1], z0], [b[0], b[1], z0], [a[0], a[1], z0]]);
+        walls.tris.push([[a[0], a[1], z0], [b[0], b[1], z0], [b[0], b[1], z1]]);
+        walls.tris.push([[a[0], a[1], z0], [b[0], b[1], z1], [a[0], a[1], z1]]);
+    }
+    let caps = Mesh { normals: m.tris.iter().map(|t| { let f = Mesh::normal(t); [f, f, f] }).collect(), tris: m.tris };
+    caps.merged(&walls.creased(crease_deg))
+}
+/// A ring profile extruded (a washer, a hub, a bearing): outer and inner radius, `seg` sides.
+pub fn tube(outer: f32, inner: f32, depth: f32, seg: u32) -> Mesh {
+    let seg = seg.max(6);
+    let pt = |r: f32, i: u32| { let a = i as f32 / seg as f32 * std::f32::consts::TAU; [r * a.cos(), r * a.sin()] };
+    let (z0, z1) = (-depth * 0.5, depth * 0.5);
+    let mut caps = Mesh::default();
+    let mut outer_w = Mesh::default();
+    let mut inner_w = Mesh::default();
+    for i in 0..seg {
+        let (o0, o1, i0, i1) = (pt(outer, i), pt(outer, i + 1), pt(inner, i), pt(inner, i + 1));
+        let v = |p: [f32; 2], z: f32| [p[0], p[1], z];
+        caps.tris.push([v(i0, z1), v(o0, z1), v(o1, z1)]); caps.tris.push([v(i0, z1), v(o1, z1), v(i1, z1)]);
+        caps.tris.push([v(i0, z0), v(o1, z0), v(o0, z0)]); caps.tris.push([v(i0, z0), v(i1, z0), v(o1, z0)]);
+        outer_w.tris.push([v(o0, z0), v(o1, z0), v(o1, z1)]); outer_w.tris.push([v(o0, z0), v(o1, z1), v(o0, z1)]);
+        inner_w.tris.push([v(i0, z0), v(i1, z1), v(i1, z0)]); inner_w.tris.push([v(i0, z0), v(i0, z1), v(i1, z1)]);
+    }
+    let caps = Mesh { normals: caps.tris.iter().map(|t| { let f = Mesh::normal(t); [f, f, f] }).collect(), tris: caps.tris };
+    caps.merged(&outer_w.creased(40.0)).merged(&inner_w.creased(40.0))
+}
+/// A spur gear around z: `teeth` teeth on a pitch circle of radius `r` (module = 2r / teeth), with
+/// involute-like flanks (each tooth a tapered trapezoid with rounded corners), extruded `depth`, around a
+/// bore of radius `bore`. The tooth tips and roots are creases, the flanks smooth.
+pub fn gear(teeth: u32, r: f32, depth: f32, bore: f32) -> Mesh {
+    use std::f32::consts::TAU;
+    let teeth = teeth.max(6);
+    let module = 2.0 * r / teeth as f32;
+    let (ra, rf) = (r + module, (r - 1.25 * module).max(bore + module * 0.5));
+    let mut prof: Vec<[f32; 2]> = vec![];
+    let step = TAU / teeth as f32;
+    // One tooth: root, flank up, tip, flank down; the flank's points follow a curve that widens toward
+    // the root as an involute does.
+    for k in 0..teeth {
+        let a0 = k as f32 * step;
+        let at = |frac: f32, rad: f32| { let a = a0 + frac * step; [rad * a.cos(), rad * a.sin()] };
+        for j in 0..=2 { prof.push(at(-0.25 + j as f32 * 0.05, rf)); }
+        for j in 1..=4 { let u = j as f32 / 4.0; let rad = rf + (ra - rf) * u; prof.push(at(-0.15 + 0.08 * u * (2.0 - u), rad)); }
+        for j in 1..=2 { prof.push(at(-0.07 + j as f32 * 0.0467, ra)); }
+        for j in 1..=4 { let u = 1.0 - j as f32 / 4.0; let rad = rf + (ra - rf) * u; prof.push(at(0.15 - 0.08 * u * (2.0 - u), rad)); }
+        for j in 1..=1 { prof.push(at(0.15 + j as f32 * 0.05, rf)); }
+    }
+    extrude_bored(&prof, bore, depth, 25.0)
+}
+/// A profile that is star-shaped around the origin, extruded along z with a round bore of radius
+/// `bore` through it: the caps join the outline to the bore along each outline point's own angle.
+pub fn extrude_bored(profile: &[[f32; 2]], bore: f32, depth: f32, crease_deg: f32) -> Mesh {
+    let n = profile.len();
+    let (z0, z1) = (-depth * 0.5, depth * 0.5);
+    let inner = |p: [f32; 2]| { let l = (p[0] * p[0] + p[1] * p[1]).sqrt().max(1e-6); [p[0] / l * bore, p[1] / l * bore] };
+    let v = |p: [f32; 2], z: f32| [p[0], p[1], z];
+    let (mut caps, mut walls, mut hole) = (Mesh::default(), Mesh::default(), Mesh::default());
+    for i in 0..n {
+        let (a, b) = (profile[i], profile[(i + 1) % n]);
+        let (ia, ib) = (inner(a), inner(b));
+        caps.tris.push([v(ia, z1), v(a, z1), v(b, z1)]); caps.tris.push([v(ia, z1), v(b, z1), v(ib, z1)]);
+        caps.tris.push([v(ia, z0), v(b, z0), v(a, z0)]); caps.tris.push([v(ia, z0), v(ib, z0), v(b, z0)]);
+        walls.tris.push([v(a, z0), v(b, z0), v(b, z1)]); walls.tris.push([v(a, z0), v(b, z1), v(a, z1)]);
+        hole.tris.push([v(ia, z0), v(ib, z1), v(ib, z0)]); hole.tris.push([v(ia, z0), v(ia, z1), v(ib, z1)]);
+    }
+    let caps = Mesh { normals: caps.tris.iter().map(|t| { let f = Mesh::normal(t); [f, f, f] }).collect(), tris: caps.tris };
+    caps.merged(&walls.creased(crease_deg)).merged(&hole.creased(40.0))
+}
+/// A box of size (x, y, z) centred at the origin, every edge a crease.
+pub fn block(x: f32, y: f32, z: f32) -> Mesh { cube().transformed(&Mat4::scale(x, y, z)).creased(30.0) }
+/// A cylinder around y, radius and height, with smooth sides and creased rims.
+pub fn rod(r: f32, h: f32, seg: u32) -> Mesh { cylinder(seg).transformed(&Mat4::scale(r * 2.0, h, r * 2.0)).creased(40.0) }
 
 /// Which mesh of a `Library`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
@@ -329,8 +448,15 @@ pub struct Mesh3d {
     pub edge_depth: f32,
     /// Normals of neighbouring texels further apart than this many degrees are an edge.
     pub edge_normal: f32,
+    /// 0: shaded by the light (ambient + lambert); 2: two flat tones, lit and shadow, with a hard
+    /// terminator where the light falls below `terminator` (0..1 of the lambert term).
+    pub tones: f32,
+    pub terminator: f32,
+    /// A drawn outline on the silhouette and the creases, logical px (0: none; the materials still see
+    /// the edges in the nearness).
+    pub outline: f32,
 }
-impl Default for Mesh3d { fn default() -> Self { Self { resolution_scale: 0.5, edge_depth: 0.04, edge_normal: 15.0 } } }
+impl Default for Mesh3d { fn default() -> Self { Self { resolution_scale: 0.5, edge_depth: 0.04, edge_normal: 15.0, tones: 0.0, terminator: 0.3, outline: 0.0 } } }
 
 /// Copies of one mesh, drawn in one call: every transform is one copy. `id` names the group in picks.
 #[derive(Clone, Debug, PartialEq)]
