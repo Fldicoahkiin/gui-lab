@@ -21,6 +21,8 @@ fn every_widget_is_in_the_registry_with_a_header() {
         let name = i["name"].as_str().unwrap();
         if name == "base" { continue; }
         assert!(i.get("response").is_some() && i.get("recompose").is_some(), "{name}: no response / recompose in registry.json");
+        let groups = ["inputs", "display", "feedback", "navigation", "layout", "data"];
+        assert!(name == "base" || i.get("group").and_then(|g| g.as_str()).is_some_and(|g| groups.contains(&g)), "{name}: no group (one of {groups:?}) in registry.json");
         if let Some(r) = i.get("recipe").and_then(|r| r.as_str()) { assert!(std::path::Path::new(&format!("{}/{r}", root())).exists(), "{name}: {r} missing"); }
     }
 }
