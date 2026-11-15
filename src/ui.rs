@@ -1327,7 +1327,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// other pressable control (a button), and text that is not part of a control's name. While a modal
     /// layer is open, only what is in it.
     pub fn a11y(&self) -> Vec<A11yNode> {
-        let leafy = |r: Role| !matches!(r, Role::Dialog | Role::List | Role::TabList | Role::Group);
+        let leafy = |r: Role| !matches!(r, Role::Dialog | Role::List | Role::TabList | Role::Group | Role::RadioGroup | Role::Listbox | Role::Region | Role::Table | Role::Row | Role::Navigation | Role::Menu | Role::Toolbar);
         let lo = self.modal_at.unwrap_or(0);
         let mut out: Vec<A11yNode> = vec![];
         let mut index: Vec<Option<usize>> = vec![None; self.nodes.len()];
