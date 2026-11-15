@@ -18,6 +18,8 @@ pub enum LookError {
     UnknownTheme { given: String, known: String, last: usize },
     #[error("unknown page `{given}`. Write a gallery page hash such as `button`, `number`, `material-dot` or `scene-morph`, or a recipe: {recipes}.")]
     UnknownPage { given: String, recipes: String },
+    #[error("unknown language `{given}`. Write one of: {known}.")]
+    UnknownLocale { given: String, known: String },
 }
 
 /// The off-screen renderer could not start.
@@ -92,4 +94,15 @@ pub enum PresetError {
     Json(String),
     #[error("the preset has no number at `{0}`. Paths are the JSON keys joined by dots, array places by their index: `transition.steps.0.a`, `interaction.press_ms`.")]
     NoSuchNumber(String),
+}
+
+/// A message catalog (`assets/i18n/<tag>.txt`) could not be used.
+#[derive(Debug, Error, PartialEq)]
+pub enum I18nError {
+    #[error("no text for `{key}` in {chain}: add a line `{key} = …` to {files} (for a plural message, `{key}.one = …` and `{key}.other = …` in English, `{key}.other = …` in Chinese)")]
+    MissingKey { key: String, chain: String, files: String },
+    #[error("line {line} of the catalog is neither a comment nor `key = text`: `{text}` (a continuation line starts with two spaces)")]
+    Syntax { line: usize, text: String },
+    #[error("line {line} of the catalog gives `{key}` a second time; keep one of them")]
+    Duplicate { line: usize, key: String },
 }

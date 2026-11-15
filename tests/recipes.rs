@@ -53,7 +53,7 @@ fn every_recipe_lays_out_and_answers() {
 fn every_recipe_renders() {
     let Ok(mut o) = lab::offscreen::Offscreen::try_new(640, 480) else { eprintln!("no GPU adapter here: skipped"); return };
     for name in NAMES {
-        let s = lab::drive::RenderSpec { page: format!("recipe-{name}"), w: 640, h: 480, scale: 1.0, material: None, theme: None, at_ms: 800.0, events: vec![] };
+        let s = lab::drive::RenderSpec { page: format!("recipe-{name}"), w: 640, h: 480, scale: 1.0, material: None, theme: None, at_ms: 800.0, events: vec![], locale: None };
         let r = lab::drive::render(&s, fonts(), Some(&mut o)).unwrap_or_else(|e| panic!("{name}: {e}"));
         assert!(r.png.len() > 2000, "{name}: an empty picture");
     }

@@ -42,7 +42,7 @@ pub fn number<M: Clone + 'static>(key: &str, label: &str, value: f32, spec: Spec
     let draft: Option<String> = draft.map(str::to_owned);
     let editing = draft.is_some();
     let step = |dir: f32, glyph: &str, k: &str| row().key(format!("{key}/{k}")).center().width(CONTROL_H).height(CONTROL_H).radius(RADIUS)
-        .fill(Paint::GROUND).border(LINE, Paint::FAINT).on_press(msg(Edit::Set(spec.clamp(value + dir * spec.step))))
+        .fill(Paint::GROUND).border(LINE, Paint::FAINT).on_press(msg(Edit::Set(spec.clamp(value + dir * spec.step)))).label(crate::i18n::tr(&format!("widget.number.{k}")))
         // The mono face: the pixel CJK face has no minus sign, and the steps then match in every theme.
         .child(text(glyph, LABEL + 2.0, Paint::TEXT).font(Font::Mono));
     let handler = {

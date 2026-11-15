@@ -72,6 +72,7 @@ pub fn list_virtual<M: Clone + 'static>(key: &str, count: usize, row_h: f32, hei
     };
     let k = key.to_owned();
     col().key(key).scroll().bar().height(height).radius(6.0).border(LINE, Paint::FAINT).on_key(keys).role(Role::List)
+        .label(crate::i18n::tr_args("widget.list.rows", &[("n", crate::i18n::Arg::from(count))]))
         .virtual_rows(count, row_h, 6, selected, move |i| {
             let on = selected == Some(i);
             let r = row().key(format!("{k}:{i}")).pad(14.0, 0.0).gap(12.0).align(AlignItems::CENTER).on_press(select(i)).focusable(false).role(Role::ListItem).selected(on).child(row_of(i));
