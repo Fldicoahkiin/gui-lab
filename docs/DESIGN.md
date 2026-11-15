@@ -405,7 +405,7 @@ layouts 12  shaped 345  views 40
 quality 0.5 auto  WebGL2  dpr 2
 ```
 
-数据（`src/perf.rs`，不依赖显卡）：`Perf.pending` 是上一帧以后花掉的时间，运行时往里加——`update+layout` 是 `update`、`view`、布局（最外一层的 `send` / `relayout` 计时，减去其中建场景的时间），`scene build` 是 `paint` 和 `finish`（生成实例、动画、角标、标注）；渲染器在 `draw` 里从开始到最后一次 `queue.submit` 的 CPU 时间是 `gpu submit`，然后 `Perf::frame` 把这三样记成一帧（只留最近两秒）。`Perf::summary(now)` 给出最近一秒画了几帧、每一项的最近 / 平均 / 最大毫秒。时间用 `perf::now_ms()`：网页是 `performance.now()`，原生是 `Instant`。另有工作计数（`Counters`：布局次数、parley 排版次数、`view` 次数、场景次数），测试也用。后端名和设备像素比由宿主填（`Perf::backend`：WebGPU、WebGL2、Vulkan、Metal）。读数打开时每 0.5 秒定时唤醒一次刷新，所以静止时帧数会落到 0；关着时不唤醒。
+数据（`src/perf.rs`，不依赖显卡）：`Perf.pending` 是上一帧以后花掉的时间，运行时往里加——`update+layout` 是 `update`、`view`、布局（最外一层的 `send` / `relayout` 计时，减去其中建场景的时间），`scene build` 是 `paint` 和 `finish`（生成实例、动画、角标、标注）；渲染器在 `draw` 里从开始到最后一次 `queue.submit` 的 CPU 时间是 `gpu submit`，然后 `Perf::frame` 把这三样记成一帧（只留最近两秒）。`Perf::summary(now)` 给出最近一秒画了几帧、每一项的最近 / 平均 / 最大毫秒。时间用 `perf::now_ms()`：网页是 `performance.now()`，原生是 `Instant`。另有工作计数（`Counters`：布局次数、parley 排版次数、`view` 次数、场景次数），测试也用。后端名和设备像素比由宿主填（`Perf::backend`：WebGPU、WebGL2、Vulkan、Metal）。读数打开时每 0.5 秒定时唤醒一次刷新，所以静止时帧数会落到 0；关着时不唤醒。网页上读数的开 / 详细 / 关记在 `localStorage`（`gui-lab.readout`，读写都包在 try / catch 里，存不了也照常运行；`readout()`、`set_readout(v)`）；原生不记。
 
 **分辨率预算**（`Look::quality`：1、0.75、0.5，或 0 = 自动）。第二遍（材质）可以先在 `q` 倍分辨率的一张图（`lo`，`ceil(宽 × q) × ceil(高 × q)`，画面的格式）上画：`fs_material` 用 `p = frag × (1 / q)`（`qual.x`），所以小图上的像素中心落在全分辨率画面的坐标上，材质函数里的长度、点距、取样都不用改。然后全分辨率的 `fs_material_up` 逐像素决定：
 
@@ -543,6 +543,8 @@ quality 0.5 auto  WebGL2  dpr 2
 - 整屏：外观变了（主题、材质、参数…）、窗口变了、提交正在显示、粒子在飞、在画低分辨率的那一遍、在用读材质时钟的材质（dot、glitch、xray）而时钟走了。
 
 **材质时钟**改成只跟着“场”走（波前、提交、凝结、变形、流动、重组、甩和拉过头、时间材质下有松开的东西），悬停的 burst、角标滑动、标注画出不再让它走：否则一次悬停就让 dot 的底在整个窗口里漂一下，只能整屏重画。
+
+**指针移动的花费**：指针移动本身不布局、不排版：影片第 9 章的视差用 `El::shift(dx, dy)`（布局以后整棵子树挪开，不进 taffy 的样式）；透镜只在它够得到的地方算进框：离指针 `dirty::LENS_REACH`（2.2）个半径以外它的钟形低于 0.01，图片的点距和 dot 底的点都不变，而且只在图片、三维元素上和 dot 材质下（别的材质的底不读透镜）；图片记号的读取范围只在有图片变了时加；标注层按集合比较（新出现和消失的那几个），一个标签多一个字不会让它后面的全部算变了。`Ui::dirty_inputs` 在没有显卡时给出渲染器会比较的那份输入。验收：`tests/pointer_moves.rs`：影片每一章和 gallery 每一页上指针移动 200 次，悬停的东西（控件、三维的那一份、标注看的元素）没变的那些次，没有布局、没有排版（只有跟着指针写坐标的标注标签可以排），从静止开始的移动重画的框不是整屏、不超过窗口的 60%（透镜在 dot 底、图片或三维上时它自己的范围就有三分之一）；标注的十字线和刻度尺跟着指针横贯整个范围，一个框装不下，这种页不量面积。
 
 **验收**：`check` 第 15 条：按钮页上悬停、按下（带波前和计数重组）、移开，每种材质 48 帧；图片页和三维页（透镜在图片和网格上）各几种材质；每一帧按框画的和整帧画的逐字节相同，并且有对照：大多数帧的框不到半个窗口。`bench` 的 dirty 一节（§9）。
 

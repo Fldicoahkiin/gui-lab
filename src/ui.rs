@@ -65,6 +65,8 @@ pub struct Node<M> {
     modal: Option<Modal<M>>,
     /// Laid out but not drawn (it or an ancestor is hidden until morphed); takes no input.
     pub hidden: bool,
+    /// Moved after layout (`El::shift`).
+    shift: (f32, f32),
     /// The nearest flow id at or above this node, and the node that carries it.
     flow: Option<(Rc<str>, usize)>,
     /// The material override of this subtree as the instance code (0 = none, see `style::override_code`).
@@ -622,6 +624,20 @@ impl<S, M: Clone> Ui<S, M> {
     /// How many recomposition tiles are alive now, over the whole window (bounded by
     /// `Recompose::max_tiles`).
     pub fn recompose_tiles(&self) -> usize { self.recomps.values().map(|r| r.tiles.len()).sum() }
+    /// The copy of a 3D element under the pointer (its key and the hit), as pick handlers last heard.
+    pub fn mesh_hover(&self) -> Option<&(String, Option<crate::mesh::MeshHit>)> { self.mesh_hover.as_ref() }
+    /// What the renderer compares to draw only what changed (DESIGN.md §1.19), as it would see this
+    /// frame under `look`, without a GPU: tests use it to bound the redrawn area. `global` is set when
+    /// a commit is showing or tiles fly (the renderer adds the reduced pass, which tests leave off).
+    pub fn dirty_inputs(&self, look: &Look) -> crate::dirty::Inputs {
+        let sc = self.scene();
+        crate::dirty::Inputs {
+            instances: sc.instances.clone(), annot: sc.annot.clone(),
+            meshes: sc.meshes.iter().map(|m| m.scene.fingerprint() ^ (m.rect[2].to_bits() as u64) << 32 ^ m.rect[3].to_bits() as u64).collect(),
+            field: *self.field(), look: *look, now: self.now, mclock: self.mclock, gclock: self.gclock, size: self.device_size(),
+            global: self.split.as_ref().is_some_and(|sp| self.split_alive(sp, self.now)) || self.run.as_ref().is_some_and(|r| r.clock(self.now).is_some()),
+        }
+    }
     /// The line boxes of a text element, window coordinates (logical px): `Text::line_boxes`.
     pub fn line_boxes(&mut self, key: &str) -> Vec<Rect> {
         let Some(n) = self.nodes.iter().find(|n| n.key == key) else { return vec![] };
@@ -2016,7 +2032,7 @@ impl<S, M: Clone> Ui<S, M> {
             // inside the window.
             let at = nodes[i].anchor.as_ref().and_then(|k| nodes[..i].iter().find(|n| &n.key == k)).map(|a| a.rect);
             let n = &mut nodes[i];
-            n.rect = Rect::new(origin.0 + l.location.x, origin.1 + l.location.y, l.size.width, l.size.height);
+            n.rect = Rect::new(origin.0 + l.location.x + n.shift.0, origin.1 + l.location.y + n.shift.1, l.size.width, l.size.height);
             if let Some(a) = at {
                 n.rect.x = a.x.min(screen.w - l.size.width - 8.0).max(0.0);
                 n.rect.y = a.bottom() + 4.0;
@@ -3244,7 +3260,7 @@ fn measure_key(c: &Content) -> u64 {
 /// A virtual list's rows are built here, for what its viewport shows.
 #[allow(clippy::too_many_arguments)]
 fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], off: (bool, bool), flow: Option<(Rc<str>, usize)>, inh: Inherit, vx: &mut VirtCtx, built: &mut Built, nodes: &mut Vec<Node<M>>) -> usize {
-    let El { key, style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, annotate, gaze_scope, material, loosen, anchor, clips, calm, mut on_text, multiline, selectable, cursor, virt, access, ripple, mut on_pick, mut on_wheel, rtl, mut children } = el;
+    let El { key, style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, shift, annotate, gaze_scope, material, loosen, anchor, clips, calm, mut on_text, multiline, selectable, cursor, virt, access, ripple, mut on_pick, mut on_wheel, rtl, mut children } = el;
     let mut style = style;
     let mut inh = inh;
     if let Some(r) = rtl { inh.rtl = r; }
@@ -3298,7 +3314,7 @@ fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], of
     let placeholder = NodeId::from(0u64);
     nodes.push(Node {
         key, parent, rect: Rect::default(), clip: Rect::default(), inner: Rect::default(), scroll, horizontal, focusable, disabled: off, extent: 0.0,
-        content, fill, border, radius, on_press, on_key, on_drag, on_blur, loose, wipe, bar, reveal, commit, modal, hidden, flow: flow.clone(),
+        content, fill, border, radius, on_press, on_key, on_drag, on_blur, loose, wipe, bar, reveal, commit, modal, hidden, shift, flow: flow.clone(),
         mat: inh.code(), loosen: inh.loosen, annotate, scope: gaze_scope, anchor, clips, calm, on_text, multiline, selectable: inh.select, cursor,
         virt: virt_info, access, respond, legible, ripple: inh.scope.clone(), ripple_scope: ripple.container, recompose, recompose_always: is_text && ripple.recompose == Some(true), unframed: ripple.unframed, keyed,
         on_pick, on_wheel, local: taffy::Layout::new(), tid: placeholder,

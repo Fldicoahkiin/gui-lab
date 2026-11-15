@@ -143,6 +143,9 @@ mod web {
         with(|s| { if let Some(l) = crate::i18n::Locale::from_tag(tag) { gallery::update(&mut s.ui.state, gallery::Msg::Locale(l)); s.ui.relayout(); } });
     }
     /// The current page's hash name, for the page to put in `location.hash`.
+    /// The readout's choice: 0 hidden, 1 shown, 2 with more (the page keeps it in localStorage).
+    #[wasm_bindgen] pub fn readout() -> u8 { with(|s| s.ui.state.overlay).unwrap_or(0) }
+    #[wasm_bindgen] pub fn set_readout(v: u8) { with(|s| { s.ui.state.overlay = v.min(2); s.ui.relayout(); }); }
     #[wasm_bindgen] pub fn hash() -> String { with(|s| s.ui.state.page.hash()).unwrap_or_default() }
     /// A DOM key name and Shift. Returns whether the page should not act on it itself.
     #[wasm_bindgen] pub fn key(name: &str, shift: bool, t: f32) -> bool {
