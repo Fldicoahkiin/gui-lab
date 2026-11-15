@@ -264,13 +264,21 @@ pub struct Virtual<M> { pub count: usize, pub row_h: f32, pub overscan: usize, p
 
 /// Roles of the accessibility mirror (the WAI-ARIA roles of the same name).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Role { Button, Switch, Slider, SpinButton, TabList, Tab, TextBox, Dialog, List, ListItem, Img, Heading, Group, Text }
+pub enum Role {
+    Button, Switch, Slider, SpinButton, TabList, Tab, TextBox, Dialog, List, ListItem, Img, Heading, Group, Text,
+    Checkbox, Radio, RadioGroup, Combobox, Listbox, Option, Tooltip, Status, ProgressBar, Region, Table, Row, Cell, ColumnHeader,
+    Navigation, Menu, MenuItem, Separator, Toolbar, Link,
+}
 impl Role {
     pub fn aria(self) -> &'static str {
         match self {
             Role::Button => "button", Role::Switch => "switch", Role::Slider => "slider", Role::SpinButton => "spinbutton",
             Role::TabList => "tablist", Role::Tab => "tab", Role::TextBox => "textbox", Role::Dialog => "dialog", Role::List => "list",
             Role::ListItem => "listitem", Role::Img => "img", Role::Heading => "heading", Role::Group => "group", Role::Text => "text",
+            Role::Checkbox => "checkbox", Role::Radio => "radio", Role::RadioGroup => "radiogroup", Role::Combobox => "combobox", Role::Listbox => "listbox",
+            Role::Option => "option", Role::Tooltip => "tooltip", Role::Status => "status", Role::ProgressBar => "progressbar", Role::Region => "region",
+            Role::Table => "table", Role::Row => "row", Role::Cell => "cell", Role::ColumnHeader => "columnheader", Role::Navigation => "navigation",
+            Role::Menu => "menu", Role::MenuItem => "menuitem", Role::Separator => "separator", Role::Toolbar => "toolbar", Role::Link => "link",
         }
     }
 }

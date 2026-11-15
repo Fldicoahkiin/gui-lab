@@ -234,7 +234,10 @@
         "base"
       ],
       "response": "loosen (decoration)",
-      "recompose": "keyed labels recompose when their text changes"
+      "recompose": "keyed labels recompose when their text changes",
+      "aliases": [
+        "separator"
+      ]
     },
     {
       "name": "scroll-area",
@@ -269,6 +272,319 @@
       "response": "loosen (a 3D element is decoration, like a picture, even when it can be turned)",
       "recompose": "none (no text)",
       "recipe": "docs/recipes/mesh.md"
+    },
+    {
+      "name": "checkbox",
+      "title": "复选框",
+      "functions": [
+        "checkbox"
+      ],
+      "description": "选择一个选项是否适用，和别的选项无关。按下、空格或 Enter 切换。",
+      "description_en": "Choose whether one option applies. Press, Space or Enter toggles.",
+      "files": [
+        "src/widgets/checkbox.rs"
+      ],
+      "dependencies": [
+        "base"
+      ],
+      "response": "nudge (a control: pushed as one piece by fronts, held and condensing at most to Look::legible_cap)",
+      "recompose": "keyed labels recompose when their text changes"
+    },
+    {
+      "name": "radio",
+      "title": "单选组",
+      "functions": [
+        "radio_group"
+      ],
+      "description": "在几个都看得见的选项里选一个。整组是一个焦点位置，方向键移动并选中。",
+      "description_en": "Choose one of a few visible options. One focus stop; the arrows move and select.",
+      "files": [
+        "src/widgets/radio.rs"
+      ],
+      "dependencies": [
+        "base"
+      ],
+      "response": "nudge (a control: pushed as one piece by fronts, held and condensing at most to Look::legible_cap)",
+      "recompose": "keyed labels recompose when their text changes"
+    },
+    {
+      "name": "select",
+      "title": "选择框",
+      "functions": [
+        "select"
+      ],
+      "description": "从按需打开的列表里选一项。Enter、空格或 ↓ 打开，↑ ↓ 移动，Enter 选中，Esc 关上。",
+      "description_en": "Choose one option from a list that opens on demand.",
+      "files": [
+        "src/widgets/select.rs"
+      ],
+      "dependencies": [
+        "base"
+      ],
+      "response": "nudge (a control: pushed as one piece by fronts, held and condensing at most to Look::legible_cap)",
+      "recompose": "keyed labels recompose when their text changes"
+    },
+    {
+      "name": "tooltip",
+      "title": "提示",
+      "functions": [
+        "tooltip"
+      ],
+      "description": "控件被悬停或获得焦点时显示的一句说明。",
+      "description_en": "A short description shown while a control is hovered or focused.",
+      "files": [
+        "src/widgets/tooltip.rs"
+      ],
+      "dependencies": [
+        "base"
+      ],
+      "response": "nudge (a control: pushed as one piece by fronts, held and condensing at most to Look::legible_cap)",
+      "recompose": "keyed labels recompose when their text changes"
+    },
+    {
+      "name": "popover",
+      "title": "浮层",
+      "functions": [
+        "popover"
+      ],
+      "description": "锚在按钮下面、按需打开的一层内容。",
+      "description_en": "Rich content in a layer anchored to a button.",
+      "files": [
+        "src/widgets/popover.rs"
+      ],
+      "dependencies": [
+        "base",
+        "button"
+      ],
+      "response": "nudge (a control: pushed as one piece by fronts, held and condensing at most to Look::legible_cap)",
+      "recompose": "keyed labels recompose when their text changes"
+    },
+    {
+      "name": "toast",
+      "title": "通知",
+      "functions": [
+        "toast"
+      ],
+      "description": "角落里一条简短的通知，过一会儿自己消失。",
+      "description_en": "A brief notice in a corner that goes away by itself.",
+      "files": [
+        "src/widgets/toast.rs"
+      ],
+      "dependencies": [
+        "base",
+        "button"
+      ],
+      "response": "nudge (a control: pushed as one piece by fronts, held and condensing at most to Look::legible_cap)",
+      "recompose": "keyed labels recompose when their text changes"
+    },
+    {
+      "name": "progress",
+      "title": "进度",
+      "functions": [
+        "progress"
+      ],
+      "description": "一项工作做到哪里了，或者正在进行。",
+      "description_en": "How far a task has come, or that it is going on.",
+      "files": [
+        "src/widgets/progress.rs"
+      ],
+      "dependencies": [
+        "base"
+      ],
+      "response": "nudge (a control: pushed as one piece by fronts, held and condensing at most to Look::legible_cap)",
+      "recompose": "keyed labels recompose when their text changes"
+    },
+    {
+      "name": "accordion",
+      "title": "折叠面板",
+      "functions": [
+        "accordion"
+      ],
+      "description": "每个标题下一段可以展开、收起的内容。",
+      "description_en": "Sections that open and close under their headings.",
+      "files": [
+        "src/widgets/accordion.rs"
+      ],
+      "dependencies": [
+        "base"
+      ],
+      "response": "nudge (a control: pushed as one piece by fronts, held and condensing at most to Look::legible_cap)",
+      "recompose": "keyed labels recompose when their text changes"
+    },
+    {
+      "name": "table",
+      "title": "表格",
+      "functions": [
+        "table"
+      ],
+      "description": "有列名的一行行记录。整张表一个焦点位置，↑ ↓ 换选中的行。",
+      "description_en": "Rows of records with named columns.",
+      "files": [
+        "src/widgets/table.rs"
+      ],
+      "dependencies": [
+        "base"
+      ],
+      "response": "nudge (a control: pushed as one piece by fronts, held and condensing at most to Look::legible_cap)",
+      "recompose": "keyed labels recompose when their text changes"
+    },
+    {
+      "name": "badge",
+      "title": "徽标",
+      "functions": [
+        "badge"
+      ],
+      "description": "表示状态或数量的小标签。",
+      "description_en": "A small label for a status or a count.",
+      "files": [
+        "src/widgets/badge.rs"
+      ],
+      "dependencies": [
+        "base"
+      ],
+      "response": "nudge (a control: pushed as one piece by fronts, held and condensing at most to Look::legible_cap)",
+      "recompose": "keyed labels recompose when their text changes"
+    },
+    {
+      "name": "avatar",
+      "title": "头像",
+      "functions": [
+        "avatar",
+        "initials"
+      ],
+      "description": "用名字的首字母代表一个人（不用照片）。",
+      "description_en": "Stands for a person by their initials (no pictures).",
+      "files": [
+        "src/widgets/avatar.rs"
+      ],
+      "dependencies": [
+        "base"
+      ],
+      "response": "nudge (a control: pushed as one piece by fronts, held and condensing at most to Look::legible_cap)",
+      "recompose": "keyed labels recompose when their text changes"
+    },
+    {
+      "name": "skeleton",
+      "title": "骨架",
+      "functions": [
+        "skeleton"
+      ],
+      "description": "内容还没来时按它的形状占位。",
+      "description_en": "Holds the place of content that is still loading.",
+      "files": [
+        "src/widgets/skeleton.rs"
+      ],
+      "dependencies": [
+        "base"
+      ],
+      "response": "nudge (a control: pushed as one piece by fronts, held and condensing at most to Look::legible_cap)",
+      "recompose": "keyed labels recompose when their text changes"
+    },
+    {
+      "name": "breadcrumb",
+      "title": "面包屑",
+      "functions": [
+        "breadcrumb"
+      ],
+      "description": "这一页在层级里的位置，每一级都能回去。",
+      "description_en": "Where this page is in a hierarchy, each level a link back.",
+      "files": [
+        "src/widgets/breadcrumb.rs"
+      ],
+      "dependencies": [
+        "base"
+      ],
+      "response": "nudge (a control: pushed as one piece by fronts, held and condensing at most to Look::legible_cap)",
+      "recompose": "keyed labels recompose when their text changes"
+    },
+    {
+      "name": "pagination",
+      "title": "分页",
+      "functions": [
+        "pagination"
+      ],
+      "description": "在结果的各页之间移动。",
+      "description_en": "Move between pages of results.",
+      "files": [
+        "src/widgets/pagination.rs"
+      ],
+      "dependencies": [
+        "base"
+      ],
+      "response": "nudge (a control: pushed as one piece by fronts, held and condensing at most to Look::legible_cap)",
+      "recompose": "keyed labels recompose when their text changes"
+    },
+    {
+      "name": "sheet",
+      "title": "抽屉",
+      "functions": [
+        "sheet"
+      ],
+      "description": "从窗口一侧盖上来的一块面板，页面仍然看得见。",
+      "description_en": "A panel over one side of the window.",
+      "files": [
+        "src/widgets/sheet.rs"
+      ],
+      "dependencies": [
+        "base",
+        "button"
+      ],
+      "response": "nudge (a control: pushed as one piece by fronts, held and condensing at most to Look::legible_cap)",
+      "recompose": "keyed labels recompose when their text changes"
+    },
+    {
+      "name": "context_menu",
+      "title": "右键菜单",
+      "functions": [
+        "context_menu"
+      ],
+      "description": "指针下的东西能做的命令，在那里打开。",
+      "description_en": "Commands for what is under the pointer, opened where it is.",
+      "files": [
+        "src/widgets/context_menu.rs"
+      ],
+      "dependencies": [
+        "base"
+      ],
+      "response": "nudge (a control: pushed as one piece by fronts, held and condensing at most to Look::legible_cap)",
+      "recompose": "keyed labels recompose when their text changes"
+    },
+    {
+      "name": "command",
+      "title": "命令面板",
+      "functions": [
+        "command",
+        "command_matches"
+      ],
+      "description": "打字找到并执行一个命令（⌘K / Ctrl+K）。",
+      "description_en": "Find and run a command by typing.",
+      "files": [
+        "src/widgets/command.rs"
+      ],
+      "dependencies": [
+        "base",
+        "input"
+      ],
+      "response": "nudge (a control: pushed as one piece by fronts, held and condensing at most to Look::legible_cap)",
+      "recompose": "keyed labels recompose when their text changes"
+    },
+    {
+      "name": "toggle",
+      "title": "切换按钮",
+      "functions": [
+        "toggle",
+        "toggle_group"
+      ],
+      "description": "一直按着的按钮（粗体、斜体），或一组这样的按钮。",
+      "description_en": "A button that stays pressed, or a group of them.",
+      "files": [
+        "src/widgets/toggle.rs"
+      ],
+      "dependencies": [
+        "base"
+      ],
+      "response": "nudge (a control: pushed as one piece by fronts, held and condensing at most to Look::legible_cap)",
+      "recompose": "keyed labels recompose when their text changes"
     }
   ]
 }
