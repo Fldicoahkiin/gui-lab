@@ -251,3 +251,20 @@ fn scrubbing_a_morph_moves_its_clock_only() {
     run(&mut ui, 4.0);
     assert!(ui.morph_run().is_none());
 }
+
+#[test]
+fn the_title_recomposes_across_a_cut() {
+    let mut ui = open();
+    pause(&mut ui);
+    film::go(&mut ui.state, 1, None);
+    ui.relayout();
+    run(&mut ui, 3.0);
+    let before = ui.node("film/word").expect("title").rect;
+    film::go(&mut ui.state, 2, None);
+    ui.relayout();
+    run(&mut ui, 1.0 / 60.0);
+    assert!(ui.recompose_tiles() > 0, "the title recomposes glyph by glyph");
+    assert_eq!(ui.node("film/word").expect("title").rect.x, before.x, "in the same place");
+    run(&mut ui, 3.0);
+    assert_eq!(ui.recompose_tiles(), 0);
+}
