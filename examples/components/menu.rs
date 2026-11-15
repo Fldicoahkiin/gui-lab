@@ -1,0 +1,12 @@
+//! menu: its examples, as the documentation page shows them (each `ex_*` function is a preview
+//! and its code).
+use lab::el::El;
+use lab::widgets::*;
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Msg { Nothing, Pick(usize), Edit(TextEdit), Num(Edit), Value(f32) }
+
+/// 关着 · Closed
+pub fn ex_0() -> El<Msg> {
+    menu("m1", "主题", &["暗", "明", "纸"], Some(0), false, false, Msg::Nothing, Msg::Nothing, Msg::Pick)
+}

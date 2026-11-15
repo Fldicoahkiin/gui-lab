@@ -294,6 +294,9 @@ pub struct Ui<S, M> {
     /// Keys nothing on the page used (the flag is Shift), and keys let go; either returns whether
     /// the state changed.
     unused_key: Option<fn(&mut S, Key, bool) -> bool>,
+    /// Cmd / Ctrl + a character no text field took (⌘K), and scroll positions told to the state.
+    shortcut: Option<fn(&mut S, char) -> bool>,
+    scrolled_of: Option<ScrollHook<S>>,
     released: Option<fn(&mut S, Key) -> bool>,
     /// Told of every press, wheel turn and key from the person (before it is handled); returns whether
     /// the state changed.
@@ -447,6 +450,8 @@ pub fn rubber_band(over: f32, d: f32, rubber: f32, max: f32) -> f32 {
 /// second, smoothed, signed: positive is the offset growing) while it moves, and when it last moved.
 #[derive(Clone, Copy, Debug, Default)]
 struct Motion { off: f32, v: f32, last: f32 }
+/// Tells the state where a scroll node is: (state, key, offset, where an element is in it).
+pub type ScrollHook<S> = fn(&mut S, &str, f32, &dyn Fn(&str) -> Option<f32>) -> bool;
 /// How quickly the measured scroll speed follows the motion (s): long enough that one wheel notch in one
 /// frame does not read as a fling, short enough that a fling reads at once.
 const SPEED_TAU: f32 = 0.06;
@@ -523,6 +528,13 @@ impl<S, M: Clone> Ui<S, M> {
     /// Give the state the keys nothing on the page used (Esc on a scene, a key that is held);
     /// `f` returns whether the state changed.
     pub fn on_unused_key(mut self, f: fn(&mut S, Key, bool) -> bool) -> Self { self.unused_key = Some(f); self }
+    /// Cmd (Ctrl) with a character that no text field used (⌘K for a search); `f` returns whether it
+    /// was used (the view is then built again).
+    pub fn on_shortcut(mut self, f: fn(&mut S, char) -> bool) -> Self { self.shortcut = Some(f); self }
+    /// After a scroll node moved: its key, its offset, and where any element is from the scroller's
+    /// top (logical px, `None` when it is not in it), so the state can follow what is in view (a page
+    /// outline). `f` returns whether the view changed.
+    pub fn on_scrolled(mut self, f: ScrollHook<S>) -> Self { self.scrolled_of = Some(f); self }
     /// Hear of every press, wheel turn and key press before it is handled (a demonstration that the
     /// person takes over).
     pub fn on_input(mut self, f: fn(&mut S) -> bool) -> Self { self.input = Some(f); self }
@@ -549,7 +561,7 @@ impl<S, M: Clone> Ui<S, M> {
             hover: None, focus: None, pressed: None, capture: None, modal_at: None, modal_key: None, return_focus: None, split: None, splits: 0,
             keyboard: false, marks: Marks::default(), sized: None, commands: None, unseen: vec![], base: vec![], tags: vec![], roles: vec![],
             run: None, painted_phase: 0, flows: HashMap::new(), ghosts: vec![], body_len: 0, animating: false, lifted: HashMap::new(),
-            gaze_of: None, gaze_seen: HashMap::new(), annots: vec![], hovered: None, pointer_of: None, scripted: false, ticked: None, unused_key: None, released: None, input: None,
+            gaze_of: None, gaze_seen: HashMap::new(), annots: vec![], hovered: None, pointer_of: None, scripted: false, ticked: None, unused_key: None, shortcut: None, scrolled_of: None, released: None, input: None,
             dirty: true, look_of: None, locale_of: None, timing: Timing::default(), wake_of: None, latest_birth: f32::NEG_INFINITY, gaze_until: f32::NEG_INFINITY,
             marks_moving: false, caret: None, caret_on: true, static_loose: false, mclock: 0.0, moving: false, gclock: 0.0, ground_moving: false,
             perf: crate::perf::Perf { quality: 1.0, ..Default::default() }, span: 0, painting: false, overlay: false, overlay_at: 0.0,
@@ -1283,7 +1295,10 @@ impl<S, M: Clone> Ui<S, M> {
             if let Some(ev) = ev && self.send_text(ev) { return true; }
         }
         // Shortcuts with Cmd are only for text fields; the rest belong to the system.
-        if mods.cmd { return false; }
+        if mods.cmd {
+            if let (Key::Char(c), Some(f)) = (k, self.shortcut) && f(&mut self.state, c.to_ascii_lowercase()) { self.relayout(); return true; }
+            return false;
+        }
         let lo = self.modal_at.unwrap_or(0);
         let fi = self.focus.as_deref().and_then(|f| self.nodes.iter().position(|n| n.key == f)).filter(|&i| i >= lo);
         if let Some(fi) = fi && let Some(m) = self.nodes[fi].on_key.clone().and_then(|f| f(k, shift)) {
@@ -1763,6 +1778,7 @@ impl<S, M: Clone> Ui<S, M> {
                 Cmd::Press { key } => { self.scripted = true; self.activate(&key); self.scripted = false; }
                 Cmd::Pointer { x, y } => { let s = self.scale; self.field.pointer[0] = x * s; self.field.pointer[1] = y * s; self.dirty = true; }
                 Cmd::Focus { key } => self.focus_key(&key),
+                Cmd::ScrollTo { key } => self.scroll_to(&key),
                 Cmd::Scrub(at) => self.scrub(at),
                 Cmd::Flow(_) | Cmd::Commit { .. } => {}
             }
@@ -1866,9 +1882,26 @@ impl<S, M: Clone> Ui<S, M> {
             nodes[i].tid = tid;
             tids.insert(nodes[i].key.clone(), tid);
         }
-        // What is gone from the view goes from the tree.
-        for (_, t) in self.tids.drain() {
-            if !used.contains(&t) { let _ = self.tree.remove(t); self.mkeys.remove(&t); changed = true; }
+        // What is gone from the view goes from the tree. A node that moved from a parent that is going
+        // to a parent that stays is still in the old parent's list (taffy does not take it out when
+        // the new parent is set), so the going nodes first drop the children that stay, and the parents
+        // that hold those are set again.
+        let gone: Vec<NodeId> = self.tids.drain().map(|(_, t)| t).filter(|t| !used.contains(t)).collect();
+        let mut moved: HashSet<NodeId> = HashSet::new();
+        for &t in &gone {
+            let kids = self.tree.children(t).unwrap_or_default();
+            if kids.iter().any(|k| used.contains(k)) {
+                moved.extend(kids.iter().copied().filter(|k| used.contains(k)));
+                let keep: Vec<NodeId> = kids.into_iter().filter(|k| !used.contains(k)).collect();
+                let _ = self.tree.set_children(t, &keep);
+            }
+        }
+        for t in gone { let _ = self.tree.remove(t); self.mkeys.remove(&t); changed = true; }
+        if !moved.is_empty() {
+            for i in 0..nodes.len() {
+                let kids: Vec<NodeId> = built.kids[i].iter().map(|&c| nodes[c].tid).collect();
+                if kids.iter().any(|k| moved.contains(k)) { let _ = self.tree.set_children(nodes[i].tid, &kids); }
+            }
         }
         self.tids = tids;
         let root = nodes[0].tid;
@@ -1971,8 +2004,28 @@ impl<S, M: Clone> Ui<S, M> {
         self.scroll_paint = true;
         if past { self.relayout(); } else { self.place(); self.paint(); }
         self.scroll_paint = false;
+        self.tell_scrolled();
     }
 
+    /// Tell the state where the scroll nodes are (`on_scrolled`).
+    fn tell_scrolled(&mut self) {
+        let Some(f) = self.scrolled_of else { return };
+        let mut changed = false;
+        let scrollers: Vec<(String, Rect, f32)> = self.nodes.iter().filter(|n| n.scroll && !n.horizontal).map(|n| (n.key.clone(), n.inner, self.scroll.get(&n.key).copied().unwrap_or(0.0))).collect();
+        for (k, r, off) in scrollers {
+            let nodes = &self.nodes;
+            let at = |key: &str| nodes.iter().find(|n| n.key == key).map(|n| n.rect.y - r.y);
+            changed |= f(&mut self.state, &k, off, &at);
+        }
+        if changed { self.relayout(); }
+    }
+    /// Scroll the nearest scroll ancestor of `key` so the element's top is at the scroller's top.
+    fn scroll_to(&mut self, key: &str) {
+        let Some(i) = self.nodes.iter().position(|n| n.key == key) else { return };
+        let Some(sc) = self.up(i, |n| n.scroll && !n.horizontal).filter(|&s| s != i) else { return };
+        let d = self.nodes[i].rect.y - self.nodes[sc].inner.y - 8.0;
+        if self.scroll_by(sc, d) { self.scrolled(); }
+    }
     /// A modal layer opened or closed: focus moves into it (remembering where it was), or back.
     fn layer_changed(&mut self) {
         let key = self.modal_at.map(|m| self.nodes[m].key.clone());

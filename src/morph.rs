@@ -197,6 +197,8 @@ pub enum Cmd {
     Commit { x: f32, y: f32 },
     /// Give the element `key` the focus (as the keyboard would), after this layout.
     Focus { key: String },
+    /// Scroll so the element `key` is at the top of its scroller (an outline's link), after this layout.
+    ScrollTo { key: String },
     /// Hold the morph in progress at this point of its flight (0 = the source's tiles, 1 = the target's),
     /// or let it run on from where it is held (`None`).
     Scrub(Option<f32>),

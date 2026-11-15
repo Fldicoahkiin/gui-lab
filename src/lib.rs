@@ -1,5 +1,6 @@
 extern crate self as lab;
 
+pub mod add;
 pub mod demo;
 pub mod dirty;
 pub mod el;
@@ -7,6 +8,7 @@ pub mod error;
 pub mod gallery;
 pub mod gaze;
 pub mod i18n;
+pub mod markdown;
 pub mod marks;
 pub mod mesh;
 pub mod morph;
@@ -147,6 +149,8 @@ mod web {
     #[wasm_bindgen] pub fn ime_commit(text: &str, t: f32) -> bool { with(|s| { s.ui.tick(t); s.ui.ime_commit(text) }).unwrap_or(false) }
     #[wasm_bindgen] pub fn paste(text: &str, t: f32) -> bool { with(|s| { s.ui.tick(t); s.ui.paste(text) }).unwrap_or(false) }
     #[wasm_bindgen] pub fn copy() -> Option<String> { with(|s| s.ui.copy()).flatten() }
+    /// Text a copy button asked to put on the clipboard (once).
+    #[wasm_bindgen] pub fn take_clipboard() -> Option<String> { with(|s| s.ui.state.clipboard.take()).flatten() }
     #[wasm_bindgen] pub fn cut(t: f32) -> Option<String> { with(|s| { s.ui.tick(t); s.ui.cut() }).flatten() }
     /// Where the focused field's caret is (x, y, w, h, CSS px), or nothing when focus is not on one.
     #[wasm_bindgen] pub fn ime_rect() -> Vec<f32> { with(|s| s.ui.ime_rect().map(|r| vec![r.x, r.y, r.w, r.h]).unwrap_or_default()).unwrap_or_default() }
