@@ -32,8 +32,10 @@ Every documentation page as Markdown, at `md/en/<page>.md` and `md/zh-Hans/<page
 
 - [Introduction](md/en/docs-introduction.md): gui-lab is an interface framework that draws every pixel itself, written in Rust on wgpu; the same code runs in a native window and on the web.
 - [Installation](md/en/docs-installation.md): Pick the host your interface lives in.
+- [Command line](md/en/docs-cli.md): Components are distributed as source, the way shadcn/ui does it: you copy a component's file into your project and change it there.
 - [Your first view](md/en/docs-first-view.md): A view is a function from state to an element tree; an update is a function from state and a message to a new state.
 - [Project structure](md/en/docs-project-structure.md): 
+- [Forms](md/en/docs-forms.md): A form is state and messages, like everything else: the state holds every value, each widget sends a message for each edit, and update is the only place a va…
 - [The tree and messages](md/en/docs-tree-and-messages.md): After every message the runtime calls view(&state) once, gets a new El tree, compares it with the last by key and lays out again only what changed.
 - [Layout](md/en/docs-layout.md): Layout is taffy's flexbox and grid, in logical pixels; elements do not shrink unless asked.
 - [Text](md/en/docs-text.md): Text is set by parley and rasterised by swash; every atlas pixel holds coverage and the signed distance to the stroke, so every material draws a glyph by its…

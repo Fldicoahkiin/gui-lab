@@ -17,6 +17,7 @@
     {
       "name": "button",
       "title": "按钮",
+      "group": "inputs",
       "functions": [
         "button",
         "button_as"
@@ -35,6 +36,7 @@
     {
       "name": "number",
       "title": "数字",
+      "group": "inputs",
       "functions": [
         "number"
       ],
@@ -52,6 +54,7 @@
     {
       "name": "input",
       "title": "输入框",
+      "group": "inputs",
       "functions": [
         "input",
         "textarea"
@@ -70,6 +73,7 @@
     {
       "name": "switch",
       "title": "开关",
+      "group": "inputs",
       "functions": [
         "switch",
         "switch_sized"
@@ -88,6 +92,7 @@
     {
       "name": "slider",
       "title": "滑块",
+      "group": "inputs",
       "functions": [
         "slider"
       ],
@@ -105,6 +110,7 @@
     {
       "name": "tabs",
       "title": "标签页",
+      "group": "navigation",
       "functions": [
         "tabs"
       ],
@@ -121,6 +127,7 @@
     {
       "name": "choice",
       "title": "选项",
+      "group": "inputs",
       "functions": [
         "choice",
         "segmented"
@@ -138,6 +145,7 @@
     {
       "name": "list",
       "title": "列表",
+      "group": "data",
       "functions": [
         "list"
       ],
@@ -155,6 +163,7 @@
     {
       "name": "menu",
       "title": "菜单",
+      "group": "navigation",
       "functions": [
         "menu"
       ],
@@ -171,6 +180,7 @@
     {
       "name": "card",
       "title": "卡片",
+      "group": "layout",
       "functions": [
         "card"
       ],
@@ -188,6 +198,7 @@
     {
       "name": "dialog",
       "title": "对话框",
+      "group": "feedback",
       "functions": [
         "dialog"
       ],
@@ -206,6 +217,7 @@
     {
       "name": "image",
       "title": "图片",
+      "group": "display",
       "functions": [
         "image"
       ],
@@ -222,6 +234,7 @@
     {
       "name": "divider",
       "title": "分隔线",
+      "group": "layout",
       "functions": [
         "divider",
         "vdivider"
@@ -242,6 +255,7 @@
     {
       "name": "scroll-area",
       "title": "滚动区",
+      "group": "layout",
       "functions": [
         "scroll_area"
       ],
@@ -258,6 +272,7 @@
     {
       "name": "orbit",
       "title": "三维视图",
+      "group": "display",
       "functions": [
         "orbit"
       ],
@@ -276,6 +291,7 @@
     {
       "name": "checkbox",
       "title": "复选框",
+      "group": "inputs",
       "functions": [
         "checkbox"
       ],
@@ -293,6 +309,7 @@
     {
       "name": "radio",
       "title": "单选组",
+      "group": "inputs",
       "functions": [
         "radio_group"
       ],
@@ -310,6 +327,7 @@
     {
       "name": "select",
       "title": "选择框",
+      "group": "inputs",
       "functions": [
         "select"
       ],
@@ -327,6 +345,7 @@
     {
       "name": "tooltip",
       "title": "提示",
+      "group": "feedback",
       "functions": [
         "tooltip"
       ],
@@ -344,6 +363,7 @@
     {
       "name": "popover",
       "title": "浮层",
+      "group": "feedback",
       "functions": [
         "popover"
       ],
@@ -362,6 +382,7 @@
     {
       "name": "toast",
       "title": "通知",
+      "group": "feedback",
       "functions": [
         "toast"
       ],
@@ -380,6 +401,7 @@
     {
       "name": "progress",
       "title": "进度",
+      "group": "feedback",
       "functions": [
         "progress"
       ],
@@ -397,6 +419,7 @@
     {
       "name": "accordion",
       "title": "折叠面板",
+      "group": "layout",
       "functions": [
         "accordion"
       ],
@@ -414,6 +437,7 @@
     {
       "name": "table",
       "title": "表格",
+      "group": "data",
       "functions": [
         "table"
       ],
@@ -431,6 +455,7 @@
     {
       "name": "badge",
       "title": "徽标",
+      "group": "display",
       "functions": [
         "badge"
       ],
@@ -448,6 +473,7 @@
     {
       "name": "avatar",
       "title": "头像",
+      "group": "display",
       "functions": [
         "avatar",
         "initials"
@@ -466,6 +492,7 @@
     {
       "name": "skeleton",
       "title": "骨架",
+      "group": "display",
       "functions": [
         "skeleton"
       ],
@@ -483,6 +510,7 @@
     {
       "name": "breadcrumb",
       "title": "面包屑",
+      "group": "navigation",
       "functions": [
         "breadcrumb"
       ],
@@ -500,6 +528,7 @@
     {
       "name": "pagination",
       "title": "分页",
+      "group": "navigation",
       "functions": [
         "pagination"
       ],
@@ -517,6 +546,7 @@
     {
       "name": "sheet",
       "title": "抽屉",
+      "group": "feedback",
       "functions": [
         "sheet"
       ],
@@ -535,6 +565,7 @@
     {
       "name": "context_menu",
       "title": "右键菜单",
+      "group": "navigation",
       "functions": [
         "context_menu"
       ],
@@ -552,6 +583,7 @@
     {
       "name": "command",
       "title": "命令面板",
+      "group": "navigation",
       "functions": [
         "command",
         "command_matches"
@@ -571,6 +603,7 @@
     {
       "name": "toggle",
       "title": "切换按钮",
+      "group": "inputs",
       "functions": [
         "toggle",
         "toggle_group"
