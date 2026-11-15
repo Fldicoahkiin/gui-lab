@@ -51,6 +51,9 @@ struct Uniforms {
     scrollo: [[f32; 4]; 8],
     scrp: [f32; 4],
     scrq: [f32; 4],
+    /// The finishing pass (`post::Post::pack`) and its palette.
+    post: [[f32; 4]; 6],
+    pal: [[f32; 4]; crate::post::PALETTE_MAX],
 }
 
 const INK: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -194,6 +197,8 @@ pub struct Renderer {
     prev: Option<crate::dirty::Inputs>,
     zero: [wgpu::RenderPipeline; 2],
     blit: wgpu::RenderPipeline,
+    /// The finishing pass in place of the blit when the look has one (DESIGN.md §1.21).
+    post: wgpu::RenderPipeline,
     blit_group: wgpu::BindGroup,
     /// The last frame's two boxes (for the readout and the bench); `None`: all of it.
     pub last_region: Option<([u32; 4], [u32; 4])>,
@@ -206,7 +211,7 @@ pub struct Renderer {
 /// The mesh pass's uniforms (see `mesh.wgsl`).
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct MeshUniforms { view: [f32; 16], proj: [f32; 16], light: [f32; 4], misc: [f32; 4], size: [f32; 4], spread: [f32; 4] }
+struct MeshUniforms { view: [f32; 16], proj: [f32; 16], light: [f32; 4], misc: [f32; 4], size: [f32; 4], spread: [f32; 4], depth: [f32; 4] }
 
 /// One copy of a mesh, as the mesh pass reads it (instance rate): its transform's columns, its paint
 /// (tone, accent, hue) and its number + 1 as two bytes.
@@ -299,6 +304,7 @@ impl Renderer {
         let mesh = Self::mesh_gpu(&device);
         let zero = [pipe("vs_full", "fs_zero", INK, None, false), pipe("vs_full", "fs_zero", out_format, None, false)];
         let blit = pipe("vs_full", "fs_blit", out_format, None, false);
+        let post = pipe("vs_full", "fs_post", out_format, None, false);
         let ubuf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: std::mem::size_of::<Uniforms>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         // Only the mark atlas has mip levels; for every other texture the mipmap filter does nothing.
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor { mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, mipmap_filter: wgpu::MipmapFilterMode::Linear, ..Default::default() });
@@ -333,7 +339,7 @@ impl Renderer {
             pictures: HashMap::new(), instances, capacity, pipes, annots, annot_capacity: 256, up_pipe: None, shader, pl,
             ink: blank.clone(), soft: blank.clone(), lo: blank.clone(), lo_key: (0, 0, 0), material_up: material.clone(), auto: Default::default(), always_lo: false,
             near: blank, material_first: material.clone(), material, size: (0, 0), tiles, mesh, sim_rows: 0,
-            region: crate::dirty::Region::All, partial: true, frame_view: blank_view.clone(), prev: None, zero, blit, blit_group: blank_group, last_region: None, tr: [[0.0; 4]; 9], boxes: [[0.0; 4]; 16], tr_loose: 0.0,
+            region: crate::dirty::Region::All, partial: true, frame_view: blank_view.clone(), prev: None, zero, blit, post, blit_group: blank_group, last_region: None, tr: [[0.0; 4]; 9], boxes: [[0.0; 4]; 16], tr_loose: 0.0,
         };
         r.set_picture(u32::MAX, 1, 1, &[0, 0, 0, 255]);
         r.resize(w, h);
@@ -426,7 +432,7 @@ impl Renderer {
 
     /// Draw every `scene3d` element of `scene` off-screen and resolve it (DESIGN.md §1.18), unless it
     /// is exactly what its target already holds.
-    fn prepare_meshes(&mut self, enc: &mut wgpu::CommandEncoder, scene: &Scene, lib: &crate::mesh::Library) {
+    fn prepare_meshes(&mut self, enc: &mut wgpu::CommandEncoder, scene: &Scene, lib: &crate::mesh::Library, marks: crate::style::Marks) {
         if scene.meshes.is_empty() { return; }
         if self.mesh.generation != lib.generation {
             let mut all: Vec<[f32; 6]> = vec![];
@@ -444,7 +450,7 @@ impl Renderer {
                 let t = self.mesh_target(size);
                 if self.mesh.targets.len() <= k { self.mesh.targets.push(t); } else { self.mesh.targets[k] = t; }
             }
-            let key = (sc.fingerprint(), [rw as u32, rh as u32], lib.generation);
+            let key = (sc.fingerprint() ^ (marks.depth_scale.to_bits() as u64) << 7 ^ (marks.depth_dim.to_bits() as u64) << 29, [rw as u32, rh as u32], lib.generation);
             if self.mesh.targets[k].drawn == Some(key) { continue; }
             self.mesh.targets[k].drawn = Some(key);
             let px = rw / size.0 as f32;
@@ -455,6 +461,7 @@ impl Renderer {
                 light: [sc.light.dir[0], sc.light.dir[1], sc.light.dir[2], sc.light.ambient.clamp(0.0, 1.0)],
                 misc: [cam.near.max(1e-3), cam.far.max(cam.near + 1e-3), sc.spec.edge_depth.max(0.0), sc.spec.edge_normal.clamp(0.0, 180.0).to_radians().cos()],
                 size: [size.0 as f32, size.1 as f32, px, radius], spread: [SPREAD as f32, sc.spec.tones, sc.spec.terminator.clamp(0.0, 1.0), 0.0],
+                depth: { let (z0, z1) = if marks.depth_scale != 0.0 || marks.depth_dim != 0.0 { sc.depth_range(lib) } else { (0.0, 1.0) }; [marks.depth_scale.clamp(0.0, 1.0), marks.depth_dim.clamp(0.0, 1.0), z0, z1] },
             };
             let mut copies: Vec<MeshCopy> = Vec::with_capacity(sc.count());
             let mut draws: Vec<(u32, u32, u32, u32)> = vec![];
@@ -871,7 +878,7 @@ impl Renderer {
                     self.uniforms(&Field::default(), look, scale, now, mt, [0.0; 4], [1.0, 1.0, w, h]);
                     self.upload(&sc);
                     let mut enc = self.device.create_command_encoder(&Default::default());
-                    self.prepare_meshes(&mut enc, &sc, ui.meshes());
+                    self.prepare_meshes(&mut enc, &sc, ui.meshes(), look.marks);
                     self.stage1(&mut enc, &sc, &iv, &nv, None, 0, None);
                     self.queue.submit([enc.finish()]);
                 }
@@ -1057,7 +1064,7 @@ impl Renderer {
             self.queue.write_buffer(&self.annots, 0, bytemuck::cast_slice(&scene.annot));
         }
         let mut enc = self.device.create_command_encoder(&Default::default());
-        self.prepare_meshes(&mut enc, scene, f.lib);
+        self.prepare_meshes(&mut enc, scene, f.lib, f.look.marks);
         let (ink, near, soft) = (self.ink.clone(), self.near.clone(), self.soft.clone());
         // The main frame is drawn into the kept frame, only within what changed, then copied out.
         let (w, h) = self.size;
@@ -1102,7 +1109,7 @@ impl Renderer {
         }
         if with_before {
             let mut pass = clear(&mut enc, target, wgpu::Color::BLACK);
-            pass.set_pipeline(&self.blit);
+            pass.set_pipeline(if f.look.post.active() { &self.post } else { &self.blit });
             pass.set_bind_group(0, &self.blit_group, &[]);
             pass.draw(0..3, 0..1);
         }
@@ -1122,6 +1129,7 @@ impl Renderer {
             mats[i * 2] = [m.0[0], m.0[1], m.0[2], m.0[3]];
             mats[i * 2 + 1] = [m.0[4], m.0[5], m.0[6], m.0[7]];
         }
+        let post = look.post.pack(scale);
         let u = Uniforms {
             res: [self.size.0 as f32, self.size.1 as f32, scale, t],
             fa: [fx.pitch, mt[0], fx.jitter, fx.glitch],
@@ -1136,6 +1144,7 @@ impl Renderer {
             scrolls: field.scrolls, scrollo: field.scrollo,
             scrp: [look.scroll.trail * scale, look.scroll.misreg * scale, look.scroll.slip * scale, look.scroll.band.max(4.0) * scale],
             scrq: [look.scroll.slip_ms.max(16.0) / 1000.0, 0.0, 0.0, 0.0],
+            post: post.0, pal: post.1,
         };
         self.queue.write_buffer(&self.ubuf, 0, bytemuck::bytes_of(&u));
     }

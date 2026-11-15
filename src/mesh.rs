@@ -472,6 +472,24 @@ impl MeshInstances {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Scene3d { pub items: Vec<MeshInstances>, pub camera: Camera, pub light: Light, pub spec: Mesh3d, pub picture: Option<u8> }
 impl Scene3d {
+    /// The nearest and farthest view depth any copy can reach (its centre ± its bounding radius), for
+    /// marks that follow depth (`style::Marks`).
+    pub fn depth_range(&self, lib: &Library) -> (f32, f32) {
+        let eye = self.camera.eye();
+        let fwd = mulf(self.camera.basis()[2], -1.0);
+        let (mut a, mut b) = (f32::INFINITY, f32::NEG_INFINITY);
+        for it in &self.items {
+            let r0 = lib.get(it.mesh).map_or(1.0, Mesh::radius);
+            for m in &it.transforms {
+                let c = [m.0[12], m.0[13], m.0[14]];
+                let s = [m.0[0], m.0[1], m.0[2]].iter().map(|v| v * v).sum::<f32>().sqrt().max([m.0[4], m.0[5], m.0[6]].iter().map(|v| v * v).sum::<f32>().sqrt()).max([m.0[8], m.0[9], m.0[10]].iter().map(|v| v * v).sum::<f32>().sqrt());
+                let z = dot(sub(c, eye), fwd);
+                a = a.min(z - r0 * s);
+                b = b.max(z + r0 * s);
+            }
+        }
+        if a.is_finite() && b > a { (a.max(self.camera.near), b) } else { (self.camera.near, self.camera.far) }
+    }
     /// One mesh at the origin, in ink, with the default camera and light.
     pub fn single(mesh: MeshId) -> Self {
         Self { items: vec![MeshInstances::one(mesh, Mat4::IDENTITY, Paint::INK, 1)], camera: Camera::default(), light: Light::default(), spec: Mesh3d::default(), picture: None }

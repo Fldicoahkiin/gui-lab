@@ -16,7 +16,8 @@ struct MU {
   light: vec4f, // direction towards the light (world), ambient
   misc: vec4f,  // near, far, edge_depth, cos(edge_normal)
   size: vec4f,  // target width, height (texels), device px per texel, search radius R (texels)
-  spread: vec4f, // stage 1's SPREAD (device px), _, _, _
+  spread: vec4f, // stage 1's SPREAD (device px), two tones, terminator, _
+  depth: vec4f,  // marks by depth (style::Marks): scale, dim; the copies' nearest and farthest view depth
 };
 @group(0) @binding(0) var<uniform> mu: MU;
 @group(0) @binding(1) var tm: texture_2d<f32>; // the mask (h and v passes)
@@ -63,8 +64,14 @@ struct GOut { @location(0) c: vec4f, @location(1) g: vec4f, @location(2) k: vec4
   if (!front) { shade = mu.light.w; }
   let d = clamp((i.z - mu.misc.x) / max(mu.misc.y - mu.misc.x, 1e-4), 0.0, 1.0);
   let hi = floor(d * 255.0);
+  // Marks by depth: far parts are dimmer (`depth_dim` takes the shade down) and carry less ink
+  // (`depth_scale` takes the tone down), so materials that size their marks by the ink there (dot,
+  // halftone, ascii, picture marks) draw them smaller and fainter with distance.
+  let far = clamp((i.z - mu.depth.z) / max(mu.depth.w - mu.depth.z, 1e-4), 0.0, 1.0);
+  shade *= 1.0 - mu.depth.y * far;
+  let tone = i.paint.x * (1.0 - mu.depth.x * far);
   var o: GOut;
-  o.c = vec4f(shade, i.paint.x, i.paint.y, 0.5 + i.paint.z * 0.25);
+  o.c = vec4f(shade, tone, i.paint.y, 0.5 + i.paint.z * 0.25);
   o.g = vec4f(n.xy * 0.5 + 0.5, hi / 255.0, d * 255.0 - hi);
   o.k = vec4f(i.id.x / 255.0, i.id.y / 255.0, n.z * 0.5 + 0.5, 1.0);
   return o;
