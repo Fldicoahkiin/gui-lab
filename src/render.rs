@@ -274,6 +274,15 @@ impl Renderer {
             fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some(fs), compilation_options: Default::default(), targets: &[Some(wgpu::ColorTargetState { format, blend, write_mask: wgpu::ColorWrites::ALL })] }),
             multiview_mask: None, cache: None,
         });
+        #[cfg(not(target_arch = "wasm32"))]
+        let timing = std::env::var_os("LAB_TIMING").is_some();
+        #[cfg(not(target_arch = "wasm32"))]
+        let pipe = |vs: &str, fs: &str, format, blend: Option<wgpu::BlendState>, inst: bool| {
+            let t0 = std::time::Instant::now();
+            let p = pipe(vs, fs, format, blend, inst);
+            if timing { eprintln!("pipeline {fs}: {:.0} ms", t0.elapsed().as_secs_f64() * 1000.0); }
+            p
+        };
         let pipes = [
             pipe("vs_inst", "fs_ink", INK, Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING), true),
             pipe("vs_inst", "fs_near", NEAR, Some(wgpu::BlendState { color: maxb, alpha: maxb }), true),

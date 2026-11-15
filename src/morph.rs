@@ -176,6 +176,9 @@ impl Grid {
 /// takes it after every update (`Ui::on_commands`).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Cmd {
+    /// Put the field's pointer at (x, y), logical px, without a lens (what follows the pointer — the
+    /// chrome's reflection — follows it): a ghost's pointer in a scripted interaction.
+    Pointer { x: f32, y: f32 },
     /// Morph the element `from` into the element `to` (keys). Asking for the reverse of the morph in
     /// progress turns it around from where its tiles are.
     Morph { from: String, to: String, spec: MorphSpec },

@@ -1756,6 +1756,7 @@ impl<S, M: Clone> Ui<S, M> {
                     self.front_from(Some(i), x, y, true, strength);
                 },
                 Cmd::Press { key } => { self.scripted = true; self.activate(&key); self.scripted = false; }
+                Cmd::Pointer { x, y } => { let s = self.scale; self.field.pointer[0] = x * s; self.field.pointer[1] = y * s; self.dirty = true; }
                 Cmd::Focus { key } => self.focus_key(&key),
                 Cmd::Scrub(at) => self.scrub(at),
                 Cmd::Flow(_) | Cmd::Commit { .. } => {}
@@ -2303,7 +2304,20 @@ impl<S, M: Clone> Ui<S, M> {
                 if let Some(f) = self.flows.get(&id) {
                     let p = ((now - f.start) / f.dur.max(1e-4)).clamp(0.0, 1.0);
                     let e = Ease::InOutCubic.at(p);
-                    for k in 0..4 { inst.rect[k] = f.from[k] + (inst.rect[k] - f.from[k]) * e; }
+                    if inst.paint[3] > 2.5 && (f.from[2] * inst.rect[3] - f.from[3] * inst.rect[2]).abs() > 0.5 {
+                        // A 3D view between boxes of other proportions keeps its own (it is drawn into its
+                        // layout box): it moves centre to centre and scales uniformly, never stretched
+                        // (DESIGN.md §1.10).
+                        let (w1, h1) = (inst.rect[2], inst.rect[3]);
+                        let s0 = ((f.from[2] * f.from[3]) / (w1 * h1).max(1.0)).sqrt();
+                        let sc = s0 + (1.0 - s0) * e;
+                        let c0 = (f.from[0] + f.from[2] * 0.5, f.from[1] + f.from[3] * 0.5);
+                        let c1 = (inst.rect[0] + w1 * 0.5, inst.rect[1] + h1 * 0.5);
+                        let c = (c0.0 + (c1.0 - c0.0) * e, c0.1 + (c1.1 - c0.1) * e);
+                        inst.rect = [c.0 - w1 * sc * 0.5, c.1 - h1 * sc * 0.5, w1 * sc, h1 * sc];
+                    } else {
+                        for k in 0..4 { inst.rect[k] = f.from[k] + (inst.rect[k] - f.from[k]) * e; }
+                    }
                     if p < 1.0 { inst.clip = [f.clip[0].min(inst.clip[0]), f.clip[1].min(inst.clip[1]), f.clip[2].max(inst.clip[2]), f.clip[3].max(inst.clip[3])]; }
                     inst.extra[2] = inst.extra[2].max(f.loose * (std::f32::consts::PI * e).sin());
                     if p < 1.0 && self.scene.layer.is_none() { lifted.push((i, inst)); inst.rect = [0.0; 4]; }

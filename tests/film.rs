@@ -1,6 +1,7 @@
-//! The film (DESIGN.md §6), without a GPU: twelve chapters, each comes to rest; the three actors are in
-//! every chapter with the same flow ids; the keyboard walks it; autoplay yields to input in the same
-//! frame; a burst of cuts leaves nothing flying.
+//! The film (DESIGN.md §6), without a GPU: thirteen chapters, each comes to rest; the three actors are
+//! in every flat chapter with the same flow ids (the sentence and the number in the mechanism too); the
+//! keyboard walks it; autoplay yields to input in the same frame; a burst of cuts leaves nothing
+//! flying; the mechanism turns, picks, explodes and loosens a part.
 use lab::el::Key;
 use lab::gallery::film::{self, CHAPTERS, FMsg};
 use lab::gallery::{self, GalleryUi, Msg, Page};
@@ -26,15 +27,16 @@ fn carrier<'a>(ui: &'a GalleryUi, id: &str) -> Option<&'a lab::ui::Node<Msg>> {
 }
 
 #[test]
-fn twelve_chapters_in_order_with_their_presets() {
-    assert_eq!(CHAPTERS, 12);
-    assert_eq!(film::CH.len(), 12);
+fn thirteen_chapters_in_order_with_their_presets() {
+    assert_eq!(CHAPTERS, 13);
+    assert_eq!(film::CH.len(), 13);
     let names: Vec<&str> = film::CH.iter().map(|c| c.name).collect();
     assert_eq!(names[0], "Normcore");
     assert_eq!(names[11], "Mixed media");
+    assert_eq!(names[12], "Mechanism");
     let ui = open();
     assert_eq!(ui.state.page, Page::Film);
-    for c in film::CH.iter() { assert_eq!(ui.state.presets[c.style].name, c.name, "chapter in its own preset"); }
+    for c in film::CH.iter().take(12) { assert_eq!(ui.state.presets[c.style].name, c.name, "chapter in its own preset"); }
 }
 
 #[test]
@@ -45,7 +47,8 @@ fn the_actors_are_in_every_chapter_and_every_chapter_rests() {
         film::go(&mut ui.state, c, None);
         ui.relayout();
         run(&mut ui, 0.05);
-        for id in ["film-sentence", "film-number", "film-object"] {
+        let ids: &[&str] = if c < 12 { &["film-sentence", "film-number", "film-sign"] } else { &["film-sentence", "film-number"] };
+        for &id in ids {
             let n = carrier(&ui, id).unwrap_or_else(|| panic!("chapter {}: no {id}", c + 1));
             assert!(n.key.starts_with(&format!("film/c{:02}/", c + 1)), "chapter {}: {id} is {}", c + 1, n.key);
             let st = ui.node(&format!("film/stage/{:02}", c + 1)).expect("stage").rect;
@@ -147,5 +150,79 @@ fn rapid_cuts_leave_nothing_flying() {
     film::go(&mut ui.state, 0, None);
     ui.relayout();
     run(&mut ui, 3.0);
-    assert!(ui.state.film.playing && ui.state.film.motion, "the ghost turned the switch on and still plays");
+    assert!(ui.state.film.playing && ui.state.film.inverted, "the ghost turned the switch on and still plays");
+}
+
+#[test]
+fn the_mechanism_turns_picks_explodes_and_loosens() {
+    use lab::gallery::mechanism::{MMsg, PARTS};
+    let mut ui = open();
+    pause(&mut ui);
+    ui.key(Key::End, false);
+    run(&mut ui, 1.0);
+    assert_eq!(ui.state.film.ch, 12);
+    let r = ui.node("film/c13/machine/view").expect("the mechanism's view").rect;
+    // Somewhere on the machine is a gear: dragging it turns the whole train at its ratios.
+    let m = &ui.state.film.mech;
+    let gear = (1..20).flat_map(|i| (1..12).map(move |j| (i as f32 / 20.0, j as f32 / 12.0)))
+        .find(|&(fx, fy)| m.scene().pick(lab::gallery::mechanism::library(), fx, fy, r.w / r.h).is_some_and(|h| (3..=5).contains(&h.object)))
+        .expect("a gear in view");
+    let (x, y) = (r.x + gear.0 * r.w, r.y + gear.1 * r.h);
+    let (t0, a0) = (ui.state.film.mech.turn, ui.state.film.mech.angles());
+    ui.press(x, y);
+    for i in 1..=10 { ui.pointer_move(x + i as f32 * 6.0, y); run(&mut ui, 1.0 / 60.0); }
+    ui.release(x + 60.0, y);
+    let a1 = ui.state.film.mech.angles();
+    assert!((ui.state.film.mech.turn - t0).abs() > 20.0, "the gear drag turned the train");
+    let d = |k: usize| a1[k] - a0[k];
+    assert!((d(1) + 2.0 * d(0)).abs() < 1e-2 && (d(2) - d(0) * 24.0 / 18.0).abs() < 1e-2, "ratios: {:?}", (d(0), d(1), d(2)));
+    // Dragging the background orbits instead.
+    let yaw = ui.state.film.mech.orbit.yaw;
+    ui.press(r.x + 6.0, r.y + 6.0);
+    for i in 1..=6 { ui.pointer_move(r.x + 6.0 + i as f32 * 10.0, r.y + 6.0); run(&mut ui, 1.0 / 60.0); }
+    ui.release(r.x + 66.0, r.y + 6.0);
+    assert!((ui.state.film.mech.orbit.yaw - yaw).abs() > 5.0, "the background drag orbits");
+    // Hovering a part names it on a leader.
+    let m = &ui.state.film.mech;
+    let (fx, fy) = (1..20).flat_map(|i| (1..12).map(move |j| (i as f32 / 20.0, j as f32 / 12.0)))
+        .find(|&(fx, fy)| m.scene().pick(lab::gallery::mechanism::library(), fx, fy, r.w / r.h).is_some_and(|h| (1..=8).contains(&h.object)))
+        .expect("a part in view");
+    let (x, y) = (r.x + fx * r.w, r.y + fy * r.h);
+    ui.pointer_move(x, y);
+    run(&mut ui, 0.1);
+    assert!(ui.state.film.mech.hover.is_some(), "hover: {:?} at {x},{y} in {r:?}", ui.state.film.mech.hover);
+    assert!(ui.node("film/c13/machine/leader-label").is_some(), "hover shows the part's name");
+    // Exploding moves the parts apart and comes to rest; a pressed part loosens and forms again.
+    gallery::update(&mut ui.state, Msg::Film(FMsg::Mech(MMsg::Explode(1.0))));
+    ui.relayout();
+    run(&mut ui, 2.0);
+    assert!((ui.state.film.mech.explode - 1.0).abs() < 1e-3);
+    gallery::update(&mut ui.state, Msg::Film(FMsg::Mech(MMsg::Loosen(6))));
+    ui.relayout();
+    run(&mut ui, 0.4);
+    assert!(ui.morph_run().is_some(), "the part loosens into particles");
+    run(&mut ui, 3.0);
+    assert!(ui.morph_run().is_none() && ui.state.film.mech.loose.is_none());
+    // Every part has a name; the keyboard turns, explodes and switches the material.
+    assert_eq!(PARTS.len(), 8);
+    ui.pointer_leave();
+    ui.state.film.mech.hover = None;
+    let k = "film/c13/machine/view";
+    gallery::update(&mut ui.state, Msg::Film(FMsg::Go(12)));
+    ui.relayout();
+    run(&mut ui, 1.0);
+    let (vx, vy) = ui.node(k).expect("view").rect.center();
+    let _ = (vx, vy);
+    ui.state.cmds.push(lab::morph::Cmd::Focus { key: k.into() });
+    ui.relayout();
+    assert_eq!(ui.focus(), Some(k));
+    let t = ui.state.film.mech.turn;
+    ui.key(Key::Char(']'), false);
+    assert!(ui.state.film.mech.turn > t);
+    ui.key(Key::Char('m'), false);
+    assert_eq!(ui.state.film.mech.mat, 1);
+    ui.key(Key::Char('e'), false);
+    run(&mut ui, 4.0);
+    let t = ui.now();
+    assert!(!ui.needs_frame(t), "the mechanism comes to rest");
 }

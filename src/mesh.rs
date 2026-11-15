@@ -288,19 +288,20 @@ pub fn gear(teeth: u32, r: f32, depth: f32, bore: f32) -> Mesh {
     use std::f32::consts::TAU;
     let teeth = teeth.max(6);
     let module = 2.0 * r / teeth as f32;
-    let (ra, rf) = (r + module, (r - 1.25 * module).max(bore + module * 0.5));
+    let (ra, rf) = (r + 0.9 * module, (r - 1.1 * module).max(bore + module * 0.5));
     let mut prof: Vec<[f32; 2]> = vec![];
     let step = TAU / teeth as f32;
-    // One tooth: root, flank up, tip, flank down; the flank's points follow a curve that widens toward
-    // the root as an involute does.
+    // One tooth, centred on its angle: the root land, the flank rising (an involute-like curve that is
+    // steep near the root and rounds over toward the tip), the tip land, the other flank down. In
+    // fractions of the tooth pitch: half a pitch is the tooth at the pitch circle, as cut gears have.
     for k in 0..teeth {
         let a0 = k as f32 * step;
         let at = |frac: f32, rad: f32| { let a = a0 + frac * step; [rad * a.cos(), rad * a.sin()] };
-        for j in 0..=2 { prof.push(at(-0.25 + j as f32 * 0.05, rf)); }
-        for j in 1..=4 { let u = j as f32 / 4.0; let rad = rf + (ra - rf) * u; prof.push(at(-0.15 + 0.08 * u * (2.0 - u), rad)); }
-        for j in 1..=2 { prof.push(at(-0.07 + j as f32 * 0.0467, ra)); }
-        for j in 1..=4 { let u = 1.0 - j as f32 / 4.0; let rad = rf + (ra - rf) * u; prof.push(at(0.15 - 0.08 * u * (2.0 - u), rad)); }
-        for j in 1..=1 { prof.push(at(0.15 + j as f32 * 0.05, rf)); }
+        for j in 0..2 { prof.push(at(-0.5 + j as f32 * 0.15, rf)); }
+        for j in 0..=5 { let u = j as f32 / 5.0; let rad = rf + (ra - rf) * u; prof.push(at(-0.22 + 0.11 * u * u, rad)); }
+        prof.push(at(0.0, ra));
+        for j in (0..=5).rev() { let u = j as f32 / 5.0; let rad = rf + (ra - rf) * u; prof.push(at(0.22 - 0.11 * u * u, rad)); }
+        prof.push(at(0.35, rf));
     }
     extrude_bored(&prof, bore, depth, 25.0)
 }
