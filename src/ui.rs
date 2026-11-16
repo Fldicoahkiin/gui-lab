@@ -26,9 +26,6 @@ impl Rect {
         Rect::new(x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0))
     }
     pub fn inset(&self, l: f32, t: f32, r: f32, b: f32) -> Rect { Rect::new(self.x + l, self.y + t, (self.w - l - r).max(0.0), (self.h - t - b).max(0.0)) }
-    fn lerp(&self, o: &Rect, k: f32) -> Rect {
-        Rect::new(self.x + (o.x - self.x) * k, self.y + (o.y - self.y) * k, self.w + (o.w - self.w) * k, self.h + (o.h - self.h) * k)
-    }
 }
 
 /// One laid-out element. Kept in paint order (parents before children).
@@ -157,9 +154,15 @@ struct Capture<M> { key: String, handler: OnDrag<M>, start: (f32, f32), rect: Re
 /// beyond a front travelling out from `at` (device px) from time `t`.
 pub struct Split { pub id: u32, pub scene: Scene, pub field: Field, pub at: [f32; 2], pub t: f32, /** The look it was drawn in. */ pub look: Look }
 
-/// The four accent corners that frame the hovered or focused element and glide between targets.
+/// The four accent corners that frame the hovered or focused element. They are on their target in the
+/// frame the target changes (the pointer's frame); the only easing is `MARKS_SETTLE`, a cosmetic close
+/// of a few pixels and the fade in, never a glide behind the pointer.
 #[derive(Default)]
-struct Marks { at: Option<Rect>, clip: Rect, alpha: f32 }
+struct Marks { at: Option<Rect>, clip: Rect, alpha: f32, since: f32, key: Option<String>, fade: f32 }
+/// How long the marks take to close onto a new target (s): under 80 ms, so they never trail.
+pub const MARKS_SETTLE: f32 = 0.07;
+/// How far out (logical px) the marks start when they close onto a new target.
+const MARKS_OPEN: f32 = 3.0;
 
 /// Which instance of a flow subtree an instance is: glyphs and other instances are counted apart, and
 /// a glyph only matches the same glyph.
@@ -987,24 +990,9 @@ impl<S, M: Clone> Ui<S, M> {
         self.now = t;
         if let Some(f) = self.look_of { self.timing = Timing::of(&f(&self.state)); }
         if let Some(f) = self.ticked && f(&mut self.state, t) { self.relayout(); }
-        // While something is dragged the marks stand aside; on hover they skip what is `unframed`.
-        let target = if self.capture.is_some() { None } else if self.keyboard { self.focus.clone() } else { self.hover.clone().or_else(|| self.focus.clone()) };
-        let target = target.and_then(|k| self.node(&k).filter(|n| self.keyboard || !n.unframed).map(|n| (n.rect, n.clip)));
-        let k = 1.0 - (-dt * 16.0).exp();
         let before = (self.marks.at, self.marks.alpha);
-        match target {
-            Some((r, clip)) => {
-                let next = match self.marks.at { Some(cur) if self.marks.alpha > 0.01 => cur.lerp(&r, k), _ => r };
-                // Close enough is there: the glide ends instead of creeping on for ever.
-                let near = (next.x - r.x).abs() + (next.y - r.y).abs() + (next.w - r.w).abs() + (next.h - r.h).abs() < 0.1;
-                self.marks.at = Some(if near { r } else { next });
-                self.marks.clip = clip;
-                self.marks.alpha += (1.0 - self.marks.alpha) * k;
-                if self.marks.alpha > 0.995 { self.marks.alpha = 1.0; }
-            }
-            None => { self.marks.alpha -= self.marks.alpha * k; if self.marks.alpha < 0.02 { self.marks.alpha = 0.0; } }
-        }
-        self.marks_moving = before != (self.marks.at, self.marks.alpha);
+        self.aim_marks();
+        self.marks_moving = before != (self.marks.at, self.marks.alpha) || self.marks_settling();
         // The caret blinks in whole phases from when it last moved.
         if let Some((_, reset, _)) = self.caret {
             let on = ((t - reset).max(0.0) / BLINK).floor() as i64 % 2 == 0;
@@ -1234,6 +1222,9 @@ impl<S, M: Clone> Ui<S, M> {
             if let Some(n) = hover.as_deref().and_then(|k| self.node(k)) { self.burst(n.rect, 0.75, 0.22); }
             self.hover = hover;
             if let Some(f) = self.hovered && f(&mut self.state, self.hover.as_deref()) { self.relayout(); }
+            // The marks land on the new target in this frame, not on the next tick.
+            self.aim_marks();
+            self.finish();
         }
         if self.capture.is_some() { self.drag(Phase::Move, x, y); }
         if !self.touching { self.pick_hover(x, y); self.move_hover(Some((x, y))); }
@@ -1255,7 +1246,11 @@ impl<S, M: Clone> Ui<S, M> {
         let key = now.map(|i| self.nodes[i].key.clone());
         if key != self.move_over && let Some(old) = self.move_over.take()
             && let Some(f) = self.nodes.iter().find(|n| n.key == old).and_then(|n| n.on_move.clone()) && let Some(m) = f(None) { self.send(m); }
+        // An element being dragged hears the pointer through its drag alone (`El::on_point` would
+        // otherwise hear each move twice, once as a hover, and could not tell a hover from the end).
+        let dragged = self.capture.as_ref().is_some_and(|c| key.as_deref() == Some(c.key.as_str()));
         self.move_over = key;
+        if dragged { return; }
         if let (Some(i), Some((x, y))) = (now, at) && let Some(f) = self.nodes[i].on_move.clone() && let Some(m) = f(Some(self.local_in(i, x, y))) { self.send(m); }
     }
     /// A window point (logical px) in element `i`'s own coordinates: from its top left, or in a
@@ -3208,12 +3203,45 @@ impl<S, M: Clone> Ui<S, M> {
         }
     }
 
+    /// Put the marks on what they frame now: the target the pointer or the keyboard gives, in this
+    /// frame. A new target restarts the short settle; the same target moved (a scroll, a layout) is
+    /// followed exactly. Without a target they fade out where they were within `MARKS_SETTLE`.
+    fn aim_marks(&mut self) {
+        // While something is dragged the marks stand aside; on hover they skip what is `unframed`.
+        let target = if self.capture.is_some() { None } else if self.keyboard { self.focus.clone() } else { self.hover.clone().or_else(|| self.focus.clone()) };
+        let target = target.and_then(|k| self.node(&k).filter(|n| self.keyboard || !n.unframed).map(|n| (k.clone(), n.rect, n.clip)));
+        let now = self.now;
+        let m = &mut self.marks;
+        match target {
+            Some((k, r, clip)) => {
+                if m.key.as_deref() != Some(k.as_str()) { m.key = Some(k); m.since = now; }
+                m.at = Some(r);
+                m.clip = clip;
+                // Seen at once, full within the settle.
+                m.alpha = (0.5 + 0.5 * (now - m.since) / MARKS_SETTLE).clamp(0.5, 1.0);
+            }
+            None => {
+                if m.key.take().is_some() { m.since = now; m.fade = m.alpha; }
+                m.alpha = (m.fade * (1.0 - (now - m.since) / MARKS_SETTLE)).max(0.0);
+                if m.alpha < 0.02 { m.alpha = 0.0; }
+            }
+        }
+    }
+    /// What the hover / focus marks frame as drawn now (logical px, before their 4 px margin and the
+    /// settle's opening) and how opaque they are; `None` when they are not drawn.
+    pub fn marks_frame(&self) -> Option<(Rect, f32)> { self.marks.at.filter(|_| self.marks.alpha >= 0.02).map(|r| (r, self.marks.alpha)) }
+    /// The marks are still closing onto their target or fading.
+    fn marks_settling(&self) -> bool { self.marks.alpha > 0.0 && (self.now - self.marks.since) < MARKS_SETTLE }
+
     fn paint_marks(&mut self) {
         self.scene.truncate(self.body_len);
-        let Some(r) = self.marks.at else { return };
         if self.marks.alpha < 0.02 { return; }
+        let Some(r) = self.marks.at else { return };
         let s = self.scale;
-        let r = r.inset(-4.0, -4.0, -4.0, -4.0);
+        // The cosmetic close: a few pixels out at the change, on the target `MARKS_SETTLE` later.
+        let e = if self.marks.key.is_some() { 1.0 - ((self.now - self.marks.since) / MARKS_SETTLE).clamp(0.0, 1.0) } else { 0.0 };
+        let open = 4.0 + MARKS_OPEN * e * e;
+        let r = r.inset(-open, -open, -open, -open);
         let (len, th) = (8.0f32.min(r.w * 0.4).min(r.h * 0.4), 1.5);
         let c = self.marks.clip.inset(-6.0, -6.0, -6.0, -6.0);
         let clip = [c.x * s, c.y * s, c.right() * s, c.bottom() * s];
