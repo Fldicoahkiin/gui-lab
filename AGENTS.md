@@ -159,7 +159,13 @@ a true outline; its pointer handlers get points in that space; `El::on_point` he
 and grows `GrayScott` inside a mask. A text element's glyphs can be posed one by one (`El::pose(|GlyphAt| Pose)`: move, turn,
 scale, tone, alpha; no layout). `El::on_visible` says when an element can be seen (step a demo only then), `El::on_outline` sends a
 subtree's true outline as a coverage grid (a mask). Every small mark draws from one frame budget (`budget::grant(n)`). `El::decode(Decode)`
-makes an element appear by decoding and disappear by the same backwards. The Lab's experiments (`examples/lab/`) show each.
+makes an element appear by decoding and disappear by the same backwards. The Lab's experiments (`examples/lab/`) show each:
+`experiment::frame(key, name, hint, piece, formula, &params, msg, label)` puts a piece on a 4:3 stage it fills, the formula on one
+line and the numbers behind `[ params ]`; seen cells step every frame (with reduced motion they rest). Sampling (`morph::cover_at`,
+`cells`, `on_outline`, decode) follows `Instance::xf` and poses, so a posed glyph loosens from where it is drawn; `cover_at` counts any
+fill (a ground-toned panel too), `ink_at` only ink that shows. The lens touches only pictures and 3D elements that may loosen and that
+no handler operates. The first scene, Body (`examples/body.rs`, `#body`), is written the same way: one posed text element, a spring
+for `gather`, a signed-distance form sampled to a spiral of surface points (DESIGN.md §6.2).
 Text flows around true outlines with `.around(Around::new(vec![Silhouette::circle(..)], gap))`; a piece of a line
 beside an obstacle is justified so both its edges are flush, adding at most `Around::justify_max` ems per gap
 (default 0.25; inter-character next to CJK, inter-word at spaces, between Latin letters only with
