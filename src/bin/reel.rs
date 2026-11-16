@@ -241,19 +241,10 @@ fn interactions(out: &str) {
                 send(&mut ui, FMsg::Plane(0)); send(&mut ui, FMsg::Squares); send(&mut ui, FMsg::Knob(0.55));
             }
             11 => {
-                shoot(&mut o, &mut ui, 0.05, &mut strip);
-                let (x, y) = center(&ui, "film/c11/item2"); ui.pointer_move(x, y);
-                shoot(&mut o, &mut ui, 0.3, &mut strip);
-                ui.press(x, y); ui.release(x, y);
-                shoot(&mut o, &mut ui, 0.2, &mut strip);
-                shoot(&mut o, &mut ui, 0.8, &mut strip);
-                send(&mut ui, FMsg::MenuSel(1));
-            }
-            13 => {
                 use lab::gallery::mechanism::MMsg;
                 shoot(&mut o, &mut ui, 0.05, &mut strip);
                 // Turn the train by dragging the big gear, then hover a part, explode, ascii.
-                let r = ui.node("film/c13/machine/view").expect("view").rect;
+                let r = ui.node("film/c11/machine/view").expect("view").rect;
                 let (gx, gy) = (r.x + r.w * 0.36, r.y + r.h * 0.52);
                 ui.press(gx, gy);
                 for i in 1..=10 { ui.pointer_move(gx + i as f32 * 9.0, gy); { let t = ui.now() + 1.0 / 60.0; run(&mut o, &mut ui, t) }; }
@@ -267,13 +258,7 @@ fn interactions(out: &str) {
                 send(&mut ui, FMsg::Mech(MMsg::Material(0)));
                 send(&mut ui, FMsg::Mech(MMsg::Explode(0.0)));
             }
-            _ => {
-                shoot(&mut o, &mut ui, 0.05, &mut strip);
-                send(&mut ui, FMsg::Finale);
-                shoot(&mut o, &mut ui, 0.9, &mut strip);
-                shoot(&mut o, &mut ui, 0.8, &mut strip);
-                shoot(&mut o, &mut ui, 2.2, &mut strip);
-            }
+            _ => shoot(&mut o, &mut ui, 0.05, &mut strip),
         }
         ui.pointer_leave();
         let (sw, sh, spx) = sheet(&strip, 4);

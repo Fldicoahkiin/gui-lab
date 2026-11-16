@@ -31,7 +31,7 @@ pub enum StackMsg { Hover(Option<usize>), Press(Option<usize>), Key(Key) }
 pub enum StackLook { Plain, Thick, Marks(Material) }
 impl StackLook {
     /// The look a material asks for: the mark materials draw marks, plain is plain, every other one
-    /// (metal, print, glass…) has thick cards.
+    /// (print, lino, glitch…) has thick cards.
     pub fn of(m: Material) -> Self {
         match m {
             Material::Plain | Material::Near => StackLook::Plain,
@@ -190,6 +190,6 @@ mod tests {
     fn looks_follow_the_material() {
         assert_eq!(StackLook::of(Material::Plain), StackLook::Plain);
         assert_eq!(StackLook::of(Material::Dot), StackLook::Marks(Material::Dot));
-        assert_eq!(StackLook::of(Material::Chrome), StackLook::Thick);
+        assert_eq!(StackLook::of(Material::Print), StackLook::Thick);
     }
 }

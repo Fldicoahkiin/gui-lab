@@ -1,11 +1,11 @@
 //! Draw only what changed (DESIGN.md §1.19). Before a frame the renderer compares what it is about to
 //! draw with what it drew last time, and finds two boxes (device px): where stage 1's images (ink, near,
-//! the liquid field) can differ, and where the final frame can differ. Everything outside them is the
+//! ) can differ, and where the final frame can differ. Everything outside them is the
 //! previous frame's, kept in place. Pure CPU; the renderer scissors its passes to the boxes.
 //!
 //! Stage 1 changes only where an instance changed (its record, or what it shows because time passes: it
 //! is condensing, a front reaches it, the lens or a burst is over a 3D element), and an instance's pixels
-//! lie within its rect grown by the nearness, the push and the liquid's reach. Stage 2 changes where
+//! lie within its rect grown by the nearness, and the push. Stage 2 changes where
 //! stage 1 changed, grown by how far the material reads its neighbours (`reach`), and where the field
 //! acts on the ground (a front, the lens, a burst, a wipe), and where the annotation layer changed.
 //! Whatever acts on every pixel (a new look, a commit's front, flying tiles, the reduced material pass,
@@ -65,9 +65,6 @@ pub fn reach(m: Material, look: &Look, s: f32) -> f32 {
         Material::Print => (p(1) + p(3)) * s + 6.0 * s,
         Material::Lino => (p(1) + p(2)) * s,
         Material::Glitch => p(1) * s + 3.0 * p(4) * s + p(2) * s,
-        Material::Chrome => 2.0 * p(0) * s + 4.0 * s,
-        Material::Liquid => (p(0) + p(1) + p(3)) * s,
-        Material::Collage => (p(0) + p(1)) * s + 6.0 * s,
     }
 }
 
@@ -100,8 +97,7 @@ pub fn region(prev: &Inputs, cur: &Inputs, scale: f32) -> Region {
     let clock_moved = prev.mclock != cur.mclock && mats.iter().any(|m| clocked(*m));
     let s = scale;
     let look = &cur.look;
-    let liquid = if mats.contains(&Material::Liquid) { look.params[Material::Liquid as usize].0[0] * s } else { 0.0 };
-    let pad = SPREAD as f32 + look.fx.push * s * 1.5 + liquid + 2.0;
+    let pad = SPREAD as f32 + look.fx.push * s * 1.5 + 2.0;
     let mut st1 = EMPTY;
     let mut st2 = EMPTY;
     // Instances whose records differ (in place; a longer or shorter list from where they part).

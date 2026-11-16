@@ -84,11 +84,6 @@ pub const BAUHAUS: Theme = Theme {
     second: [0.10, 0.27, 0.64], third: [0.97, 0.76, 0.08], sizes: TypeScale { display: 64.0, title: 24.0, body: 16.0, small: 12.0 }, rule: 4.0,
     ..theme("包豪斯", [0.925, 0.906, 0.855], [0.06, 0.06, 0.06], [0.85, 0.13, 0.10])
 };
-/// Silver-blue gradient ground (Neo-Y2K).
-pub const Y2K: Theme = Theme {
-    ground2: [0.56, 0.62, 0.78], second: [0.96, 0.32, 0.78], third: [0.55, 0.96, 0.92], sizes: TypeScale { display: 48.0, title: 22.0, body: 15.0, small: 12.0 },
-    ..theme("银", [0.86, 0.89, 0.95], [0.06, 0.07, 0.14], [0.18, 0.42, 1.0])
-};
 /// Black, amber LEDs, pixel faces (Neo-Dotmatrix).
 pub const LED: Theme = Theme {
     display: PIXEL, body: PIXEL, second: [0.35, 1.0, 0.45], sizes: TypeScale { display: 48.0, title: 24.0, body: 12.0, small: 12.0 }, rule: 2.0,
@@ -104,12 +99,7 @@ pub const GLITCH: Theme = Theme {
     second: [0.10, 0.92, 1.0], sizes: TypeScale { display: 56.0, title: 22.0, body: 15.0, small: 12.0 },
     ..theme("故障", [0.02, 0.02, 0.03], [0.93, 0.93, 0.95], [1.0, 0.16, 0.46])
 };
-/// Kraft card, ink, two colours and white paper (Mixed media).
-pub const KRAFT: Theme = Theme {
-    second: [0.14, 0.34, 0.56], third: [0.975, 0.96, 0.925], sizes: TypeScale { display: 46.0, title: 22.0, body: 15.0, small: 12.0 },
-    ..theme("牛皮纸", [0.78, 0.69, 0.56], [0.09, 0.08, 0.07], [0.86, 0.30, 0.17])
-};
-pub const THEMES: [Theme; 15] = [DARK, LIGHT, PIXEL_THEME, PAPER, CREAM, COOL, MANUAL, NORMCORE, CYBER, BAUHAUS, Y2K, LED, GAZE, GLITCH, KRAFT];
+pub const THEMES: [Theme; 13] = [DARK, LIGHT, PIXEL_THEME, PAPER, CREAM, COOL, MANUAL, NORMCORE, CYBER, BAUHAUS, LED, GAZE, GLITCH];
 pub fn theme_index(name: &str) -> usize { THEMES.iter().position(|t| t.name == name).unwrap_or(0) }
 
 /// How stage 2 draws text, shapes and the ground (DESIGN.md §1.6). Pictures always follow their own
@@ -132,19 +122,15 @@ pub enum Material {
     Lino = 5,
     Glitch = 6,
     Xray = 7,
-    Chrome = 8,
-    Liquid = 9,
-    Collage = 10,
     /// The intermediate images made visible: the signed nearness as contour bands (warm inside the
     /// ink, cool outside), the outline itself, and the looseness as a tint. A view of the machinery,
-    /// so like chrome it has its own look at rest.
-    Near = 11,
+    /// so it has its own look at rest.
+    Near = 8,
 }
-pub const MATERIAL_COUNT: usize = 12;
+pub const MATERIAL_COUNT: usize = 9;
 pub const MATERIALS: [(Material, &str); MATERIAL_COUNT] = [
     (Material::Plain, "plain"), (Material::Dot, "dot"), (Material::Halftone, "halftone"), (Material::Ascii, "ascii"), (Material::Print, "print"),
-    (Material::Lino, "lino"), (Material::Glitch, "glitch"), (Material::Xray, "xray"), (Material::Chrome, "chrome"), (Material::Liquid, "liquid"),
-    (Material::Collage, "collage"), (Material::Near, "near"),
+    (Material::Lino, "lino"), (Material::Glitch, "glitch"), (Material::Xray, "xray"), (Material::Near, "near"),
 ];
 impl Material {
     /// Whether the material has a time term that moves loose things by itself (glitch's held rows,
@@ -176,9 +162,6 @@ pub const MAT_PARAMS: [&[MatParam]; MATERIAL_COUNT] = [
     &[mp("刻痕", 0.0, 1.0, 0.05, 2, "", 0.6), mp("刻带", 2.0, 40.0, 1.0, 0, "px", 12.0), mp("刀长", 2.0, 40.0, 1.0, 0, "px", 12.0), mp("刀距", 2.0, 16.0, 0.5, 1, "px", 7.0), mp("抖动", 0.0, 1.0, 0.05, 2, "", 0.4)],
     &[mp("行高", 1.0, 40.0, 1.0, 0, "px", 6.0), mp("位移", 0.0, 200.0, 2.0, 0, "px", 48.0), mp("色差", 0.0, 30.0, 0.5, 1, "px", 6.0), mp("保持", 16.0, 500.0, 2.0, 0, "ms", 90.0), mp("块", 4.0, 120.0, 2.0, 0, "px", 28.0)],
     &[mp("线宽", 0.5, 4.0, 0.25, 2, "px", 1.5), mp("填充", 0.0, 1.0, 0.02, 2, "", 0.22), mp("等距线", 2.0, 32.0, 1.0, 0, "px", 7.0), mp("虚线", 2.0, 24.0, 1.0, 0, "px", 6.0)],
-    &[mp("倒角", 1.0, 32.0, 0.5, 1, "px", 9.0), mp("环境", 0.2, 3.0, 0.05, 2, "", 1.0), mp("高光", 0.0, 2.0, 0.05, 2, "", 0.9), mp("最小尺寸", 8.0, 120.0, 1.0, 0, "px", 44.0), mp("着色", 0.0, 1.0, 0.05, 2, "", 0.15)],
-    &[mp("融合", 2.0, 40.0, 1.0, 0, "px", 14.0), mp("折射", 0.0, 30.0, 0.5, 1, "px", 7.0), mp("光泽", 0.0, 2.0, 0.05, 2, "", 0.9), mp("下垂", 0.0, 120.0, 2.0, 0, "px", 40.0)],
-    &[mp("撕边", 0.0, 20.0, 0.5, 1, "px", 5.0), mp("纸边", 0.0, 4.0, 0.25, 2, "px", 1.5)],
     &[mp("间距", 1.5, 12.0, 0.5, 1, "px", 3.0), mp("填充", 0.0, 1.0, 0.05, 2, "", 0.25)],
 ];
 
@@ -454,7 +437,7 @@ fn with(m: Material, vals: &[(usize, f32)]) -> MaterialParams {
 }
 
 /// The twelve presets, in the order of DESIGN.md §4.
-pub fn styles() -> [Style; 12] {
+pub fn styles() -> [Style; 10] {
     use gaze::*;
     let off = Gaze::default();
     let base = |name, hash, th: Theme, material: Material| Style {
@@ -487,9 +470,6 @@ pub fn styles() -> [Style; 12] {
         Style { params: with(Material::Halftone, &[(0, 9.0), (2, 0.0), (1, 15.0)]),
             pic: PicFx { pitch: 8.0, levels: 8.0, palette: 6.0, colours: 5.0, spread: 0.4, ..PicFx::with_set(set::DOTS) },
             ..base("Bauhaus", "bauhaus", BAUHAUS, Material::Halftone) },
-        Style { pic: PicFx { pitch: 9.0, levels: 8.0, relief: 1.6, ground: 0.3, ..PicFx::with_set(set::BRICK) }, ..base("Neo-Y2K", "y2k", Y2K, Material::Chrome) },
-        Style { pic: PicFx { pitch: 6.0, levels: 8.0, colour: colour::TWO as f32, tint_a: [0.09, 0.08, 0.07], tint_b: KRAFT.third, ground: 0.2, ..PicFx::with_set(set::DOTS) },
-            ..base("Mixed media", "mixed-media", KRAFT, Material::Collage) },
     ]
 }
 
