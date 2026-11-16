@@ -156,7 +156,8 @@ loads, draw the real rows with `.skeleton()` as `widgets::Loading::show` says (d
 Text flows around true outlines with `.around(Around::new(vec![Silhouette::circle(..)], gap))`; a piece of a line
 beside an obstacle is justified so both its edges are flush, adding at most `Around::justify_max` ems per gap
 (default 0.25; inter-character next to CJK, inter-word at spaces, between Latin letters only with
-`Around::justify_latin_letters`); a piece that would need more stays start-aligned (DESIGN.md §1.2, "around").
+`Around::justify_latin_letters`); Latin pieces then take up to `Around::track_max` (0.08 em) between letters and, if still short,
+hyphenate the next word (`Around::hyphenate`, on by default); a piece that would need more stays start-aligned (DESIGN.md §1.2, "around").
 
 ## The rules
 

@@ -105,6 +105,22 @@ impl Silhouette {
     }
 }
 
+/// Where a Latin word may be hyphenated: byte offsets inside `word` (Liang's en-US patterns, at least two
+/// letters before and three after a break). Words with anything but ASCII letters, or shorter than five
+/// letters, are not broken.
+pub fn hyphen_points(word: &str) -> Vec<usize> {
+    use hyphenation::{Hyphenator, Language, Load, Standard};
+    static DICT: std::sync::OnceLock<Option<Standard>> = std::sync::OnceLock::new();
+    if word.len() < 5 || !word.bytes().all(|b| b.is_ascii_alphabetic()) { return vec![]; }
+    let Some(d) = DICT.get_or_init(|| Standard::from_embedded(Language::EnglishUS).ok()) else { return vec![] };
+    d.hyphenate(&word.to_ascii_lowercase()).breaks
+}
+/// Whether a line of `s` ending at byte `end` was broken inside a word (a hyphenated break): a letter on
+/// both sides.
+pub fn hyphenated_at(s: &str, end: usize) -> bool {
+    end > 0 && end < s.len() && s[..end].chars().next_back().is_some_and(|c| c.is_ascii_alphabetic()) && s[end..].chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+}
+
 /// The narrowest piece of a line worth setting text in, in ems, when `Around::min` is 0: a sliver
 /// narrower than this gets no text.
 pub const MIN_EM: f32 = 3.0;
@@ -114,6 +130,9 @@ pub const STEP: f32 = 2.0;
 /// The most extra advance justification puts in one gap between glyph clusters, in ems, by default
 /// (`Around::justify_max`).
 pub const JUSTIFY_MAX_EM: f32 = 0.25;
+/// The most letter spacing a justified Latin piece takes between its letters once its spaces are at
+/// `justify_max`, in ems (`Around::track_max`).
+pub const TRACK_MAX_EM: f32 = 0.08;
 /// The most a piece is tightened per gap, in ems, when it takes one glyph cluster (or word) more than
 /// fits so as to stay within `Around::justify_max`: little enough that neighbouring glyphs never touch.
 pub const SHRINK_EM: f32 = 0.05;
@@ -127,12 +146,18 @@ pub const SHRINK_SPACE_EM: f32 = 1.0 / 9.0;
 /// both of its edges are flush (the column's margin and the outline's gap). A piece that would need more
 /// is broken with one cluster more and tightened by at most `SHRINK_EM` per gap (`SHRINK_SPACE_EM` at
 /// spaces) if that fits; otherwise
-/// it stays start-aligned. A paragraph's last line is never justified.
+/// it stays start-aligned — unless `hyphenate` is on (the default) and the next word is a Latin word
+/// that can be broken (Liang's patterns for en-US, `hyphen_points`): then the piece takes the longest
+/// part of it that, with a hyphen, justifies within the cap. A paragraph's last line is never justified.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Around { pub obstacles: Vec<Silhouette>, pub gap: f32, pub min: f32, pub justify_max: f32, pub justify_latin_letters: bool }
+/// When the spaces of a Latin piece are at their cap, the rest may go between its letters, at most
+/// `track_max` ems per gap (default `TRACK_MAX_EM`, 0.04; 0 turns it off).
+pub struct Around { pub obstacles: Vec<Silhouette>, pub gap: f32, pub min: f32, pub justify_max: f32, pub justify_latin_letters: bool, pub hyphenate: bool, pub track_max: f32 }
 
 impl Around {
-    pub fn new(obstacles: Vec<Silhouette>, gap: f32) -> Self { Self { obstacles, gap, min: 0.0, justify_max: JUSTIFY_MAX_EM, justify_latin_letters: false } }
+    /// The same, never hyphenating.
+    pub fn no_hyphens(mut self) -> Self { self.hyphenate = false; self }
+    pub fn new(obstacles: Vec<Silhouette>, gap: f32) -> Self { Self { obstacles, gap, min: 0.0, justify_max: JUSTIFY_MAX_EM, justify_latin_letters: false, hyphenate: true, track_max: TRACK_MAX_EM } }
     /// A key for caches: the same outlines and gap give the same lines.
     pub fn id(&self) -> u64 {
         let mut h = std::hash::DefaultHasher::new();
@@ -140,6 +165,8 @@ impl Around {
         self.min.to_bits().hash(&mut h);
         self.justify_max.to_bits().hash(&mut h);
         self.justify_latin_letters.hash(&mut h);
+        self.hyphenate.hash(&mut h);
+        self.track_max.to_bits().hash(&mut h);
         for o in &self.obstacles {
             o.top.to_bits().hash(&mut h);
             for r in &o.rows { r.0.to_bits().hash(&mut h); r.1.to_bits().hash(&mut h); }

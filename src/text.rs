@@ -213,16 +213,25 @@ impl Text {
         match around {
             None => l.break_all_lines(max_width),
             Some(a) => {
-                let plan = plan_around(&mut l, s, a, max_width.unwrap_or(1e5), line, if a.min > 0.0 { a.min } else { crate::wrap::MIN_EM * size }, size);
+                let hy = if a.hyphenate { self.hyphen_advance(fi, size) } else { 0.0 };
+                let plan = plan_around(&mut l, s, a, max_width.unwrap_or(1e5), line, if a.min > 0.0 { a.min } else { crate::wrap::MIN_EM * size }, size, hy);
                 // Justified pieces: the same text again, with the extra advance as letter spacing on the
                 // clusters it follows, broken at exactly the planned places.
-                let spans: Vec<(std::ops::Range<usize>, f32)> = plan.iter().flat_map(|p| p.after.iter().map(|r| (r.clone(), p.extra))).collect();
+                let spans: Vec<(std::ops::Range<usize>, f32)> = plan.iter().flat_map(|p| p.after.iter().map(|r| (r.clone(), p.extra)).chain(p.letters.iter().map(|r| (r.clone(), p.track)))).collect();
                 if !spans.is_empty() { l = self.build(s, fi, size, line, &spans); }
                 set_planned(&mut l, s, &plan, max_width.unwrap_or(1e5));
             }
         }
         l
     }
+    /// The advance of a hyphen in family `fi` at `size` logical px.
+    fn hyphen_advance(&self, fi: usize, size: f32) -> f32 {
+        let fam = &self.families[fi.min(self.families.len() - 1)];
+        let Some(fref) = swash::FontRef::from_index(&fam.data, 0) else { return size * 0.33 };
+        fref.glyph_metrics(&[]).scale(size).advance_width(fref.charmap().map('-'))
+    }
+    /// Whether line `ln` of `p` ends in a hyphenated break (it flows around obstacles with hyphens on).
+    fn hyphenated(p: &Para<'_>, end: usize) -> bool { p.around.is_some_and(|a| a.hyphenate) && crate::wrap::hyphenated_at(p.s, end) }
     /// The paragraph shaped (not yet broken), with extra letter spacing on the given byte ranges.
     fn build(&mut self, s: &str, fi: usize, size: f32, line: f32, spacing: &[(std::ops::Range<usize>, f32)]) -> Layout<()> {
         let mut b = self.layouts.ranged_builder(&mut self.fonts, s, 1.0, true);
@@ -279,10 +288,18 @@ impl Text {
     /// visible character (trailing spaces hang and are left out), over the line's full height.
     pub fn line_boxes(&mut self, p: Para<'_>, origin: (f32, f32)) -> Vec<crate::ui::Rect> {
         let l = self.layout(p.s, p.face, p.size, p.line, Some(p.width), p.around);
+        let hy = self.hyphen_advance(p.face as usize, self.size_for(p.face, p.size));
         l.lines().map(|ln| {
             let m = ln.metrics();
-            crate::ui::Rect::new(origin.0 + m.offset + m.inline_min_coord, origin.1 + m.block_min_coord, (m.advance - m.hanging_advance).max(0.0), m.block_max_coord - m.block_min_coord)
+            // A hyphenated line ends with its hyphen.
+            let h = if Self::hyphenated(&p, ln.text_range().end) { hy } else { 0.0 };
+            crate::ui::Rect::new(origin.0 + m.offset + m.inline_min_coord, origin.1 + m.block_min_coord, (m.advance - m.hanging_advance).max(0.0) + h, m.block_max_coord - m.block_min_coord)
         }).collect()
+    }
+    /// Where each laid-out line's text ends (byte index).
+    pub fn line_ends(&mut self, p: Para<'_>) -> Vec<usize> {
+        let l = self.layout(p.s, p.face, p.size, p.line, Some(p.width), p.around);
+        l.lines().map(|ln| ln.text_range().end).collect()
     }
     /// Where the caret goes from byte `at` by the layout: a line up or down (keeping its x), or the start
     /// or end of its visual line.
@@ -329,7 +346,10 @@ impl Text {
                 let pad = (SPREAD as f32 + p.size) * scale;
                 if y1 + pad < top || y0 - pad > bottom { continue; }
             }
-            for item in ln.items() {
+            let hyphen = Self::hyphenated(&p, ln.text_range().end);
+            let items: Vec<_> = ln.items().collect();
+            let last_run = items.iter().rposition(|i| matches!(i, PositionedLayoutItem::GlyphRun(_)));
+            for (ii, item) in items.into_iter().enumerate() {
                 let PositionedLayoutItem::GlyphRun(gr) = item else { continue };
                 let run = gr.run();
                 let font = run.font();
@@ -340,7 +360,12 @@ impl Text {
                 let fsize = run.font_size() * scale;
                 let coords: Vec<i16> = run.normalized_coords().iter().map(|c| c.to_bits()).collect();
                 let mut scaler = self.scaler.builder(fref).size(fsize).hint(false).normalized_coords(coords.iter().copied()).build();
-                for g in gr.positioned_glyphs() {
+                // The hyphen of a hyphenated line: one more glyph after the run's last.
+                let mut glyphs: Vec<parley::Glyph> = gr.positioned_glyphs().collect();
+                if hyphen && Some(ii) == last_run && let Some(g) = glyphs.last().copied() {
+                    glyphs.push(parley::Glyph { id: fref.charmap().map('-') as u32, x: g.x + g.advance, ..g });
+                }
+                for g in glyphs {
                     let (gx, gy) = (ox + g.x * scale, (oy + g.y * scale).round());
                     let gx = if pixel { gx.round() } else { gx };
                     let sub = if pixel { 0 } else { ((gx.fract() * 4.0) as u8).min(3) };
@@ -402,7 +427,9 @@ pub fn word_range(s: &str, at: usize) -> (usize, usize) {
 
 /// One line as planned around obstacles: where it starts, its band, its text, and the extra advance
 /// (negative: tightening) put after each cluster in `after` to justify it.
-struct Planned { x: f32, y: f32, range: std::ops::Range<usize>, extra: f32, after: Vec<std::ops::Range<usize>> }
+/// `track` is put after each cluster in `letters` (Latin letters inside words) when the spaces alone
+/// would need more than their cap.
+struct Planned { x: f32, y: f32, range: std::ops::Range<usize>, extra: f32, after: Vec<std::ops::Range<usize>>, track: f32, letters: Vec<std::ops::Range<usize>> }
 
 /// Is this character set without spaces between words (Han, kana, Hangul, CJK punctuation, fullwidth
 /// forms)? Justification puts its extra advance after each of them.
@@ -422,11 +449,28 @@ fn opportunities(s: &str, range: std::ops::Range<usize>, letters: bool) -> Vec<s
     if picked.is_empty() && letters { inner.iter().map(at).collect() } else { picked }
 }
 
+/// The Latin letters of `s[range]` followed by another letter of the same word: where tracking goes.
+fn letter_gaps(s: &str, range: std::ops::Range<usize>) -> Vec<std::ops::Range<usize>> {
+    let text = &s[range.clone()];
+    let cs: Vec<(usize, char)> = text.char_indices().collect();
+    cs.windows(2).filter(|w| w[0].1.is_ascii_alphabetic() && w[1].1.is_ascii_alphabetic()).map(|w| range.start + w[0].0..range.start + w[0].0 + w[0].1.len_utf8()).collect()
+}
+/// How `slack` px are shared: up to `cap` after each of `after`, the rest after each of `letters` up to
+/// `track` (Latin pieces only: none when `after` already has letters). `None` when that is not enough.
+fn share(slack: f32, after: usize, letters: usize, cap: f32, track: f32) -> Option<(f32, f32)> {
+    if after == 0 { return (letters > 0 && track > 0.0 && slack / letters as f32 <= track).then(|| (0.0, slack / letters as f32)); }
+    let e = slack / after as f32;
+    if e <= cap { return Some((e, 0.0)); }
+    let rest = slack - cap * after as f32;
+    (letters > 0 && track > 0.0 && rest / letters as f32 <= track).then(|| (cap, rest / letters as f32))
+}
+
 /// One pass of breaking `l` around the obstacles in `a`: down the column a line height at a time, each
 /// band's free pieces (left to right) take a line each, starting at the piece's start; a band with no
 /// free piece is skipped a few px at a time. `more` lists lines (by index) given extra room so that they
 /// take one cluster more than fits. Returns each line's piece `(x0, x1)` and band top.
-fn flow_pass(l: &mut Layout<()>, a: &Around, width: f32, line: f32, min: f32, more: &[(usize, f32)]) -> Vec<(f32, f32, f32)> {
+/// `split` lists lines (by index) that end after exactly so many characters (a hyphenated break).
+fn flow_pass(l: &mut Layout<()>, a: &Around, width: f32, line: f32, min: f32, more: &[(usize, f32)], split: &[(usize, u32)]) -> Vec<(f32, f32, f32)> {
     let mut br = l.break_lines();
     br.state_mut().set_layout_max_advance(width);
     let mut y = 0.0f32;
@@ -448,6 +492,12 @@ fn flow_pass(l: &mut Layout<()>, a: &Around, width: f32, line: f32, min: f32, mo
         st.set_line_x(x0);
         st.set_line_max_advance(w + room);
         st.set_line_y(y as f64);
+        if let Some(&(_, n)) = split.iter().find(|s| s.0 == out.len()) {
+            if br.break_next_with_length(n).is_none() { break; }
+            out.push((x0, x0 + w, y));
+            if pieces.is_empty() { y += line; }
+            continue;
+        }
         let Some(done) = br.break_next() else { break };
         // A word too long for a piece with an obstacle after it would run into the obstacle: leave the
         // piece empty.
@@ -466,7 +516,9 @@ fn flow_pass(l: &mut Layout<()>, a: &Around, width: f32, line: f32, min: f32, mo
 /// (and not the paragraph's last line) is justified to fill it, within `Around::justify_max` per gap;
 /// one that would need more is tried with one cluster more (tightened by at most `wrap::SHRINK_EM` per
 /// gap, `wrap::SHRINK_SPACE_EM` when every gap is a space), else left start-aligned.
-fn plan_around(l: &mut Layout<()>, s: &str, a: &Around, width: f32, line: f32, min: f32, size: f32) -> Vec<Planned> {
+/// `hy` is the hyphen's advance, for a piece that ends inside a word (`Around::hyphenate`).
+#[allow(clippy::too_many_arguments)]
+fn plan_around(l: &mut Layout<()>, s: &str, a: &Around, width: f32, line: f32, min: f32, size: f32, hy: f32) -> Vec<Planned> {
     /// The most lines per paragraph tried with one cluster more (each try breaks the paragraph again).
     const TRIES: usize = 16;
     let cap = a.justify_max * size;
@@ -485,24 +537,28 @@ fn plan_around(l: &mut Layout<()>, s: &str, a: &Around, width: f32, line: f32, m
         }).collect()
     };
     let mut more: Vec<(usize, f32)> = vec![];
-    let placed = flow_pass(l, a, width, line, min, &more);
+    let mut split: Vec<(usize, u32)> = vec![];
+    let placed = flow_pass(l, a, width, line, min, &more, &split);
     let mut cur = lines(l, &placed);
     let mut plan = Vec::with_capacity(cur.len());
     let mut i = 0;
     while i < cur.len() {
-        let (x0, x1, y, ref range, used, may) = cur[i];
-        let mut p = Planned { x: x0, y, range: range.clone(), extra: 0.0, after: vec![] };
+        let (x0, x1, y, range, used, may) = cur[i].clone();
+        let mut p = Planned { x: x0, y, range: range.clone(), extra: 0.0, after: vec![], track: 0.0, letters: vec![] };
+        let track = if a.justify_latin_letters { 0.0 } else { a.track_max * size };
         if may {
             let after = opportunities(s, range.clone(), a.justify_latin_letters);
             let slack = x1 - x0 - used;
-            if !after.is_empty() && slack > 0.01 {
-                let extra = slack / after.len() as f32;
+            let gaps = letter_gaps(s, range.clone());
+            if (!after.is_empty() || (!gaps.is_empty() && track > 0.0)) && slack > 0.01 {
+                let extra = if after.is_empty() { f32::INFINITY } else { slack / after.len() as f32 };
                 if extra <= cap { p.extra = extra; p.after = after; }
-                else if more.len() < TRIES {
+                else if let Some((e, t)) = share(slack, after.len(), gaps.len(), cap, track) { (p.extra, p.after, p.track, p.letters) = (e, after, t, gaps); }
+                else if more.len() < TRIES && !after.is_empty() {
                     // One cluster more, tightened to fit, if that stays within the shrink allowed.
                     let mut trial = more.clone();
                     trial.push((i, shrink(&after) * (after.len() + 1) as f32));
-                    let tp = flow_pass(l, a, width, line, min, &trial);
+                    let tp = flow_pass(l, a, width, line, min, &trial, &split);
                     let t = lines(l, &tp);
                     if let Some((tx0, tx1, ty, tr, tu, _)) = t.get(i).cloned() && tu > tx1 - tx0 + 0.01 && tx0 == x0 && ty == y {
                         let ta = opportunities(s, tr.clone(), a.justify_latin_letters);
@@ -510,7 +566,34 @@ fn plan_around(l: &mut Layout<()>, s: &str, a: &Around, width: f32, line: f32, m
                         if !ta.is_empty() && -e <= shrink(&ta) {
                             more = trial;
                             cur = t;
-                            p = Planned { x: tx0, y: ty, range: tr, extra: e, after: ta };
+                            p = Planned { x: tx0, y: ty, range: tr, extra: e, after: ta, track: 0.0, letters: vec![] };
+                        }
+                    }
+                }
+                // Still start-aligned: break the next word, at the longest hyphenation point whose part
+                // (and the hyphen) justifies the piece within the cap.
+                if p.after.is_empty() && p.letters.is_empty() && a.hyphenate && split.len() < TRIES {
+                    let start = range.end;
+                    let word_len = s[start..].bytes().take_while(u8::is_ascii_alphabetic).count();
+                    let word = &s[start..start + word_len];
+                    for b in crate::wrap::hyphen_points(word).into_iter().rev() {
+                        let mut trial = split.clone();
+                        trial.push((i, s[range.start..start + b].chars().count() as u32));
+                        let tp = flow_pass(l, a, width, line, min, &more, &trial);
+                        let tl = lines(l, &tp);
+                        let Some((tx0, tx1, ty, tr, tu, _)) = tl.get(i).cloned() else { continue };
+                        if tr.end != start + b || tx0 != x0 || ty != y { continue; }
+                        let ta = opportunities(s, tr.clone(), a.justify_latin_letters);
+                        if ta.is_empty() { continue; }
+                        let slack = tx1 - tx0 - tu - hy;
+                        let e = slack / ta.len() as f32;
+                        let fit = if e < 0.0 { (-e <= shrink(&ta)).then_some((e, 0.0)) } else { share(slack, ta.len(), letter_gaps(s, tr.clone()).len(), cap, track) };
+                        if let Some((e, tk)) = fit {
+                            split = trial;
+                            cur = tl;
+                            let letters = if tk > 0.0 { letter_gaps(s, tr.clone()) } else { vec![] };
+                            p = Planned { x: tx0, y: ty, range: tr, extra: e, after: ta, track: tk, letters };
+                            break;
                         }
                     }
                 }

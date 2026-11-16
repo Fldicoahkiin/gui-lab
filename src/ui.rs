@@ -664,6 +664,13 @@ impl<S, M: Clone> Ui<S, M> {
         let o = n.origin();
         self.text.line_boxes(p, o)
     }
+    /// How many lines of text element `key` end in a hyphenated break (`Around::hyphenate`).
+    pub fn hyphenated_lines(&mut self, key: &str) -> usize {
+        let Some(n) = self.nodes.iter().find(|n| n.key == key) else { return 0 };
+        let Some(p) = n.para() else { return 0 };
+        if !p.around.is_some_and(|a| a.hyphenate) { return 0; }
+        self.text.line_ends(p).into_iter().filter(|&e| crate::wrap::hyphenated_at(p.s, e)).count()
+    }
     pub fn instances_of(&self, key: &str) -> Vec<Instance> {
         let Some(root) = self.nodes.iter().position(|n| n.key == key) else { return vec![] };
         (0..self.page_len).filter(|&i| within(&self.nodes, self.owners[i].0, root)).map(|i| self.scene.instances[*self.lifted.get(&i).unwrap_or(&i)]).collect()

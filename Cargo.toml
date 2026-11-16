@@ -27,6 +27,8 @@ serde_json = "1"
 thiserror = "2"
 # Plural categories for the message catalogs (i18n.rs): CLDR's rules, no other machinery.
 intl_pluralrules = "7"
+# Liang hyphenation with the en-US patterns embedded, for Latin text that flows around obstacles (wrap.rs).
+hyphenation = { version = "0.8", default-features = false, features = ["embed_en-us"] }
 unic-langid = "0.9"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

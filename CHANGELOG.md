@@ -8,6 +8,7 @@
 - 底部面板（几档、按投射收起、橡皮筋、背板、滚动交接）和浮动窗口（按投射选角）。A bottom sheet and a floating box.
 - 公式注：演示下面印出真实参数的一行，参数可改。The formula caption.
 - `el::layers`：叠在同一个盒子里的孩子。Children layered in one box.
+- 英文绕排：断词（Liang，en-US）和至多 0.08 em 的字距，不对齐的段降到 15% 以下。English wrap: hyphenation and a little letter spacing.
 - 点阵图表：点的大小和亮度是曲线下的面积，扫过的竖线，可拖的控制点。A dot chart.
 - 第 6 章的墨粉减半、避开文字（`Shed.clear`），一行公式注。The zine's toner halved and kept off the text.
 - 卡片叠：angle0 × falloff^n、delay_ms × n、三种样子随材质。A fanning stack of cards in three looks.
