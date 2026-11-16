@@ -2,6 +2,13 @@
 
 按 DESIGN.md §7 的步骤记。Each step of DESIGN.md §7.
 
+## 14 — 交互的手艺 · Interaction craft
+
+- 手势的物理：弹簧（解析步，松手速度交接）、橡皮筋、投射、速度（`lab::gesture`）。Gesture physics: a spring with velocity hand-off, a rubber band, projection, velocity.
+- 底部面板（几档、按投射收起、橡皮筋、背板、滚动交接）和浮动窗口（按投射选角）。A bottom sheet and a floating box.
+- 公式注：演示下面印出真实参数的一行，参数可改。The formula caption.
+- `el::layers`：叠在同一个盒子里的孩子。Children layered in one box.
+
 ## 11 — 序章、展示而不是标语、引导、文字绕排、读数、配方 · The prologue, display not slogans, guidance, wrap, readout, recipes
 
 - 影片的序章：同一个小界面左边原样、右边一种材质，分界线能拖，材质名一排。The prologue: one small interface, as it is and in a material, a divider and chips.

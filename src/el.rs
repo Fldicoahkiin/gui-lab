@@ -78,6 +78,8 @@ pub enum Content {
 pub type OnPick<M> = Rc<dyn Fn(crate::mesh::Pick) -> Option<M>>;
 /// Handles the wheel over an element before any scroll node does (dx, dy, logical px).
 pub type OnWheel<M> = Rc<dyn Fn(f32, f32) -> Option<M>>;
+/// The pointer over an element (`Some` local logical px) or leaving it (`None`).
+pub type OnMove<M> = Rc<dyn Fn(Option<(f32, f32)>) -> Option<M>>;
 /// Handles a key while the element has focus; the flag is Shift.
 pub type OnKey<M> = Rc<dyn Fn(Key, bool) -> Option<M>>;
 /// Handles text input while the element has focus (a text field, DESIGN.md §1.8.1).
@@ -263,6 +265,8 @@ pub struct El<M> {
     pub on_pick: Option<OnPick<M>>,
     /// The wheel over this element (taken before scrolling).
     pub on_wheel: Option<OnWheel<M>>,
+    /// The pointer moving over this element, in its own coordinates, and leaving it (`El::on_move`).
+    pub on_move: Option<OnMove<M>>,
     /// Lines and rows run right to left in this subtree (inherited; `None` follows the parent).
     pub rtl: Option<bool>,
     pub children: Vec<El<M>>,
@@ -321,7 +325,7 @@ impl<M> El<M> {
     fn new(style: Style, content: Content) -> Self {
         // Nothing shrinks unless asked: fixed sizes stay fixed inside columns and scroll areas.
         let style = Style { flex_shrink: 0.0, ..style };
-        Self { key: String::new(), style, content, fill: None, border: None, radius: 0.0, on_press: None, on_key: None, on_drag: None, on_blur: None, focusable: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, modal: None, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, shift: (0.0, 0.0), shed: None, flow_field: None, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, clips: false, calm: false, on_text: None, multiline: false, selectable: false, cursor: None, virt: None, access: None, ripple: Ripple::default(), on_pick: None, on_wheel: None, rtl: None, children: vec![] }
+        Self { key: String::new(), style, content, fill: None, border: None, radius: 0.0, on_press: None, on_key: None, on_drag: None, on_blur: None, focusable: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, modal: None, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, shift: (0.0, 0.0), shed: None, flow_field: None, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, clips: false, calm: false, on_text: None, multiline: false, selectable: false, cursor: None, virt: None, access: None, ripple: Ripple::default(), on_pick: None, on_wheel: None, on_move: None, rtl: None, children: vec![] }
     }
     pub fn key(mut self, k: impl Into<String>) -> Self { self.key = k.into(); self }
     pub fn gap(mut self, g: f32) -> Self { self.style.gap = Size { width: length(g), height: length(g) }; self }
@@ -469,6 +473,9 @@ impl<M> El<M> {
     pub fn on_pick(mut self, f: impl Fn(crate::mesh::Pick) -> Option<M> + 'static) -> Self { self.on_pick = Some(Rc::new(f)); self }
     /// Take the wheel over this element (before any scroll node): dx, dy in logical px.
     pub fn on_wheel(mut self, f: impl Fn(f32, f32) -> Option<M> + 'static) -> Self { self.on_wheel = Some(Rc::new(f)); self }
+    /// Hear a mouse or pen moving over this element (`Some((x, y))`, logical px from its top left) and
+    /// leaving it (`None`): for menus that steer by where the pointer goes. Fingers have no hover.
+    pub fn on_move(mut self, f: impl Fn(Option<(f32, f32)>) -> Option<M> + 'static) -> Self { self.on_move = Some(Rc::new(f)); self }
     pub fn scroll(mut self) -> Self { self.scroll = true; self.style.overflow.y = taffy::Overflow::Scroll; self.style.scrollbar_width = 0.0; self }
     /// Scroll horizontally instead (the wheel's vertical movement scrolls it too).
     pub fn scroll_x(mut self) -> Self { self.scroll = true; self.horizontal = true; self.style.overflow.x = taffy::Overflow::Scroll; self.style.scrollbar_width = 0.0; self }
@@ -479,17 +486,18 @@ impl<M> El<M> {
 
     /// The same tree sending other messages: lets one application embed another's view.
     pub fn map<N: 'static>(self, f: Rc<dyn Fn(M) -> N>) -> El<N> where M: 'static {
-        let El { key, style, content, fill, border, radius, on_press, on_key, on_drag, on_blur, focusable, scroll, horizontal, bar, reveal, disabled, commit, modal, fonts, loose, wipe, flow, hidden, shift, shed, flow_field, annotate, gaze_scope, material, loosen, anchor, clips, calm, on_text, multiline, selectable, cursor, virt, access, ripple, on_pick, on_wheel, rtl, children } = self;
+        let El { key, style, content, fill, border, radius, on_press, on_key, on_drag, on_blur, focusable, scroll, horizontal, bar, reveal, disabled, commit, modal, fonts, loose, wipe, flow, hidden, shift, shed, flow_field, annotate, gaze_scope, material, loosen, anchor, clips, calm, on_text, multiline, selectable, cursor, virt, access, ripple, on_pick, on_wheel, on_move, rtl, children } = self;
         let virt = virt.map(|v| { let f = f.clone(); let b = v.build; Virtual { count: v.count, row_h: v.row_h, overscan: v.overscan, selected: v.selected, build: Rc::new(move |i: usize| b(i).map(f.clone())) as Rc<dyn Fn(usize) -> El<N>> } });
         let on_key = on_key.map(|k| { let f = f.clone(); Rc::new(move |key: Key, shift: bool| k(key, shift).map(|m| f(m))) as OnKey<N> });
         let on_text = on_text.map(|t| { let f = f.clone(); Rc::new(move |i: TextInput| t(i).map(|m| f(m))) as OnText<N> });
         let on_drag = on_drag.map(|d| { let f = f.clone(); Rc::new(move |g: Drag| d(g).map(|m| f(m))) as OnDrag<N> });
         let on_pick = on_pick.map(|d| { let f = f.clone(); Rc::new(move |g: crate::mesh::Pick| d(g).map(|m| f(m))) as OnPick<N> });
         let on_wheel = on_wheel.map(|d| { let f = f.clone(); Rc::new(move |x: f32, y: f32| d(x, y).map(|m| f(m))) as OnWheel<N> });
+        let on_move = on_move.map(|d| { let f = f.clone(); Rc::new(move |p: Option<(f32, f32)>| d(p).map(|m| f(m))) as OnMove<N> });
         El {
             key, style, content, fill, border, radius, on_press: on_press.map(|m| f(m)), on_key, on_drag, on_blur: on_blur.map(|m| f(m)),
             focusable, scroll, horizontal, bar, reveal, disabled, commit, modal: modal.map(|m| Modal { dismiss: f(m.dismiss), beneath: m.beneath }),
-            fonts, loose, wipe, flow, hidden, shift, shed, flow_field, annotate, gaze_scope, material, loosen, anchor, clips, calm, on_text, multiline, selectable, cursor, virt, access, ripple, on_pick, on_wheel, rtl, children: children.into_iter().map(|c| c.map(f.clone())).collect(),
+            fonts, loose, wipe, flow, hidden, shift, shed, flow_field, annotate, gaze_scope, material, loosen, anchor, clips, calm, on_text, multiline, selectable, cursor, virt, access, ripple, on_pick, on_wheel, on_move, rtl, children: children.into_iter().map(|c| c.map(f.clone())).collect(),
         }
     }
 }
@@ -538,8 +546,32 @@ pub fn picture<M>(id: u32, ratio: f32) -> El<M> { El::new(Style { size: Size { w
 pub fn scene3d<M>(s: crate::mesh::Scene3d) -> El<M> {
     El::new(Style { size: Size { width: percent(1.0), height: length(240.0) }, ..Default::default() }, Content::Scene3d(Rc::new(s)))
 }
+impl<M: Clone + 'static> El<M> {
+    /// This demo with its formula caption under it (`widgets::caption`, DESIGN.md §5.2): the line is
+    /// formatted from the fields that drive the demo and the controls set those fields.
+    pub fn caption_params(self, key: &str, formula: impl Into<String>, params: &[crate::widgets::CaptionParam], msg: impl Fn(usize, crate::widgets::Edit) -> M + 'static) -> El<M> {
+        col().key(format!("{key}/with")).gap(10.0).min_width(0.0).child(self).child(crate::widgets::caption(key, formula, params, msg))
+    }
+}
 /// One mesh at the origin, with the default camera and light (`mesh::Scene3d::single`).
 pub fn mesh<M>(id: crate::mesh::MeshId) -> El<M> { scene3d(crate::mesh::Scene3d::single(id)) }
+/// Every child over the one before, each starting at the top left of the same box: the box is the
+/// parent's (fill it with `fill_width` / `fill_height`, or size it) and does not grow with the children,
+/// so a panel taller than it hangs out of it (clip the box). For sheets and floating boxes over a page;
+/// a child sized `fill_width().fill_height()` covers the box.
+pub fn layers<M>(children: impl IntoIterator<Item = El<M>>) -> El<M> {
+    let track = || vec![minmax(length(0.0), fr(1.0))];
+    let mut s = El::new(Style {
+        display: Display::Grid, grid_template_columns: track(), grid_template_rows: track(),
+        justify_items: AlignItems::START, align_items: AlignItems::START, ..Default::default()
+    }, Content::None);
+    for mut c in children {
+        c.style.grid_row = Line { start: line(1), end: span(1) };
+        c.style.grid_column = Line { start: line(1), end: span(1) };
+        s.children.push(c);
+    }
+    s
+}
 /// Every child in the same place, centred in the stack (a one-cell grid): for things that replace one
 /// another where they stand, like the candidates of a morph.
 pub fn stack<M>(children: impl IntoIterator<Item = El<M>>) -> El<M> {

@@ -7,6 +7,7 @@ pub mod el;
 pub mod error;
 pub mod gallery;
 pub mod gaze;
+pub mod gesture;
 pub mod i18n;
 pub mod markdown;
 pub mod marks;

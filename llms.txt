@@ -86,6 +86,9 @@ Every documentation page as Markdown, at `md/en/<page>.md` and `md/zh-Hans/<page
 - [context menu](md/en/context-menu.md): Commands for what is under the pointer, opened where it is.
 - [command](md/en/command.md): Find and run a command by typing.
 - [toggle](md/en/toggle.md): A button that stays pressed, or a group of them.
+- [bottom sheet](md/en/bottom-sheet.md): A panel that rises from the bottom edge: dragged by its handle or body between detents, swiped down to dismiss.
+- [floating](md/en/floating.md): A small box floating over an area (picture in picture): drag it anywhere; let go, the throw's projected end picks the nearest corner and a spring takes it th…
+- [caption](md/en/caption.md): A small monospaced line under a live demo that prints the parameters driving it (read from the same fields, never typed by hand), each also a number control.
 - [AGENTS.md](md/en/ai-agents.md): gui-lab is a self-drawn interface framework in Rust (wgpu; the same code runs natively and on the web).
 - [llms.txt](md/en/ai-llms.md): Start with AGENTS.
 - [Registry](md/en/ai-registry.md): {
