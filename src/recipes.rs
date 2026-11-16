@@ -103,6 +103,32 @@ pub fn open(name: &str, faces: Vec<crate::text::Face>, w: u32, h: u32, scale: f3
 #[path = "../examples/components/nested_menu.rs"] pub mod ex_nested_menu;
 #[path = "../examples/components/card_stack.rs"] pub mod ex_card_stack;
 #[path = "../examples/components/dot_chart.rs"] pub mod ex_dot_chart;
+#[path = "../examples/lab/lumen.rs"] pub mod lab_lumen;
+#[path = "../examples/lab/contours.rs"] pub mod lab_contours;
+#[path = "../examples/lab/silk.rs"] pub mod lab_silk;
+#[path = "../examples/lab/grown.rs"] pub mod lab_grown;
+#[path = "../examples/lab/mercury.rs"] pub mod lab_mercury;
+#[path = "../examples/lab/flow.rs"] pub mod lab_flow;
+#[path = "../examples/lab/loupe.rs"] pub mod lab_loupe;
+#[path = "../examples/lab/orbit.rs"] pub mod lab_orbit;
+#[path = "../examples/lab/spring.rs"] pub mod lab_spring;
+#[path = "../examples/lab/stack.rs"] pub mod lab_stack;
+/// The Lab's experiments (DESIGN.md §5.3), one file each in `examples/lab/`, in page order: name and source.
+pub mod lab {
+    pub use super::{lab_lumen as lumen, lab_contours as contours, lab_silk as silk, lab_grown as grown, lab_mercury as mercury, lab_flow as flow, lab_loupe as loupe, lab_orbit as orbit, lab_spring as spring, lab_stack as stack};
+    pub const ALL: [(&str, &str); 10] = [
+        ("lumen", include_str!("../examples/lab/lumen.rs")),
+        ("contours", include_str!("../examples/lab/contours.rs")),
+        ("silk", include_str!("../examples/lab/silk.rs")),
+        ("grown", include_str!("../examples/lab/grown.rs")),
+        ("mercury", include_str!("../examples/lab/mercury.rs")),
+        ("flow", include_str!("../examples/lab/flow.rs")),
+        ("loupe", include_str!("../examples/lab/loupe.rs")),
+        ("orbit", include_str!("../examples/lab/orbit.rs")),
+        ("spring", include_str!("../examples/lab/spring.rs")),
+        ("stack", include_str!("../examples/lab/stack.rs")),
+    ];
+}
 pub mod components {
     pub use super::{ex_menu as menu, ex_orbit as orbit, ex_button as button, ex_number as number, ex_input as input, ex_switch as switch, ex_slider as slider, ex_tabs as tabs, ex_choice as choice, ex_list as list, ex_card as card, ex_dialog as dialog, ex_image as image, ex_divider as divider, ex_scroll as scroll, ex_checkbox as checkbox, ex_radio as radio, ex_select as select, ex_tooltip as tooltip, ex_popover as popover, ex_toast as toast, ex_progress as progress, ex_accordion as accordion, ex_table as table, ex_badge as badge, ex_avatar as avatar, ex_skeleton as skeleton, ex_breadcrumb as breadcrumb, ex_pagination as pagination, ex_sheet as sheet, ex_context_menu as context_menu, ex_command as command, ex_toggle as toggle, ex_bottom_sheet as bottom_sheet, ex_floating as floating, ex_caption as caption, ex_nested_menu as nested_menu, ex_card_stack as card_stack, ex_dot_chart as dot_chart};
     /// (component, source, its examples as elements).
