@@ -2840,7 +2840,7 @@ impl<S, M: Clone> Ui<S, M> {
     fn animate(&mut self) {
         self.scene.truncate(self.page_len);
         let now = self.now;
-        let active = self.run.is_some() || !self.flows.is_empty() || !self.recomps.is_empty() || !self.slides.is_empty() || !self.decodes.is_empty();
+        let active = self.run.is_some() || !self.flows.is_empty() || !self.recomps.is_empty() || !self.slides.is_empty() || self.decodes.values().any(|d| d.spec.hold.is_none());
         let hidden: HashSet<u64> = self.recomps.values().flat_map(|r| r.hide.iter().copied()).collect();
         // One more pass after the last animation ends puts every instance back as painted.
         // Parts in flight are drawn over the page, so they do not pass behind what is already there.

@@ -739,5 +739,456 @@
       "response": "nudge (a control: pushed as one piece by fronts, held and condensing at most to Look::legible_cap)",
       "recompose": "the value label does not recompose (it follows the pointer)"
     }
+  ],
+  "experiments": [
+    {
+      "name": "lumen",
+      "file": "examples/lab/lumen.rs",
+      "page": "lab-lumen",
+      "docs": [
+        "docs/site/en/lab-lumen.md",
+        "docs/site/zh-Hans/lab-lumen.md"
+      ],
+      "formula": "L(d) = L0 + (1 − L0)·e^(−d²/r²)",
+      "params": [
+        {
+          "name": "L0",
+          "default": 0.22,
+          "min": 0.05,
+          "max": 1.0,
+          "step": 0.01,
+          "unit": ""
+        },
+        {
+          "name": "r",
+          "default": 46.0,
+          "min": 8.0,
+          "max": 160.0,
+          "step": 1.0,
+          "unit": "px"
+        },
+        {
+          "name": "ω",
+          "default": 0.35,
+          "min": 0.0,
+          "max": 2.0,
+          "step": 0.05,
+          "unit": "rad/s"
+        }
+      ],
+      "input": "number"
+    },
+    {
+      "name": "contours",
+      "file": "examples/lab/contours.rs",
+      "page": "lab-contours",
+      "docs": [
+        "docs/site/en/lab-contours.md",
+        "docs/site/zh-Hans/lab-contours.md"
+      ],
+      "formula": "f(x,y) = n(x/s, y/s, t) + a·e^(−|p−m|²/r²)",
+      "params": [
+        {
+          "name": "s",
+          "default": 52.0,
+          "min": 12.0,
+          "max": 120.0,
+          "step": 1.0,
+          "unit": "px"
+        },
+        {
+          "name": "a",
+          "default": 0.7,
+          "min": 0.0,
+          "max": 2.0,
+          "step": 0.05,
+          "unit": ""
+        },
+        {
+          "name": "r",
+          "default": 30.0,
+          "min": 6.0,
+          "max": 90.0,
+          "step": 1.0,
+          "unit": "px"
+        },
+        {
+          "name": "n",
+          "default": 9.0,
+          "min": 2.0,
+          "max": 16.0,
+          "step": 1.0,
+          "unit": ""
+        }
+      ],
+      "input": "number"
+    },
+    {
+      "name": "silk",
+      "file": "examples/lab/silk.rs",
+      "page": "lab-silk",
+      "docs": [
+        "docs/site/en/lab-silk.md",
+        "docs/site/zh-Hans/lab-silk.md"
+      ],
+      "formula": "ṗ = v·s·curl n(p/s) + u(p)",
+      "params": [
+        {
+          "name": "N",
+          "default": 1600.0,
+          "min": 100.0,
+          "max": 20000.0,
+          "step": 100.0,
+          "unit": ""
+        },
+        {
+          "name": "v",
+          "default": 16.0,
+          "min": 0.0,
+          "max": 60.0,
+          "step": 1.0,
+          "unit": "px/s"
+        },
+        {
+          "name": "s",
+          "default": 60.0,
+          "min": 10.0,
+          "max": 200.0,
+          "step": 1.0,
+          "unit": "px"
+        },
+        {
+          "name": "τ",
+          "default": 0.6,
+          "min": 0.05,
+          "max": 3.0,
+          "step": 0.05,
+          "unit": "s"
+        }
+      ],
+      "input": "number"
+    },
+    {
+      "name": "grown",
+      "file": "examples/lab/grown.rs",
+      "page": "lab-grown",
+      "docs": [
+        "docs/site/en/lab-grown.md",
+        "docs/site/zh-Hans/lab-grown.md"
+      ],
+      "formula": "u′ = ∇²u − uv² + f(1−u), v′ = ½∇²v + uv² − (f+k)v",
+      "params": [
+        {
+          "name": "f",
+          "default": 0.037,
+          "min": 0.01,
+          "max": 0.08,
+          "step": 0.001,
+          "unit": ""
+        },
+        {
+          "name": "k",
+          "default": 0.06,
+          "min": 0.04,
+          "max": 0.07,
+          "step": 0.001,
+          "unit": ""
+        },
+        {
+          "name": "steps",
+          "default": 24.0,
+          "min": 1.0,
+          "max": 40.0,
+          "step": 1.0,
+          "unit": "/frame"
+        },
+        {
+          "name": "T",
+          "default": 9.0,
+          "min": 2.0,
+          "max": 30.0,
+          "step": 0.5,
+          "unit": "s"
+        }
+      ],
+      "input": "number"
+    },
+    {
+      "name": "mercury",
+      "file": "examples/lab/mercury.rs",
+      "page": "lab-mercury",
+      "docs": [
+        "docs/site/en/lab-mercury.md",
+        "docs/site/zh-Hans/lab-mercury.md"
+      ],
+      "formula": "Σ rᵢ²/dᵢ² = 1",
+      "params": [
+        {
+          "name": "r0",
+          "default": 17.0,
+          "min": 4.0,
+          "max": 40.0,
+          "step": 0.5,
+          "unit": "px"
+        },
+        {
+          "name": "r",
+          "default": 12.0,
+          "min": 4.0,
+          "max": 40.0,
+          "step": 0.5,
+          "unit": "px"
+        },
+        {
+          "name": "k",
+          "default": 120.0,
+          "min": 10.0,
+          "max": 600.0,
+          "step": 10.0,
+          "unit": "N/m"
+        },
+        {
+          "name": "c",
+          "default": 14.0,
+          "min": 1.0,
+          "max": 60.0,
+          "step": 1.0,
+          "unit": "N·s/m"
+        }
+      ],
+      "input": "number"
+    },
+    {
+      "name": "flow",
+      "file": "examples/lab/flow.rs",
+      "page": "lab-flow",
+      "docs": [
+        "docs/site/en/lab-flow.md",
+        "docs/site/zh-Hans/lab-flow.md"
+      ],
+      "formula": "y(x) = A·sin(2πx/λ − ωt) + bump",
+      "params": [
+        {
+          "name": "A",
+          "default": 9.0,
+          "min": 0.0,
+          "max": 40.0,
+          "step": 0.5,
+          "unit": "px"
+        },
+        {
+          "name": "λ",
+          "default": 150.0,
+          "min": 20.0,
+          "max": 400.0,
+          "step": 1.0,
+          "unit": "px"
+        },
+        {
+          "name": "ω",
+          "default": 1.6,
+          "min": 0.0,
+          "max": 8.0,
+          "step": 0.1,
+          "unit": "rad/s"
+        },
+        {
+          "name": "σ",
+          "default": 40.0,
+          "min": 6.0,
+          "max": 160.0,
+          "step": 1.0,
+          "unit": "px"
+        }
+      ],
+      "input": "number"
+    },
+    {
+      "name": "loupe",
+      "file": "examples/lab/loupe.rs",
+      "page": "lab-loupe",
+      "docs": [
+        "docs/site/en/lab-loupe.md",
+        "docs/site/zh-Hans/lab-loupe.md"
+      ],
+      "formula": "(λ, φ) → R·(cos φ sin λ, sin φ)",
+      "params": [
+        {
+          "name": "R",
+          "default": 66.0,
+          "min": 30.0,
+          "max": 120.0,
+          "step": 1.0,
+          "unit": "px"
+        },
+        {
+          "name": "ω0",
+          "default": 0.3,
+          "min": 0.0,
+          "max": 2.0,
+          "step": 0.05,
+          "unit": "rad/s"
+        },
+        {
+          "name": "μ",
+          "default": 1.6,
+          "min": 0.1,
+          "max": 8.0,
+          "step": 0.1,
+          "unit": "/s"
+        }
+      ],
+      "input": "number"
+    },
+    {
+      "name": "orbit",
+      "file": "examples/lab/orbit.rs",
+      "page": "lab-orbit",
+      "docs": [
+        "docs/site/en/lab-orbit.md",
+        "docs/site/zh-Hans/lab-orbit.md"
+      ],
+      "formula": "ω(r) = ω1·r^−1.5",
+      "params": [
+        {
+          "name": "ω1",
+          "default": 1.2,
+          "min": 0.0,
+          "max": 4.0,
+          "step": 0.05,
+          "unit": "rad/s"
+        },
+        {
+          "name": "G",
+          "default": 9000.0,
+          "min": 0.0,
+          "max": 40000.0,
+          "step": 500.0,
+          "unit": ""
+        },
+        {
+          "name": "k",
+          "default": 26.0,
+          "min": 1.0,
+          "max": 200.0,
+          "step": 1.0,
+          "unit": "/s²"
+        },
+        {
+          "name": "c",
+          "default": 5.0,
+          "min": 0.0,
+          "max": 30.0,
+          "step": 0.5,
+          "unit": "/s"
+        }
+      ],
+      "input": "number"
+    },
+    {
+      "name": "spring",
+      "file": "examples/lab/spring.rs",
+      "page": "lab-spring",
+      "docs": [
+        "docs/site/en/lab-spring.md",
+        "docs/site/zh-Hans/lab-spring.md"
+      ],
+      "formula": "m·x″ = −k(x − x₀) − c·x′",
+      "params": [
+        {
+          "name": "k",
+          "default": 180.0,
+          "min": 10.0,
+          "max": 1200.0,
+          "step": 10.0,
+          "unit": "N/m"
+        },
+        {
+          "name": "c",
+          "default": 6.0,
+          "min": 0.0,
+          "max": 80.0,
+          "step": 0.5,
+          "unit": "N·s/m"
+        },
+        {
+          "name": "m",
+          "default": 1.0,
+          "min": 0.2,
+          "max": 5.0,
+          "step": 0.1,
+          "unit": "kg"
+        }
+      ],
+      "input": "number"
+    },
+    {
+      "name": "stack",
+      "file": "examples/lab/stack.rs",
+      "page": "lab-stack",
+      "docs": [
+        "docs/site/en/lab-stack.md",
+        "docs/site/zh-Hans/lab-stack.md"
+      ],
+      "formula": "angle(n) = angle0 × falloff^n",
+      "params": [
+        {
+          "name": "angle0",
+          "default": null,
+          "min": 0.0,
+          "max": 90.0,
+          "step": 1.0,
+          "unit": "°"
+        },
+        {
+          "name": "falloff",
+          "default": null,
+          "min": 0.1,
+          "max": 1.0,
+          "step": 0.01,
+          "unit": ""
+        },
+        {
+          "name": "delay",
+          "default": null,
+          "min": 0.0,
+          "max": 200.0,
+          "step": 1.0,
+          "unit": "ms"
+        }
+      ],
+      "input": "number"
+    },
+    {
+      "name": "decode",
+      "file": "src/decode.rs",
+      "page": "decode",
+      "formula": "tier i on over [i·S, i·S + W], content at C = (T−1)·S + W, finest off over [C, C + W]",
+      "params": [
+        {
+          "name": "tiers",
+          "default": [
+            32,
+            16,
+            8,
+            4
+          ],
+          "unit": "px"
+        },
+        {
+          "name": "stagger_ms",
+          "default": 90
+        },
+        {
+          "name": "duration_ms",
+          "default": 720
+        },
+        {
+          "name": "seed",
+          "default": 7
+        }
+      ],
+      "input": "number"
+    }
   ]
 }

@@ -2,6 +2,17 @@
 
 按 DESIGN.md §7 的步骤记。Each step of DESIGN.md §7.
 
+## 15 — 场、实验室、解码过渡、范围缩小、帧预算 · Fields, the Lab, decode, a narrower scope, the frame budget
+
+- 实例自己的变换（`Instance::xf`：转、缩放、斜切，绕自己的中心），字形的姿态（`El::pose`），所以字可以沿路径、包在球上、被光照亮，轮廓不变。Per-instance transforms and glyph poses.
+- 图（`el::canvas(Drawing)`：点和笔画都是有真实轮廓的形状），`El::on_point`（移动、按下拖动、离开一个处理函数，画布上是画布的坐标）。Drawings and one pointer handler.
+- 场（`lab::field`：噪声、鼓包、元球、旋度、网格、marching squares 等值线、矢量流、点群平流、有遮罩的 Gray–Scott）。Fields as one abstraction.
+- `El::on_visible`（看得见才走）和 `El::on_outline`（把真实轮廓作为遮罩交给状态）。Visibility and true outlines as messages.
+- 帧预算（`lab::budget`）：变形格子、掉落、流场、点群、图的记号都从一份里取，超时自动缩、有余量时恢复；读数里写出。One frame budget for every small mark.
+- 实验室（`#lab`）：十格实验（光照文字、等值线、丝、长成形状、水银、沿路径的文字、球面上的文字、轨道、弹簧、卡片叠），每格一个示例文件，各有一页文档。The Lab: ten experiments, one file each, with their pages.
+- 解码过渡（`El::decode`）：按真实轮廓由粗到细解开，倒放消失；文档页有分层的三维视图和时间轴。The decode transition with an exploded view and a timeline.
+- 删掉了金属、液体、拼贴三种材质，Neo-Y2K 和 Mixed media 两个预设，影片第 11、12 章（连同终章）。Removed chrome, liquid and collage, two presets and two film chapters.
+
 ## 14 — 交互的手艺 · Interaction craft
 
 - 手势的物理：弹簧（解析步，松手速度交接）、橡皮筋、投射、速度（`lab::gesture`）。Gesture physics: a spring with velocity hand-off, a rubber band, projection, velocity.

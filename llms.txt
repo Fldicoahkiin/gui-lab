@@ -26,6 +26,22 @@ Start with AGENTS.md (the mental model, the ten things you write, the rules, how
 - [A chapter: one scene with actors that flow in](docs/recipes/chapter.md): code in examples/chapter.rs
 - [The film](src/gallery/film.rs): twelve chapters, the landing page (`#film`)
 
+## Lab
+
+The Lab (`#lab`) is a grid of small live experiments, one file each in `examples/lab/`, written against the public API (`lab::experiment::Experiment`); each has a page `#lab-<name>` with its formula and parameters (registry.json `experiments`).
+
+- [Lumen](docs/site/en/lab-lumen.md): light on text, tone by distance, outlines untouched (`El::pose`)
+- [Contours](docs/site/en/lab-contours.md): iso-lines of noise plus a pointer bump (`field::Grid::contours`)
+- [Silk](docs/site/en/lab-silk.md): marks advected by curl noise and a stirred flow (`field::Swarm`, `budget::grant`)
+- [Grown](docs/site/en/lab-grown.md): Gray–Scott inside an element's true outline (`El::on_outline`, `field::GrayScott`)
+- [Mercury](docs/site/en/lab-mercury.md): metaballs with a spring-followed ball (`field::Balls`)
+- [Flow](docs/site/en/lab-flow.md): text on a waving path (`Pose::angle`)
+- [Loupe](docs/site/en/lab-loupe.md): text on a sphere, drag to spin
+- [Orbit](docs/site/en/lab-orbit.md): Kepler orbits with pointer attraction
+- [Spring](docs/site/en/lab-spring.md): the gesture spring, dragged and thrown
+- [Stack](docs/site/en/lab-stack.md): the card stack in the lab's look
+- [Decode](src/decode.rs): `El::decode`, blocks over the true outline resolving coarse to fine (`#decode`)
+
 ## Pages
 
 Every documentation page as Markdown, at `md/en/<page>.md` and `md/zh-Hans/<page>.md` next to the web build (`cargo run --release --bin md -- dist/md`).
@@ -39,7 +55,7 @@ Every documentation page as Markdown, at `md/en/<page>.md` and `md/zh-Hans/<page
 - [The tree and messages](md/en/docs-tree-and-messages.md): After every message the runtime calls view(&state) once, gets a new El tree, compares it with the last by key and lays out again only what changed.
 - [Layout](md/en/docs-layout.md): Layout is taffy's flexbox and grid, in logical pixels; elements do not shrink unless asked.
 - [Text](md/en/docs-text.md): Text is set by parley and rasterised by swash; every atlas pixel holds coverage and the signed distance to the stroke, so every material draws a glyph by its…
-- [Materials and looseness](md/en/docs-materials.md): A material is how the second pass draws: plain, dot, halftone, ascii, print, lino, glitch, xray, chrome, liquid, collage, near.
+- [Materials and looseness](md/en/docs-materials.md): A material is how the second pass draws: plain, dot, halftone, ascii, print, lino, glitch, xray, near.
 - [Ripple rules](md/en/docs-ripples.md): A press sends a front that by default reaches only the control pressed (Scope::Own); Scope::Container and Scope::Global reach further.
 - [Transforms](md/en/docs-transforms.md): Two kinds: a morph (Cmd::Morph: one element breaks into cells that fly onto another's shape) and a flow (Cmd::Flow: what two pages share moves to its new pla…
 - [Presets](md/en/docs-presets.md): A style preset is data: theme, material and its numbers, annotation, interaction character, how scrolling looks, and a transition program.
@@ -102,4 +118,7 @@ Every documentation page as Markdown, at `md/en/<page>.md` and `md/zh-Hans/<page
 - [src/el.rs](src/el.rs): the element tree and its builders
 - [src/ui.rs](src/ui.rs): the runtime
 - [src/drive.rs](src/drive.rs): scripted input and the render tool
+- [src/field.rs](src/field.rs): fields: noise, bumps, metaballs, curl, grids, marching-squares contours, flows, swarms, masked Gray–Scott
+- [src/draw.rs](src/draw.rs): drawings (`el::canvas`): dots and strokes as shapes with true outlines
+- [src/budget.rs](src/budget.rs): the frame budget every small mark draws from
 - [src/wrap.rs](src/wrap.rs): text around true outlines (`.around(Around)`); a piece beside an obstacle is justified flush on both edges, at most `Around::justify_max` ems per gap (default 0.25), between Latin letters only with `Around::justify_latin_letters` (default off)
