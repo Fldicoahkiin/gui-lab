@@ -698,6 +698,27 @@
       ],
       "response": "nudge (a control: pushed as one piece by fronts, held and condensing at most to Look::legible_cap)",
       "recompose": "keyed labels recompose when their text changes"
+    },
+    {
+      "name": "card_stack",
+      "title": "卡片叠",
+      "group": "display",
+      "functions": [
+        "card_stack"
+      ],
+      "description": "一叠卡片：悬停或按下一张，它下面的卡片绕左下角展开，第 n 张转 angle0 × falloff^n（默认 42° × 0.7^n），晚 delay_ms × n（默认 28 ms）开始，各自用弹簧。卡片是三维元素，所以样子跟着材质：平的、带厚度能看见边的、或者由记号（点阵、ASCII）画出来的。",
+      "description_en": "A stack of cards: hover or press one and the cards beneath fan out about their bottom-left corners, card n turning angle0 × falloff^n (42° × 0.7^n) and starting delay_ms × n (28 ms) later, each on its own spring. The cards are a 3D element, so the look follows the material: flat, thick with visible edges, or drawn in marks (dots, ASCII).",
+      "files": [
+        "src/widgets/card_stack.rs",
+        "src/gesture.rs",
+        "src/mesh.rs"
+      ],
+      "dependencies": [
+        "base"
+      ],
+      "response": "loosen (a 3D element is decoration, like a picture, even when it can be turned)",
+      "recompose": "none (no text)",
+      "recipe": "docs/recipes/stack.md"
     }
   ]
 }
