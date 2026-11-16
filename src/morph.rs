@@ -353,8 +353,11 @@ pub type Bounds = [f32; 4];
 pub fn ink_bounds(insts: &[Instance]) -> Option<Bounds> {
     let mut b: Option<Bounds> = None;
     for i in insts {
+        // Where it really is: a turned, scaled or posed instance covers its transformed box.
         let pad = if i.paint[3] == GLYPH { SPREAD as f32 } else { 0.0 };
-        let r = [i.rect[0] + pad, i.rect[1] + pad, i.rect[0] + i.rect[2] - pad, i.rect[1] + i.rect[3] - pad];
+        let mut g = *i;
+        g.rect = [i.rect[0] + pad, i.rect[1] + pad, (i.rect[2] - 2.0 * pad).max(0.0), (i.rect[3] - 2.0 * pad).max(0.0)];
+        let r = g.bounds(0.0);
         b = Some(match b { None => r, Some(o) => [o[0].min(r[0]), o[1].min(r[1]), o[2].max(r[2]), o[3].max(r[3])] });
     }
     b
@@ -368,16 +371,37 @@ fn box_d(lx: f32, ly: f32, w: f32, h: f32, r: f32) -> f32 {
     (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt() + qx.max(qy).min(0.0) - rr
 }
 
-/// How much one instance visibly covers device point (x, y): glyphs from the atlas, shapes by their
-/// distance, pictures fully. Ink in the page's own ground colour (tone and accent 0) is not visible.
-pub fn cover_at(i: &Instance, x: f32, y: f32, atlas: &[u8]) -> f32 {
+/// Device point (x, y) taken into instance `i`'s own box: the inverse of its transform about the box's
+/// centre (`Instance::xf`), as the shader's `exact_i` does, so a turned or posed instance is sampled
+/// where it is drawn.
+pub fn to_box(i: &Instance, x: f32, y: f32) -> (f32, f32) {
     let r = i.rect;
+    let x4 = i.xf;
+    if x4 == [0.0; 4] { return (x, y); }
+    let (cx, cy) = (r[0] + r[2] * 0.5, r[1] + r[3] * 0.5);
+    let (a, b, c, d) = (1.0 + x4[0], x4[1], x4[2], 1.0 + x4[3]);
+    let det = a * d - b * c;
+    if det.abs() < 1e-6 { return (f32::NAN, f32::NAN); }
+    let (qx, qy) = (x - cx, y - cy);
+    (cx + (d * qx - b * qy) / det, cy + (a * qy - c * qx) / det)
+}
+
+/// How much one instance's true outline covers device point (x, y), whatever its colour: glyphs from
+/// the atlas, shapes by their distance, pictures fully; turned and posed instances where they are drawn.
+/// A fill in the ground's own tone is still an outline (a dialog's panel): it covers.
+pub fn cover_at(i: &Instance, x: f32, y: f32, atlas: &[u8]) -> f32 { cover(i, x, y, atlas, false) }
+/// `cover_at`, but only ink that shows against the ground: tone or accent at least 0.1 (what a morph
+/// flies, since a tile in the ground's colour would be invisible).
+pub fn ink_at(i: &Instance, x: f32, y: f32, atlas: &[u8]) -> f32 { cover(i, x, y, atlas, true) }
+fn cover(i: &Instance, x: f32, y: f32, atlas: &[u8], visible: bool) -> f32 {
     if x < i.clip[0] || y < i.clip[1] || x >= i.clip[2] || y >= i.clip[3] { return 0.0; }
-    if x < r[0] || y < r[1] || x >= r[0] + r[2] || y >= r[1] + r[3] { return 0.0; }
+    let (x, y) = to_box(i, x, y);
+    let r = i.rect;
+    if !(x >= r[0] && y >= r[1] && x < r[0] + r[2] && y < r[1] + r[3]) { return 0.0; }
     let a = i.paint[2];
+    if visible && i.paint[3] != PICTURE && i.paint[3] != MESH && i.paint[0].max(i.paint[1]) < 0.1 { return 0.0; }
     match i.paint[3] {
         k if k == GLYPH => {
-            if i.paint[0].max(i.paint[1]) < 0.1 { return 0.0; }
             let (tx, ty) = ((i.uv[0] * ATLAS as f32).round() as i64 + (x - r[0]).floor() as i64, (i.uv[1] * ATLAS as f32).round() as i64 + (y - r[1]).floor() as i64);
             if tx < 0 || ty < 0 || tx >= ATLAS as i64 || ty >= ATLAS as i64 { return 0.0; }
             let o = ((ty * ATLAS as i64 + tx) * 2) as usize;
@@ -390,7 +414,6 @@ pub fn cover_at(i: &Instance, x: f32, y: f32, atlas: &[u8]) -> f32 {
         // A 3D element counts as covering its box; its tiles show what it drew there.
         k if k == PICTURE || k == MESH => a,
         _ => {
-            if i.paint[0].max(i.paint[1]) < 0.1 { return 0.0; }
             let (lx, ly) = (x - r[0], y - r[1]);
             let mut d = box_d(lx, ly, r[2], r[3], i.uv[0]);
             if i.extra[0] > 0.0 { d = (d + i.extra[0] * 0.5).abs() - i.extra[0] * 0.5; }
@@ -402,7 +425,11 @@ pub fn cover_at(i: &Instance, x: f32, y: f32, atlas: &[u8]) -> f32 {
 /// Every tile of an element at tile size `tile` (device px) on the global lattice, over its ink bounds
 /// widened by the near spread (so the tiles also carry the nearness around the ink). The cover of a
 /// cell is the average of four points at ± a quarter tile from its centre, as the dot material reads it.
-pub fn cells(insts: &[Instance], tile: f32, atlas: &[u8]) -> Vec<Cell> {
+/// Only ink that shows counts (`ink_at`): these are the tiles a morph flies.
+pub fn cells(insts: &[Instance], tile: f32, atlas: &[u8]) -> Vec<Cell> { cells_by(insts, tile, atlas, true) }
+/// The cells of an element's true outline, whatever its colours (`cover_at`): what a decode covers.
+pub fn outline_cells(insts: &[Instance], tile: f32, atlas: &[u8]) -> Vec<Cell> { cells_by(insts, tile, atlas, false) }
+fn cells_by(insts: &[Instance], tile: f32, atlas: &[u8], visible: bool) -> Vec<Cell> {
     let Some(b) = ink_bounds(insts) else { return vec![] };
     let s = SPREAD as f32;
     let (c0, r0) = (((b[0] - s) / tile).floor() as i64, ((b[1] - s) / tile).floor() as i64);
@@ -412,13 +439,14 @@ pub fn cells(insts: &[Instance], tile: f32, atlas: &[u8]) -> Vec<Cell> {
     let mut open = vec![1.0f32; nc * nr * 4];
     let q = [(-0.25, -0.25), (0.25, -0.25), (-0.25, 0.25), (0.25, 0.25)];
     for i in insts {
-        let r = i.rect;
+        let b = i.bounds(0.0);
+        let r = [b[0], b[1], b[2] - b[0], b[3] - b[1]];
         let (ic0, ir0) = (((r[0] / tile).floor() as i64 - c0).max(0) as usize, ((r[1] / tile).floor() as i64 - r0).max(0) as usize);
         let (ic1, ir1) = ((((r[0] + r[2]) / tile).ceil() as i64 - c0).clamp(0, nc as i64) as usize, (((r[1] + r[3]) / tile).ceil() as i64 - r0).clamp(0, nr as i64) as usize);
         for cy in ir0..ir1 { for cx in ic0..ic1 {
             let (ox, oy) = ((cx as i64 + c0) as f32 * tile, (cy as i64 + r0) as f32 * tile);
             for (k, (dx, dy)) in q.iter().enumerate() {
-                let c = cover_at(i, ox + tile * (0.5 + dx), oy + tile * (0.5 + dy), atlas);
+                let c = cover(i, ox + tile * (0.5 + dx), oy + tile * (0.5 + dy), atlas, visible);
                 if c > 0.0 { open[(cy * nc + cx) * 4 + k] *= 1.0 - c.min(1.0); }
             }
         } }
