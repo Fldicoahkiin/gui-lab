@@ -12,9 +12,10 @@
 #[path = "../examples/preset.rs"] pub mod preset;
 #[path = "../examples/chapter.rs"] pub mod chapter;
 #[path = "../examples/gesture.rs"] pub mod gesture;
+#[path = "../examples/submenu.rs"] pub mod submenu;
 
 /// Every recipe: its name, its source (the file in `examples/`), and what it shows.
-pub const RECIPES: [(&str, &str, &str); 12] = [
+pub const RECIPES: [(&str, &str, &str); 13] = [
     ("form", include_str!("../examples/form.rs"), "A form: text field, number, switch, submit."),
     ("list", include_str!("../examples/list.rs"), "A list with selection."),
     ("dialog", include_str!("../examples/dialog.rs"), "A modal dialog."),
@@ -27,8 +28,9 @@ pub const RECIPES: [(&str, &str, &str); 12] = [
     ("preset", include_str!("../examples/preset.rs"), "A custom preset with its own transition."),
     ("chapter", include_str!("../examples/chapter.rs"), "A chapter: one scene with actors that flow in."),
     ("gesture", include_str!("../examples/gesture.rs"), "A bottom sheet and a floating box driven by springs."),
+    ("submenu", include_str!("../examples/submenu.rs"), "A menu with submenus and a safe zone."),
 ];
-pub const NAMES: [&str; 12] = ["form", "list", "dialog", "flow", "morph", "material", "annotate", "counter", "mesh", "preset", "chapter", "gesture"];
+pub const NAMES: [&str; 13] = ["form", "list", "dialog", "flow", "morph", "material", "annotate", "counter", "mesh", "preset", "chapter", "gesture", "submenu"];
 
 /// Open recipe `name` as a page to drive and draw.
 #[cfg(not(target_arch = "wasm32"))]
@@ -46,6 +48,7 @@ pub fn open(name: &str, faces: Vec<crate::text::Face>, w: u32, h: u32, scale: f3
         "preset" => Box::new(preset::ui(faces, w, h, scale)),
         "chapter" => Box::new(chapter::ui(faces, w, h, scale)),
         "gesture" => Box::new(gesture::ui(faces, w, h, scale)),
+        "submenu" => Box::new(submenu::ui(faces, w, h, scale)),
         _ => return None,
     })
 }
@@ -88,8 +91,9 @@ pub fn open(name: &str, faces: Vec<crate::text::Face>, w: u32, h: u32, scale: f3
 #[path = "../examples/components/bottom_sheet.rs"] pub mod ex_bottom_sheet;
 #[path = "../examples/components/floating.rs"] pub mod ex_floating;
 #[path = "../examples/components/caption.rs"] pub mod ex_caption;
+#[path = "../examples/components/nested_menu.rs"] pub mod ex_nested_menu;
 pub mod components {
-    pub use super::{ex_menu as menu, ex_orbit as orbit, ex_button as button, ex_number as number, ex_input as input, ex_switch as switch, ex_slider as slider, ex_tabs as tabs, ex_choice as choice, ex_list as list, ex_card as card, ex_dialog as dialog, ex_image as image, ex_divider as divider, ex_scroll as scroll, ex_checkbox as checkbox, ex_radio as radio, ex_select as select, ex_tooltip as tooltip, ex_popover as popover, ex_toast as toast, ex_progress as progress, ex_accordion as accordion, ex_table as table, ex_badge as badge, ex_avatar as avatar, ex_skeleton as skeleton, ex_breadcrumb as breadcrumb, ex_pagination as pagination, ex_sheet as sheet, ex_context_menu as context_menu, ex_command as command, ex_toggle as toggle, ex_bottom_sheet as bottom_sheet, ex_floating as floating, ex_caption as caption};
+    pub use super::{ex_menu as menu, ex_orbit as orbit, ex_button as button, ex_number as number, ex_input as input, ex_switch as switch, ex_slider as slider, ex_tabs as tabs, ex_choice as choice, ex_list as list, ex_card as card, ex_dialog as dialog, ex_image as image, ex_divider as divider, ex_scroll as scroll, ex_checkbox as checkbox, ex_radio as radio, ex_select as select, ex_tooltip as tooltip, ex_popover as popover, ex_toast as toast, ex_progress as progress, ex_accordion as accordion, ex_table as table, ex_badge as badge, ex_avatar as avatar, ex_skeleton as skeleton, ex_breadcrumb as breadcrumb, ex_pagination as pagination, ex_sheet as sheet, ex_context_menu as context_menu, ex_command as command, ex_toggle as toggle, ex_bottom_sheet as bottom_sheet, ex_floating as floating, ex_caption as caption, ex_nested_menu as nested_menu};
     /// (component, source, its examples as elements).
     pub fn all() -> Vec<(&'static str, &'static str)> { vec![
         ("button", include_str!("../examples/components/button.rs")),
@@ -128,6 +132,7 @@ pub mod components {
         ("bottom_sheet", include_str!("../examples/components/bottom_sheet.rs")),
         ("floating", include_str!("../examples/components/floating.rs")),
         ("caption", include_str!("../examples/components/caption.rs")),
+        ("nested_menu", include_str!("../examples/components/nested_menu.rs")),
     ] }
     /// The examples of `name`, as elements sending `()`.
     pub fn examples(name: &str) -> Vec<crate::el::El<()>> {
@@ -169,6 +174,7 @@ pub mod components {
             "bottom_sheet" => f(vec![bottom_sheet::ex_0(), bottom_sheet::ex_1()]),
             "floating" => f(vec![floating::ex_0()]),
             "caption" => f(vec![caption::ex_0()]),
+            "nested_menu" => f(vec![nested_menu::ex_0()]),
             _ => vec![],
         }
     }

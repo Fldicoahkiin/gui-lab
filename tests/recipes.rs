@@ -41,6 +41,7 @@ fn every_recipe_lays_out_and_answers() {
             "annotate" => ("", Box::new(|t| t.find("panel").is_some())),
             "chapter" => ("cut", Box::new(|t| t.find("scene1").is_some() && t.find("s1/sentence").is_some())),
             "preset" => ("switch", Box::new(|t| t.find("title").and_then(|n| n.text.as_deref()) == Some("自己的风格"))),
+            "submenu" => ("menu/m0/r0", Box::new(|t| t.find("menu/m1").is_some())),
             "gesture" => ("open", Box::new(|t| t.find("sheet/panel").is_some_and(|n| n.role == Some("dialog")))),
             "mesh" => ("turn", Box::new(|t| t.find("turns").and_then(|n| n.text.as_deref()) == Some("转过 1 次") && t.find("ring").is_some_and(|n| n.kind == "mesh"))),
             _ => ("inc", Box::new(|t| t.find("count").and_then(|n| n.text.as_deref()) == Some("10"))),
