@@ -157,6 +157,8 @@ mod web {
     #[wasm_bindgen] pub fn frame_costs() -> Vec<f32> {
         with(|s| { let f = &s.ui.perf().frames; let v: Vec<f32> = f.iter().map(|(_, c)| c.total()).collect(); let gap = if f.len() > 1 { ((f[f.len() - 1].0 - f[0].0) / (f.len() - 1) as f64) as f32 } else { 0.0 }; vec![v.len() as f32, v.iter().sum::<f32>() / v.len().max(1) as f32, v.iter().copied().fold(0.0, f32::max), gap] }).unwrap_or_default()
     }
+    /// The viewer's reduced-motion preference: the Lab's pieces then rest after a moment (DESIGN.md §5.3).
+    #[wasm_bindgen] pub fn set_reduced_motion(on: bool) { with(|s| { s.ui.state.lab.reduced = on; s.ui.state.body.reduced = on; }); }
     #[wasm_bindgen] pub fn readout() -> u8 { with(|s| s.ui.state.overlay).unwrap_or(0) }
     #[wasm_bindgen] pub fn set_readout(v: u8) { with(|s| { s.ui.state.overlay = v.min(2); s.ui.relayout(); }); }
     #[wasm_bindgen] pub fn hash() -> String { with(|s| s.ui.state.page.hash()).unwrap_or_default() }
