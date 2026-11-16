@@ -13,11 +13,15 @@ pub trait Experiment: Default + Clone + 'static {
     /// The whole cell (`frame`), keyed under `key`.
     fn view(&self, key: &str) -> El<Self::Msg>;
     fn update(&mut self, m: Self::Msg, now: f32);
-    /// Advance to `now` (s); whether anything changed.
+    /// Advance to `now` (s); whether anything changed. The host calls it while the cell can be seen
+    /// and either input came less than `IDLE_S` ago (its idle motion: drift, growth) or it is still
+    /// settling (`moving`).
     fn step(&mut self, now: f32) -> bool;
-    /// Whether it wants the next frame (it is moving by itself or settling).
+    /// Whether it is still settling by itself (a spring, a coast): frames until it rests.
     fn moving(&self) -> bool;
 }
+/// How long after the last input (or arriving) a cell's idle motion runs before the page comes to rest.
+pub const IDLE_S: f32 = 1.2;
 
 /// The cell, in the lab's look: `[ NAME ]` and the hint on top, the piece, the formula line printed
 /// from the numbers that drive it with those numbers as controls, and a small label.
@@ -103,12 +107,12 @@ pub fn ink(tone: f32, a: f32) -> Paint { if a > 0.5 { Paint::ACCENT.alpha(tone.m
 /// A standalone runtime for one experiment (the `render` tool, tests): the cell on the lab's ground.
 pub fn ui<E: Experiment>(faces: Vec<crate::text::Face>, w: u32, h: u32, scale: f32) -> crate::ui::Ui<Solo<E>, E::Msg> {
     fn view<E: Experiment>(s: &Solo<E>) -> El<E::Msg> { col().fill_width().fill_height().pad(24.0, 24.0).fonts(crate::style::LAB.roles()).child(s.e.view("cell")) }
-    fn update<E: Experiment>(s: &mut Solo<E>, m: E::Msg) { let now = s.now; s.e.update(m, now); }
-    crate::ui::Ui::new(Solo::<E>::default(), view::<E>, update::<E>, faces, w, h, scale)
+    fn update<E: Experiment>(s: &mut Solo<E>, m: E::Msg) { let now = s.now; s.until = now + IDLE_S; s.e.update(m, now); }
+    crate::ui::Ui::new(Solo::<E> { e: E::default(), now: 0.0, until: IDLE_S }, view::<E>, update::<E>, faces, w, h, scale)
         .on_look(|_| crate::style::Look { theme: crate::style::LAB, ..crate::style::Look::default() })
-        .on_tick(|s, t| { s.now = t; s.e.step(t) })
-        .on_wake(|s, t| s.e.moving().then_some(t))
+        .on_tick(|s, t| { s.now = t; (t < s.until || s.e.moving()) && s.e.step(t) })
+        .on_wake(|s, t| (t < s.until || s.e.moving()).then_some(t))
 }
 /// One experiment and the clock, for `ui`.
-#[derive(Clone, Default)]
-pub struct Solo<E> { pub e: E, pub now: f32 }
+#[derive(Clone)]
+pub struct Solo<E> { pub e: E, pub now: f32, pub until: f32 }

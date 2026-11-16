@@ -153,6 +153,13 @@ after the page in `el::layers([...])` (docs/recipes/gesture.md). Under a live de
 drive it and lets them be edited (DESIGN.md §5.2). `widgets::nested_menu` steers submenus by a safe-zone triangle
 (`El::on_move` hears the pointer over an element; `El::guide` draws an outline in the annotation layer). While data
 loads, draw the real rows with `.skeleton()` as `widgets::Loading::show` says (docs/recipes/loading.md).
+Fields and drawings (DESIGN.md §1.26): `el::canvas(Drawing)` draws dots and strokes in its own space (each a shape with
+a true outline; its pointer handlers get points in that space; `El::on_point` hears move, press-drag and leave in one handler);
+`lab::field` samples noise, bumps and metaballs on a `Grid`, traces iso-contours, advects a `Swarm` along `curl` or a stirred `Flow`,
+and grows `GrayScott` inside a mask. A text element's glyphs can be posed one by one (`El::pose(|GlyphAt| Pose)`: move, turn,
+scale, tone, alpha; no layout). `El::on_visible` says when an element can be seen (step a demo only then), `El::on_outline` sends a
+subtree's true outline as a coverage grid (a mask). Every small mark draws from one frame budget (`budget::grant(n)`). `El::decode(Decode)`
+makes an element appear by decoding and disappear by the same backwards. The Lab's experiments (`examples/lab/`) show each.
 Text flows around true outlines with `.around(Around::new(vec![Silhouette::circle(..)], gap))`; a piece of a line
 beside an obstacle is justified so both its edges are flush, adding at most `Around::justify_max` ems per gap
 (default 0.25; inter-character next to CJK, inter-word at spaces, between Latin letters only with
