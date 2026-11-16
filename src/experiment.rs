@@ -109,7 +109,7 @@ pub fn ui<E: Experiment>(faces: Vec<crate::text::Face>, w: u32, h: u32, scale: f
     fn view<E: Experiment>(s: &Solo<E>) -> El<E::Msg> { col().fill_width().fill_height().pad(24.0, 24.0).fonts(crate::style::LAB.roles()).child(s.e.view("cell")) }
     fn update<E: Experiment>(s: &mut Solo<E>, m: E::Msg) { let now = s.now; s.until = now + IDLE_S; s.e.update(m, now); }
     crate::ui::Ui::new(Solo::<E> { e: E::default(), now: 0.0, until: IDLE_S }, view::<E>, update::<E>, faces, w, h, scale)
-        .on_look(|_| crate::style::Look { theme: crate::style::LAB, ..crate::style::Look::default() })
+        .on_look(|_| crate::style::Look { theme: crate::style::LAB, material: crate::style::Material::Plain, ..crate::style::Look::default() })
         .on_tick(|s, t| { s.now = t; (t < s.until || s.e.moving()) && s.e.step(t) })
         .on_wake(|s, t| (t < s.until || s.e.moving()).then_some(t))
 }

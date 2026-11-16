@@ -152,6 +152,11 @@ mod web {
     }
     /// The current page's hash name, for the page to put in `location.hash`.
     /// The readout's choice: 0 hidden, 1 shown, 2 with more (the page keeps it in localStorage).
+    /// The frames of the last few seconds: how many, and their mean and largest cost (ms: update and
+    /// layout, scene, submit together), and the mean time between them (ms) — for measuring a page headless.
+    #[wasm_bindgen] pub fn frame_costs() -> Vec<f32> {
+        with(|s| { let f = &s.ui.perf().frames; let v: Vec<f32> = f.iter().map(|(_, c)| c.total()).collect(); let gap = if f.len() > 1 { ((f[f.len() - 1].0 - f[0].0) / (f.len() - 1) as f64) as f32 } else { 0.0 }; vec![v.len() as f32, v.iter().sum::<f32>() / v.len().max(1) as f32, v.iter().copied().fold(0.0, f32::max), gap] }).unwrap_or_default()
+    }
     #[wasm_bindgen] pub fn readout() -> u8 { with(|s| s.ui.state.overlay).unwrap_or(0) }
     #[wasm_bindgen] pub fn set_readout(v: u8) { with(|s| { s.ui.state.overlay = v.min(2); s.ui.relayout(); }); }
     #[wasm_bindgen] pub fn hash() -> String { with(|s| s.ui.state.page.hash()).unwrap_or_default() }
