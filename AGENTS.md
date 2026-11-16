@@ -137,8 +137,8 @@ material draws it (its outline and creases are edges in the nearness). Hear the 
 `.on_pick(|Pick| ..)` (`Pick::Hover` / `Pick::Press` carry `MeshHit { object, instance }`); turn it with
 `widgets::orbit(key, scene, &state.orbit, Msg::Orbit)` and call `Orbit::update` / `Orbit::step` (see
 `docs/recipes/mesh.md`). Morphs with many tiles run on the GPU by themselves (`Look::particles.gpu_above`).
-A scene that changes into another with shared actors is a commit plus a flow (`docs/recipes/chapter.md`;
-the film, `src/gallery/film.rs`, is twelve of them). `Ui::on_pointer` tells the state where the pointer is.
+A scene that changes into another with shared actors is a commit plus a flow (`docs/recipes/chapter.md`).
+`Ui::on_pointer` tells the state where the pointer is.
 A style preset is data: `preset::presets()`, change a number (`Preset::set_number("transition.steps.0.a", 3.0)`)
 or read JSON (`Preset::from_json`), then `preset.apply(&look)`; a commit (`El::commit`) that applies it
 plays its transition (`docs/recipes/preset.md`).
@@ -164,8 +164,9 @@ makes an element appear by decoding and disappear by the same backwards. The Lab
 line and the numbers behind `[ params ]`; seen cells step every frame (with reduced motion they rest). Sampling (`morph::cover_at`,
 `cells`, `on_outline`, decode) follows `Instance::xf` and poses, so a posed glyph loosens from where it is drawn; `cover_at` counts any
 fill (a ground-toned panel too), `ink_at` only ink that shows. The lens touches only pictures and 3D elements that may loosen and that
-no handler operates. The first scene, Body (`examples/body.rs`, `#body`), is written the same way: one posed text element, a spring
-for `gather`, a signed-distance form sampled to a spiral of surface points (DESIGN.md §6.2).
+no handler operates. The landing page and first scene, Body (`examples/body.rs`, `#body`), is written the same way: one posed text element (the
+skin, its glyph count conserved), drawings for its volume, reflection, dust and the instrument markings, springs for `gather`
+and the opening, a signed-distance form sampled to a spiral of surface points (DESIGN.md §6.2). `Pose::hue` picks a glyph's accent.
 Text flows around true outlines with `.around(Around::new(vec![Silhouette::circle(..)], gap))`; a piece of a line
 beside an obstacle is justified so both its edges are flush, adding at most `Around::justify_max` ems per gap
 (default 0.25; inter-character next to CJK, inter-word at spaces, between Latin letters only with

@@ -24,7 +24,6 @@ Start with AGENTS.md (the mental model, the ten things you write, the rules, how
 - [A 3D object in a card](docs/recipes/mesh.md): code in examples/mesh.rs
 - [A custom preset with its own transition](docs/recipes/preset.md): code in examples/preset.rs
 - [A chapter: one scene with actors that flow in](docs/recipes/chapter.md): code in examples/chapter.rs
-- [The film](src/gallery/film.rs): twelve chapters, the landing page (`#film`)
 
 ## Lab
 
@@ -40,7 +39,7 @@ The Lab (`#lab`) is a grid of small live experiments, one file each in `examples
 - [Orbit](docs/site/en/lab-orbit.md): Kepler orbits with pointer attraction
 - [Spring](docs/site/en/lab-spring.md): the gesture spring, dragged and thrown
 - [Stack](docs/site/en/lab-stack.md): the card stack in the lab's look
-- [Body](docs/site/en/scene-body.md): the first scene (`#body`, `examples/body.rs`): a passage gathers into a turning body of its own glyphs and back; two rest states, glyph count conserved
+- [Body](docs/site/en/scene-body.md): the landing page and first scene (`#body`, `examples/body.rs`): a passage gathers into a turning, luminous body of its own glyphs and back; full-bleed, markings in the picture; two rest states, glyph count conserved
 - [Decode](src/decode.rs): `El::decode`, blocks over the true outline resolving coarse to fine (`#decode`)
 
 ## Pages
@@ -56,7 +55,7 @@ Every documentation page as Markdown, at `md/en/<page>.md` and `md/zh-Hans/<page
 - [The tree and messages](md/en/docs-tree-and-messages.md): After every message the runtime calls view(&state) once, gets a new El tree, compares it with the last by key and lays out again only what changed.
 - [Layout](md/en/docs-layout.md): Layout is taffy's flexbox and grid, in logical pixels; elements do not shrink unless asked.
 - [Text](md/en/docs-text.md): Text is set by parley and rasterised by swash; every atlas pixel holds coverage and the signed distance to the stroke, so every material draws a glyph by its…
-- [Materials and looseness](md/en/docs-materials.md): A material is how the second pass draws: plain, dot, halftone, ascii, print, lino, glitch, xray, near.
+- [Materials and looseness](md/en/docs-materials.md): A material is how the second pass draws: plain, dot, halftone, ascii, print, lino, glitch, near.
 - [Ripple rules](md/en/docs-ripples.md): A press sends a front that by default reaches only the control pressed (Scope::Own); Scope::Container and Scope::Global reach further.
 - [Transforms](md/en/docs-transforms.md): Two kinds: a morph (Cmd::Morph: one element breaks into cells that fly onto another's shape) and a flow (Cmd::Flow: what two pages share moves to its new pla…
 - [Presets](md/en/docs-presets.md): A style preset is data: theme, material and its numbers, annotation, interaction character, how scrolling looks, and a transition program.

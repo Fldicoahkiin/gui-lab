@@ -1222,10 +1222,10 @@
         "docs/site/en/scene-body.md",
         "docs/site/zh-Hans/scene-body.md"
       ],
-      "what": "A passage gathers into a slowly turning luminous body made of its own glyphs (a signed-distance form sampled to a spiral of surface points) and goes back to readable text.",
+      "what": "The landing page: a passage, first a readable page, gathers into a slowly turning luminous body of its own glyphs (the skin, conserved) and some eleven thousand budgeted volume marks, lit by one key light, over a reflection pool and drifting dust; it goes back to readable text.",
       "rest_states": [
-        "page: every glyph where the layout put it, no pose",
-        "body: turning slowly (the idle turn is its only motion)"
+        "page: every glyph where the layout put it, no pose (after the first 2.4 s)",
+        "body: turning slowly and breathing (its only motion)"
       ],
       "params": [
         {
@@ -1233,7 +1233,7 @@
           "default": 0.0,
           "min": 0.0,
           "max": 1.0,
-          "step": 0.01,
+          "step": 1.0,
           "unit": ""
         },
         {
@@ -1242,7 +1242,7 @@
           "min": 0.0,
           "max": 1.0,
           "step": 1.0,
-          "unit": ""
+          "unit": "rock / cloud"
         },
         {
           "name": "seed",
@@ -1254,7 +1254,7 @@
         },
         {
           "name": "ω",
-          "default": 0.18,
+          "default": 0.16,
           "min": 0.0,
           "max": 1.5,
           "step": 0.01,
@@ -1262,22 +1262,14 @@
         },
         {
           "name": "open",
-          "default": 140.0,
+          "default": 120.0,
           "min": 20.0,
-          "max": 260.0,
+          "max": 300.0,
           "step": 5.0,
           "unit": "px"
-        },
-        {
-          "name": "size",
-          "default": 0.72,
-          "min": 0.3,
-          "max": 1.2,
-          "step": 0.01,
-          "unit": "·h"
         }
       ],
-      "input": "click, Space or Enter toggles; drag turns; ← → nudge the turn; number controls"
+      "input": "click, Space or Enter toggles; drag turns; ← → nudge the turn; the markings in the picture (form, seed, gather / release, language, Lab, components)"
     }
   ]
 }

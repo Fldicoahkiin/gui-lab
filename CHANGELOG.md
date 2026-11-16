@@ -11,7 +11,9 @@
 - 解码按轮廓的覆盖算、不看颜色：用底色填的对话框里面在最细一档也被盖住。Ground-toned fills count as coverage in decode.
 - DESIGN.md 里删掉了已经删除的材质（金属、液体、拼贴）的旧说法。Old mentions of removed materials cleaned up.
 - 实验室：舞台占格子的七成以上、作品填满，公式一行，数字收进 `[ params ]`；看得见的格子一直走、滚出去停（减少动态效果时照旧静止）；每格都重做到填满舞台、指针下出现那种蓝；解码的分层视图改成斜看的平面、各带引线和标签。The Lab as a wall of living pieces.
-- 形体（`#body`，第一个场景，`examples/body.rs`）：一段文字聚成由它自己的字组成、慢慢转动的发光形体，再回到文字；两种静止、字数守恒、石头和云两种距离场、拖动有惯性、指针处开口读到原文、边缘掉下预算里的小点。Body: a passage that gathers into a turning body of its own glyphs.
+- 删掉了影片（序章和各章、场记板、时间线、前后对比、各章的公式注）、透视材质（xray）和它的预设（Transparent Electronics），以及只为它们存在的测试、检查、文档和文案；拆开场景不再用 xray。The film, the xray material and its preset are gone.
+- 形体（`#body`）是新的落地页，铺满窗口：一页能读的文字先出现，再自己聚成由它自己的字（皮，字数守恒）和一万多个体积记号组成、慢慢转动的发光形体，一盏主光、边光、雾、辉光、地上的倒影和光晕、三层灰尘、视差和镜头的呼吸；画面里的小标记（形、种子、聚拢 / 散开、语言、实验室、组件库）；指针处开口读到原文。Body is the landing page, full-bleed, as a picture.
+- 辉光的采样按像素转一个噪声角度，不再出现文字的重影；`Pose::hue` 让一个字换强调色。Bloom without ghost copies; a glyph's hue in its pose.
 
 ## 15 — 场、实验室、解码过渡、范围缩小、帧预算 · Fields, the Lab, decode, a narrower scope, the frame budget
 
