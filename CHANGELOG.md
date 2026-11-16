@@ -8,6 +8,8 @@
 - 底部面板（几档、按投射收起、橡皮筋、背板、滚动交接）和浮动窗口（按投射选角）。A bottom sheet and a floating box.
 - 公式注：演示下面印出真实参数的一行，参数可改。The formula caption.
 - `el::layers`：叠在同一个盒子里的孩子。Children layered in one box.
+- 点阵图表：点的大小和亮度是曲线下的面积，扫过的竖线，可拖的控制点。A dot chart.
+- 第 6 章的墨粉减半、避开文字（`Shed.clear`），一行公式注。The zine's toner halved and kept off the text.
 - 卡片叠：angle0 × falloff^n、delay_ms × n、三种样子随材质。A fanning stack of cards in three looks.
 - 骨架：`El::skeleton()` 用真实的树画骨架（条是量出来的行宽），`Loading` 的两个数，零位移；四种加载方式的比较。Skeletons from the real tree, the loading rules, zero layout shift.
 - 多级菜单：安全区三角形、两个延迟、键盘、可画出的三角形（`El::on_move`、`El::guide`）。Nested menus with a safe-zone triangle.

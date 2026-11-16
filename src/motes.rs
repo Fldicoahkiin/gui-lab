@@ -6,10 +6,18 @@
 use serde::{Deserialize, Serialize};
 
 /// What a moving element sheds: `rate` marks per 100 logical px it moves, each living `life_ms`,
-/// falling with `gravity` (px/s²), pushed sideways by up to `drift` (px/s), `size` px across.
+/// falling with `gravity` (px/s²), pushed sideways by up to `drift` (px/s), `size` px across. With
+/// `clear` above 0 they keep off text: none is made within `clear` px of a line of text, and one that
+/// falls toward a line fades as it comes within `clear` of it and is gone before it touches it.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Shed { pub rate: f32, pub life_ms: f32, pub gravity: f32, pub drift: f32, pub size: f32 }
-impl Default for Shed { fn default() -> Self { Self { rate: 0.0, life_ms: 900.0, gravity: 240.0, drift: 30.0, size: 2.5 } } }
+pub struct Shed { pub rate: f32, pub life_ms: f32, pub gravity: f32, pub drift: f32, pub size: f32, #[serde(default)] pub clear: f32 }
+impl Default for Shed { fn default() -> Self { Self { rate: 0.0, life_ms: 900.0, gravity: 240.0, drift: 30.0, size: 2.5, clear: 0.0 } } }
+/// How far (px) a point is from a box (0 inside it).
+pub fn distance(x: f32, y: f32, b: [f32; 4]) -> f32 {
+    let dx = (b[0] - x).max(x - b[2]).max(0.0);
+    let dy = (b[1] - y).max(y - b[3]).max(0.0);
+    dx.hypot(dy)
+}
 
 /// Marks on a ground carried along a noise field: features `scale` px apart, `speed` px/s (0: still),
 /// `density` marks per 10,000 px², each `size` px, drawn in the ink at `alpha`.
@@ -19,7 +27,7 @@ impl Default for FlowField { fn default() -> Self { Self { scale: 140.0, speed: 
 
 /// One shed mark: where it is (logical px), how it moves, when it was made, what it looks like.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Mote { pub x: f32, pub y: f32, pub vx: f32, pub vy: f32, pub born: f32, pub life: f32, pub size: f32, pub gravity: f32, pub paint: crate::el::Paint }
+pub struct Mote { pub x: f32, pub y: f32, pub vx: f32, pub vy: f32, pub born: f32, pub life: f32, pub size: f32, pub gravity: f32, pub paint: crate::el::Paint, pub clear: f32, pub veil: f32 }
 
 /// A hash in 0..1 of an integer (deterministic: the same frames give the same bytes).
 pub fn hash(n: u32) -> f32 {

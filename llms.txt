@@ -91,6 +91,7 @@ Every documentation page as Markdown, at `md/en/<page>.md` and `md/zh-Hans/<page
 - [caption](md/en/caption.md): A small monospaced line under a live demo that prints the parameters driving it (read from the same fields, never typed by hand), each also a number control.
 - [nested menu](md/en/nested-menu.md): A menu whose rows open submenus, steered by where the pointer heads: moving toward an open submenu inside the triangle from its previous position to the subm…
 - [card stack](md/en/card-stack.md): A stack of cards: hover or press one and the cards beneath fan out about their bottom-left corners, card n turning angle0 × falloff^n (42° × 0.
+- [dot chart](md/en/dot-chart.md): A series as a field of dots: each column filled from the axis up to the curve, a dot's size and brightness saying how much of it lies under the curve (the ar…
 - [AGENTS.md](md/en/ai-agents.md): gui-lab is a self-drawn interface framework in Rust (wgpu; the same code runs natively and on the web).
 - [llms.txt](md/en/ai-llms.md): Start with AGENTS.
 - [Registry](md/en/ai-registry.md): {
