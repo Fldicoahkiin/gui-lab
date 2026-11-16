@@ -109,12 +109,12 @@ pub fn region(prev: &Inputs, cur: &Inputs, scale: f32) -> Region {
     for k in 0..a.len().max(b.len()) {
         match (a.get(k), b.get(k)) {
             (Some(x), Some(y)) if x == y => {}
-            (x, y) => { for i in [x, y].into_iter().flatten() { st1 = union(st1, grow(rect(i.rect), pad)); } }
+            (x, y) => { for i in [x, y].into_iter().flatten() { st1 = union(st1, i.bounds(pad)); } }
         }
     }
     // 3D elements whose meshes changed (the instance is the same box).
     for (k, (pa, pb)) in prev.meshes.iter().zip(&cur.meshes).enumerate() {
-        if pa != pb { for i in b.iter().filter(|i| i.paint[3] == MESH && i.extra[1] as usize == k) { st1 = union(st1, grow(rect(i.rect), pad)); } }
+        if pa != pb { for i in b.iter().filter(|i| i.paint[3] == MESH && i.extra[1] as usize == k) { st1 = union(st1, i.bounds(pad)); } }
     }
     // What changes because time passes: condensing, the fronts, the lens and the burst on 3D elements.
     let enter = look.fx.enter.max(1e-3);
@@ -130,7 +130,7 @@ pub fn region(prev: &Inputs, cur: &Inputs, scale: f32) -> Region {
         union(burst(&prev.field, prev.now), burst(&cur.field, cur.now))
     } else { EMPTY };
     for i in b {
-        let r = grow(rect(i.rect), pad);
+        let r = i.bounds(pad);
         let born = i.extra[3];
         let condensing = cur.now - born < enter || prev.now - born < enter;
         let fronted = acting.iter().any(|f| !is_empty(meet(*f, r)));
@@ -144,7 +144,7 @@ pub fn region(prev: &Inputs, cur: &Inputs, scale: f32) -> Region {
     }
     // Stage 2: what stage 1 changed, as far as the materials read around it, and the field on the ground.
     // Pictures' marks read their own cells (and the parallax its depth): only where a picture changed.
-    let pic_changed = b.iter().chain(a.iter()).any(|i| i.paint[3] == PICTURE && !is_empty(meet(grow(rect(i.rect), pad), st1)));
+    let pic_changed = b.iter().chain(a.iter()).any(|i| i.paint[3] == PICTURE && !is_empty(meet(i.bounds(pad), st1)));
     let rch = mats.iter().map(|m| reach(*m, look, s)).fold(0.0, f32::max)
         + if pic_changed { look.pics.iter().map(|p| 2.0 * p.pitch * s + p.depth * s).fold(0.0, f32::max) } else { 0.0 };
     st2 = union(st2, grow(st1, rch));

@@ -87,7 +87,7 @@ fn in_scope(c: vec2f, j: i32) -> bool {
 struct VIn {
   @builtin(vertex_index) vi: u32,
   @location(0) rect: vec4f, @location(1) uv: vec4f, @location(2) paint: vec4f, @location(3) clip: vec4f, @location(4) extra: vec4f, @location(5) look: vec4f,
-  @location(6) resp: vec4f,
+  @location(6) resp: vec4f, @location(7) xf: vec4f,
 };
 struct VOut {
   @builtin(position) pos: vec4f,
@@ -106,12 +106,20 @@ struct VOut {
   // draws the same pixels).
   @location(9) @interpolate(flat) org: vec2f,
   @location(10) @interpolate(flat) uvr: vec4f,
+  // The instance's own transform about its box's centre, less the identity (scene.rs Instance::xf).
+  @location(11) @interpolate(flat) xf: vec4f,
 };
 /// The fragment's local coordinates and texture coordinates from its exact position and the flat box,
 /// not from interpolation (which rounds differently at every place on screen).
 fn exact_i(iv: VOut) -> VOut {
   var i = iv;
   i.local = i.pos.xy - i.org;
+  if (any(i.xf != vec4f(0.0))) {
+    // A turned or scaled instance: the pixel's offset from the centre, taken back into the box.
+    let a = 1.0 + i.xf.x; let b = i.xf.y; let c = i.xf.z; let d = 1.0 + i.xf.w;
+    let q = i.local - i.size * 0.5;
+    i.local = vec2f(d * q.x - b * q.y, a * q.y - c * q.x) / (a * d - b * c) + i.size * 0.5;
+  }
   if (i.paint.w < 0.5 || i.paint.w > 1.5) { i.uv = i.uvr.xy + i.local / i.size * (i.uvr.zw - i.uvr.xy); }
   return i;
 }
@@ -125,6 +133,9 @@ fn vs_pad(i: VIn, spad: f32) -> VOut {
   let pad = select(spad, 0.0, i.paint.w < 0.5);
   let r = vec4f(i.rect.xy - vec2f(pad), i.rect.zw + vec2f(pad * 2.0));
   var p = r.xy + c * r.zw;
+  let mid = i.rect.xy + i.rect.zw * 0.5;
+  let q = p - mid;
+  p = mid + q + vec2f(i.xf.x * q.x + i.xf.y * q.y, i.xf.z * q.x + i.xf.w * q.y);
   // Each instance rides the wave: it is pushed outward a little as a front passes under it.
   // A legible piece is pushed as one: every instance of it measures the push at the piece's centre.
   let centre = select(i.rect.xy + i.rect.zw * 0.5, i.resp.zw, i.resp.y > 1.5);
@@ -148,6 +159,7 @@ fn vs_pad(i: VIn, spad: f32) -> VOut {
   o.resp = vec4f(i.resp.x, i.resp.y, centre);
   o.org = i.rect.xy + push;
   o.uvr = i.uv;
+  o.xf = i.xf;
   return o;
 }
 
@@ -367,6 +379,7 @@ fn near_of(i: VOut) -> vec4f {
   o.size = i.rect.zw;
   o.uv = mix(i.uv.xy, i.uv.zw, c);
   o.paint = i.paint; o.clip = i.clip; o.extra = i.extra; o.radius = 0.0; o.look = i.look;
+  o.xf = vec4f(0.0);
   return o;
 }
 @fragment fn fs_annot(i: VOut) -> @location(0) vec4f {

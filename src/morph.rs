@@ -370,7 +370,7 @@ fn box_d(lx: f32, ly: f32, w: f32, h: f32, r: f32) -> f32 {
 
 /// How much one instance visibly covers device point (x, y): glyphs from the atlas, shapes by their
 /// distance, pictures fully. Ink in the page's own ground colour (tone and accent 0) is not visible.
-fn cover_at(i: &Instance, x: f32, y: f32, atlas: &[u8]) -> f32 {
+pub fn cover_at(i: &Instance, x: f32, y: f32, atlas: &[u8]) -> f32 {
     let r = i.rect;
     if x < i.clip[0] || y < i.clip[1] || x >= i.clip[2] || y >= i.clip[3] { return 0.0; }
     if x < r[0] || y < r[1] || x >= r[0] + r[2] || y >= r[1] + r[3] { return 0.0; }
@@ -614,7 +614,7 @@ mod tests {
     #[test]
     fn cap_raises_the_tile_to_a_multiple() {
         // A 400 × 400 opaque picture at pitch 2: 40 000 cells and more, so the tile doubles or more.
-        let pic = Instance { rect: [0.0, 0.0, 400.0, 400.0], uv: [0.0, 0.0, 1.0, 1.0], paint: [1.0, 0.0, 1.0, PICTURE], clip: [-1e5, -1e5, 1e5, 1e5], extra: [0.0; 4], look: [0.0; 4], resp: [0.0; 4] };
+        let pic = Instance { rect: [0.0, 0.0, 400.0, 400.0], uv: [0.0, 0.0, 1.0, 1.0], paint: [1.0, 0.0, 1.0, PICTURE], clip: [-1e5, -1e5, 1e5, 1e5], extra: [0.0; 4], look: [0.0; 4], resp: [0.0; 4], xf: [0.0; 4] };
         let spec = MorphSpec { count_max: 10000.0, ..MorphSpec::default() };
         let t = tiles(&[pic], &[pic], 2.0, &spec, &[]);
         assert!(t.particles.len() <= 10000, "{}", t.particles.len());

@@ -34,6 +34,27 @@ pub struct Instance {
     /// 1: by its own centre, 2: as one piece with the point in z, w — the centre of the control or text
     /// it belongs to, device px — so a word is never pulled apart).
     pub resp: [f32; 4],
+    /// Its own linear transform about the centre of `rect` (rotation, scale, shear), stored as the
+    /// difference from the identity so that zero is untransformed: screen offset from the centre =
+    /// `[[1 + xf[0], xf[1]], [xf[2], 1 + xf[3]]]` × the offset in the box. Glyphs on a path or a sphere,
+    /// strokes of a drawing (`el::canvas`).
+    pub xf: [f32; 4],
+}
+impl Instance {
+    /// The transform for a turn by `angle` (radians, clockwise on screen) after scaling by `sx`, `sy`.
+    pub fn turned(angle: f32, sx: f32, sy: f32) -> [f32; 4] {
+        let (s, c) = angle.sin_cos();
+        [c * sx - 1.0, -s * sy, s * sx, c * sy - 1.0]
+    }
+    /// The axis-aligned box (x0, y0, x1, y1) its transformed `rect` covers, grown by `pad` (device px).
+    pub fn bounds(&self, pad: f32) -> [f32; 4] {
+        let r = self.rect;
+        let (hw, hh) = (r[2] * 0.5 + pad, r[3] * 0.5 + pad);
+        let (cx, cy) = (r[0] + r[2] * 0.5, r[1] + r[3] * 0.5);
+        let x = self.xf;
+        let (ex, ey) = if x == [0.0; 4] { (hw, hh) } else { (((1.0 + x[0]) * hw).abs() + (x[1] * hh).abs(), (x[2] * hw).abs() + ((1.0 + x[3]) * hh).abs()) };
+        [cx - ex, cy - ey, cx + ex, cy + ey]
+    }
 }
 
 /// One `scene3d` element to draw: what it holds and its content box (device px: x, y, w, h).
