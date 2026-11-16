@@ -111,6 +111,8 @@ pub struct Node<M> {
     on_wheel: Option<crate::el::OnWheel<M>>,
     on_move: Option<crate::el::OnMove<M>>,
     guide: Option<Rc<Vec<(f32, f32)>>>,
+    /// Drawn as a skeleton (`El::skeleton`, inherited).
+    pub skeleton: bool,
     /// The box layout gave it, relative to its parent (scrolling does not change it).
     local: taffy::Layout,
     tid: NodeId,
@@ -520,6 +522,8 @@ impl Timing {
 
 /// Blink half-period of the caret, seconds.
 pub const BLINK: f32 = 0.53;
+/// How tall a skeleton's bar is, as a fraction of its line's height.
+pub const SKELETON_BAR: f32 = 0.56;
 /// How far a selected glyph's halo reaches past its outline, logical px.
 pub const SELECT_HALO: f32 = 3.0;
 /// How far from a pulled edge (logical px) things loosen.
@@ -2294,6 +2298,26 @@ impl<S, M: Clone> Ui<S, M> {
                 sink.tags.push(tag);
             };
             let shape = |p: Paint, bw: f32| Instance { rect: dev(n.rect), uv: [n.radius * s, 0.0, 0.0, 0.0], paint: [p.tone, p.accent, p.alpha, SHAPE], clip, extra: [bw * s, 0.0, 0.0, 0.0], look: [mat, p.hue as f32, (n.rect.y * s).round(), (n.rect.h * s).round().max(1.0)], resp };
+            // A skeleton (DESIGN.md §1.23): faint fills and borders, a bar for every line of text, a block
+            // for every picture; its own identities, so the content that replaces it condenses in.
+            if n.skeleton {
+                let faint = |p: Paint| Paint { tone: Paint::FAINT.tone, accent: 0.0, alpha: p.alpha.min(1.0), hue: 0 };
+                if let Some(p) = n.fill { put(&mut sink, shape(faint(p), 0.0), ident(&n.key, u32::MAX - 20, 0), None); }
+                if let Some((w, p)) = n.border { put(&mut sink, shape(faint(p), w), ident(&n.key, u32::MAX - 21, 0), None); }
+                let block = |r: Rect, radius: f32| Instance { rect: dev(r), uv: [radius * s, 0.0, 0.0, 0.0], paint: [Paint::FAINT.tone, 0.0, 1.0, SHAPE], clip, look: [mat, 0.0, (r.y * s).round(), (r.h * s).round().max(1.0)], resp, ..Default::default() };
+                match &n.content {
+                    Content::Text { .. } => if let Some(p) = n.para() {
+                        for (k, r) in self.text.line_boxes(p, n.origin()).into_iter().enumerate() {
+                            let h = (r.h * SKELETON_BAR).round().max(2.0);
+                            let bar = Rect::new(r.x, r.y + ((r.h - h) * 0.5).round(), r.w, h);
+                            put(&mut sink, block(bar, h * 0.5), ident(&n.key, u32::MAX - 32 - k as u32, 0), None);
+                        }
+                    },
+                    Content::Picture { .. } | Content::Scene3d(_) => put(&mut sink, block(n.inner, n.radius.max(4.0)), ident(&n.key, u32::MAX - 22, 0), None),
+                    Content::None => {}
+                }
+                continue;
+            }
             if let Some(p) = n.fill { put(&mut sink, shape(p, 0.0), ident(&n.key, u32::MAX, 0), None); }
             if let Some((w, p)) = n.border { put(&mut sink, shape(p, w), ident(&n.key, u32::MAX - 1, 0), None); }
             match &n.content {
@@ -3179,10 +3203,12 @@ struct Inherit {
     roles: [Response; 2],
     /// Right to left (`El::rtl`).
     rtl: bool,
+    /// Drawn as a skeleton (`El::skeleton`).
+    skeleton: bool,
 }
 impl Default for Inherit {
     fn default() -> Self {
-        Self { level: 0, mat: None, loosen: 0.0, select: false, respond: None, legible: None, scope: None, recompose: None, control: false, field: false, roles: [Response::Nudge, Response::Loosen], rtl: false }
+        Self { level: 0, mat: None, loosen: 0.0, select: false, respond: None, legible: None, scope: None, recompose: None, control: false, field: false, roles: [Response::Nudge, Response::Loosen], rtl: false, skeleton: false }
     }
 }
 impl Inherit {
@@ -3418,7 +3444,7 @@ fn measure_key(c: &Content) -> u64 {
 /// A virtual list's rows are built here, for what its viewport shows.
 #[allow(clippy::too_many_arguments)]
 fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], off: (bool, bool), flow: Option<(Rc<str>, usize)>, inh: Inherit, vx: &mut VirtCtx, built: &mut Built, nodes: &mut Vec<Node<M>>) -> usize {
-    let El { key, style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, annotate, gaze_scope, material, loosen, anchor, clips, calm, mut on_text, multiline, selectable, cursor, virt, access, ripple, mut on_pick, mut on_wheel, mut on_move, guide, rtl, mut children } = el;
+    let El { key, style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, annotate, gaze_scope, material, loosen, anchor, clips, calm, mut on_text, multiline, selectable, cursor, virt, access, ripple, mut on_pick, mut on_wheel, mut on_move, guide, skeleton, rtl, mut children } = el;
     let mut style = style;
     let mut inh = inh;
     if let Some(r) = rtl { inh.rtl = r; }
@@ -3428,6 +3454,9 @@ fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], of
     let roles = fonts.unwrap_or(roles);
     let (off, hidden) = (off.0 || disabled, off.1 || hidden);
     if off || hidden { on_press = None; on_key = None; on_drag = None; on_blur = None; on_text = None; on_pick = None; on_wheel = None; on_move = None; focusable = false; commit = false; }
+    // A skeleton takes no input (and is not drawn faint, as a disabled subtree is).
+    inh.skeleton |= skeleton;
+    if inh.skeleton { on_press = None; on_key = None; on_drag = None; on_blur = None; on_text = None; on_pick = None; on_wheel = None; on_move = None; focusable = false; commit = false; }
     if let Content::Text { font, .. } = &mut content { *font = Font::Face(font.resolve(roles)); }
     let i = nodes.len();
     let flow = own_flow.map(|f| (Rc::from(f.as_str()), i)).or(flow);
@@ -3475,7 +3504,7 @@ fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], of
         content, fill, border, radius, on_press, on_key, on_drag, on_blur, loose, wipe, bar, reveal, commit, modal, hidden, shift, shed, flow_field, flow: flow.clone(),
         mat: inh.code(), loosen: inh.loosen, annotate, scope: gaze_scope, anchor, clips, calm, on_text, multiline, selectable: inh.select, cursor,
         virt: virt_info, access, respond, legible, ripple: inh.scope.clone(), ripple_scope: ripple.container, recompose, recompose_always: is_text && ripple.recompose == Some(true), unframed: ripple.unframed, keyed,
-        on_pick, on_wheel, on_move, guide, local: taffy::Layout::new(), tid: placeholder,
+        on_pick, on_wheel, on_move, guide, skeleton: inh.skeleton, local: taffy::Layout::new(), tid: placeholder,
     });
     built.styles.push(style);
     built.kids.push(vec![]);

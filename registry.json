@@ -494,10 +494,11 @@
       "title": "骨架",
       "group": "display",
       "functions": [
-        "skeleton"
+        "skeleton",
+        "Loading"
       ],
-      "description": "内容还没来时按它的形状占位。",
-      "description_en": "Holds the place of content that is still loading.",
+      "description": "内容还没来时按它的形状占位。更好的做法是在真实的行上写 El::skeleton()：同一棵树、同样的布局，字画成量出来的行宽的条，图片画成块；Loading 的规则（skeleton_after_ms 300 以后才出骨架，换内容时每行错开 swap_stagger_ms 40）决定什么时候画什么，换上内容时框不动。",
+      "description_en": "Holds the place of content that is still loading. Better: El::skeleton() on the real rows — the same tree and layout, text drawn as bars of the measured line widths, pictures as blocks; the Loading rules (a skeleton only after skeleton_after_ms 300, rows swapped in swap_stagger_ms 40 apart) decide what shows, and nothing moves when the content comes.",
       "files": [
         "src/widgets/skeleton.rs"
       ],
@@ -505,7 +506,8 @@
         "base"
       ],
       "response": "nudge (a control: pushed as one piece by fronts, held and condensing at most to Look::legible_cap)",
-      "recompose": "keyed labels recompose when their text changes"
+      "recompose": "keyed labels recompose when their text changes",
+      "recipe": "docs/recipes/loading.md"
     },
     {
       "name": "breadcrumb",
