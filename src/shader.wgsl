@@ -33,7 +33,7 @@ struct U {
   third: vec4f,
   burst: vec4f,    // a burst's rect, device px (x0, y0, x1, y1)
   burst_t: vec4f,  // its start time, strength, length (s); w: the legibility cap (Look::legible_cap)
-  mats: array<vec4f, 18>, // every material's numbers, two vec4s each (style.rs MAT_PARAMS)
+  mats: array<vec4f, 16>, // every material's numbers, two vec4s each (style.rs MAT_PARAMS)
   calm: array<vec4f, 4>,  // boxes fronts pass by (x0, y0, x1, y1, device px)
   qual: vec4f,     // the material resolution: 1 / q for the reduced pass (1 otherwise), q, its size w, h
   scopes: array<vec4f, 8>, // each front's scope box (x0, y0, x1, y1, device px): it reaches instances centred inside
@@ -58,7 +58,7 @@ struct U {
 @group(0) @binding(9) var lo: texture_2d<f32>;       // the material at reduced resolution (DESIGN.md §1.12)
 
 const PLAIN: i32 = 0; const DOT: i32 = 1; const HALFTONE: i32 = 2; const ASCII: i32 = 3; const PRINT: i32 = 4;
-const LINO: i32 = 5; const GLITCH: i32 = 6; const XRAY: i32 = 7; const NEAR: i32 = 8;
+const LINO: i32 = 5; const GLITCH: i32 = 6; const NEAR: i32 = 7;
 fn mp(m: i32, i: i32) -> vec4f { return u.mats[m * 2 + i]; }
 /// The material an instance (or a pixel) is drawn with: its override, or the global one.
 fn eff_mat(code: f32) -> i32 { if (code >= 127.5) { return i32(round(code)) % 16; } return i32(u.fd.x); }
@@ -241,8 +241,7 @@ fn own_loose(i: VOut) -> f32 {
 }
 
 @fragment fn fs_ink(i: VOut) -> @location(0) vec4f { return ink_of(exact_i(i), false); }
-// The modal layer: the same, but an outline-drawn (xray) panel still covers what is beneath it, with
-// the ground inside its outline, so a dialog stays readable over the page.
+// The modal layer: the same (its own pipeline, drawn without blending in the near image).
 @fragment fn fs_ink_top(i: VOut) -> @location(0) vec4f { return ink_of(exact_i(i), true); }
 fn ink_of(i: VOut, solid: bool) -> vec4f {
   let s = inst(i);
@@ -260,25 +259,6 @@ fn ink_of(i: VOut, solid: bool) -> vec4f {
       return vec4f(col * a, a);
     }
     let code = hue * 0.15 + 0.07;
-    // Transparent electronics: a solid is drawn as its edges (the silhouette and the creases, from the
-    // resolved nearness) in its unlit colour over a faint shaded fill, as shapes are drawn by their
-    // outline, so what is behind it shows through. Loosened, the edges break into dashes that run along
-    // and the fill thins further.
-    if (eff_mat(i.look.x) == XRAY && !solid) {
-      let k = loose1(i);
-      let line = max(mp(XRAY, 0).x * u.res.z * 1.5, 0.75);
-      let dash = max(mp(XRAY, 0).w * u.res.z, 2.0);
-      let face = -s.w;
-      var wire = clamp(line + 0.5 - abs(face), 0.0, 1.0) * step(-0.5, face);
-      let along = (i.pos.x + i.pos.y) * 0.7071 + u.fa.y * 40.0 * u.res.z;
-      wire *= mix(1.0, step(fract(along / (dash * 2.0)), 0.5), smoothstep(0.25, 0.7, k));
-      let fill = max(mp(XRAY, 0).y, 0.3);
-      let body = s.x * i.paint.z * mix(fill, fill * 0.4, smoothstep(0.05, 0.6, k));
-      let aw = max(wire * i.paint.z, body);
-      let tw = mix(r, c.g * (1.0 - c.b), wire);
-      let gw = mix(g, c.b, wire);
-      return vec4f(tw * aw, gw * aw, code * aw, aw);
-    }
     // A drawn outline on the silhouette and the creases (Mesh3d::outline, device px in paint.x).
     if (i.paint.x > 0.0) {
       let line = clamp(i.paint.x + 0.5 - abs(s.w), 0.0, 1.0) * step(0.02, s.x);
@@ -287,32 +267,6 @@ fn ink_of(i: VOut, solid: bool) -> vec4f {
     return vec4f(r * a, g * a, code * a, a);
   }
   if (i.paint.w > 1.5) { return vec4f(textureSampleLevel(tex1, samp, clamp(i.uv, vec2f(0.0), vec2f(1.0)), 0.0).rgb * a, a); }
-  // Transparent electronics: filled shapes are drawn by their outline, a faint fill and contour lines
-  // inside, so what is under them shows through. Loosened, the outlines break into moving dashes.
-  if (i.paint.w < 1.5 && i.paint.w > 0.5 && i.extra.x == 0.0 && eff_mat(i.look.x) == XRAY) {
-    let line = max(mp(XRAY, 0).x * u.res.z, 0.5);
-    // An accent fill carries a label in the ground colour (an accent button, a selected segment): it
-    // keeps most of its fill, so the label reads and the selection shows.
-    let fill = select(mp(XRAY, 0).y, max(mp(XRAY, 0).y, 0.72), i.paint.y > 0.5);
-    let cpitch = max(mp(XRAY, 0).z * u.res.z, 2.0);
-    let d = s.w;
-    let k = loose1(i);
-    var stroke = clamp(0.5 - d, 0.0, 1.0) - clamp(0.5 - d - line, 0.0, 1.0);
-    if (k > 0.0) {
-      // Dashes along the edge: the edge's own coordinate is x on the long sides and y on the short ones.
-      let edge_y = min(i.local.y, i.size.y - i.local.y) > min(i.local.x, i.size.x - i.local.x);
-      let along = select(i.local.x, i.local.y, edge_y) + u.fa.y * 40.0 * u.res.z;
-      let dash = max(mp(XRAY, 0).w * u.res.z, 2.0);
-      stroke *= mix(1.0, step(fract(along / (dash * 2.0)), 0.5), smoothstep(0.05, 0.4, k));
-    }
-    var contour = 0.0;
-    if (-d > cpitch * 0.75 && -d < cpitch * 3.5) {
-      let f = abs(fract(-d / cpitch + 0.5) - 0.5) * cpitch;
-      contour = clamp(line * 0.5 + 0.5 - f, 0.0, 1.0) * 0.7 * (1.0 - smoothstep(0.0, 0.6, k));
-    }
-    a = max(max(stroke, contour), s.x * fill * (1.0 - 0.5 * k)) * i.paint.z;
-    if (solid) { return vec4f(i.paint.x * (1.0 - i.paint.y) * a, i.paint.y * a, ink_code(i) * s.x * i.paint.z, s.x * i.paint.z); }
-  }
   return vec4f(i.paint.x * (1.0 - i.paint.y) * a, i.paint.y * a, ink_code(i) * a, a);
 }
 fn near_of(i: VOut) -> vec4f {
@@ -965,16 +919,6 @@ fn m_glitch(p: vec2f, pic: bool) -> vec3f {
   return c;
 }
 
-// xray: shapes are drawn by outline in stage 1; here loosened text turns hollow.
-fn m_xray(p: vec2f) -> vec3f {
-  let k = kt(p);
-  let d = dec(p);
-  if (k <= 0.0 || d.shape || d.a <= 0.0) { return exact(p); }
-  let line = max(mp(XRAY, 0).x * u.res.z, 0.5);
-  let hollow = 1.0 - smoothstep(line + 0.3, line + 1.0, sdist(p));
-  return mix(gnd(p), d.rgb, d.a * mix(1.0, hollow, smoothstep(0.1, 0.6, k)));
-}
-
 // near: the intermediate images made visible. The signed nearness in bands every `pitch` px, warm
 // inside the ink and cool outside, fading toward the edge of its reach; the outline in the ink colour;
 // the ink itself as a faint fill; the looseness of each instance as a tint over it.
@@ -1086,13 +1030,6 @@ fn scroll_trace(col: vec3f, q: vec2f, m: i32, sc: Sc) -> vec3f {
     }
     return mix(c, u.fg.rgb, hit);
   }
-  if (m == XRAY) {
-    // The outline once more, a little behind: a layer lagging under the motion.
-    let at = q + d * u.scrp.x * 0.5 * k;
-    let line = max(mp(XRAY, 0).x * s, 0.75);
-    let o = clamp(line + 0.5 - abs(sdist(at)), 0.0, 1.0) * step(0.02, near_t(at).r);
-    return mix(c, u.accent.rgb, o * 0.7 * k);
-  }
   if (m == GLITCH || m == NEAR) { return c; }
   // plain: a soft trailing edge, at most.
   let L = u.scrp.x * k * 0.45;
@@ -1158,8 +1095,7 @@ fn shade_new(pf: vec2f) -> vec3f {
       case 4: { col = m_print(p); }
       case 5: { col = m_lino(p); }
       case 6: { col = m_glitch(p, is_pic); }
-      case 7: { col = m_xray(p); }
-      case 8: { col = m_near(p); }
+      case 7: { col = m_near(p); }
       default: { col = m_plain(p); }
     }
     col = scroll_trace(col, p, m, sc);
@@ -1360,13 +1296,20 @@ fn post_bloom(p: vec2f) -> vec3f {
     let r = u.post[1].z;
     let th = u.post[1].y;
     var acc = vec3f(0.0);
-    // Two rings of six taps (at the radius and half of it, turned half a step): a soft glow in one pass.
-    for (var i = 0; i < 12; i++) {
-      let inner = (i & 1) == 1;
-      let a = f32(i >> 1) * 1.0471976 + select(0.0, 0.5235988, inner);
-      acc += max(post_src(p + vec2f(cos(a), sin(a)) * r * select(1.0, 0.5, inner)) - vec3f(th), vec3f(0.0));
+    // Three rings of six taps (at the radius, two thirds and a third of it), the whole pattern turned
+    // by a per-pixel noise so the taps never show as copies of what glows: a soft glow in one pass,
+    // weighted toward the centre.
+    let spin = fract(52.9829189 * fract(dot(floor(p), vec2f(0.06711056, 0.00583715)))) * 6.2831853;
+    var wsum = 0.0;
+    for (var i = 0; i < 18; i++) {
+      let ring = i / 6;
+      let k = 1.0 - f32(ring) / 3.0;
+      let a = f32(i % 6) * 1.0471976 + spin + f32(ring) * 0.5235988;
+      let w = 0.6 + 0.4 * (1.0 - k);
+      acc += w * max(post_src(p + vec2f(cos(a), sin(a)) * r * k) - vec3f(th), vec3f(0.0));
+      wsum += w;
     }
-    c += acc * (s / 6.0);
+    c += acc * (s * 2.0 / wsum);
   }
   return c;
 }

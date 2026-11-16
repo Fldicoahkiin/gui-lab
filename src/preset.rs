@@ -281,7 +281,6 @@ pub fn presets() -> Vec<Preset> {
             // Carved in: strokes along the outlines, the ink last.
             "linocut" => (Interaction { press_ms: 420.0, front_speed: 520.0, ..base }, Transition::of(900.0, &[step(Carve, 0.0, 1.0, [9.0, 0.62, 0.0, 0.0, 0.0])])),
             // Layers part in depth, swap, close.
-            "transparent" => (Interaction { press_ms: 340.0, ..base }, Transition::of(820.0, &[step(Layers, 0.0, 1.0, [46.0, 210.0, 0.0, 0.0, 0.0])])),
             // Frames and lines first, the content after.
             "tech-manual" => (Interaction { press_ms: 300.0, ..base }, Transition::of(880.0, &[step(Outline, 0.0, 1.0, [1.2, 0.55, 0.0, 0.0, 0.0]), step(Boxes, 0.0, 0.5, [10.0, 1.0, 0.0, 0.0, 0.0])])),
             // Nothing.
