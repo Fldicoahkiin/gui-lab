@@ -753,7 +753,7 @@
       "params": [
         {
           "name": "L0",
-          "default": 0.22,
+          "default": 0.16,
           "min": 0.05,
           "max": 1.0,
           "step": 0.01,
@@ -761,7 +761,7 @@
         },
         {
           "name": "r",
-          "default": 46.0,
+          "default": 54.0,
           "min": 8.0,
           "max": 160.0,
           "step": 1.0,
@@ -776,7 +776,9 @@
           "unit": "rad/s"
         }
       ],
-      "input": "number"
+      "input": "number",
+      "stage": "4:3, the piece fills it; runs every frame while seen (reduced motion: rests)",
+      "params_toggle": "[ params ]"
     },
     {
       "name": "contours",
@@ -821,7 +823,9 @@
           "unit": ""
         }
       ],
-      "input": "number"
+      "input": "number",
+      "stage": "4:3, the piece fills it; runs every frame while seen (reduced motion: rests)",
+      "params_toggle": "[ params ]"
     },
     {
       "name": "silk",
@@ -835,7 +839,7 @@
       "params": [
         {
           "name": "N",
-          "default": 1600.0,
+          "default": 1400.0,
           "min": 100.0,
           "max": 20000.0,
           "step": 100.0,
@@ -843,7 +847,7 @@
         },
         {
           "name": "v",
-          "default": 16.0,
+          "default": 22.0,
           "min": 0.0,
           "max": 60.0,
           "step": 1.0,
@@ -866,7 +870,9 @@
           "unit": "s"
         }
       ],
-      "input": "number"
+      "input": "number",
+      "stage": "4:3, the piece fills it; runs every frame while seen (reduced motion: rests)",
+      "params_toggle": "[ params ]"
     },
     {
       "name": "grown",
@@ -880,7 +886,7 @@
       "params": [
         {
           "name": "f",
-          "default": 0.037,
+          "default": 0.029,
           "min": 0.01,
           "max": 0.08,
           "step": 0.001,
@@ -888,7 +894,7 @@
         },
         {
           "name": "k",
-          "default": 0.06,
+          "default": 0.057,
           "min": 0.04,
           "max": 0.07,
           "step": 0.001,
@@ -904,14 +910,16 @@
         },
         {
           "name": "T",
-          "default": 9.0,
+          "default": 7.0,
           "min": 2.0,
           "max": 30.0,
           "step": 0.5,
           "unit": "s"
         }
       ],
-      "input": "number"
+      "input": "number",
+      "stage": "4:3, the piece fills it; runs every frame while seen (reduced motion: rests)",
+      "params_toggle": "[ params ]"
     },
     {
       "name": "mercury",
@@ -925,7 +933,7 @@
       "params": [
         {
           "name": "r0",
-          "default": 17.0,
+          "default": 22.0,
           "min": 4.0,
           "max": 40.0,
           "step": 0.5,
@@ -933,7 +941,7 @@
         },
         {
           "name": "r",
-          "default": 12.0,
+          "default": 16.0,
           "min": 4.0,
           "max": 40.0,
           "step": 0.5,
@@ -956,7 +964,9 @@
           "unit": "N·s/m"
         }
       ],
-      "input": "number"
+      "input": "number",
+      "stage": "4:3, the piece fills it; runs every frame while seen (reduced motion: rests)",
+      "params_toggle": "[ params ]"
     },
     {
       "name": "flow",
@@ -1001,7 +1011,9 @@
           "unit": "px"
         }
       ],
-      "input": "number"
+      "input": "number",
+      "stage": "4:3, the piece fills it; runs every frame while seen (reduced motion: rests)",
+      "params_toggle": "[ params ]"
     },
     {
       "name": "loupe",
@@ -1011,15 +1023,15 @@
         "docs/site/en/lab-loupe.md",
         "docs/site/zh-Hans/lab-loupe.md"
       ],
-      "formula": "(λ, φ) → R·(cos φ sin λ, sin φ)",
+      "formula": "(λ, φ) → R·h·(cos φ sin λ, sin φ)",
       "params": [
         {
           "name": "R",
-          "default": 66.0,
-          "min": 30.0,
-          "max": 120.0,
-          "step": 1.0,
-          "unit": "px"
+          "default": 0.46,
+          "min": 0.2,
+          "max": 0.5,
+          "step": 0.01,
+          "unit": "·h"
         },
         {
           "name": "ω0",
@@ -1038,7 +1050,9 @@
           "unit": "/s"
         }
       ],
-      "input": "number"
+      "input": "number",
+      "stage": "4:3, the piece fills it; runs every frame while seen (reduced motion: rests)",
+      "params_toggle": "[ params ]"
     },
     {
       "name": "orbit",
@@ -1083,7 +1097,9 @@
           "unit": "/s"
         }
       ],
-      "input": "number"
+      "input": "number",
+      "stage": "4:3, the piece fills it; runs every frame while seen (reduced motion: rests)",
+      "params_toggle": "[ params ]"
     },
     {
       "name": "spring",
@@ -1120,7 +1136,9 @@
           "unit": "kg"
         }
       ],
-      "input": "number"
+      "input": "number",
+      "stage": "4:3, the piece fills it; runs every frame while seen (reduced motion: rests)",
+      "params_toggle": "[ params ]"
     },
     {
       "name": "stack",
@@ -1157,7 +1175,9 @@
           "unit": "ms"
         }
       ],
-      "input": "number"
+      "input": "number",
+      "stage": "4:3, the piece fills it; runs every frame while seen (reduced motion: rests)",
+      "params_toggle": "[ params ]"
     },
     {
       "name": "decode",
@@ -1188,7 +1208,76 @@
           "default": 7
         }
       ],
-      "input": "number"
+      "input": "number",
+      "stage": "4:3, the piece fills it; runs every frame while seen (reduced motion: rests)",
+      "params_toggle": "[ params ]"
+    }
+  ],
+  "scenes": [
+    {
+      "name": "body",
+      "file": "examples/body.rs",
+      "page": "body",
+      "docs": [
+        "docs/site/en/scene-body.md",
+        "docs/site/zh-Hans/scene-body.md"
+      ],
+      "what": "A passage gathers into a slowly turning luminous body made of its own glyphs (a signed-distance form sampled to a spiral of surface points) and goes back to readable text.",
+      "rest_states": [
+        "page: every glyph where the layout put it, no pose",
+        "body: turning slowly (the idle turn is its only motion)"
+      ],
+      "params": [
+        {
+          "name": "gather",
+          "default": 0.0,
+          "min": 0.0,
+          "max": 1.0,
+          "step": 0.01,
+          "unit": ""
+        },
+        {
+          "name": "form",
+          "default": 0.0,
+          "min": 0.0,
+          "max": 1.0,
+          "step": 1.0,
+          "unit": ""
+        },
+        {
+          "name": "seed",
+          "default": 7.0,
+          "min": 0.0,
+          "max": 99.0,
+          "step": 1.0,
+          "unit": ""
+        },
+        {
+          "name": "ω",
+          "default": 0.18,
+          "min": 0.0,
+          "max": 1.5,
+          "step": 0.01,
+          "unit": "rad/s"
+        },
+        {
+          "name": "open",
+          "default": 140.0,
+          "min": 20.0,
+          "max": 260.0,
+          "step": 5.0,
+          "unit": "px"
+        },
+        {
+          "name": "size",
+          "default": 0.72,
+          "min": 0.3,
+          "max": 1.2,
+          "step": 0.01,
+          "unit": "·h"
+        }
+      ],
+      "input": "click, Space or Enter toggles; drag turns; ← → nudge the turn; number controls"
     }
   ]
 }

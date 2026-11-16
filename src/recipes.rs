@@ -113,6 +113,12 @@ pub fn open(name: &str, faces: Vec<crate::text::Face>, w: u32, h: u32, scale: f3
 #[path = "../examples/lab/orbit.rs"] pub mod lab_orbit;
 #[path = "../examples/lab/spring.rs"] pub mod lab_spring;
 #[path = "../examples/lab/stack.rs"] pub mod lab_stack;
+#[path = "../examples/body.rs"] pub mod scene_body;
+/// The showcase scenes written as examples against the public API (DESIGN.md §6.2): name and source.
+pub mod scenes {
+    pub use super::scene_body as body;
+    pub const ALL: [(&str, &str); 1] = [("body", include_str!("../examples/body.rs"))];
+}
 /// The Lab's experiments (DESIGN.md §5.3), one file each in `examples/lab/`, in page order: name and source.
 pub mod lab {
     pub use super::{lab_lumen as lumen, lab_contours as contours, lab_silk as silk, lab_grown as grown, lab_mercury as mercury, lab_flow as flow, lab_loupe as loupe, lab_orbit as orbit, lab_spring as spring, lab_stack as stack};
