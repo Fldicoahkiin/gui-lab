@@ -618,6 +618,65 @@
       ],
       "response": "nudge (a control: pushed as one piece by fronts, held and condensing at most to Look::legible_cap)",
       "recompose": "keyed labels recompose when their text changes"
+    },
+    {
+      "name": "bottom_sheet",
+      "title": "底部面板",
+      "group": "feedback",
+      "functions": [
+        "bottom_sheet"
+      ],
+      "description": "从底边升起的面板：按把手或正文拖动，停在几档高度之间；往下甩就收起。松手时的速度交给弹簧，停在哪一档由这个速度能把它带到哪里决定；拉过最高一档会越拉越难；正文里的滚动到顶以后再往下拉就变成拖面板。Esc 收起。",
+      "description_en": "A panel that rises from the bottom edge: dragged by its handle or body between detents, swiped down to dismiss. The release velocity carries on into a spring; where it rests is decided by where that velocity would take it; past the top detent it resists; a scroll inside hands off to the sheet at its top. Esc dismisses.",
+      "files": [
+        "src/widgets/bottom_sheet.rs",
+        "src/gesture.rs"
+      ],
+      "recipe": "docs/recipes/gesture.md",
+      "dependencies": [
+        "base"
+      ],
+      "response": "nudge (a control: pushed as one piece by fronts, held and condensing at most to Look::legible_cap)",
+      "recompose": "keyed labels recompose when their text changes"
+    },
+    {
+      "name": "floating",
+      "title": "浮动窗口",
+      "group": "layout",
+      "functions": [
+        "floating"
+      ],
+      "description": "浮在一块区域上的小框（画中画）：随便拖，松手后按甩出去的方向和速度投射出终点，用弹簧滑到离终点最近的角。获得焦点后方向键换角。",
+      "description_en": "A small box floating over an area (picture in picture): drag it anywhere; let go, the throw's projected end picks the nearest corner and a spring takes it there. Arrow keys move it between corners.",
+      "files": [
+        "src/widgets/floating.rs",
+        "src/gesture.rs"
+      ],
+      "recipe": "docs/recipes/gesture.md",
+      "dependencies": [
+        "base"
+      ],
+      "response": "nudge (a control: pushed as one piece by fronts, held and condensing at most to Look::legible_cap)",
+      "recompose": "keyed labels recompose when their text changes"
+    },
+    {
+      "name": "caption",
+      "title": "公式注",
+      "group": "display",
+      "functions": [
+        "caption"
+      ],
+      "description": "实时演示下面的一行等宽小字：印出驱动它的真实参数（从同一些字段读出来，不是手写的），每个参数也是一个能改的数字控件。El::caption_params 把它放在演示下面。",
+      "description_en": "A small monospaced line under a live demo that prints the parameters driving it (read from the same fields, never typed by hand), each also a number control. El::caption_params puts it under the demo.",
+      "files": [
+        "src/widgets/caption.rs"
+      ],
+      "dependencies": [
+        "base",
+        "number"
+      ],
+      "response": "nudge (a control: pushed as one piece by fronts, held and condensing at most to Look::legible_cap)",
+      "recompose": "keyed labels recompose when their text changes"
     }
   ]
 }

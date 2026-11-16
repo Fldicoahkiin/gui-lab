@@ -109,6 +109,7 @@ pub struct Node<M> {
     /// A `scene3d` element's pointer handler, and a wheel handler.
     on_pick: Option<crate::el::OnPick<M>>,
     on_wheel: Option<crate::el::OnWheel<M>>,
+    on_move: Option<crate::el::OnMove<M>>,
     /// The box layout gave it, relative to its parent (scrolling does not change it).
     local: taffy::Layout,
     tid: NodeId,
@@ -406,6 +407,8 @@ pub struct Ui<S, M> {
     /// Every mesh `scene3d` elements can name; which copy the pointer was last over (element key, hit).
     meshes: crate::mesh::Library,
     mesh_hover: Option<(String, Option<crate::mesh::MeshHit>)>,
+    /// The element whose `on_move` heard the pointer last.
+    move_over: Option<String>,
     /// Shed marks in flight, where each shedding element was, the fraction of a mark it still owes, the
     /// flow fields' marks by element (box-relative), and how many marks were ever made (their seed).
     motes: Vec<crate::motes::Mote>,
@@ -595,7 +598,7 @@ impl<S, M: Clone> Ui<S, M> {
             tree: TaffyTree::new(), tids: HashMap::new(), mkeys: HashMap::new(), virt_views: HashMap::new(), virt_made: HashMap::new(),
             scrolling: Scrolling::default(), touch: None, touches: HashSet::new(), touching: false, fling: None, over: HashMap::new(), motion: HashMap::new(), scroll_paint: false, event_t: None,
             recs: HashMap::new(), recomps: HashMap::new(), slides: HashMap::new(), no_recompose: false,
-            meshes: crate::mesh::Library::default(), mesh_hover: None, particle_gpu: false, motes: vec![], shed_at: HashMap::new(), shed_owed: HashMap::new(), field_marks: HashMap::new(), motes_made: 0,
+            meshes: crate::mesh::Library::default(), mesh_hover: None, move_over: None, particle_gpu: false, motes: vec![], shed_at: HashMap::new(), shed_owed: HashMap::new(), field_marks: HashMap::new(), motes_made: 0,
         };
         ui.resize(w, h, scale);
         ui
@@ -1047,7 +1050,12 @@ impl<S, M: Clone> Ui<S, M> {
         self.touching = true;
         self.hover = None;
         let hit = self.hit_target(x, y);
-        let direct = hit.and_then(|i| self.up(i, |n| n.on_drag.is_some() || n.on_text.is_some())).is_some() || hit.and_then(|i| self.up(i, |n| n.scroll)).is_none();
+        // A scroll area inside a dragged element (a sheet's body) scrolls first: its drag waits for a pull
+        // past the scroll's start (the hand-off in `drag_scroll`).
+        let dragged = hit.and_then(|i| self.up(i, |n| n.on_drag.is_some() || n.on_text.is_some()));
+        let scroller = hit.and_then(|i| self.up(i, |n| n.scroll));
+        let inner_scroll = matches!((dragged, scroller), (Some(d), Some(sc)) if self.nodes[d].on_text.is_none() && self.within(sc, d) && sc != d);
+        let direct = (dragged.is_some() && !inner_scroll) || scroller.is_none();
         let mode = if direct { self.press_with(x, y, shift); TouchMode::Direct } else {
             self.heard();
             let ctl = hit.and_then(|i| self.up(i, Node::active));
@@ -1087,15 +1095,31 @@ impl<S, M: Clone> Ui<S, M> {
                 let key = self.nodes[i].key.clone();
                 if let Some(t) = &mut self.touch { t.mode = TouchMode::Scroll(key.clone()); }
                 let d = if self.nodes[i].horizontal { -(x - last.0) } else { -(y - last.1) };
-                self.drag_scroll(i, d);
+                if !self.hand_off(i, d, x, y) { self.drag_scroll(i, d); }
             }
             TouchMode::Scroll(key) => {
                 let Some(i) = self.nodes.iter().position(|n| n.key == key) else { return };
                 let d = if self.nodes[i].horizontal { -(x - last.0) } else { -(y - last.1) };
-                self.drag_scroll(i, d);
+                if !self.hand_off(i, d, x, y) { self.drag_scroll(i, d); }
             }
             TouchMode::Cancelled => {}
         }
+    }
+    /// A finger pulling vertical scroll node `i` back past its start (`d` < 0 at offset 0, nothing pulled)
+    /// while an element around it is dragged (a sheet) hands the gesture to that element: its drag
+    /// starts here and the finger is then its own (DESIGN.md §1.8.2, hand-off). Returns whether it did.
+    fn hand_off(&mut self, i: usize, d: f32, x: f32, y: f32) -> bool {
+        let n = &self.nodes[i];
+        if n.horizontal || d >= 0.0 || self.scroll.get(&n.key).copied().unwrap_or(0.0) > 0.0 || self.over.get(&n.key).is_some_and(|o| *o != 0.0) { return false; }
+        let Some(p) = n.parent.and_then(|p| self.up(p, |m| m.on_drag.is_some())) else { return false };
+        let Some(handler) = self.nodes[p].on_drag.clone() else { return false };
+        // The drag starts where the finger was a step ago, so this step already moves it.
+        let (x0, y0) = (x, y + d);
+        self.capture = Some(Capture { key: self.nodes[p].key.clone(), handler, start: (x0, y0), rect: self.nodes[p].rect });
+        self.drag(Phase::Start, x0, y0);
+        self.drag(Phase::Move, x, y);
+        if let Some(t) = &mut self.touch { t.mode = TouchMode::Direct; }
+        true
     }
     /// Move scroll node `i` with the finger by `d`; past an end, pull instead.
     fn drag_scroll(&mut self, i: usize, d: f32) {
@@ -1180,7 +1204,7 @@ impl<S, M: Clone> Ui<S, M> {
             if let Some(f) = self.hovered && f(&mut self.state, self.hover.as_deref()) { self.relayout(); }
         }
         if self.capture.is_some() { self.drag(Phase::Move, x, y); }
-        if !self.touching { self.pick_hover(x, y); }
+        if !self.touching { self.pick_hover(x, y); self.move_hover(Some((x, y))); }
         if !self.touching && let Some(f) = self.pointer_of && f(&mut self.state, x, y) { self.relayout(); }
         if let Some(k) = self.text_capture.clone() && let Some(fi) = self.nodes.iter().position(|n| n.key == k) && self.field_at() == Some(fi)
             && let Some(at) = self.leaf_of(fi).and_then(|l| self.text_hit(l, x, y)) {
@@ -1192,6 +1216,19 @@ impl<S, M: Clone> Ui<S, M> {
         }
     }
 
+    /// Tell the element with `on_move` under the pointer where it is (local px), and the one it left
+    /// that it left. `None`: the pointer left the window.
+    fn move_hover(&mut self, at: Option<(f32, f32)>) {
+        let now = at.and_then(|(x, y)| self.hit(x, y).and_then(|i| self.up(i, |n| n.on_move.is_some())));
+        let key = now.map(|i| self.nodes[i].key.clone());
+        if key != self.move_over && let Some(old) = self.move_over.take()
+            && let Some(f) = self.nodes.iter().find(|n| n.key == old).and_then(|n| n.on_move.clone()) && let Some(m) = f(None) { self.send(m); }
+        self.move_over = key;
+        if let (Some(i), Some((x, y))) = (now, at) && let Some(f) = self.nodes[i].on_move.clone() {
+            let r = self.nodes[i].rect;
+            if let Some(m) = f(Some((x - r.x, y - r.y))) { self.send(m); }
+        }
+    }
     /// The `scene3d` element under (x, y) with a pick handler, and the copy there (logical px).
     fn pick_at(&self, x: f32, y: f32) -> Option<(usize, Option<crate::mesh::MeshHit>)> {
         let i = self.hit(x, y).and_then(|i| self.up(i, |n| n.on_pick.is_some()))?;
@@ -1222,6 +1259,7 @@ impl<S, M: Clone> Ui<S, M> {
     pub fn pointer_leave(&mut self) {
         self.dirty = true;
         self.field.pointer = [-1e5, -1e5, 0.0, 0.0];
+        self.move_hover(None);
         if self.hover.take().is_some() && let Some(f) = self.hovered && f(&mut self.state, None) { self.relayout(); }
     }
     /// A burst over a rect (logical px) from now: `strength` 0..1 for `secs`.
@@ -1734,7 +1772,11 @@ impl<S, M: Clone> Ui<S, M> {
             let mut a = self.nodes[i].parent;
             let mut moved = false;
             while let Some(p) = a.and_then(|p| self.up(p, |n| n.scroll)) {
-                let (r, view) = (self.nodes[i].rect, self.nodes[p].clip.intersect(&self.nodes[p].inner));
+                // What can be seen of it: a box that clips it (a sheet's frame) cuts what is to be shown.
+                let mut r = self.nodes[i].rect;
+                let mut c = self.nodes[i].parent;
+                while let Some(j) = c && j != p { if self.nodes[j].clips && !self.nodes[j].scroll { r = r.intersect(&self.nodes[j].rect); } c = self.nodes[j].parent; }
+                let view = self.nodes[p].clip.intersect(&self.nodes[p].inner);
                 let (lo, hi, vlo, vhi) = if self.nodes[p].horizontal { (r.x, r.right(), view.x, view.right()) } else { (r.y, r.bottom(), view.y, view.bottom()) };
                 let d = if lo < vlo { lo - vlo - 8.0 } else if hi > vhi { (hi - vhi + 8.0).min(lo - vlo) } else { 0.0 };
                 if d != 0.0 && self.scroll_by(p, d) { moved = true; break; }
@@ -3349,7 +3391,7 @@ fn measure_key(c: &Content) -> u64 {
 /// A virtual list's rows are built here, for what its viewport shows.
 #[allow(clippy::too_many_arguments)]
 fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], off: (bool, bool), flow: Option<(Rc<str>, usize)>, inh: Inherit, vx: &mut VirtCtx, built: &mut Built, nodes: &mut Vec<Node<M>>) -> usize {
-    let El { key, style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, annotate, gaze_scope, material, loosen, anchor, clips, calm, mut on_text, multiline, selectable, cursor, virt, access, ripple, mut on_pick, mut on_wheel, rtl, mut children } = el;
+    let El { key, style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, annotate, gaze_scope, material, loosen, anchor, clips, calm, mut on_text, multiline, selectable, cursor, virt, access, ripple, mut on_pick, mut on_wheel, mut on_move, rtl, mut children } = el;
     let mut style = style;
     let mut inh = inh;
     if let Some(r) = rtl { inh.rtl = r; }
@@ -3358,7 +3400,7 @@ fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], of
     let key = if key.is_empty() { path } else { key };
     let roles = fonts.unwrap_or(roles);
     let (off, hidden) = (off.0 || disabled, off.1 || hidden);
-    if off || hidden { on_press = None; on_key = None; on_drag = None; on_blur = None; on_text = None; on_pick = None; on_wheel = None; focusable = false; commit = false; }
+    if off || hidden { on_press = None; on_key = None; on_drag = None; on_blur = None; on_text = None; on_pick = None; on_wheel = None; on_move = None; focusable = false; commit = false; }
     if let Content::Text { font, .. } = &mut content { *font = Font::Face(font.resolve(roles)); }
     let i = nodes.len();
     let flow = own_flow.map(|f| (Rc::from(f.as_str()), i)).or(flow);
@@ -3406,7 +3448,7 @@ fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], of
         content, fill, border, radius, on_press, on_key, on_drag, on_blur, loose, wipe, bar, reveal, commit, modal, hidden, shift, shed, flow_field, flow: flow.clone(),
         mat: inh.code(), loosen: inh.loosen, annotate, scope: gaze_scope, anchor, clips, calm, on_text, multiline, selectable: inh.select, cursor,
         virt: virt_info, access, respond, legible, ripple: inh.scope.clone(), ripple_scope: ripple.container, recompose, recompose_always: is_text && ripple.recompose == Some(true), unframed: ripple.unframed, keyed,
-        on_pick, on_wheel, local: taffy::Layout::new(), tid: placeholder,
+        on_pick, on_wheel, on_move, local: taffy::Layout::new(), tid: placeholder,
     });
     built.styles.push(style);
     built.kids.push(vec![]);
