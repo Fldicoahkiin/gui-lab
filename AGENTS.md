@@ -147,6 +147,10 @@ dither and a palette — `lab::post`, all off by default, DESIGN.md §1.21) and 
 follow depth. `El::shed(Shed)` makes a moving element drop marks, `El::flow_field(FlowField)` carries marks along a
 noise field over a box (speed 0: still), and `El::shift(dx, dy)` moves a subtree after layout (pointer parallax
 without a layout).
+Text flows around true outlines with `.around(Around::new(vec![Silhouette::circle(..)], gap))`; a piece of a line
+beside an obstacle is justified so both its edges are flush, adding at most `Around::justify_max` ems per gap
+(default 0.25; inter-character next to CJK, inter-word at spaces, between Latin letters only with
+`Around::justify_latin_letters`); a piece that would need more stays start-aligned (DESIGN.md §1.2, "around").
 
 ## The rules
 

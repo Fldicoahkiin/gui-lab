@@ -105,24 +105,41 @@ impl Silhouette {
     }
 }
 
-/// What a paragraph flows around: obstacles, the gap kept from their ink, and the narrowest piece of
-/// a line worth setting text in (logical px; 0 = three times the type size, `MIN_EM`).
 /// The narrowest piece of a line worth setting text in, in ems, when `Around::min` is 0: a sliver
 /// narrower than this gets no text.
 pub const MIN_EM: f32 = 3.0;
 /// Obstacles are placed on a grid this fine (logical px) before lines are broken around them, so a
 /// sub-pixel move never moves a break: the lines change only when the outline has moved a whole step.
 pub const STEP: f32 = 2.0;
+/// The most extra advance justification puts in one gap between glyph clusters, in ems, by default
+/// (`Around::justify_max`).
+pub const JUSTIFY_MAX_EM: f32 = 0.25;
+/// The most a piece is tightened per gap, in ems, when it takes one glyph cluster (or word) more than
+/// fits so as to stay within `Around::justify_max`: little enough that neighbouring glyphs never touch.
+pub const SHRINK_EM: f32 = 0.05;
+/// The same for a piece whose every gap is a space (inter-word): a ninth of an em, as TeX shrinks a space.
+pub const SHRINK_SPACE_EM: f32 = 1.0 / 9.0;
+/// What a paragraph flows around: obstacles, the gap kept from their ink, and the narrowest piece of
+/// a line worth setting text in (logical px; 0 = three times the type size, `MIN_EM`).
+/// A piece with an obstacle on either side is justified: its slack goes between glyph clusters
+/// (inter-character next to CJK, inter-word at spaces; between Latin letters only when the piece has no
+/// space and `justify_latin_letters` is on), at most `justify_max` ems per gap (`JUSTIFY_MAX_EM`), so
+/// both of its edges are flush (the column's margin and the outline's gap). A piece that would need more
+/// is broken with one cluster more and tightened by at most `SHRINK_EM` per gap (`SHRINK_SPACE_EM` at
+/// spaces) if that fits; otherwise
+/// it stays start-aligned. A paragraph's last line is never justified.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Around { pub obstacles: Vec<Silhouette>, pub gap: f32, pub min: f32 }
+pub struct Around { pub obstacles: Vec<Silhouette>, pub gap: f32, pub min: f32, pub justify_max: f32, pub justify_latin_letters: bool }
 
 impl Around {
-    pub fn new(obstacles: Vec<Silhouette>, gap: f32) -> Self { Self { obstacles, gap, min: 0.0 } }
+    pub fn new(obstacles: Vec<Silhouette>, gap: f32) -> Self { Self { obstacles, gap, min: 0.0, justify_max: JUSTIFY_MAX_EM, justify_latin_letters: false } }
     /// A key for caches: the same outlines and gap give the same lines.
     pub fn id(&self) -> u64 {
         let mut h = std::hash::DefaultHasher::new();
         self.gap.to_bits().hash(&mut h);
         self.min.to_bits().hash(&mut h);
+        self.justify_max.to_bits().hash(&mut h);
+        self.justify_latin_letters.hash(&mut h);
         for o in &self.obstacles {
             o.top.to_bits().hash(&mut h);
             for r in &o.rows { r.0.to_bits().hash(&mut h); r.1.to_bits().hash(&mut h); }

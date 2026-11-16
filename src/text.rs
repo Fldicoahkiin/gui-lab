@@ -209,6 +209,22 @@ impl Text {
         if self.log_shapes { self.shape_log.push(s.to_owned()); }
         let size = self.size_for(face, size);
         let fi = (face as usize).min(self.families.len() - 1);
+        let mut l = self.build(s, fi, size, line, &[]);
+        match around {
+            None => l.break_all_lines(max_width),
+            Some(a) => {
+                let plan = plan_around(&mut l, s, a, max_width.unwrap_or(1e5), line, if a.min > 0.0 { a.min } else { crate::wrap::MIN_EM * size }, size);
+                // Justified pieces: the same text again, with the extra advance as letter spacing on the
+                // clusters it follows, broken at exactly the planned places.
+                let spans: Vec<(std::ops::Range<usize>, f32)> = plan.iter().flat_map(|p| p.after.iter().map(|r| (r.clone(), p.extra))).collect();
+                if !spans.is_empty() { l = self.build(s, fi, size, line, &spans); }
+                set_planned(&mut l, s, &plan, max_width.unwrap_or(1e5));
+            }
+        }
+        l
+    }
+    /// The paragraph shaped (not yet broken), with extra letter spacing on the given byte ranges.
+    fn build(&mut self, s: &str, fi: usize, size: f32, line: f32, spacing: &[(std::ops::Range<usize>, f32)]) -> Layout<()> {
         let mut b = self.layouts.ranged_builder(&mut self.fonts, s, 1.0, true);
         // The first registered face (the proportional one, with CJK) backs up any face that lacks a
         // character, so a monospaced face can still show Chinese.
@@ -216,12 +232,8 @@ impl Text {
         b.push_default(StyleProperty::FontFamily(FontFamily::List(std::borrow::Cow::Borrowed(&stack))));
         b.push_default(StyleProperty::FontSize(size));
         b.push_default(LineHeight::Absolute(line));
-        let mut l: Layout<()> = b.build(s);
-        match around {
-            None => l.break_all_lines(max_width),
-            Some(a) => flow_around(&mut l, a, max_width.unwrap_or(1e5), line, if a.min > 0.0 { a.min } else { crate::wrap::MIN_EM * size }),
-        }
-        l
+        for (r, v) in spacing { b.push(StyleProperty::LetterSpacing(*v), r.clone()); }
+        b.build(s)
     }
 
     /// Width and height of a paragraph in logical px when limited to `max_width`.
@@ -388,14 +400,38 @@ pub fn word_range(s: &str, at: usize) -> (usize, usize) {
     last
 }
 
-/// Break `l` into lines that keep out of the obstacles in `a`: down the column a line height at a
-/// time, each band's free pieces (left to right) take a line each; a band with no free piece is
-/// skipped a few px at a time.
-fn flow_around(l: &mut Layout<()>, a: &Around, width: f32, line: f32, min: f32) {
+/// One line as planned around obstacles: where it starts, its band, its text, and the extra advance
+/// (negative: tightening) put after each cluster in `after` to justify it.
+struct Planned { x: f32, y: f32, range: std::ops::Range<usize>, extra: f32, after: Vec<std::ops::Range<usize>> }
+
+/// Is this character set without spaces between words (Han, kana, Hangul, CJK punctuation, fullwidth
+/// forms)? Justification puts its extra advance after each of them.
+fn cjk(c: char) -> bool {
+    matches!(c as u32, 0x2E80..=0x9FFF | 0xAC00..=0xD7AF | 0xF900..=0xFAFF | 0xFE30..=0xFE4F | 0xFF00..=0xFFEF | 0x20000..=0x3FFFF)
+}
+
+/// The clusters of `s[range]` that justification puts extra advance after: every cluster before the
+/// last visible one that is CJK or a space; when there is none and `letters` is on, every one.
+fn opportunities(s: &str, range: std::ops::Range<usize>, letters: bool) -> Vec<std::ops::Range<usize>> {
+    let text = &s[range.clone()];
+    let vis = text.trim_end_matches(char::is_whitespace).len();
+    let gs: Vec<(usize, &str)> = text[..vis].grapheme_indices(true).collect();
+    let Some((_, inner)) = gs.split_last() else { return vec![] };
+    let at = |&(i, g): &(usize, &str)| range.start + i..range.start + i + g.len();
+    let picked: Vec<_> = inner.iter().filter(|(_, g)| g.chars().next().is_some_and(|c| cjk(c) || c == ' ' || c == '\u{a0}')).map(at).collect();
+    if picked.is_empty() && letters { inner.iter().map(at).collect() } else { picked }
+}
+
+/// One pass of breaking `l` around the obstacles in `a`: down the column a line height at a time, each
+/// band's free pieces (left to right) take a line each, starting at the piece's start; a band with no
+/// free piece is skipped a few px at a time. `more` lists lines (by index) given extra room so that they
+/// take one cluster more than fits. Returns each line's piece `(x0, x1)` and band top.
+fn flow_pass(l: &mut Layout<()>, a: &Around, width: f32, line: f32, min: f32, more: &[(usize, f32)]) -> Vec<(f32, f32, f32)> {
     let mut br = l.break_lines();
     br.state_mut().set_layout_max_advance(width);
     let mut y = 0.0f32;
     let mut pieces: std::collections::VecDeque<(f32, f32)> = Default::default();
+    let mut out = vec![];
     let mut guard = 0;
     while !br.is_done() && guard < 100_000 {
         guard += 1;
@@ -405,30 +441,96 @@ fn flow_around(l: &mut Layout<()>, a: &Around, width: f32, line: f32, min: f32) 
             if pieces.is_empty() { y += 4.0; continue; }
         }
         let (x0, x1) = pieces.pop_front().expect("a free piece");
+        let w = (x1 - x0).min(width);
+        let room = more.iter().find(|m| m.0 == out.len()).map_or(0.0, |m| m.1);
         let before = br.state().clone();
         let st = br.state_mut();
         st.set_line_x(x0);
-        st.set_line_max_advance((x1 - x0).min(width));
+        st.set_line_max_advance(w + room);
         st.set_line_y(y as f64);
         let Some(done) = br.break_next() else { break };
-        // A piece with an obstacle after it in its band is set flush against that obstacle, so the
-        // text keeps the same distance (the gap) from the outline on its left and on its right: the
-        // line is broken again from its start, moved right by what it left unused.
-        if !pieces.is_empty() && let parley::YieldData::LineBreak(d) = done {
-            let used = d.metrics.advance - d.metrics.hanging_advance;
-            let slack = (x1 - x0).min(width) - used;
-            // A word too long for the piece would run into the obstacle: leave the piece empty.
-            if slack < -0.25 { br.revert_to(before); continue; }
-            if slack > 0.25 && !matches!(d.reason, parley::BreakReason::None | parley::BreakReason::Explicit) {
-                br.revert_to(before);
-                let st = br.state_mut();
-                st.set_line_x(x0 + slack);
-                st.set_line_max_advance(used + 0.01);
-                st.set_line_y(y as f64);
-                if br.break_next().is_none() { break; }
+        // A word too long for a piece with an obstacle after it would run into the obstacle: leave the
+        // piece empty.
+        if room == 0.0 && !pieces.is_empty() && let parley::YieldData::LineBreak(d) = done && d.metrics.advance - d.metrics.hanging_advance > w + 0.25 {
+            br.revert_to(before);
+            continue;
+        }
+        out.push((x0, x0 + w, y));
+        if pieces.is_empty() { y += line; }
+    }
+    br.finish();
+    out
+}
+
+/// Break `l` around the obstacles in `a` and plan each line: a piece with an obstacle on either side
+/// (and not the paragraph's last line) is justified to fill it, within `Around::justify_max` per gap;
+/// one that would need more is tried with one cluster more (tightened by at most `wrap::SHRINK_EM` per
+/// gap, `wrap::SHRINK_SPACE_EM` when every gap is a space), else left start-aligned.
+fn plan_around(l: &mut Layout<()>, s: &str, a: &Around, width: f32, line: f32, min: f32, size: f32) -> Vec<Planned> {
+    /// The most lines per paragraph tried with one cluster more (each try breaks the paragraph again).
+    const TRIES: usize = 16;
+    let cap = a.justify_max * size;
+    // Spaces give more than the gaps between CJK glyphs, which are only their side bearings.
+    let shrink = |after: &[std::ops::Range<usize>]| {
+        let spaces = after.iter().all(|r| s[r.clone()].starts_with([' ', '\u{a0}']));
+        (if spaces { crate::wrap::SHRINK_SPACE_EM } else { crate::wrap::SHRINK_EM }).min(a.justify_max) * size
+    };
+    // Each line: piece, band top, text, ink advance, whether it may be justified.
+    let lines = |l: &Layout<()>, placed: &[(f32, f32, f32)]| -> Vec<(f32, f32, f32, std::ops::Range<usize>, f32, bool)> {
+        l.lines().zip(placed).map(|(ln, &(x0, x1, y))| {
+            let m = ln.metrics();
+            let last = matches!(ln.break_reason(), parley::BreakReason::None | parley::BreakReason::Explicit);
+            let bounded = x0 > 0.5 || x1 < width - 0.5;
+            (x0, x1, y, ln.text_range(), m.advance - m.hanging_advance, bounded && !last)
+        }).collect()
+    };
+    let mut more: Vec<(usize, f32)> = vec![];
+    let placed = flow_pass(l, a, width, line, min, &more);
+    let mut cur = lines(l, &placed);
+    let mut plan = Vec::with_capacity(cur.len());
+    let mut i = 0;
+    while i < cur.len() {
+        let (x0, x1, y, ref range, used, may) = cur[i];
+        let mut p = Planned { x: x0, y, range: range.clone(), extra: 0.0, after: vec![] };
+        if may {
+            let after = opportunities(s, range.clone(), a.justify_latin_letters);
+            let slack = x1 - x0 - used;
+            if !after.is_empty() && slack > 0.01 {
+                let extra = slack / after.len() as f32;
+                if extra <= cap { p.extra = extra; p.after = after; }
+                else if more.len() < TRIES {
+                    // One cluster more, tightened to fit, if that stays within the shrink allowed.
+                    let mut trial = more.clone();
+                    trial.push((i, shrink(&after) * (after.len() + 1) as f32));
+                    let tp = flow_pass(l, a, width, line, min, &trial);
+                    let t = lines(l, &tp);
+                    if let Some((tx0, tx1, ty, tr, tu, _)) = t.get(i).cloned() && tu > tx1 - tx0 + 0.01 && tx0 == x0 && ty == y {
+                        let ta = opportunities(s, tr.clone(), a.justify_latin_letters);
+                        let e = (tx1 - tx0 - tu) / ta.len().max(1) as f32;
+                        if !ta.is_empty() && -e <= shrink(&ta) {
+                            more = trial;
+                            cur = t;
+                            p = Planned { x: tx0, y: ty, range: tr, extra: e, after: ta };
+                        }
+                    }
+                }
             }
         }
-        if pieces.is_empty() { y += line; }
+        plan.push(p);
+        i += 1;
+    }
+    plan
+}
+
+/// Break `l` again exactly as planned: each line takes the planned text from the planned place.
+fn set_planned(l: &mut Layout<()>, s: &str, plan: &[Planned], width: f32) {
+    let mut br = l.break_lines();
+    br.state_mut().set_layout_max_advance(width);
+    for p in plan {
+        let st = br.state_mut();
+        st.set_line_x(p.x);
+        st.set_line_y(p.y as f64);
+        if br.break_next_with_length(s[p.range.clone()].chars().count() as u32).is_none() { break; }
     }
     br.finish();
 }

@@ -1,6 +1,7 @@
 //! Text flowing around the zine's sign (DESIGN.md §1.9): at twenty places of the sign, no two glyphs
 //! of the paragraph overlap, none is under the sign, the text keeps the same distance from the outline
-//! on its left and its right in every band, and a sub-pixel nudge does not move a line break.
+//! on its left and its right in every band, the pieces beside the sign are justified flush on both
+//! edges, and a sub-pixel nudge does not move a line break.
 use lab::gallery::film::{self, FMsg};
 use lab::gallery::{self, GalleryUi, Msg};
 
@@ -23,7 +24,9 @@ fn glyphs(ui: &GalleryUi) -> Vec<[f32; 4]> {
 
 #[test]
 fn the_paragraph_never_overlaps_itself_or_the_sign() {
+  for locale in lab::i18n::Locale::ALL {
     let mut ui = open();
+    gallery::update(&mut ui.state, Msg::Locale(locale));
     let mut t = 3.0;
     for i in 0..20 {
         let (x, y) = (-60.0 + (i % 5) as f32 * 120.0, -40.0 + (i / 5) as f32 * 110.0);
@@ -36,15 +39,16 @@ fn the_paragraph_never_overlaps_itself_or_the_sign() {
             let (p, q) = (g[a], g[b]);
             let ox = p[2].min(q[2]) - p[0].max(q[0]);
             let oy = p[3].min(q[3]) - p[1].max(q[1]);
-            assert!(ox <= 1.0 || oy <= 1.0, "position {i} ({x}, {y}): glyphs {a} {p:?} and {b} {q:?} overlap");
+            assert!(ox <= 1.0 || oy <= 1.0, "{locale:?} position {i} ({x}, {y}): glyphs {a} {p:?} and {b} {q:?} overlap");
         } }
         let s = ui.node("film/c06/sign").expect("sign").rect;
         let (cx, cy, r) = (s.x + s.w / film::SIGN_W * 0.5, s.y + s.w / film::SIGN_W * 0.5, s.w / film::SIGN_W * 0.5);
         for (j, q) in g.iter().enumerate() {
             let (gx, gy) = ((q[0] + q[2]) * 0.5, (q[1] + q[3]) * 0.5);
-            assert!(((gx - cx).powi(2) + (gy - cy).powi(2)).sqrt() > r, "position {i}: glyph {j} under the disc");
+            assert!(((gx - cx).powi(2) + (gy - cy).powi(2)).sqrt() > r, "{locale:?} position {i}: glyph {j} under the disc");
         }
     }
+  }
 }
 
 #[test]
@@ -94,7 +98,7 @@ fn the_clearance_is_the_same_on_both_sides() {
     let mut ui = open();
     gallery::update(&mut ui.state, Msg::Locale(locale));
     let mut t = 3.0;
-    let mut both = 0;
+    let mut checked = 0;
     for i in 0..20 {
         let (x, y) = (40.0 + (i % 5) as f32 * 60.0, -30.0 + (i / 5) as f32 * 70.0);
         gallery::update(&mut ui.state, Msg::Film(FMsg::Obj(x, y)));
@@ -102,13 +106,64 @@ fn the_clearance_is_the_same_on_both_sides() {
         for _ in 0..30 { t += 1.0 / 60.0; ui.tick(t); ui.frame_drawn(); }
         let (w, h) = ui.logical_size(); let gap = ui.state.film.gap * film::geo(w, h).k;
         for (y0, l, r) in clearances(&mut ui) {
-            both += 1;
+            // A left piece justification could not fill within its cap is start-aligned: its gap is
+            // wider (counted, and bounded, in `pieces_beside_the_sign_are_flush_on_both_edges`).
+            if l > gap + crate_step() + 0.5 { continue; }
+            checked += 1;
             assert!((l - r).abs() <= 2.0, "position {i} ({x}, {y}), band at {y0:.0}: {l:.1} px from the outline on the left, {r:.1} on the right");
             // On the wrap's grid the obstacle sits up to a step from the drawn sign.
             assert!((r - gap).abs() <= crate_step() + 0.5, "position {i}, band at {y0:.0}: the right piece starts {r:.1} px from the outline, gap {gap:.1}");
         }
     }
-    assert!(both > 20, "{locale:?}: {both} bands with text on both sides");
+    assert!(checked > 20, "{locale:?}: {checked} bands with text on both sides and both pieces justified");
+  }
+}
+
+/// Every piece beside the sign but the paragraph's last line is justified: its outer edge on the
+/// column's edge (within 1 px), its inner edge the gap from the outline (within a grid step). A piece
+/// justification could not fill within `Around::justify_max` stays start-aligned — flush on its outer
+/// side for a left piece, at the gap for a right one — and at most 15 % of pieces are like that in
+/// Chinese. English has only its spaces to stretch (no hyphenation, no letter spacing by default), and
+/// a piece beside the sign holds a handful of words, so at the default cap of a quarter em per gap more
+/// than a third of its pieces stay start-aligned: bounded at 40 %.
+#[test]
+fn pieces_beside_the_sign_are_flush_on_both_edges() {
+  for locale in lab::i18n::Locale::ALL {
+    let mut ui = open();
+    gallery::update(&mut ui.state, Msg::Locale(locale));
+    let mut t = 3.0;
+    let (mut pieces, mut limited) = (0, 0);
+    for i in 0..20 {
+        let (x, y) = (-60.0 + (i % 5) as f32 * 120.0, -40.0 + (i / 5) as f32 * 110.0);
+        gallery::update(&mut ui.state, Msg::Film(FMsg::Obj(x, y)));
+        ui.relayout();
+        for _ in 0..30 { t += 1.0 / 60.0; ui.tick(t); ui.frame_drawn(); }
+        let (w, h) = ui.logical_size(); let gap = ui.state.film.gap * film::geo(w, h).k;
+        let s = ui.node("film/c06/sign").expect("sign").rect;
+        let body = ui.node("film/c06/body").expect("body").inner;
+        let sil = film::sign_outline(s.x - body.x, s.y - body.y, s.w / film::SIGN_W);
+        let lines = ui.line_boxes("film/c06/body");
+        let step = crate_step() + 0.5;
+        for (k, m) in lines.iter().enumerate() {
+            if k + 1 == lines.len() || m.w <= 0.0 { continue; }
+            let Some((a, b)) = sil.span(m.y - body.y, m.bottom() - body.y) else { continue };
+            let (a, b) = (a + body.x, b + body.x);
+            let (outer, inner, left) = if m.right() <= a + 0.5 { (m.x - body.x, a - m.right(), true) }
+                else if m.x >= b - 0.5 { (body.x + body.w - m.right(), m.x - b, false) }
+                else { continue };
+            pieces += 1;
+            let at = format!("{locale:?} position {i} ({x}, {y}), {} piece at y {:.0} ({:.1}..{:.1})", if left { "left" } else { "right" }, m.y, m.x, m.right());
+            if outer.abs() <= 1.0 && (inner - gap).abs() <= step { continue; }
+            // Start-aligned: the start edge is where it belongs, the other is short of it.
+            let (start, end) = if left { (outer, inner - gap) } else { (inner - gap, outer) };
+            assert!(start.abs() <= if left { 1.0 } else { step } && end > 0.0, "{at}: {outer:.1} px from the column's edge, {inner:.1} from the outline (gap {gap:.1})");
+            limited += 1;
+        }
+    }
+    assert!(pieces > 40, "{locale:?}: {pieces} pieces beside the sign");
+    let most = if locale == lab::i18n::Locale::En { 40 } else { 15 };
+    assert!(limited * 100 <= pieces * most, "{locale:?}: {limited} of {pieces} pieces beside the sign are start-aligned");
+    eprintln!("{locale:?}: {limited} of {pieces} pieces beside the sign start-aligned");
   }
 }
 
