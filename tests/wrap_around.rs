@@ -122,10 +122,10 @@ fn the_clearance_is_the_same_on_both_sides() {
 /// Every piece beside the sign but the paragraph's last line is justified: its outer edge on the
 /// column's edge (within 1 px), its inner edge the gap from the outline (within a grid step). A piece
 /// justification could not fill within `Around::justify_max` stays start-aligned — flush on its outer
-/// side for a left piece, at the gap for a right one — and at most 15 % of pieces are like that in
-/// Chinese. English has only its spaces to stretch (no hyphenation, no letter spacing by default), and
-/// a piece beside the sign holds a handful of words, so at the default cap of a quarter em per gap more
-/// than a third of its pieces stay start-aligned: bounded at 40 %.
+/// side for a left piece, at the gap for a right one — and at most 15 % of pieces are like that, in
+/// both languages. English stretches its spaces up to a quarter em, then its letters up to
+/// `wrap::TRACK_MAX_EM`, and a piece that still falls short takes part of the next word with a hyphen
+/// (`Around::hyphenate`, Liang's en-US patterns).
 #[test]
 fn pieces_beside_the_sign_are_flush_on_both_edges() {
   for locale in lab::i18n::Locale::ALL {
@@ -161,10 +161,30 @@ fn pieces_beside_the_sign_are_flush_on_both_edges() {
         }
     }
     assert!(pieces > 40, "{locale:?}: {pieces} pieces beside the sign");
-    let most = if locale == lab::i18n::Locale::En { 40 } else { 15 };
+    let most = 15;
     assert!(limited * 100 <= pieces * most, "{locale:?}: {limited} of {pieces} pieces beside the sign are start-aligned");
     eprintln!("{locale:?}: {limited} of {pieces} pieces beside the sign start-aligned");
   }
 }
 
 fn crate_step() -> f32 { lab::wrap::STEP }
+
+#[test]
+fn english_pieces_are_hyphenated_where_the_patterns_allow() {
+    assert_eq!(lab::wrap::hyphen_points("hyphenation"), vec![2, 6, 7]); // hy-phen-a-tion
+    assert!(lab::wrap::hyphen_points("the").is_empty() && lab::wrap::hyphen_points("naïve").is_empty());
+    assert!(!lab::wrap::hyphenated_at("out-line", 3) && lab::wrap::hyphenated_at("outline", 3));
+    // Somewhere in the twenty positions a line beside the sign ends in a hyphen, drawn as a glyph.
+    let mut ui = open();
+    gallery::update(&mut ui.state, Msg::Locale(lab::i18n::Locale::En));
+    let mut t = 3.0;
+    let mut found = 0;
+    for i in 0..20 {
+        let (x, y) = (-60.0 + (i % 5) as f32 * 120.0, -40.0 + (i / 5) as f32 * 110.0);
+        gallery::update(&mut ui.state, Msg::Film(FMsg::Obj(x, y)));
+        ui.relayout();
+        for _ in 0..30 { t += 1.0 / 60.0; ui.tick(t); ui.frame_drawn(); }
+        found += ui.hyphenated_lines("film/c06/body");
+    }
+    assert!(found > 0, "no hyphenated line in twenty positions");
+}
