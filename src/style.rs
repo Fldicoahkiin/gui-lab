@@ -121,21 +121,20 @@ pub enum Material {
     Print = 4,
     Lino = 5,
     Glitch = 6,
-    Xray = 7,
     /// The intermediate images made visible: the signed nearness as contour bands (warm inside the
     /// ink, cool outside), the outline itself, and the looseness as a tint. A view of the machinery,
     /// so it has its own look at rest.
-    Near = 8,
+    Near = 7,
 }
-pub const MATERIAL_COUNT: usize = 9;
+pub const MATERIAL_COUNT: usize = 8;
 pub const MATERIALS: [(Material, &str); MATERIAL_COUNT] = [
     (Material::Plain, "plain"), (Material::Dot, "dot"), (Material::Halftone, "halftone"), (Material::Ascii, "ascii"), (Material::Print, "print"),
-    (Material::Lino, "lino"), (Material::Glitch, "glitch"), (Material::Xray, "xray"), (Material::Near, "near"),
+    (Material::Lino, "lino"), (Material::Glitch, "glitch"), (Material::Near, "near"),
 ];
 impl Material {
     /// Whether the material has a time term that moves loose things by itself (glitch's held rows,
-    /// xray's travelling dashes): while something is loose under it, frames keep coming.
-    pub fn time_varying(self) -> bool { matches!(self, Material::Glitch | Material::Xray) }
+    /// while something is loose under it, frames keep coming.
+    pub fn time_varying(self) -> bool { matches!(self, Material::Glitch) }
     pub fn id(self) -> u8 { self as u8 }
     pub fn from_id(i: u8) -> Material { MATERIALS[(i as usize).min(MATERIAL_COUNT - 1)].0 }
     pub fn name(self) -> &'static str { MATERIALS[self as usize].1 }
@@ -161,7 +160,6 @@ pub const MAT_PARAMS: [&[MatParam]; MATERIAL_COUNT] = [
     &[mp("纸纹", 0.0, 1.0, 0.05, 2, "", 0.6), mp("套印错位", 0.0, 6.0, 0.25, 2, "px", 1.5), mp("斑点", 0.0, 1.0, 0.05, 2, "", 0.6), mp("洇开", 0.0, 10.0, 0.5, 1, "px", 3.0)],
     &[mp("刻痕", 0.0, 1.0, 0.05, 2, "", 0.6), mp("刻带", 2.0, 40.0, 1.0, 0, "px", 12.0), mp("刀长", 2.0, 40.0, 1.0, 0, "px", 12.0), mp("刀距", 2.0, 16.0, 0.5, 1, "px", 7.0), mp("抖动", 0.0, 1.0, 0.05, 2, "", 0.4)],
     &[mp("行高", 1.0, 40.0, 1.0, 0, "px", 6.0), mp("位移", 0.0, 200.0, 2.0, 0, "px", 48.0), mp("色差", 0.0, 30.0, 0.5, 1, "px", 6.0), mp("保持", 16.0, 500.0, 2.0, 0, "ms", 90.0), mp("块", 4.0, 120.0, 2.0, 0, "px", 28.0)],
-    &[mp("线宽", 0.5, 4.0, 0.25, 2, "px", 1.5), mp("填充", 0.0, 1.0, 0.02, 2, "", 0.22), mp("等距线", 2.0, 32.0, 1.0, 0, "px", 7.0), mp("虚线", 2.0, 24.0, 1.0, 0, "px", 6.0)],
     &[mp("间距", 1.5, 12.0, 0.5, 1, "px", 3.0), mp("填充", 0.0, 1.0, 0.05, 2, "", 0.25)],
 ];
 
@@ -437,7 +435,7 @@ fn with(m: Material, vals: &[(usize, f32)]) -> MaterialParams {
 }
 
 /// The twelve presets, in the order of DESIGN.md §4.
-pub fn styles() -> [Style; 10] {
+pub fn styles() -> [Style; 9] {
     use gaze::*;
     let off = Gaze::default();
     let base = |name, hash, th: Theme, material: Material| Style {
@@ -457,9 +455,6 @@ pub fn styles() -> [Style; 10] {
             ..base("Glitch", "glitch", GLITCH, Material::Glitch) },
         Style { pic: PicFx { pitch: 7.0, levels: 6.0, colour: colour::TWO as f32, tint_a: [0.085, 0.075, 0.07], tint_b: [0.925, 0.886, 0.792], ground: 0.0, follow: 1.0, gamma: 0.55, ..PicFx::with_set(set::STROKE) },
             ..base("Metamorphosis Linocut", "linocut", CREAM, Material::Lino) },
-        Style { gaze: Gaze { mode: GazeMode::All, kinds: LEADER | INDEX, density: 10.0, draw_ms: 420.0, colour: COOL.accent, only_marked: true },
-            pic: PicFx { pitch: 5.0, levels: 6.0, colour: colour::GIVEN as f32, tint_a: COOL.accent, ground: 0.1, ..PicFx::with_set(set::LINES) },
-            ..base("Transparent Electronics", "transparent", COOL, Material::Xray) },
         Style { gaze: Gaze { mode: GazeMode::All, kinds: LEADER | INDEX | RULER, density: 12.0, draw_ms: 380.0, colour: MANUAL.ink, only_marked: true },
             pic: PicFx { pitch: 4.0, levels: 6.0, colour: colour::THEME_INK as f32, ground: 1.0, ..PicFx::with_set(set::DIAGONAL) },
             ..base("Tech-Manual", "tech-manual", MANUAL, Material::Plain) },

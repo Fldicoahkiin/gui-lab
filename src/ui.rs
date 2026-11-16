@@ -347,7 +347,7 @@ pub struct Ui<S, M> {
     caret_on: bool,
     /// Some drawn instance holds a static looseness under a time-varying material (which moves it).
     static_loose: bool,
-    /// The material clock: time terms of materials (glitch's hold, xray's dashes, dot's drift) read it.
+    /// The material clock: time terms of materials (glitch's hold, dot's drift) read it.
     /// It only runs while something moves, so a page at rest is a still image.
     mclock: f32,
     /// The ground clock, and whether it runs (see `ground_clock`).
@@ -2450,6 +2450,7 @@ impl<S, M: Clone> Ui<S, M> {
                             g.paint[0] *= p.tone;
                             g.paint[1] = g.paint[1].max(p.accent);
                             g.paint[2] *= p.alpha;
+                            if p.hue >= 0.0 { g.look[1] = p.hue.round().min(2.0); }
                             true
                         });
                     }

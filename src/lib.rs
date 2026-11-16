@@ -76,8 +76,8 @@ mod web {
         r.set_particle_tier(crate::render::particle_tier(&adapter));
         for (id, pw, ph, px) in demo::pictures() { r.set_picture(id, pw, ph, &px); }
         let mut ui = gallery::new_ui(crate::text::with_geist(crate::text::bundled(sans, pixel, mono), crate::text::geist_bytes()), w, h, scale);
-        // The film is the landing page; any other page is one hash away (`#gallery` is the gallery's first).
-        let hash = if hash.trim_start_matches('#').is_empty() { "film".to_owned() } else { hash };
+        // The Body scene is the landing page; any other page is one hash away (`#gallery` is the gallery's first, `#lab` the Lab).
+        let hash = if hash.trim_start_matches('#').is_empty() { "body".to_owned() } else { hash };
         if ui.state.route(&hash) { ui.relayout(); }
         ui.perf_mut().backend = backend_name(adapter.get_info().backend).into();
         ui.perf_mut().adapter = adapter.get_info().name;

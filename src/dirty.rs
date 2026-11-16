@@ -59,7 +59,7 @@ pub fn reach(m: Material, look: &Look, s: f32) -> f32 {
     let p = |i: usize| look.params[m as usize].0[i];
     let base = 2.0 + 10.0 * s; // the dot ground's cells read the nearness at their centre
     base + match m {
-        Material::Plain | Material::Xray | Material::Near => 4.0 * s,
+        Material::Plain | Material::Near => 4.0 * s,
         Material::Dot => 2.0 * look.fx.pitch * s + 40.0 * look.fx.glitch * s,
         Material::Halftone => 2.0 * p(0) * s + p(2) * s,
         Material::Ascii => 2.0 * p(0) * s,
@@ -69,8 +69,8 @@ pub fn reach(m: Material, look: &Look, s: f32) -> f32 {
     }
 }
 
-/// Whether a material reads the material clock where things are loose (glitch's rows, xray's dashes).
-fn clocked(m: Material) -> bool { matches!(m, Material::Glitch | Material::Xray) }
+/// Whether a material reads the material clock where things are loose (glitch's rows).
+fn clocked(m: Material) -> bool { matches!(m, Material::Glitch) }
 
 /// The materials in use: the global one and every override.
 fn materials(i: &Inputs) -> Vec<Material> {

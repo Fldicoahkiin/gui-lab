@@ -83,10 +83,11 @@ pub enum Content {
 pub struct GlyphAt { pub i: usize, pub n: usize, pub x: f32, pub y: f32, pub w: f32, pub h: f32, pub span: [f32; 4] }
 /// How one glyph is drawn instead of where the layout put it: moved by (dx, dy) logical px, turned by
 /// `angle` (radians, clockwise), scaled by `sx`, `sy` about its centre; its tone and alpha multiplied,
-/// its accent raised to at least `accent`. Alpha 0 leaves it out. The glyph keeps its true outline.
+/// its accent raised to at least `accent`, drawn in accent `hue` (0, 1, 2; negative keeps the text's).
+/// Alpha 0 leaves it out. The glyph keeps its true outline.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Pose { pub dx: f32, pub dy: f32, pub angle: f32, pub sx: f32, pub sy: f32, pub tone: f32, pub alpha: f32, pub accent: f32 }
-impl Default for Pose { fn default() -> Self { Self { dx: 0.0, dy: 0.0, angle: 0.0, sx: 1.0, sy: 1.0, tone: 1.0, alpha: 1.0, accent: 0.0 } } }
+pub struct Pose { pub dx: f32, pub dy: f32, pub angle: f32, pub sx: f32, pub sy: f32, pub tone: f32, pub alpha: f32, pub accent: f32, pub hue: f32 }
+impl Default for Pose { fn default() -> Self { Self { dx: 0.0, dy: 0.0, angle: 0.0, sx: 1.0, sy: 1.0, tone: 1.0, alpha: 1.0, accent: 0.0, hue: -1.0 } } }
 /// A text element's glyph poses (`El::pose`): asked once per glyph each time the scene is made, never
 /// for layout, so moving glyphs costs no layout or shaping.
 pub type GlyphPose = Rc<dyn Fn(GlyphAt) -> Pose>;
