@@ -685,6 +685,8 @@ impl<S, M: Clone> Ui<S, M> {
         if !p.around.is_some_and(|a| a.hyphenate) { return 0; }
         self.text.line_ends(p).into_iter().filter(|&e| crate::wrap::hyphenated_at(p.s, e)).count()
     }
+    /// The glyph atlas the instances sample (coverage and signed distance per texel), for `morph::cells`.
+    pub fn atlas(&self) -> &[u8] { &self.text.pixels }
     pub fn instances_of(&self, key: &str) -> Vec<Instance> {
         let Some(root) = self.nodes.iter().position(|n| n.key == key) else { return vec![] };
         (0..self.page_len).filter(|&i| within(&self.nodes, self.owners[i].0, root)).map(|i| self.scene.instances[*self.lifted.get(&i).unwrap_or(&i)]).collect()
@@ -2186,7 +2188,7 @@ impl<S, M: Clone> Ui<S, M> {
                 let mut h = DefaultHasher::new();
                 (o.cols, o.rows, r.w.to_bits(), r.h.to_bits()).hash(&mut h);
                 // Where it is in its own box, not on the page: scrolling it sends nothing.
-                for x in &insts { for v in [x.rect[0] - r.x * s, x.rect[1] - r.y * s, x.rect[2], x.rect[3]].iter().chain(&x.uv).chain(&x.paint[..3]).chain(&[x.extra[0]]) { v.to_bits().hash(&mut h); } }
+                for x in &insts { for v in [x.rect[0] - r.x * s, x.rect[1] - r.y * s, x.rect[2], x.rect[3]].iter().chain(&x.uv).chain(&x.paint[..3]).chain(&[x.extra[0]]).chain(&x.xf) { v.to_bits().hash(&mut h); } }
                 h.finish()
             };
             if self.outlines.get(&nodes[i].key) == Some(&sig) { continue; }
@@ -2592,7 +2594,7 @@ impl<S, M: Clone> Ui<S, M> {
             }
             if let Some(r) = self.decodes.get_mut(&key) && r.plan.is_none() && !insts.is_empty() {
                 let fine = spec.tiers.last().copied().unwrap_or(4.0) * s;
-                let cells: Vec<(f32, f32)> = morph::cells(&insts, fine.round().max(1.0), &self.text.pixels).into_iter().filter(|c| c.cover > 0.02).map(|c| (c.x, c.y)).collect();
+                let cells: Vec<(f32, f32)> = morph::outline_cells(&insts, fine.round().max(1.0), &self.text.pixels).into_iter().filter(|c| c.cover > 0.02).map(|c| (c.x, c.y)).collect();
                 r.plan = Some(spec.plan(&cells, s));
             }
             present.insert(key, insts);
@@ -2603,7 +2605,7 @@ impl<S, M: Clone> Ui<S, M> {
             let ghost = self.decode_last.remove(&k).unwrap_or_default();
             let spec = self.decodes.get(&k).map(|r| r.spec.clone()).unwrap_or_default();
             let (fine, atlas) = (spec.tiers.last().copied().unwrap_or(4.0) * s, &self.text.pixels);
-            let cells: Vec<(f32, f32)> = morph::cells(&ghost, fine.round().max(1.0), atlas).into_iter().filter(|c| c.cover > 0.02).map(|c| (c.x, c.y)).collect();
+            let cells: Vec<(f32, f32)> = morph::outline_cells(&ghost, fine.round().max(1.0), atlas).into_iter().filter(|c| c.cover > 0.02).map(|c| (c.x, c.y)).collect();
             let plan = spec.plan(&cells, s);
             self.decodes.insert(k, DecodeRun { start: now, reverse: true, spec: Decode { hold: None, ..spec }, plan: Some(plan), ghost });
         }
