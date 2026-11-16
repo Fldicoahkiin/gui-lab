@@ -28,7 +28,7 @@ Start with AGENTS.md (the mental model, the ten things you write, the rules, how
 
 ## Lab
 
-The Lab (`#lab`) is a grid of small live experiments, one file each in `examples/lab/`, written against the public API (`lab::experiment::Experiment`); each has a page `#lab-<name>` with its formula and parameters (registry.json `experiments`).
+The Lab (`#lab`) is a grid of small live experiments, one file each in `examples/lab/`, written against the public API (`lab::experiment::Experiment`); each has a page `#lab-<name>` with its formula and parameters (registry.json `experiments`). Each piece fills a 4:3 stage; the numbers open under `[ params ]`; seen cells run every frame (reduced motion: they rest).
 
 - [Lumen](docs/site/en/lab-lumen.md): light on text, tone by distance, outlines untouched (`El::pose`)
 - [Contours](docs/site/en/lab-contours.md): iso-lines of noise plus a pointer bump (`field::Grid::contours`)
@@ -40,6 +40,7 @@ The Lab (`#lab`) is a grid of small live experiments, one file each in `examples
 - [Orbit](docs/site/en/lab-orbit.md): Kepler orbits with pointer attraction
 - [Spring](docs/site/en/lab-spring.md): the gesture spring, dragged and thrown
 - [Stack](docs/site/en/lab-stack.md): the card stack in the lab's look
+- [Body](docs/site/en/scene-body.md): the first scene (`#body`, `examples/body.rs`): a passage gathers into a turning body of its own glyphs and back; two rest states, glyph count conserved
 - [Decode](src/decode.rs): `El::decode`, blocks over the true outline resolving coarse to fine (`#decode`)
 
 ## Pages

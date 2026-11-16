@@ -2,6 +2,17 @@
 
 按 DESIGN.md §7 的步骤记。Each step of DESIGN.md §7.
 
+## 16 — 基础的收尾、实验室的墙、形体 · Foundation leftovers, the Lab as a wall, Body
+
+- 取样看变换：`morph::cover_at` 把点按实例自己的变换反算回盒子里，`cells`、`ink_bounds` 用转过的外接框，摆了姿态、转过的字从它画在的地方松开，遮罩和解码也在那里。Sampling honours `xf` and glyph poses.
+- 角标在指针到的那一帧就落在目标上（原来每帧追过去，总落后一段滑行），只有 70 ms 的收拢和淡入。Hover and focus marks land in the pointer's frame.
+- 透镜按第一性原理只碰可以松开、没有被指针操作的图片和三维元素，像波前一样在第一遍按实例加；松开度只属于实例自己的墨（墨压过别人的近度圈），不再漏到旁边的装饰上。The lens touches only pictures and 3D elements that may loosen and are not being operated; looseness no longer spills onto neighbours.
+- 浮动窗口拖动、甩出、滑到角上加进了 `check` 的部分重画对比（每种材质，两种 2 倍缩放）。The floating box in the partial-redraw check.
+- 解码按轮廓的覆盖算、不看颜色：用底色填的对话框里面在最细一档也被盖住。Ground-toned fills count as coverage in decode.
+- DESIGN.md 里删掉了已经删除的材质（金属、液体、拼贴）的旧说法。Old mentions of removed materials cleaned up.
+- 实验室：舞台占格子的七成以上、作品填满，公式一行，数字收进 `[ params ]`；看得见的格子一直走、滚出去停（减少动态效果时照旧静止）；每格都重做到填满舞台、指针下出现那种蓝；解码的分层视图改成斜看的平面、各带引线和标签。The Lab as a wall of living pieces.
+- 形体（`#body`，第一个场景，`examples/body.rs`）：一段文字聚成由它自己的字组成、慢慢转动的发光形体，再回到文字；两种静止、字数守恒、石头和云两种距离场、拖动有惯性、指针处开口读到原文、边缘掉下预算里的小点。Body: a passage that gathers into a turning body of its own glyphs.
+
 ## 15 — 场、实验室、解码过渡、范围缩小、帧预算 · Fields, the Lab, decode, a narrower scope, the frame budget
 
 - 实例自己的变换（`Instance::xf`：转、缩放、斜切，绕自己的中心），字形的姿态（`El::pose`），所以字可以沿路径、包在球上、被光照亮，轮廓不变。Per-instance transforms and glyph poses.
