@@ -111,6 +111,9 @@ pub struct Node<M> {
     on_wheel: Option<crate::el::OnWheel<M>>,
     on_move: Option<crate::el::OnMove<M>>,
     guide: Option<Rc<Vec<(f32, f32)>>>,
+    on_visible: Option<crate::el::OnVisible<M>>,
+    on_outline: Option<crate::el::Outline<M>>,
+    decode: Option<crate::decode::Decode>,
     /// Drawn as a skeleton (`El::skeleton`, inherited).
     pub skeleton: bool,
     /// The box layout gave it, relative to its parent (scrolling does not change it).
@@ -128,6 +131,7 @@ impl<M> Node<M> {
             Content::Text { .. } => "text",
             Content::Picture { .. } => "image",
             Content::Scene3d(_) => "mesh",
+            Content::Canvas(_) => "drawing",
             Content::None if self.focusable || self.on_press.is_some() || self.on_drag.is_some() => "control",
             Content::None if self.fill.is_some() || self.border.is_some() => "shape",
             Content::None => "box",
@@ -419,6 +423,16 @@ pub struct Ui<S, M> {
     shed_owed: HashMap<String, f32>,
     field_marks: HashMap<String, Vec<(f32, f32)>>,
     motes_made: u32,
+    /// What each `on_visible` element was last told, and each `on_outline` element's last outline.
+    seen: HashMap<String, bool>,
+    outlines: HashMap<String, u64>,
+    /// Messages the runtime itself has to send after a layout or paint (visibility, outlines).
+    queued: Vec<M>,
+    flushing: bool,
+    /// Decode transitions running (by key), and each decoding element's instances as last painted
+    /// (what its disappearance plays over).
+    decodes: HashMap<String, DecodeRun>,
+    decode_last: HashMap<String, Vec<Instance>>,
     /// The renderer can simulate particles on the GPU (it says so on every draw).
     particle_gpu: bool,
 }
@@ -603,7 +617,7 @@ impl<S, M: Clone> Ui<S, M> {
             tree: TaffyTree::new(), tids: HashMap::new(), mkeys: HashMap::new(), virt_views: HashMap::new(), virt_made: HashMap::new(),
             scrolling: Scrolling::default(), touch: None, touches: HashSet::new(), touching: false, fling: None, over: HashMap::new(), motion: HashMap::new(), scroll_paint: false, event_t: None,
             recs: HashMap::new(), recomps: HashMap::new(), slides: HashMap::new(), no_recompose: false,
-            meshes: crate::mesh::Library::default(), mesh_hover: None, move_over: None, particle_gpu: false, motes: vec![], shed_at: HashMap::new(), shed_owed: HashMap::new(), field_marks: HashMap::new(), motes_made: 0,
+            meshes: crate::mesh::Library::default(), mesh_hover: None, move_over: None, particle_gpu: false, motes: vec![], shed_at: HashMap::new(), shed_owed: HashMap::new(), field_marks: HashMap::new(), seen: HashMap::new(), outlines: HashMap::new(), decodes: HashMap::new(), decode_last: HashMap::new(), queued: vec![], flushing: false, motes_made: 0,
         };
         ui.resize(w, h, scale);
         ui
@@ -837,7 +851,7 @@ impl<S, M: Clone> Ui<S, M> {
             || self.run.is_some() || !self.flows.is_empty() || !self.ghosts.is_empty() || self.animating
             || self.marks_moving || now < self.gaze_until || self.fling.is_some() || !self.over.is_empty()
             || self.static_loose || !self.recomps.is_empty() || !self.slides.is_empty() || self.motion_alive(now)
-            || self.motes_moving()
+            || self.motes_moving() || self.decodes.values().any(|d| d.spec.hold.is_none())
     }
     /// Whether some scroll node's trace (DESIGN.md §1.8.3) is still showing or settling at `now`.
     fn motion_alive(&self, now: f32) -> bool {
@@ -963,6 +977,7 @@ impl<S, M: Clone> Ui<S, M> {
 
     /// Advance the clock to `t` seconds; the marks glide toward their target.
     pub fn tick(&mut self, t: f32) {
+        crate::budget::begin_frame();
         let dt = (t - self.now).clamp(0.0, 0.1);
         // The material clock runs only while something was moving.
         if self.moving { self.mclock += dt; }
@@ -1013,6 +1028,7 @@ impl<S, M: Clone> Ui<S, M> {
         if self.marks_moving { self.dirty = true; }
         self.moving = self.field_moving_at(t);
         self.ground_moving = self.ground_moving_at(t);
+        self.flush();
     }
 
     /// A fling going on and pulls springing back (it paints what moved; the result is whether the caller
@@ -1238,9 +1254,15 @@ impl<S, M: Clone> Ui<S, M> {
         if key != self.move_over && let Some(old) = self.move_over.take()
             && let Some(f) = self.nodes.iter().find(|n| n.key == old).and_then(|n| n.on_move.clone()) && let Some(m) = f(None) { self.send(m); }
         self.move_over = key;
-        if let (Some(i), Some((x, y))) = (now, at) && let Some(f) = self.nodes[i].on_move.clone() {
-            let r = self.nodes[i].rect;
-            if let Some(m) = f(Some((x - r.x, y - r.y))) { self.send(m); }
+        if let (Some(i), Some((x, y))) = (now, at) && let Some(f) = self.nodes[i].on_move.clone() && let Some(m) = f(Some(self.local_in(i, x, y))) { self.send(m); }
+    }
+    /// A window point (logical px) in element `i`'s own coordinates: from its top left, or in a
+    /// canvas's drawing space.
+    fn local_in(&self, i: usize, x: f32, y: f32) -> (f32, f32) {
+        let n = &self.nodes[i];
+        match &n.content {
+            Content::Canvas(d) => { let k = d.w / n.inner.w.max(1e-3); ((x - n.inner.x) * k, (y - n.inner.y) * k) }
+            _ => (x - n.rect.x, y - n.rect.y),
         }
     }
     /// The `scene3d` element under (x, y) with a pick handler, and the copy there (logical px).
@@ -1265,9 +1287,17 @@ impl<S, M: Clone> Ui<S, M> {
     /// used when it still exists, so a drag follows an element that moves.
     fn drag(&mut self, phase: Phase, x: f32, y: f32) {
         let Some(c) = &mut self.capture else { return };
-        if let Some(n) = self.nodes.iter().find(|n| n.key == c.key) { c.rect = n.rect; }
+        let at = self.nodes.iter().position(|n| n.key == c.key);
+        if let Some(i) = at { c.rect = self.nodes[i].rect; }
         let r = c.rect;
-        let d = Drag { phase, x: x - r.x, y: y - r.y, w: r.w, h: r.h, dx: x - c.start.0, dy: y - c.start.1 };
+        let mut d = Drag { phase, x: x - r.x, y: y - r.y, w: r.w, h: r.h, dx: x - c.start.0, dy: y - c.start.1 };
+        // A canvas is dragged in its drawing's space.
+        if let Some(i) = at && let Content::Canvas(dr) = &self.nodes[i].content {
+            let inner = self.nodes[i].inner;
+            let k = dr.w / inner.w.max(1e-3);
+            d = Drag { phase, x: (x - inner.x) * k, y: (y - inner.y) * k, w: dr.w, h: dr.h, dx: d.dx * k, dy: d.dy * k };
+        }
+        let Some(c) = &self.capture else { return };
         if let Some(m) = (c.handler)(d) { self.send(m); }
     }
     pub fn pointer_leave(&mut self) {
@@ -1464,7 +1494,7 @@ impl<S, M: Clone> Ui<S, M> {
             let a = n.access.clone().unwrap_or_default();
             let role = a.role.or_else(|| match &n.content {
                 Content::Text { .. } if !spoken => Some(Role::Text),
-                Content::Picture { .. } | Content::Scene3d(_) => Some(Role::Img),
+                Content::Picture { .. } | Content::Scene3d(_) | Content::Canvas(_) => Some(Role::Img),
                 Content::None if n.on_press.is_some() && n.focusable && !spoken => Some(Role::Button),
                 _ => None,
             });
@@ -1898,6 +1928,7 @@ impl<S, M: Clone> Ui<S, M> {
         // A morph whose two elements are both gone (the page changed under it) ends: nothing is left
         // to fly from or to.
         if let Some(r) = &self.run && !self.nodes.iter().any(|n| n.key == r.from || n.key == r.to) { self.run = None; self.paint(); }
+        self.flush();
     }
 
     /// Hold the morph in progress at a point of its flight, or let it go on from there. While held, the
@@ -2044,6 +2075,10 @@ impl<S, M: Clone> Ui<S, M> {
                         let w = known.width.or(avail.width.into_option()).unwrap_or(0.0);
                         Size { width: w, height: known.height.unwrap_or((w * ratio).round()) }
                     }),
+                    Some(Content::Canvas(d)) => taffy::compute_leaf_layout(input, style, none, |known, avail| {
+                        let w = known.width.or(avail.width.into_option()).unwrap_or(d.w);
+                        Size { width: w, height: known.height.unwrap_or((w * d.h / d.w.max(1e-3)).round()) }
+                    }),
                     _ => taffy::compute_leaf_layout(input, style, none, |_, _| Size::ZERO),
                 }
             };
@@ -2111,6 +2146,60 @@ impl<S, M: Clone> Ui<S, M> {
             inside[i] = if n.scroll { clip.intersect(&inner_border) } else if n.clips { clip.intersect(&n.rect) } else { clip };
             if n.virt.is_some() { self.virt_views.insert(n.key.clone(), n.rect.h); }
         }
+        // Who came into view or left it (`El::on_visible`); what is gone is forgotten, so it is told
+        // again when it comes back.
+        let keys: HashSet<&str> = self.nodes.iter().filter(|n| n.on_visible.is_some()).map(|n| n.key.as_str()).collect();
+        self.seen.retain(|k, _| keys.contains(k.as_str()));
+        for n in self.nodes.iter().filter(|n| n.on_visible.is_some()) {
+            let r = n.rect.intersect(&n.clip);
+            let v = !n.hidden && r.w > 0.0 && r.h > 0.0;
+            if self.seen.get(&n.key) != Some(&v) {
+                self.seen.insert(n.key.clone(), v);
+                if let Some(m) = n.on_visible.as_ref().and_then(|f| f(v)) { self.queued.push(m); }
+            }
+        }
+    }
+    /// Send what the runtime itself had to say after a layout or paint (visibility, outlines), then lay
+    /// out once for all of it.
+    fn flush(&mut self) {
+        if self.flushing || self.queued.is_empty() { return; }
+        self.flushing = true;
+        for _ in 0..4 {
+            if self.queued.is_empty() { break; }
+            for m in std::mem::take(&mut self.queued) { (self.update)(&mut self.state, m); }
+            self.relayout();
+        }
+        self.queued.clear();
+        self.flushing = false;
+    }
+    /// The true outlines asked for (`El::on_outline`): each subtree's coverage on its grid, sent only
+    /// when its instances changed.
+    fn outline_pass(&mut self) {
+        let s = self.scale;
+        for i in 0..self.nodes.len() {
+            let Some(o) = &self.nodes[i].on_outline else { continue };
+            let nodes = &self.nodes;
+            let insts: Vec<Instance> = self.scene.instances.iter().zip(&self.owners).filter(|(_, (k, _))| within(nodes, *k, i)).map(|(x, _)| *x)
+                .chain(self.unseen.iter().filter(|(k, _)| within(nodes, *k, i)).map(|(_, x)| *x)).collect();
+            let r = nodes[i].rect;
+            let sig = {
+                let mut h = DefaultHasher::new();
+                (o.cols, o.rows, r.w.to_bits(), r.h.to_bits()).hash(&mut h);
+                // Where it is in its own box, not on the page: scrolling it sends nothing.
+                for x in &insts { for v in [x.rect[0] - r.x * s, x.rect[1] - r.y * s, x.rect[2], x.rect[3]].iter().chain(&x.uv).chain(&x.paint[..3]).chain(&[x.extra[0]]) { v.to_bits().hash(&mut h); } }
+                h.finish()
+            };
+            if self.outlines.get(&nodes[i].key) == Some(&sig) { continue; }
+            self.outlines.insert(nodes[i].key.clone(), sig);
+            let mut g = crate::field::Grid::new(o.cols, o.rows, r.w, r.h);
+            for j in 0..g.rows { for k in 0..g.cols {
+                let (x, y) = g.node(k, j);
+                let (px, py) = ((r.x + x) * s, (r.y + y) * s);
+                let open = insts.iter().fold(1.0, |a, inst| a * (1.0 - morph::cover_at(inst, px, py, &self.text.pixels).min(1.0)));
+                g.v[j * g.cols + k] = 1.0 - open;
+            } }
+            if let Some(m) = (o.f)(Rc::new(g)) { self.queued.push(m); }
+        }
     }
 
     /// After a scroll offset changed: move everything (no layout) — unless a virtual list scrolled past
@@ -2126,6 +2215,7 @@ impl<S, M: Clone> Ui<S, M> {
         if past { self.relayout(); } else { self.place(); self.paint(); }
         self.scroll_paint = false;
         self.tell_scrolled();
+        self.flush();
     }
 
     /// Tell the state where the scroll nodes are (`on_scrolled`).
@@ -2277,6 +2367,7 @@ impl<S, M: Clone> Ui<S, M> {
             let mut sink = Sink { scene: &mut self.scene, owners: &mut self.owners, tags: &mut self.tags, unseen: &mut self.unseen, counters: &mut counters, latest: &mut latest, loose: &mut any_loose };
             let nk = { use std::hash::{Hash, Hasher}; let mut h = std::hash::DefaultHasher::new(); n.key.hash(&mut h); h.finish() };
             let text_born = self.text_births.get(&nk).copied();
+            let drawn = matches!(n.content, Content::Canvas(_));
             let mut put = |sink: &mut Sink, mut inst: Instance, id: u64, glyph: Option<u32>| {
                 inst.clip = clip;
                 // A negative push marks what fronts pass by whatever its element says (the caret, a
@@ -2288,7 +2379,8 @@ impl<S, M: Clone> Ui<S, M> {
                 // shows them later lets them condense as usual.
                 if hidden { inst.extra[3] = -1e4; sink.unseen.push((i, inst)); return; }
                 // What a morph shows has been there all along: it must not condense on top of its ramp.
-                let born = if role != 0 { *births.entry(id).or_insert(-1e4) }
+                // A drawing's marks change every frame: they are there at once, never condensing.
+                let born = if role != 0 || drawn { *births.entry(id).or_insert(-1e4) }
                            else { *births.entry(id).or_insert_with(|| self.births.get(&id).copied().or(if glyph.is_some() { text_born } else { None }).unwrap_or(if self.scroll_paint { -1e4 } else { now })) };
                 if glyph.is_some() { let e = text_births.entry(nk).or_insert(born); *e = e.min(born); }
                 inst.extra[3] = born;
@@ -2306,7 +2398,7 @@ impl<S, M: Clone> Ui<S, M> {
                 sink.owners.push((i, id));
                 sink.tags.push(tag);
             };
-            let shape = |p: Paint, bw: f32| Instance { rect: dev(n.rect), uv: [n.radius * s, 0.0, 0.0, 0.0], paint: [p.tone, p.accent, p.alpha, SHAPE], clip, extra: [bw * s, 0.0, 0.0, 0.0], look: [mat, p.hue as f32, (n.rect.y * s).round(), (n.rect.h * s).round().max(1.0)], resp };
+            let shape = |p: Paint, bw: f32| Instance { rect: dev(n.rect), uv: [n.radius * s, 0.0, 0.0, 0.0], paint: [p.tone, p.accent, p.alpha, SHAPE], clip, extra: [bw * s, 0.0, 0.0, 0.0], look: [mat, p.hue as f32, (n.rect.y * s).round(), (n.rect.h * s).round().max(1.0)], resp, xf: [0.0; 4] };
             // A skeleton (DESIGN.md §1.23): faint fills and borders, a bar for every line of text, a block
             // for every picture; its own identities, so the content that replaces it condenses in.
             if n.skeleton {
@@ -2322,7 +2414,7 @@ impl<S, M: Clone> Ui<S, M> {
                             put(&mut sink, block(bar, h * 0.5), ident(&n.key, u32::MAX - 32 - k as u32, 0), None);
                         }
                     },
-                    Content::Picture { .. } | Content::Scene3d(_) => put(&mut sink, block(n.inner, n.radius.max(4.0)), ident(&n.key, u32::MAX - 22, 0), None),
+                    Content::Picture { .. } | Content::Scene3d(_) | Content::Canvas(_) => put(&mut sink, block(n.inner, n.radius.max(4.0)), ident(&n.key, u32::MAX - 22, 0), None),
                     Content::None => {}
                 }
                 continue;
@@ -2330,7 +2422,7 @@ impl<S, M: Clone> Ui<S, M> {
             if let Some(p) = n.fill { put(&mut sink, shape(p, 0.0), ident(&n.key, u32::MAX, 0), None); }
             if let Some((w, p)) = n.border { put(&mut sink, shape(p, w), ident(&n.key, u32::MAX - 1, 0), None); }
             match &n.content {
-                Content::Text { line, paint, caret, weight, select, mark, .. } => {
+                Content::Text { line, paint, caret, weight, select, mark, pose, .. } => {
                     let proto = Instance { paint: [paint.tone, paint.accent, paint.alpha, 0.0], look: [mat, paint.hue as f32, (n.inner.y * s).round(), (line * s).round().max(1.0)], ..Default::default() };
                     let Some(para) = n.para() else { continue };
                     let wpx = weight * s;
@@ -2339,6 +2431,28 @@ impl<S, M: Clone> Ui<S, M> {
                     let rows = Some((clip[1], clip[3]));
                     let mut glyphs: Vec<(Instance, u32)> = vec![];
                     self.text.emit_in(para, n.origin(), proto, s, rows, |mut inst, glyph| { inst.extra[0] = wpx; glyphs.push((inst, glyph)); });
+                    // Glyphs drawn by their poses (on a path, a sphere, under a light): each keeps its
+                    // outline and is moved, turned and scaled as a whole (DESIGN.md §1.26).
+                    if let Some(f) = pose {
+                        let (ox, oy, bw, bh) = (n.inner.x, n.inner.y, n.inner.w, n.inner.h);
+                        let centre = |g: &Instance| ((g.rect[0] + g.rect[2] * 0.5) / s - ox, (g.rect[1] + g.rect[3] * 0.5) / s - oy);
+                        let span = glyphs.iter().fold([f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY], |b, (g, _)| { let (x, y) = centre(g); [b[0].min(x), b[1].min(y), b[2].max(x), b[3].max(y)] });
+                        let (mut k, count) = (0, glyphs.len());
+                        glyphs.retain_mut(|(g, _)| {
+                            let (x, y) = centre(g);
+                            let at = crate::el::GlyphAt { i: k, n: count, x, y, w: bw, h: bh, span };
+                            k += 1;
+                            let p = f(at);
+                            if p.alpha <= 0.004 { return false; }
+                            g.rect[0] += p.dx * s;
+                            g.rect[1] += p.dy * s;
+                            g.xf = Instance::turned(p.angle, p.sx, p.sy);
+                            g.paint[0] *= p.tone;
+                            g.paint[1] = g.paint[1].max(p.accent);
+                            g.paint[2] *= p.alpha;
+                            true
+                        });
+                    }
                     // A selection (the field's, while it has focus, or the read-only one) is drawn by
                     // nearness: each selected glyph again, under itself, with its outline moved out, so
                     // neighbouring glyphs' halos run together and follow the letters, not a box.
@@ -2380,7 +2494,7 @@ impl<S, M: Clone> Ui<S, M> {
                     }
                 }
                 Content::Picture { id, fx, .. } => {
-                    let inst = Instance { rect: dev(n.inner), uv: [0.0, 0.0, 1.0, 1.0], paint: [1.0, *fx as f32, 1.0, PICTURE], clip, extra: [0.0, *id as f32, 0.0, 0.0], look: [mat, 0.0, 0.0, 1.0], resp };
+                    let inst = Instance { rect: dev(n.inner), uv: [0.0, 0.0, 1.0, 1.0], paint: [1.0, *fx as f32, 1.0, PICTURE], clip, extra: [0.0, *id as f32, 0.0, 0.0], look: [mat, 0.0, 0.0, 1.0], resp, xf: [0.0; 4] };
                     put(&mut sink, inst, ident(&n.key, u32::MAX - 2, *id), None);
                     // The wipe is a half-plane source in the field, acting over the visible picture.
                     if let Some(x) = n.wipe && !hidden {
@@ -2394,8 +2508,31 @@ impl<S, M: Clone> Ui<S, M> {
                     let k = sink.scene.meshes.len();
                     let r = dev(n.inner);
                     sink.scene.meshes.push(crate::scene::MeshDraw { scene: sc.clone(), rect: r });
-                    let inst = Instance { rect: r, uv: [0.0, 0.0, 1.0, 1.0], paint: [sc.spec.outline.max(0.0) * s, sc.picture.unwrap_or(0) as f32, 1.0, MESH], clip, extra: [sc.picture.map_or(0.0, |_| 1.0), k as f32, 0.0, 0.0], look: [mat, 0.0, r[1], r[3].max(1.0)], resp };
+                    let inst = Instance { rect: r, uv: [0.0, 0.0, 1.0, 1.0], paint: [sc.spec.outline.max(0.0) * s, sc.picture.unwrap_or(0) as f32, 1.0, MESH], clip, extra: [sc.picture.map_or(0.0, |_| 1.0), k as f32, 0.0, 0.0], look: [mat, 0.0, r[1], r[3].max(1.0)], resp, xf: [0.0; 4] };
                     put(&mut sink, inst, ident(&n.key, u32::MAX - 5, 0), None);
+                }
+                Content::Canvas(d) => {
+                    // Each mark a shape with its true outline, in the drawing's space scaled to the box.
+                    let k = n.inner.w / d.w.max(1e-3) * s;
+                    let (ox, oy) = (n.inner.x * s, n.inner.y * s);
+                    // A drawing shows at most the budget's count of marks, evenly thinned (DESIGN.md §1.27).
+                    let stride = d.marks.len().div_ceil(crate::budget::cap().max(1)).max(1);
+                    for (j, m) in d.marks.iter().enumerate().step_by(stride) {
+                        let (rect, radius, xf, p) = match *m {
+                            crate::draw::Mark::Dot { x, y, r, paint } => {
+                                let rr = (r * k).max(0.5);
+                                ([ox + x * k - rr, oy + y * k - rr, rr * 2.0, rr * 2.0], rr, [0.0; 4], paint)
+                            }
+                            crate::draw::Mark::Line { a, b, w, paint } => {
+                                let (dx, dy) = ((b.0 - a.0) * k, (b.1 - a.1) * k);
+                                let (len, ww) = ((dx * dx + dy * dy).sqrt(), (w * k).max(0.5));
+                                let (cx, cy) = (ox + (a.0 + b.0) * 0.5 * k, oy + (a.1 + b.1) * 0.5 * k);
+                                ([cx - (len + ww) * 0.5, cy - ww * 0.5, len + ww, ww], ww * 0.5, Instance::turned(dy.atan2(dx), 1.0, 1.0), paint)
+                            }
+                        };
+                        let inst = Instance { rect, uv: [radius, 0.0, 0.0, 0.0], paint: [p.tone, p.accent, p.alpha, SHAPE], clip, look: [mat, p.hue as f32, rect[1], rect[3].max(1.0)], resp, xf, ..Default::default() };
+                        put(&mut sink, inst, ident(&n.key, j as u32 | 0x2000_0000, 0), None);
+                    }
                 }
                 Content::None => {}
             }
@@ -2434,7 +2571,67 @@ impl<S, M: Clone> Ui<S, M> {
         self.painted_phase = self.run.as_ref().map_or(0, |r| r.phase(now));
         // Ramps and flows apply from the first frame.
         self.animating = true;
+        self.outline_pass();
+        self.decode_pass();
         self.finish();
+    }
+    /// Start what appears and what went (DESIGN.md §1.28), and keep each decoding element's instances.
+    fn decode_pass(&mut self) {
+        let (now, s) = (self.now, self.scale);
+        let mut present: HashMap<String, Vec<Instance>> = HashMap::new();
+        for i in 0..self.nodes.len() {
+            let Some(spec) = &self.nodes[i].decode else { continue };
+            if self.nodes[i].hidden { continue; }
+            let nodes = &self.nodes;
+            let insts: Vec<Instance> = self.scene.instances[..self.page_len].iter().zip(&self.owners).filter(|(_, (k, _))| within(nodes, *k, i)).map(|(x, _)| *x).collect();
+            let key = nodes[i].key.clone();
+            match self.decodes.get_mut(&key) {
+                Some(r) if !r.reverse => { r.spec.hold = spec.hold; }
+                _ if !self.decode_last.contains_key(&key) => { self.decodes.insert(key.clone(), DecodeRun { start: now, reverse: false, spec: spec.clone(), plan: None, ghost: vec![] }); }
+                _ => {}
+            }
+            if let Some(r) = self.decodes.get_mut(&key) && r.plan.is_none() && !insts.is_empty() {
+                let fine = spec.tiers.last().copied().unwrap_or(4.0) * s;
+                let cells: Vec<(f32, f32)> = morph::cells(&insts, fine.round().max(1.0), &self.text.pixels).into_iter().filter(|c| c.cover > 0.02).map(|c| (c.x, c.y)).collect();
+                r.plan = Some(spec.plan(&cells, s));
+            }
+            present.insert(key, insts);
+        }
+        // What went: its last instances play the transition backwards.
+        let gone: Vec<String> = self.decode_last.keys().filter(|k| !present.contains_key(*k)).cloned().collect();
+        for k in gone {
+            let ghost = self.decode_last.remove(&k).unwrap_or_default();
+            let spec = self.decodes.get(&k).map(|r| r.spec.clone()).unwrap_or_default();
+            let (fine, atlas) = (spec.tiers.last().copied().unwrap_or(4.0) * s, &self.text.pixels);
+            let cells: Vec<(f32, f32)> = morph::cells(&ghost, fine.round().max(1.0), atlas).into_iter().filter(|c| c.cover > 0.02).map(|c| (c.x, c.y)).collect();
+            let plan = spec.plan(&cells, s);
+            self.decodes.insert(k, DecodeRun { start: now, reverse: true, spec: Decode { hold: None, ..spec }, plan: Some(plan), ghost });
+        }
+        self.decode_last = present;
+    }
+    /// Draw the decode transitions running now: hide what is not shown yet, the blocks over the rest.
+    fn paint_decodes(&mut self) {
+        let now = self.now;
+        self.decodes.retain(|_, r| r.spec.hold.is_some() || now - r.start < r.spec.duration_ms / 1000.0);
+        if self.decodes.is_empty() { return; }
+        let screen = [0.0, 0.0, self.size.0 * self.scale, self.size.1 * self.scale];
+        let mut pushed = vec![];
+        for (key, r) in &self.decodes {
+            let Some(plan) = &r.plan else { continue };
+            let p = ((now - r.start) / (r.spec.duration_ms / 1000.0).max(1e-3)).clamp(0.0, 1.0);
+            let u = r.spec.hold.unwrap_or(if r.reverse { 1.0 - p } else { p });
+            let at = self.nodes.iter().position(|n| &n.key == key);
+            let clip = at.map_or(screen, |i| { let c = self.nodes[i].clip; let s = self.scale; [c.x * s, c.y * s, c.right() * s, c.bottom() * s] });
+            if let Some(i) = at && !r.reverse && !plan.shows_content(u) {
+                for k in 0..self.page_len.min(self.owners.len()) { if within(&self.nodes, self.owners[k].0, i) { self.scene.instances[k].paint[2] = 0.0; } }
+            }
+            if r.reverse && plan.shows_content(u) { pushed.extend(r.ghost.iter().copied()); }
+            for b in plan.at(u) {
+                pushed.push(Instance { rect: [b.x, b.y, b.size, b.size], paint: [1.0, 1.0, 1.0, SHAPE], clip, extra: [0.0, 0.0, 0.0, -1e4], look: [0.0, b.hue as f32, b.y, b.size], resp: IGNORE, ..Default::default() });
+            }
+        }
+        for i in pushed { self.scene.push(i); }
+        self.dirty = true;
     }
 
     /// Whether motes are moving: shed marks in flight, or a flow field with speed.
@@ -2443,7 +2640,8 @@ impl<S, M: Clone> Ui<S, M> {
     pub fn motes(&self) -> &[crate::motes::Mote] { &self.motes }
     /// Move the motes by `dt` s (DESIGN.md §1.22); whether anything changed.
     fn step_motes(&mut self, dt: f32) -> bool {
-        use crate::motes::{FlowField, Mote, hash};
+        use crate::motes::{FlowField, Mote};
+        use crate::field::hash;
         let now = self.now;
         let mut changed = false;
         // Shedding: an element that moved since the last tick leaves marks along the way it went.
@@ -2471,7 +2669,8 @@ impl<S, M: Clone> Ui<S, M> {
             let k = owed.floor() as u32;
             self.shed_owed.insert(n.key.clone(), owed - k as f32);
             let paint = n.fill.unwrap_or(crate::el::Paint::INK);
-            for j in 0..k.min(400) {
+            // New marks come out of the frame budget (DESIGN.md §1.27).
+            for j in 0..crate::budget::grant(k as usize) as u32 {
                 let m = self.motes_made.wrapping_add(j);
                 // Somewhere on the element's edge, between where it was and where it is.
                 let (u, v, f) = (hash(m * 3 + 1), hash(m * 3 + 2), hash(m * 3 + 3));
@@ -2497,11 +2696,12 @@ impl<S, M: Clone> Ui<S, M> {
         }
         // Flow fields: their marks are made once per box size and move while the speed is above 0.
         let mut fields: Vec<String> = vec![];
-        for n in self.nodes.iter().filter(|n| n.flow_field.is_some() && !n.hidden) {
+        // Only fields that can be seen are stepped; each frame's marks come out of the budget.
+        for n in self.nodes.iter().filter(|n| n.flow_field.is_some() && !n.hidden && { let r = n.rect.intersect(&n.clip); r.w > 0.0 && r.h > 0.0 }) {
             let f: FlowField = n.flow_field.expect("filtered");
             fields.push(n.key.clone());
             let (w, h) = (n.rect.w, n.rect.h);
-            let want = f.count(w, h);
+            let want = crate::budget::grant(f.count(w, h));
             let marks = self.field_marks.entry(n.key.clone()).or_default();
             if marks.len() != want { *marks = (0..want).map(|i| FlowField::seed(i, w, h)).collect(); changed = true; }
             if f.speed > 0.0 && dt > 0.0 { for p in marks.iter_mut() { *p = f.advect(*p, w, h, dt); } changed = true; }
@@ -2517,7 +2717,7 @@ impl<S, M: Clone> Ui<S, M> {
         let now = self.now;
         let mote = |x: f32, y: f32, size: f32, p: crate::el::Paint, alpha: f32, clip: [f32; 4]| Instance {
             rect: [((x - size * 0.5) * s).round(), ((y - size * 0.5) * s).round(), (size * s).round().max(1.0), (size * s).round().max(1.0)],
-            uv: [size * s * 0.5, 0.0, 0.0, 0.0], paint: [p.tone, p.accent, alpha, SHAPE], clip, extra: [0.0, 0.0, 0.0, -1e4], look: [0.0, p.hue as f32, (y * s).round(), (size * s).max(1.0)], resp: IGNORE,
+            uv: [size * s * 0.5, 0.0, 0.0, 0.0], paint: [p.tone, p.accent, alpha, SHAPE], clip, extra: [0.0, 0.0, 0.0, -1e4], look: [0.0, p.hue as f32, (y * s).round(), (size * s).max(1.0)], resp: IGNORE, xf: [0.0; 4],
         };
         for n in self.nodes.iter().filter(|n| n.flow_field.is_some() && !n.hidden) {
             let (f, Some(marks)) = (n.flow_field.expect("filtered"), self.field_marks.get(&n.key)) else { continue };
@@ -2533,6 +2733,7 @@ impl<S, M: Clone> Ui<S, M> {
     fn finish(&mut self) {
         let t0 = crate::perf::now_ms();
         self.animate();
+        self.paint_decodes();
         self.paint_motes();
         // The page as animated, with its motes: what the hover marks are drawn over.
         self.body_len = self.scene.instances.len();
@@ -2568,7 +2769,7 @@ impl<S, M: Clone> Ui<S, M> {
         let backend = if p.backend.is_empty() { "?" } else { &p.backend };
         let last = p.frames.back().map(|f| f.1).unwrap_or_default();
         let lines: Vec<String> = if self.overlay == 1 {
-            vec![format!("{fps}  {:>5.1} ms  dirty {:>3.0}%  {} inst  {mat}  {backend}", sm.total[0], p.dirty * 100.0, self.scene.instances.len())]
+            vec![format!("{fps}  {:>5.1} ms  dirty {:>3.0}%  {} inst  budget {:.0}%  {mat}  {backend}", sm.total[0], p.dirty * 100.0, self.scene.instances.len(), crate::budget::usage().scale * 100.0)]
         } else {
             let row = |name: &str, v: [f32; 3]| format!("{name:<13}{:>7.2}{:>7.2}{:>7.2}", v[0], v[1], v[2]);
             vec![
@@ -2583,6 +2784,7 @@ impl<S, M: Clone> Ui<S, M> {
                 format!("dirty         {:>5.1}% of {}x{}  passes {}", p.dirty * 100.0, (self.size.0 * self.scale) as u32, (self.size.1 * self.scale) as u32, p.passes),
                 format!("instances     glyph {}  shape {}  picture {}  mesh {}", kinds[0], kinds[1], kinds[2], kinds[3]),
                 format!("particles     {parts}  {path}"),
+                { let b = crate::budget::usage(); format!("budget        {} / {} marks  asked {}  scale {:.2}", b.used, b.max, b.asked, b.scale) },
                 format!("tree          {} nodes  changed {}  layouts {}", self.nodes.len(), self.rebuilt, p.counters.layouts),
                 format!("text          {} cached  {} shaped  atlas {:.0}%", self.text.cached(), self.text.shaped(), self.text.atlas_use() * 100.0),
                 format!("textures      ~{:.0} MB  fronts {fronts}", p.tex_mb),
@@ -2638,7 +2840,7 @@ impl<S, M: Clone> Ui<S, M> {
     fn animate(&mut self) {
         self.scene.truncate(self.page_len);
         let now = self.now;
-        let active = self.run.is_some() || !self.flows.is_empty() || !self.recomps.is_empty() || !self.slides.is_empty();
+        let active = self.run.is_some() || !self.flows.is_empty() || !self.recomps.is_empty() || !self.slides.is_empty() || !self.decodes.is_empty();
         let hidden: HashSet<u64> = self.recomps.values().flat_map(|r| r.hide.iter().copied()).collect();
         // One more pass after the last animation ends puts every instance back as painted.
         // Parts in flight are drawn over the page, so they do not pass behind what is already there.
@@ -2761,6 +2963,11 @@ impl<S, M: Clone> Ui<S, M> {
         let (src, dst) = (self.collect(from), self.collect(to));
         if src.is_empty() || dst.is_empty() { return; }
         let pitch = (spec.lattice * self.scale).max(1.5);
+        // The tiles come out of the frame budget: its scale, and on the CPU path at most its count
+        // (DESIGN.md §1.27). A smaller count only makes the tiles larger.
+        let b = crate::budget::usage();
+        let spec = MorphSpec { count_max: (spec.count_max * b.scale).max(1.0), ..spec };
+        let cpu_cap = b.max as f32;
         // 3D elements emit from their surface (on the CPU path; the GPU's grid samples what the screen
         // shows); the rest of each side from the screen.
         let (es, ed) = (self.emitters(from), self.emitters(to));
@@ -2774,11 +2981,11 @@ impl<S, M: Clone> Ui<S, M> {
         let mut emit = vec![];
         let tiles = if let Some(g) = grid { morph::Tiles { particles: vec![], tile: g.a[2], tags: vec![] } }
         else if meshy {
-            let (lib, atlas, cap) = (&self.meshes, &self.text.pixels, spec.count_max);
+            let (lib, atlas, cap) = (&self.meshes, &self.text.pixels, spec.count_max.min(cpu_cap));
             let t = morph::tiles_with(mesh_side(&src, &es, 0, lib, atlas, cap), mesh_side(&dst, &ed, es.len() as u32, lib, atlas, cap), morph::ink_bounds(&src), morph::ink_bounds(&dst), pitch, &spec);
             for (key, sc, r) in es.iter().chain(&ed) { emit.push(Emitter { key: key.clone(), points: sc.surface(lib, surface_count(r, t.tile, cap), 0x51ab) }); }
             t
-        } else { morph::tiles(&src, &dst, pitch, &spec, &self.text.pixels) };
+        } else { morph::tiles(&src, &dst, pitch, &MorphSpec { count_max: spec.count_max.min(cpu_cap), ..spec }, &self.text.pixels) };
         let (loosen, flight) = (spec.loosen_ms / 1000.0 * (1.0 - k0), spec.duration_ms / 1000.0);
         let (t1, t2) = (now + loosen, now + loosen + flight);
         let id = next_run();
@@ -3248,6 +3455,10 @@ impl Inherit {
 /// An instance's `resp` that fronts pass by (see `Instance::resp`; the negative push tells `paint` to
 /// keep it).
 const IGNORE: [f32; 4] = [0.0, -1.0, 0.0, 0.0];
+/// A decode transition running over one element (DESIGN.md §1.28): forward when it appeared, backwards
+/// over its last instances when it went.
+struct DecodeRun { start: f32, reverse: bool, spec: crate::decode::Decode, plan: Option<crate::decode::Plan>, ghost: Vec<Instance> }
+use crate::decode::Decode;
 
 /// What the field may do to a node (DESIGN.md §1.15): how much looseness fronts may add (0 when it is
 /// ignored or only nudged; `legible_cap` for legible elements that loosen; else 1), how loose a press held
@@ -3458,6 +3669,7 @@ fn measure_key(c: &Content) -> u64 {
         Content::Picture { ratio, .. } => ratio.to_bits().hash(&mut h),
         // Sized by its style alone.
         Content::Scene3d(_) => 3u8.hash(&mut h),
+        Content::Canvas(d) => (d.h / d.w.max(1e-3)).to_bits().hash(&mut h),
         Content::None => 0u8.hash(&mut h),
     }
     h.finish()
@@ -3470,7 +3682,7 @@ fn measure_key(c: &Content) -> u64 {
 /// A virtual list's rows are built here, for what its viewport shows.
 #[allow(clippy::too_many_arguments)]
 fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], off: (bool, bool), flow: Option<(Rc<str>, usize)>, inh: Inherit, vx: &mut VirtCtx, built: &mut Built, nodes: &mut Vec<Node<M>>) -> usize {
-    let El { key, style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, annotate, gaze_scope, material, loosen, anchor, clips, calm, mut on_text, multiline, selectable, cursor, virt, access, ripple, mut on_pick, mut on_wheel, mut on_move, guide, skeleton, rtl, mut children } = el;
+    let El { key, style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, annotate, gaze_scope, material, loosen, anchor, clips, calm, mut on_text, multiline, selectable, cursor, virt, access, ripple, mut on_pick, mut on_wheel, mut on_move, guide, skeleton, rtl, on_visible, on_outline, decode, mut children } = el;
     let mut style = style;
     let mut inh = inh;
     if let Some(r) = rtl { inh.rtl = r; }
@@ -3530,7 +3742,7 @@ fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], of
         content, fill, border, radius, on_press, on_key, on_drag, on_blur, loose, wipe, bar, reveal, commit, modal, hidden, shift, shed, flow_field, flow: flow.clone(),
         mat: inh.code(), loosen: inh.loosen, annotate, scope: gaze_scope, anchor, clips, calm, on_text, multiline, selectable: inh.select, cursor,
         virt: virt_info, access, respond, legible, ripple: inh.scope.clone(), ripple_scope: ripple.container, recompose, recompose_always: is_text && ripple.recompose == Some(true), unframed: ripple.unframed, keyed,
-        on_pick, on_wheel, on_move, guide, skeleton: inh.skeleton, local: taffy::Layout::new(), tid: placeholder,
+        on_pick, on_wheel, on_move, guide, on_visible, on_outline, decode, skeleton: inh.skeleton, local: taffy::Layout::new(), tid: placeholder,
     });
     built.styles.push(style);
     built.kids.push(vec![]);

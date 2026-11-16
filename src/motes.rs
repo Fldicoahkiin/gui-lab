@@ -2,7 +2,9 @@
 //! element can shed them (`Shed`): they leave its box as it moves, fall and drift, and fade out; an
 //! element that stands still sheds nothing and costs nothing. A ground can carry a flow field
 //! (`FlowField`): marks advected along a fixed, continuous noise field, which move only while its speed
-//! is above 0 (the page sets the speed: a chapter declares it active). No GPU here.
+//! is above 0 (the page sets the speed: a chapter declares it active). The noise and hash are the
+//! fields' (`field`, DESIGN.md §1.26). No GPU here.
+use crate::field::hash;
 use serde::{Deserialize, Serialize};
 
 /// What a moving element sheds: `rate` marks per 100 logical px it moves, each living `life_ms`,
@@ -29,33 +31,16 @@ impl Default for FlowField { fn default() -> Self { Self { scale: 140.0, speed: 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Mote { pub x: f32, pub y: f32, pub vx: f32, pub vy: f32, pub born: f32, pub life: f32, pub size: f32, pub gravity: f32, pub paint: crate::el::Paint, pub clear: f32, pub veil: f32 }
 
-/// A hash in 0..1 of an integer (deterministic: the same frames give the same bytes).
-pub fn hash(n: u32) -> f32 {
-    let mut x = n.wrapping_mul(0x9E37_79B9) ^ 0x85EB_CA6B;
-    x ^= x >> 16; x = x.wrapping_mul(0x7FEB_352D); x ^= x >> 15; x = x.wrapping_mul(0x846C_A68B); x ^= x >> 16;
-    (x >> 8) as f32 / (1u32 << 24) as f32
-}
-fn lattice(ix: i32, iy: i32) -> f32 { hash((ix as u32).wrapping_mul(73_856_093) ^ (iy as u32).wrapping_mul(19_349_663)) }
-/// Smooth value noise, 0..1, features one unit apart.
-pub fn noise(x: f32, y: f32) -> f32 {
-    let (ix, iy) = (x.floor() as i32, y.floor() as i32);
-    let (fx, fy) = (x - x.floor(), y - y.floor());
-    let s = |t: f32| t * t * (3.0 - 2.0 * t);
-    let (sx, sy) = (s(fx), s(fy));
-    let a = lattice(ix, iy) + (lattice(ix + 1, iy) - lattice(ix, iy)) * sx;
-    let b = lattice(ix, iy + 1) + (lattice(ix + 1, iy + 1) - lattice(ix, iy + 1)) * sx;
-    a + (b - a) * sy
-}
 /// The field's direction at (x, y) for features `scale` apart: the noise turned into an angle (two
 /// turns over its range, so neighbouring streams curl around each other).
 pub fn direction(x: f32, y: f32, scale: f32) -> (f32, f32) {
-    let a = noise(x / scale.max(1.0), y / scale.max(1.0)) * std::f32::consts::TAU * 2.0;
+    let a = crate::field::noise(x / scale.max(1.0), y / scale.max(1.0)) * std::f32::consts::TAU * 2.0;
     (a.cos(), a.sin())
 }
 
 impl FlowField {
     /// How many marks a box of `w × h` px carries.
-    pub fn count(&self, w: f32, h: f32) -> usize { ((w * h / 10_000.0) * self.density.max(0.0)).round().clamp(0.0, 4000.0) as usize }
+    pub fn count(&self, w: f32, h: f32) -> usize { ((w * h / 10_000.0) * self.density.max(0.0)).round().max(0.0) as usize }
     /// Where mark `i` starts in a `w × h` box (deterministic).
     pub fn seed(i: usize, w: f32, h: f32) -> (f32, f32) { (hash(i as u32 * 2 + 1) * w, hash(i as u32 * 2 + 2) * h) }
     /// Move a mark at (x, y) in a `w × h` box by `dt` seconds; one that leaves the box comes in again on

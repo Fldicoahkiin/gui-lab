@@ -67,12 +67,37 @@ pub enum Content {
     /// the field it belongs to has focus; `mark` a byte range underlined (text being composed by an input
     /// method). `nowrap` keeps it on one line whatever its width (a single-line field that scrolls).
     Text { s: String, size: f32, line: f32, paint: Paint, font: Font, print: f32, caret: Option<usize>, weight: f32, around: Option<Rc<Around>>,
-           select: Option<(usize, usize)>, mark: Option<(usize, usize)>, nowrap: bool },
+           select: Option<(usize, usize)>, mark: Option<(usize, usize)>, nowrap: bool, pose: Option<GlyphPose> },
     /// A picture by id, with its height as a fraction of its width, and the `PicFx` slot it uses.
     Picture { id: u32, ratio: f32, fx: u8 },
     /// Meshes, a camera and a light, drawn into the element's box (DESIGN.md §1.18).
     Scene3d(Rc<crate::mesh::Scene3d>),
+    /// Marks in their own space, scaled to the element's width (`el::canvas`, DESIGN.md §1.26).
+    Canvas(Rc<crate::draw::Drawing>),
 }
+
+/// Where one laid-out glyph is, for a pose: its number in the text and how many there are, its centre
+/// in the element's content box (logical px), that box's size, and the box (x0, y0, x1, y1) all the
+/// glyphs' centres span (so a pose can map the text block onto a path or a sphere).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GlyphAt { pub i: usize, pub n: usize, pub x: f32, pub y: f32, pub w: f32, pub h: f32, pub span: [f32; 4] }
+/// How one glyph is drawn instead of where the layout put it: moved by (dx, dy) logical px, turned by
+/// `angle` (radians, clockwise), scaled by `sx`, `sy` about its centre; its tone and alpha multiplied,
+/// its accent raised to at least `accent`. Alpha 0 leaves it out. The glyph keeps its true outline.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Pose { pub dx: f32, pub dy: f32, pub angle: f32, pub sx: f32, pub sy: f32, pub tone: f32, pub alpha: f32, pub accent: f32 }
+impl Default for Pose { fn default() -> Self { Self { dx: 0.0, dy: 0.0, angle: 0.0, sx: 1.0, sy: 1.0, tone: 1.0, alpha: 1.0, accent: 0.0 } } }
+/// A text element's glyph poses (`El::pose`): asked once per glyph each time the scene is made, never
+/// for layout, so moving glyphs costs no layout or shaping.
+pub type GlyphPose = Rc<dyn Fn(GlyphAt) -> Pose>;
+/// The pointer over or on an element (`El::on_point`): where (local px, or a canvas's own space) and
+/// whether it is pressed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Point { pub x: f32, pub y: f32, pub down: bool }
+/// An element coming into view (`true`, any part inside its clip) or leaving it.
+pub type OnVisible<M> = Rc<dyn Fn(bool) -> Option<M>>;
+/// Asks for the true outline of an element's subtree as coverage on a grid (`El::on_outline`).
+pub struct Outline<M> { pub cols: usize, pub rows: usize, pub f: Rc<dyn Fn(Rc<crate::field::Grid>) -> Option<M>> }
 
 /// Handles the pointer over a `scene3d` element: which copy it is on, or pressed (DESIGN.md §1.18).
 pub type OnPick<M> = Rc<dyn Fn(crate::mesh::Pick) -> Option<M>>;
@@ -273,6 +298,12 @@ pub struct El<M> {
     pub skeleton: bool,
     /// Lines and rows run right to left in this subtree (inherited; `None` follows the parent).
     pub rtl: Option<bool>,
+    /// Told when it comes into view and leaves it (`El::on_visible`).
+    pub on_visible: Option<OnVisible<M>>,
+    /// Told its subtree's true outline as coverage on a grid, whenever it changes (`El::on_outline`).
+    pub on_outline: Option<Outline<M>>,
+    /// Appears and disappears by decoding (`El::decode`, DESIGN.md §1.28).
+    pub decode: Option<crate::decode::Decode>,
     pub children: Vec<El<M>>,
 }
 
@@ -329,7 +360,7 @@ impl<M> El<M> {
     fn new(style: Style, content: Content) -> Self {
         // Nothing shrinks unless asked: fixed sizes stay fixed inside columns and scroll areas.
         let style = Style { flex_shrink: 0.0, ..style };
-        Self { key: String::new(), style, content, fill: None, border: None, radius: 0.0, on_press: None, on_key: None, on_drag: None, on_blur: None, focusable: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, modal: None, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, shift: (0.0, 0.0), shed: None, flow_field: None, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, clips: false, calm: false, on_text: None, multiline: false, selectable: false, cursor: None, virt: None, access: None, ripple: Ripple::default(), on_pick: None, on_wheel: None, on_move: None, guide: None, skeleton: false, rtl: None, children: vec![] }
+        Self { key: String::new(), style, content, fill: None, border: None, radius: 0.0, on_press: None, on_key: None, on_drag: None, on_blur: None, focusable: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, modal: None, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, shift: (0.0, 0.0), shed: None, flow_field: None, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, clips: false, calm: false, on_text: None, multiline: false, selectable: false, cursor: None, virt: None, access: None, ripple: Ripple::default(), on_pick: None, on_wheel: None, on_move: None, guide: None, skeleton: false, rtl: None, on_visible: None, on_outline: None, decode: None, children: vec![] }
     }
     pub fn key(mut self, k: impl Into<String>) -> Self { self.key = k.into(); self }
     pub fn gap(mut self, g: f32) -> Self { self.style.gap = Size { width: length(g), height: length(g) }; self }
@@ -488,6 +519,30 @@ impl<M> El<M> {
     pub fn skeleton(mut self) -> Self { self.skeleton = true; self }
     pub fn guide(mut self, points: Vec<(f32, f32)>) -> Self { self.guide = (points.len() >= 2).then(|| Rc::new(points)); self }
     pub fn on_move(mut self, f: impl Fn(Option<(f32, f32)>) -> Option<M> + 'static) -> Self { self.on_move = Some(Rc::new(f)); self }
+    /// The pointer over this element and dragging on it, as one handler: `Some(Point)` while it moves
+    /// over it (`down` false: a mouse or pen hovering) or presses and drags (`down` true until let go;
+    /// a finger only does this), `None` when it leaves. On a canvas the point is in the canvas's space.
+    /// The focus marks do not frame it (it is a surface, not a control).
+    pub fn on_point(mut self, f: impl Fn(Option<Point>) -> Option<M> + 'static) -> Self {
+        let f = Rc::new(f);
+        let g = f.clone();
+        self.on_move = Some(Rc::new(move |p: Option<(f32, f32)>| g(p.map(|(x, y)| Point { x, y, down: false }))));
+        self.on_drag = Some(Rc::new(move |d: Drag| f(Some(Point { x: d.x, y: d.y, down: d.phase != Phase::End }))));
+        self.ripple.unframed = true;
+        self
+    }
+    /// Hear when this element comes into view or leaves it (inside its scroll area's and clips' view):
+    /// a live demo steps only while it can be seen.
+    pub fn on_visible(mut self, f: impl Fn(bool) -> Option<M> + 'static) -> Self { self.on_visible = Some(Rc::new(f)); self }
+    /// Be told this subtree's true outline — the coverage of its glyphs, shapes and pictures, hidden
+    /// ones included — sampled on a `cols × rows` grid over its box (values 0..1), each time it changes.
+    /// What it gives is a mask for a field (DESIGN.md §1.26).
+    pub fn on_outline(mut self, cols: usize, rows: usize, f: impl Fn(Rc<crate::field::Grid>) -> Option<M> + 'static) -> Self { self.on_outline = Some(Outline { cols, rows, f: Rc::new(f) }); self }
+    /// Appear by decoding and disappear by the same played backwards (DESIGN.md §1.28): blocks over the
+    /// true outline resolve coarse to fine, then the content shows. `hold` in it scrubs to a progress.
+    pub fn decode(mut self, d: crate::decode::Decode) -> Self { self.decode = Some(d); self }
+    /// Draw each glyph of this text by its pose (`Pose`): on a path, on a sphere, lit by distance.
+    pub fn pose(mut self, f: impl Fn(GlyphAt) -> Pose + 'static) -> Self { if let Content::Text { pose, .. } = &mut self.content { *pose = Some(Rc::new(f)); } self }
     pub fn scroll(mut self) -> Self { self.scroll = true; self.style.overflow.y = taffy::Overflow::Scroll; self.style.scrollbar_width = 0.0; self }
     /// Scroll horizontally instead (the wheel's vertical movement scrolls it too).
     pub fn scroll_x(mut self) -> Self { self.scroll = true; self.horizontal = true; self.style.overflow.x = taffy::Overflow::Scroll; self.style.scrollbar_width = 0.0; self }
@@ -498,7 +553,7 @@ impl<M> El<M> {
 
     /// The same tree sending other messages: lets one application embed another's view.
     pub fn map<N: 'static>(self, f: Rc<dyn Fn(M) -> N>) -> El<N> where M: 'static {
-        let El { key, style, content, fill, border, radius, on_press, on_key, on_drag, on_blur, focusable, scroll, horizontal, bar, reveal, disabled, commit, modal, fonts, loose, wipe, flow, hidden, shift, shed, flow_field, annotate, gaze_scope, material, loosen, anchor, clips, calm, on_text, multiline, selectable, cursor, virt, access, ripple, on_pick, on_wheel, on_move, guide, skeleton, rtl, children } = self;
+        let El { key, style, content, fill, border, radius, on_press, on_key, on_drag, on_blur, focusable, scroll, horizontal, bar, reveal, disabled, commit, modal, fonts, loose, wipe, flow, hidden, shift, shed, flow_field, annotate, gaze_scope, material, loosen, anchor, clips, calm, on_text, multiline, selectable, cursor, virt, access, ripple, on_pick, on_wheel, on_move, guide, skeleton, rtl, on_visible, on_outline, decode, children } = self;
         let virt = virt.map(|v| { let f = f.clone(); let b = v.build; Virtual { count: v.count, row_h: v.row_h, overscan: v.overscan, selected: v.selected, build: Rc::new(move |i: usize| b(i).map(f.clone())) as Rc<dyn Fn(usize) -> El<N>> } });
         let on_key = on_key.map(|k| { let f = f.clone(); Rc::new(move |key: Key, shift: bool| k(key, shift).map(|m| f(m))) as OnKey<N> });
         let on_text = on_text.map(|t| { let f = f.clone(); Rc::new(move |i: TextInput| t(i).map(|m| f(m))) as OnText<N> });
@@ -506,10 +561,12 @@ impl<M> El<M> {
         let on_pick = on_pick.map(|d| { let f = f.clone(); Rc::new(move |g: crate::mesh::Pick| d(g).map(|m| f(m))) as OnPick<N> });
         let on_wheel = on_wheel.map(|d| { let f = f.clone(); Rc::new(move |x: f32, y: f32| d(x, y).map(|m| f(m))) as OnWheel<N> });
         let on_move = on_move.map(|d| { let f = f.clone(); Rc::new(move |p: Option<(f32, f32)>| d(p).map(|m| f(m))) as OnMove<N> });
+        let on_visible = on_visible.map(|d| { let f = f.clone(); Rc::new(move |v: bool| d(v).map(|m| f(m))) as OnVisible<N> });
+        let on_outline = on_outline.map(|o| { let f = f.clone(); let g = o.f; Outline { cols: o.cols, rows: o.rows, f: Rc::new(move |x: Rc<crate::field::Grid>| g(x).map(|m| f(m))) } });
         El {
             key, style, content, fill, border, radius, on_press: on_press.map(|m| f(m)), on_key, on_drag, on_blur: on_blur.map(|m| f(m)),
             focusable, scroll, horizontal, bar, reveal, disabled, commit, modal: modal.map(|m| Modal { dismiss: f(m.dismiss), beneath: m.beneath }),
-            fonts, loose, wipe, flow, hidden, shift, shed, flow_field, annotate, gaze_scope, material, loosen, anchor, clips, calm, on_text, multiline, selectable, cursor, virt, access, ripple, on_pick, on_wheel, on_move, guide, skeleton, rtl, children: children.into_iter().map(|c| c.map(f.clone())).collect(),
+            fonts, loose, wipe, flow, hidden, shift, shed, flow_field, annotate, gaze_scope, material, loosen, anchor, clips, calm, on_text, multiline, selectable, cursor, virt, access, ripple, on_pick, on_wheel, on_move, guide, skeleton, rtl, on_visible, on_outline, decode, children: children.into_iter().map(|c| c.map(f.clone())).collect(),
         }
     }
 }
@@ -518,7 +575,7 @@ pub fn row<M>() -> El<M> { El::new(Style { display: Display::Flex, flex_directio
 pub fn col<M>() -> El<M> { El::new(Style { display: Display::Flex, flex_direction: FlexDirection::Column, ..Default::default() }, Content::None) }
 pub fn space<M>(w: f32, h: f32) -> El<M> { El::new(Style { size: Size { width: length(w), height: length(h) }, ..Default::default() }, Content::None) }
 pub fn text<M>(s: impl Into<String>, size: f32, paint: Paint) -> El<M> {
-    El::new(Style::default(), Content::Text { s: s.into(), size, line: (size * 1.6).round(), paint, font: Font::Body, print: 0.0, caret: None, weight: 0.0, around: None, select: None, mark: None, nowrap: false })
+    El::new(Style::default(), Content::Text { s: s.into(), size, line: (size * 1.6).round(), paint, font: Font::Body, print: 0.0, caret: None, weight: 0.0, around: None, select: None, mark: None, nowrap: false, pose: None })
 }
 /// Scale one taffy length by `k` (lengths only; percentages, auto and the rest stay).
 fn zoom_lp(v: LengthPercentage, k: f32) -> LengthPercentage { match v.expand() { taffy::style::ExpandedLengthPercentage::Length(x) => LengthPercentage::length(x * k), _ => v } }
@@ -550,7 +607,7 @@ impl<M> El<M> {
 
 /// A text leaf with an explicit line height.
 pub fn text_lh<M>(s: impl Into<String>, size: f32, line: f32, paint: Paint) -> El<M> {
-    El::new(Style::default(), Content::Text { s: s.into(), size, line, paint, font: Font::Body, print: 0.0, caret: None, weight: 0.0, around: None, select: None, mark: None, nowrap: false })
+    El::new(Style::default(), Content::Text { s: s.into(), size, line, paint, font: Font::Body, print: 0.0, caret: None, weight: 0.0, around: None, select: None, mark: None, nowrap: false, pose: None })
 }
 pub fn picture<M>(id: u32, ratio: f32) -> El<M> { El::new(Style { size: Size { width: percent(1.0), height: auto() }, ..Default::default() }, Content::Picture { id, ratio, fx: 0 }) }
 /// Meshes with a camera and a light (DESIGN.md §1.18), as wide as its parent and 240 px tall unless
@@ -565,6 +622,10 @@ impl<M: Clone + 'static> El<M> {
         col().key(format!("{key}/with")).gap(10.0).min_width(0.0).child(self).child(crate::widgets::caption(key, formula, params, msg))
     }
 }
+/// A drawing (DESIGN.md §1.26): as wide as its parent (unless sized), as tall as the drawing's
+/// proportions make it; its marks are shapes with true outlines. Pointer handlers on it get points in
+/// the drawing's space.
+pub fn canvas<M>(d: crate::draw::Drawing) -> El<M> { El::new(Style { size: Size { width: percent(1.0), height: auto() }, ..Default::default() }, Content::Canvas(Rc::new(d))) }
 /// One mesh at the origin, with the default camera and light (`mesh::Scene3d::single`).
 pub fn mesh<M>(id: crate::mesh::MeshId) -> El<M> { scene3d(crate::mesh::Scene3d::single(id)) }
 /// Every child over the one before, each starting at the top left of the same box: the box is the

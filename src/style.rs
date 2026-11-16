@@ -41,6 +41,9 @@ const fn theme(name: &'static str, ground: [f32; 3], ink: [f32; 3], accent: [f32
 
 pub const DARK: Theme = Theme { second: [0.30, 0.62, 1.0], third: [0.98, 0.80, 0.25], ..theme("暗", [0.047, 0.051, 0.055], [0.886, 0.89, 0.878], [1.0, 0.42, 0.17]) };
 pub const LIGHT: Theme = Theme { second: [0.10, 0.36, 0.78], third: [0.80, 0.60, 0.02], ..theme("明", [0.914, 0.910, 0.890], [0.09, 0.094, 0.10], [0.86, 0.30, 0.08]) };
+/// The Lab (DESIGN.md §5.3): near-black ground, grey-white ink, one blue accent (all three hues the
+/// same blue), everything in the monospaced pixel face.
+pub const LAB: Theme = Theme { display: MONO, body: MONO, ..theme("实验室", [0.031, 0.033, 0.036], [0.84, 0.85, 0.86], [0.26, 0.52, 1.0]) };
 /// Everything set in the pixel faces, at whole multiples of their native sizes.
 pub const PIXEL_THEME: Theme = Theme {
     display: PIXEL, body: PIXEL, sizes: TypeScale { display: 36.0, title: 24.0, body: 12.0, small: 12.0 }, rule: 2.0,

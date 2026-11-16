@@ -1,10 +1,15 @@
 extern crate self as lab;
 
 pub mod add;
+pub mod budget;
 pub mod demo;
+pub mod decode;
 pub mod dirty;
+pub mod draw;
 pub mod el;
 pub mod error;
+pub mod experiment;
+pub mod field;
 pub mod gallery;
 pub mod gaze;
 pub mod gesture;

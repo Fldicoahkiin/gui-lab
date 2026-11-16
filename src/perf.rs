@@ -69,6 +69,7 @@ impl Perf {
     pub fn frame(&mut self, submit_ms: f32) {
         let mut c = std::mem::take(&mut self.pending);
         c.submit = submit_ms;
+        crate::budget::feed(c.total());
         let now = now_ms();
         if let Some((t, _)) = self.frames.back() { let d = now - t; if d > PERIOD_MS * 1.5 && d < 250.0 { self.dropped += 1; } }
         self.frames.push_back((now, c));
