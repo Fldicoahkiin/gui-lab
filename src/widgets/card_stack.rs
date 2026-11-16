@@ -54,6 +54,9 @@ pub struct Stack {
     pub look: StackLook,
     /// A card's size (world units: 1 is the view's height).
     pub card: (f32, f32),
+    /// Card n's colour (cycled), and an outline (logical px) round flat cards (0: none).
+    pub paints: Vec<Paint>,
+    pub outline: f32,
     /// Which card the fan is under (hovered, or held by a press).
     hover: Option<usize>,
     held: Option<usize>,
@@ -65,7 +68,7 @@ impl Default for Stack {
     fn default() -> Self {
         let spring = Spring { stiffness: 260.0, damping: 24.0, ..Spring::default() };
         let count = 5;
-        Self { count, angle0: 42.0, falloff: 0.7, delay_ms: 28.0, spring, look: StackLook::Plain, card: (0.8, 0.52), hover: None, held: None,
+        Self { count, angle0: 42.0, falloff: 0.7, delay_ms: 28.0, spring, look: StackLook::Plain, card: (0.8, 0.52), paints: vec![Paint::hue(0), Paint::hue(1), Paint::hue(2), Paint::INK, Paint::DIM], outline: 0.0, hover: None, held: None,
                angles: vec![Animated::new(0.0, spring); count], queue: vec![None; count] }
     }
 }
@@ -126,7 +129,8 @@ impl Stack {
         moved
     }
     /// The cards as a 3D scene: card 0 on top (nearest), each turned about its bottom-left corner.
-    pub fn scene(&self, colours: &[Paint]) -> Scene3d {
+    pub fn scene(&self) -> Scene3d {
+        let colours = &self.paints;
         let (w, h) = self.card;
         let thick = self.look == StackLook::Thick;
         let depth = if thick { 0.028 } else { 0.004 };
@@ -138,18 +142,17 @@ impl Stack {
         }).collect();
         let camera = if thick { Camera { projection: Projection::Perspective { fov: 34.0 }, yaw: -22.0, pitch: 24.0, distance: 2.3, target: [0.0, 0.0, -0.06], ..Camera::default() } }
             else { Camera { projection: Projection::Orthographic { height: 1.25 }, yaw: 0.0, pitch: 0.0, distance: 3.0, target: [0.0, 0.0, 0.0], ..Camera::default() } };
-        let spec = if thick { Mesh3d { tones: 2.0, outline: 1.2, ..Mesh3d::default() } } else { Mesh3d { tones: 2.0, ..Mesh3d::default() } };
+        let spec = if thick { Mesh3d { tones: 2.0, outline: 1.2, ..Mesh3d::default() } } else { Mesh3d { tones: 2.0, outline: self.outline, ..Mesh3d::default() } };
         Scene3d { items, camera, light: Light::from_angles(-30.0, 50.0, 0.55), spec, picture: None }
     }
 }
 
 /// The stack in a box `width` × `height`: hover and presses pick a card.
 pub fn card_stack<M: Clone + 'static>(key: &str, s: &Stack, width: f32, height: f32, msg: impl Fn(StackMsg) -> M + 'static) -> El<M> {
-    let colours = [Paint::hue(0), Paint::hue(1), Paint::hue(2), Paint::INK, Paint::DIM];
     let msg = Rc::new(msg);
     let (a, b) = (msg.clone(), msg);
     let card = |h: Option<MeshHit>| h.map(|h| h.object.saturating_sub(1) as usize);
-    let mut e = scene3d(s.scene(&colours)).key(key.to_owned()).width(width).height(height).focusable(true).role(Role::Group).label(crate::i18n::tr("widget.stack.label"))
+    let mut e = scene3d(s.scene()).key(key.to_owned()).width(width).height(height).focusable(true).role(Role::Group).label(crate::i18n::tr("widget.stack.label"))
         .on_pick(move |p| Some(a(match p { Pick::Hover(h) => StackMsg::Hover(card(h)), Pick::Press(h) => StackMsg::Press(card(h)) })))
         .on_key(move |k, _| matches!(k, Key::Up | Key::Down | Key::Left | Key::Right | Key::Enter | Key::Char(' ') | Key::Escape).then(|| b(StackMsg::Key(k))));
     // Marks: the material draws the cards as its marks at rest too (held loose, like a picture).
