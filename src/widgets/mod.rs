@@ -54,7 +54,7 @@ pub use progress::progress;
 pub use radio::radio_group;
 pub use select::select;
 pub use sheet::sheet;
-pub use skeleton::skeleton;
+pub use skeleton::{Loading, Show, skeleton};
 pub use table::table;
 pub use toast::toast;
 pub use toggle::{toggle, toggle_group};

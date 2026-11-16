@@ -151,7 +151,8 @@ Gestures are state (`lab::gesture`: `Spring`, `Animated`, `RubberBand`, `project
 report drags, `Sheet::update` / `Floating::update` take them with the time, `step` runs on the tick while `moving()`; put them
 after the page in `el::layers([...])` (docs/recipes/gesture.md). Under a live demo, `El::caption_params` prints the numbers that
 drive it and lets them be edited (DESIGN.md §5.2). `widgets::nested_menu` steers submenus by a safe-zone triangle
-(`El::on_move` hears the pointer over an element; `El::guide` draws an outline in the annotation layer).
+(`El::on_move` hears the pointer over an element; `El::guide` draws an outline in the annotation layer). While data
+loads, draw the real rows with `.skeleton()` as `widgets::Loading::show` says (docs/recipes/loading.md).
 Text flows around true outlines with `.around(Around::new(vec![Silhouette::circle(..)], gap))`; a piece of a line
 beside an obstacle is justified so both its edges are flush, adding at most `Around::justify_max` ems per gap
 (default 0.25; inter-character next to CJK, inter-word at spaces, between Latin letters only with

@@ -269,6 +269,8 @@ pub struct El<M> {
     pub on_move: Option<OnMove<M>>,
     /// A closed outline (local logical px) the annotation layer draws over this element (`El::guide`).
     pub guide: Option<Rc<Vec<(f32, f32)>>>,
+    /// This subtree is drawn as its own loading skeleton (`El::skeleton`), inherited.
+    pub skeleton: bool,
     /// Lines and rows run right to left in this subtree (inherited; `None` follows the parent).
     pub rtl: Option<bool>,
     pub children: Vec<El<M>>,
@@ -327,7 +329,7 @@ impl<M> El<M> {
     fn new(style: Style, content: Content) -> Self {
         // Nothing shrinks unless asked: fixed sizes stay fixed inside columns and scroll areas.
         let style = Style { flex_shrink: 0.0, ..style };
-        Self { key: String::new(), style, content, fill: None, border: None, radius: 0.0, on_press: None, on_key: None, on_drag: None, on_blur: None, focusable: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, modal: None, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, shift: (0.0, 0.0), shed: None, flow_field: None, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, clips: false, calm: false, on_text: None, multiline: false, selectable: false, cursor: None, virt: None, access: None, ripple: Ripple::default(), on_pick: None, on_wheel: None, on_move: None, guide: None, rtl: None, children: vec![] }
+        Self { key: String::new(), style, content, fill: None, border: None, radius: 0.0, on_press: None, on_key: None, on_drag: None, on_blur: None, focusable: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, modal: None, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, shift: (0.0, 0.0), shed: None, flow_field: None, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, clips: false, calm: false, on_text: None, multiline: false, selectable: false, cursor: None, virt: None, access: None, ripple: Ripple::default(), on_pick: None, on_wheel: None, on_move: None, guide: None, skeleton: false, rtl: None, children: vec![] }
     }
     pub fn key(mut self, k: impl Into<String>) -> Self { self.key = k.into(); self }
     pub fn gap(mut self, g: f32) -> Self { self.style.gap = Size { width: length(g), height: length(g) }; self }
@@ -479,6 +481,11 @@ impl<M> El<M> {
     /// leaving it (`None`): for menus that steer by where the pointer goes. Fingers have no hover.
     /// A closed outline through `points` (logical px from this element's top left), drawn dotted by the
     /// annotation layer in its colour whatever its mode: a debug overlay (a menu's safe zone).
+    /// Draw this subtree as its own skeleton (DESIGN.md §1.23): laid out exactly as it is, but every
+    /// line of text is a bar as wide as that line measures, every picture or 3D element a block, every
+    /// fill and border faint; it takes no input. Swapping `.skeleton()` off shows the content in the same
+    /// boxes, so nothing moves.
+    pub fn skeleton(mut self) -> Self { self.skeleton = true; self }
     pub fn guide(mut self, points: Vec<(f32, f32)>) -> Self { self.guide = (points.len() >= 2).then(|| Rc::new(points)); self }
     pub fn on_move(mut self, f: impl Fn(Option<(f32, f32)>) -> Option<M> + 'static) -> Self { self.on_move = Some(Rc::new(f)); self }
     pub fn scroll(mut self) -> Self { self.scroll = true; self.style.overflow.y = taffy::Overflow::Scroll; self.style.scrollbar_width = 0.0; self }
@@ -491,7 +498,7 @@ impl<M> El<M> {
 
     /// The same tree sending other messages: lets one application embed another's view.
     pub fn map<N: 'static>(self, f: Rc<dyn Fn(M) -> N>) -> El<N> where M: 'static {
-        let El { key, style, content, fill, border, radius, on_press, on_key, on_drag, on_blur, focusable, scroll, horizontal, bar, reveal, disabled, commit, modal, fonts, loose, wipe, flow, hidden, shift, shed, flow_field, annotate, gaze_scope, material, loosen, anchor, clips, calm, on_text, multiline, selectable, cursor, virt, access, ripple, on_pick, on_wheel, on_move, guide, rtl, children } = self;
+        let El { key, style, content, fill, border, radius, on_press, on_key, on_drag, on_blur, focusable, scroll, horizontal, bar, reveal, disabled, commit, modal, fonts, loose, wipe, flow, hidden, shift, shed, flow_field, annotate, gaze_scope, material, loosen, anchor, clips, calm, on_text, multiline, selectable, cursor, virt, access, ripple, on_pick, on_wheel, on_move, guide, skeleton, rtl, children } = self;
         let virt = virt.map(|v| { let f = f.clone(); let b = v.build; Virtual { count: v.count, row_h: v.row_h, overscan: v.overscan, selected: v.selected, build: Rc::new(move |i: usize| b(i).map(f.clone())) as Rc<dyn Fn(usize) -> El<N>> } });
         let on_key = on_key.map(|k| { let f = f.clone(); Rc::new(move |key: Key, shift: bool| k(key, shift).map(|m| f(m))) as OnKey<N> });
         let on_text = on_text.map(|t| { let f = f.clone(); Rc::new(move |i: TextInput| t(i).map(|m| f(m))) as OnText<N> });
@@ -502,7 +509,7 @@ impl<M> El<M> {
         El {
             key, style, content, fill, border, radius, on_press: on_press.map(|m| f(m)), on_key, on_drag, on_blur: on_blur.map(|m| f(m)),
             focusable, scroll, horizontal, bar, reveal, disabled, commit, modal: modal.map(|m| Modal { dismiss: f(m.dismiss), beneath: m.beneath }),
-            fonts, loose, wipe, flow, hidden, shift, shed, flow_field, annotate, gaze_scope, material, loosen, anchor, clips, calm, on_text, multiline, selectable, cursor, virt, access, ripple, on_pick, on_wheel, on_move, guide, rtl, children: children.into_iter().map(|c| c.map(f.clone())).collect(),
+            fonts, loose, wipe, flow, hidden, shift, shed, flow_field, annotate, gaze_scope, material, loosen, anchor, clips, calm, on_text, multiline, selectable, cursor, virt, access, ripple, on_pick, on_wheel, on_move, guide, skeleton, rtl, children: children.into_iter().map(|c| c.map(f.clone())).collect(),
         }
     }
 }

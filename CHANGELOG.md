@@ -8,6 +8,7 @@
 - 底部面板（几档、按投射收起、橡皮筋、背板、滚动交接）和浮动窗口（按投射选角）。A bottom sheet and a floating box.
 - 公式注：演示下面印出真实参数的一行，参数可改。The formula caption.
 - `el::layers`：叠在同一个盒子里的孩子。Children layered in one box.
+- 骨架：`El::skeleton()` 用真实的树画骨架（条是量出来的行宽），`Loading` 的两个数，零位移；四种加载方式的比较。Skeletons from the real tree, the loading rules, zero layout shift.
 - 多级菜单：安全区三角形、两个延迟、键盘、可画出的三角形（`El::on_move`、`El::guide`）。Nested menus with a safe-zone triangle.
 
 ## 11 — 序章、展示而不是标语、引导、文字绕排、读数、配方 · The prologue, display not slogans, guidance, wrap, readout, recipes

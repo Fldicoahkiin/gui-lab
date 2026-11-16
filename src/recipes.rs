@@ -13,9 +13,10 @@
 #[path = "../examples/chapter.rs"] pub mod chapter;
 #[path = "../examples/gesture.rs"] pub mod gesture;
 #[path = "../examples/submenu.rs"] pub mod submenu;
+#[path = "../examples/loading.rs"] pub mod loading;
 
 /// Every recipe: its name, its source (the file in `examples/`), and what it shows.
-pub const RECIPES: [(&str, &str, &str); 13] = [
+pub const RECIPES: [(&str, &str, &str); 14] = [
     ("form", include_str!("../examples/form.rs"), "A form: text field, number, switch, submit."),
     ("list", include_str!("../examples/list.rs"), "A list with selection."),
     ("dialog", include_str!("../examples/dialog.rs"), "A modal dialog."),
@@ -29,8 +30,9 @@ pub const RECIPES: [(&str, &str, &str); 13] = [
     ("chapter", include_str!("../examples/chapter.rs"), "A chapter: one scene with actors that flow in."),
     ("gesture", include_str!("../examples/gesture.rs"), "A bottom sheet and a floating box driven by springs."),
     ("submenu", include_str!("../examples/submenu.rs"), "A menu with submenus and a safe zone."),
+    ("loading", include_str!("../examples/loading.rs"), "A list that loads: nothing, its own skeleton, then the rows in turn."),
 ];
-pub const NAMES: [&str; 13] = ["form", "list", "dialog", "flow", "morph", "material", "annotate", "counter", "mesh", "preset", "chapter", "gesture", "submenu"];
+pub const NAMES: [&str; 14] = ["form", "list", "dialog", "flow", "morph", "material", "annotate", "counter", "mesh", "preset", "chapter", "gesture", "submenu", "loading"];
 
 /// Open recipe `name` as a page to drive and draw.
 #[cfg(not(target_arch = "wasm32"))]
@@ -49,6 +51,7 @@ pub fn open(name: &str, faces: Vec<crate::text::Face>, w: u32, h: u32, scale: f3
         "chapter" => Box::new(chapter::ui(faces, w, h, scale)),
         "gesture" => Box::new(gesture::ui(faces, w, h, scale)),
         "submenu" => Box::new(submenu::ui(faces, w, h, scale)),
+        "loading" => Box::new(loading::ui(faces, w, h, scale)),
         _ => return None,
     })
 }
