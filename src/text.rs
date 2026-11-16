@@ -23,7 +23,7 @@ pub const SPREAD: i32 = 12;
 pub const ATLAS: u32 = 2048;
 /// Paragraph layouts kept per generation of the layout cache (DESIGN.md §1.13). A page's source listing is
 /// a paragraph per line, so this is well above the longest page.
-pub const LAYOUT_CACHE: usize = 4096;
+pub const LAYOUT_CACHE: usize = 8192;
 
 /// The faces that ship in `assets/`, in the order `bundled` registers them.
 pub const SANS: u8 = 0;
