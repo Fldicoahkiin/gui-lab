@@ -615,6 +615,8 @@ impl<S, M: Clone> Ui<S, M> {
     pub fn scroll_offset(&self, key: &str) -> f32 { self.scroll.get(key).copied().unwrap_or(0.0) }
     pub fn focus(&self) -> Option<&str> { self.focus.as_deref() }
     pub fn hover(&self) -> Option<&str> { self.hover.as_deref() }
+    /// The element whose `El::on_move` hears the pointer now (a menu, a chart that scrubs), if any.
+    pub fn move_over(&self) -> Option<&str> { self.move_over.as_deref() }
     pub fn scene(&self) -> &Scene { &self.scene }
     pub fn field(&self) -> &Field { &self.field }
     pub fn text_mut(&mut self) -> &mut Text { &mut self.text }
@@ -2439,6 +2441,17 @@ impl<S, M: Clone> Ui<S, M> {
         let mut changed = false;
         // Shedding: an element that moved since the last tick leaves marks along the way it went.
         let mut seen: Vec<String> = vec![];
+        // The lines of text shed marks keep off (only worked out when some shedder asks to).
+        let wants_clear = self.motes.iter().any(|m| m.clear > 0.0) || self.nodes.iter().any(|n| n.shed.is_some_and(|s| s.rate > 0.0 && s.clear > 0.0) && !n.hidden);
+        let mut lines: Vec<[f32; 4]> = vec![];
+        if wants_clear {
+            let text = &mut self.text;
+            for n in self.nodes.iter().filter(|n| !n.hidden) {
+                let Some(p) = n.para() else { continue };
+                for r in text.line_boxes(p, n.origin()) { if r.w > 0.0 { lines.push([r.x, r.y, r.right(), r.bottom()]); } }
+            }
+        }
+        let near = |x: f32, y: f32| lines.iter().map(|b| crate::motes::distance(x, y, *b)).fold(f32::INFINITY, f32::min);
         for n in self.nodes.iter().filter(|n| n.shed.is_some_and(|s| s.rate > 0.0) && !n.hidden) {
             let sh = n.shed.expect("filtered");
             let c = n.rect.center();
@@ -2458,15 +2471,21 @@ impl<S, M: Clone> Ui<S, M> {
                 let side = (u * 4.0) as u32;
                 let (ex, ey) = match side { 0 => (n.rect.x + v * n.rect.w, n.rect.y), 1 => (n.rect.right(), n.rect.y + v * n.rect.h), 2 => (n.rect.x + v * n.rect.w, n.rect.bottom()), _ => (n.rect.x, n.rect.y + v * n.rect.h) };
                 let back = (last.0 - c.0, last.1 - c.1);
-                self.motes.push(Mote { x: ex + back.0 * f, y: ey + back.1 * f, vx: (hash(m * 7 + 5) - 0.5) * 2.0 * sh.drift, vy: (hash(m * 7 + 6) - 0.5) * sh.drift, born: now, life: sh.life_ms / 1000.0, size: sh.size, gravity: sh.gravity, paint });
+                let (mx, my) = (ex + back.0 * f, ey + back.1 * f);
+                if sh.clear > 0.0 && near(mx, my) < sh.clear { continue; }
+                self.motes.push(Mote { x: mx, y: my, vx: (hash(m * 7 + 5) - 0.5) * 2.0 * sh.drift, vy: (hash(m * 7 + 6) - 0.5) * sh.drift, born: now, life: sh.life_ms / 1000.0, size: sh.size, gravity: sh.gravity, paint, clear: sh.clear, veil: 1.0 });
             }
             self.motes_made = self.motes_made.wrapping_add(k);
             changed |= k > 0;
         }
         self.shed_at.retain(|k, _| seen.contains(k));
         if !self.motes.is_empty() {
-            for m in &mut self.motes { m.vy += m.gravity * dt; m.x += m.vx * dt; m.y += m.vy * dt; }
-            self.motes.retain(|m| now - m.born < m.life);
+            for m in &mut self.motes {
+                m.vy += m.gravity * dt; m.x += m.vx * dt; m.y += m.vy * dt;
+                // Nearing text, it fades; it is gone a pixel before it would touch.
+                if m.clear > 0.0 { let d = near(m.x, m.y) - m.size; m.veil = m.veil.min(((d - 1.0) / m.clear).clamp(0.0, 1.0)); }
+            }
+            self.motes.retain(|m| now - m.born < m.life && m.veil > 0.0);
             changed = true;
         }
         // Flow fields: their marks are made once per box size and move while the speed is above 0.
@@ -2500,7 +2519,7 @@ impl<S, M: Clone> Ui<S, M> {
         }
         for m in &self.motes {
             let fade = (1.0 - (now - m.born) / m.life.max(1e-3)).clamp(0.0, 1.0);
-            self.scene.push(mote(m.x, m.y, m.size, m.paint, m.paint.alpha * fade, screen));
+            self.scene.push(mote(m.x, m.y, m.size, m.paint, m.paint.alpha * fade * m.veil, screen));
         }
     }
     /// Apply what moves without a new layout (morph ramps, flows, the old page dissolving), then the marks.

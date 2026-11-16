@@ -719,6 +719,25 @@
       "response": "loosen (a 3D element is decoration, like a picture, even when it can be turned)",
       "recompose": "none (no text)",
       "recipe": "docs/recipes/stack.md"
+    },
+    {
+      "name": "dot_chart",
+      "title": "点阵图表",
+      "group": "data",
+      "functions": [
+        "dot_chart"
+      ],
+      "description": "一条曲线画成一片点：每一列从轴往上填到曲线，点的大小和亮度说它有多少在曲线下面（面积就是曲线下的面积）；一段范围用强调色；指针扫过时一条竖线和那里的值；轴上的控制点可以拖，曲线跟着重算。标签用等宽（像素）字。",
+      "description_en": "A series as a field of dots: each column filled from the axis up to the curve, a dot's size and brightness saying how much of it lies under the curve (the area reads as the area under it); a range in the accent colour; a scrubbing marker with the value; control points on the axis that drag the curve live. Labels in the mono (pixel) face.",
+      "files": [
+        "src/widgets/dot_chart.rs"
+      ],
+      "dependencies": [
+        "base"
+      ],
+      "recipe": "docs/recipes/chart.md",
+      "response": "nudge (a control: pushed as one piece by fronts, held and condensing at most to Look::legible_cap)",
+      "recompose": "the value label does not recompose (it follows the pointer)"
     }
   ]
 }

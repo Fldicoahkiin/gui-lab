@@ -35,7 +35,8 @@ fn a_dragged_sign_sheds_and_a_still_one_does_not() {
     let mut most = 0;
     for i in 1..=30 { t += 1.0 / 60.0; ui.pointer_move(x + i as f32 * 6.0, y + i as f32 * 2.0); ui.tick(t); ui.frame_drawn(); most = most.max(ui.motes().len()); }
     ui.release(x + 180.0, y + 60.0);
-    assert!(most >= 10, "dragging 190 px shed {most} marks");
+    // ZINE_SHED is 6 a 100 px, and none is made within ZINE_CLEAR of a line.
+    assert!(most >= 4, "dragging 190 px shed {most} marks");
     // They fall: below where they started, a moment later.
     let y0: f32 = ui.motes().iter().map(|m| m.y).sum::<f32>() / ui.motes().len() as f32;
     run(&mut ui, 0.3);
@@ -62,4 +63,31 @@ fn the_monitor_ground_drifts_only_while_it_plays() {
     run(&mut ui, 1.0);
     let drawn = run(&mut ui, 2.0);
     assert_eq!(drawn, 0, "a paused monitor drew {drawn} frames");
+}
+
+#[test]
+fn the_zine_toner_never_reaches_the_text() {
+    let mut ui = open(6, false);
+    let (x, y) = ui.node("film/c06/sign").expect("sign").rect.center();
+    let mut t = ui.now();
+    ui.press(x, y);
+    let mut seen = 0;
+    for i in 1..=90 {
+        t += 1.0 / 60.0;
+        let k = i as f32;
+        ui.pointer_move(x + (k * 0.2).sin() * 160.0, y + (k * 0.13).cos() * 80.0 - 40.0);
+        ui.tick(t);
+        ui.frame_drawn();
+        let mut lines = vec![];
+        for key in ["film/c06/body", "film/c06/body2", "film/c06/caption", "film/c06/head"] { lines.extend(ui.line_boxes(key)); }
+        for m in ui.motes() {
+            seen += 1;
+            for l in &lines {
+                let d = lab::motes::distance(m.x, m.y, [l.x, l.y, l.right(), l.bottom()]);
+                assert!(d > m.size, "a mark at ({:.1}, {:.1}) is {d:.1} px from a line of text", m.x, m.y);
+            }
+        }
+    }
+    ui.release(x, y);
+    assert!(seen > 0, "the drag shed something");
 }
