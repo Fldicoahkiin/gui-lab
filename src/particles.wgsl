@@ -270,7 +270,8 @@ fn tile_px(f: POut) -> Px {
   ink *= f.w.y;
   nr.r *= f.w.y;
   // Every tile is fully loose, as its element was at the hand-over.
-  nr.b = step(0.02, nr.r);
+  // (encoded as stage 1 does: 255 on the tile's ink, 125 in its halo; shader.wgsl `enc_loose`)
+  nr.b = select(125.0 / 255.0, 1.0, ink.a > 0.5) * step(0.02, nr.r);
   return Px(ink, nr);
 }
 @fragment fn fs_part_ink(f: POut) -> @location(0) vec4f { return tile_px(f).ink; }

@@ -4,7 +4,8 @@
 //! previous frame's, kept in place. Pure CPU; the renderer scissors its passes to the boxes.
 //!
 //! Stage 1 changes only where an instance changed (its record, or what it shows because time passes: it
-//! is condensing, a front reaches it, the lens or a burst is over a 3D element), and an instance's pixels
+//! is condensing, a front reaches it, the lens over a picture or 3D element that lets it, a burst over a
+//! 3D element), and an instance's pixels
 //! lie within its rect grown by the nearness, and the push. Stage 2 changes where
 //! stage 1 changed, grown by how far the material reads its neighbours (`reach`), and where the field
 //! acts on the ground (a front, the lens, a burst, a wipe), and where the annotation layer changed.
@@ -130,13 +131,13 @@ pub fn region(prev: &Inputs, cur: &Inputs, scale: f32) -> Region {
         let born = i.extra[3];
         let condensing = cur.now - born < enter || prev.now - born < enter;
         let fronted = acting.iter().any(|f| !is_empty(meet(*f, r)));
-        let meshy = i.paint[3] == MESH && (!is_empty(meet(lenses, r)) || !is_empty(meet(bursts, r)));
+        // The lens reaches, in stage 1, the pictures and 3D elements that let it (`resp[3]`); a burst, 3D.
+        let lensed = i.resp[3] > 0.5 && i.resp[1] < 1.5 && !is_empty(meet(lenses, r));
+        let meshy = lensed || (i.paint[3] == MESH && !is_empty(meet(bursts, r)));
         // Under a material whose loose parts read the material clock, what is held loose changes when
         // it moves (only there: the rest of the window reads no clock).
         let held = clock_moved && i.extra[2] > 0.0;
-        if condensing || fronted || meshy || held { st1 = union(st1, r); }
-        // Pictures read the lens in stage 2.
-        if i.paint[3] == PICTURE && !is_empty(meet(lenses, r)) { st2 = union(st2, meet(lenses, r)); }
+        if condensing || fronted || meshy || held { st1 = union(st1, if lensed { meet(lenses, r) } else { r }); }
     }
     // Stage 2: what stage 1 changed, as far as the materials read around it, and the field on the ground.
     // Pictures' marks read their own cells (and the parallax its depth): only where a picture changed.
@@ -145,7 +146,7 @@ pub fn region(prev: &Inputs, cur: &Inputs, scale: f32) -> Region {
         + if pic_changed { look.pics.iter().map(|p| 2.0 * p.pitch * s + p.depth * s).fold(0.0, f32::max) } else { 0.0 };
     st2 = union(st2, grow(st1, rch));
     for f in &acting { st2 = union(st2, grow(*f, rch)); }
-    // The lens acts on pictures and 3D elements (above) and on the dot ground; elsewhere it shows nothing.
+    // The lens acts on the pictures and 3D elements that let it (above) and on the dot ground.
     if mats.contains(&Material::Dot) { st2 = union(st2, grow(lenses, rch)); }
     st2 = union(st2, grow(bursts, rch));
     // Scroll nodes whose content moved (the lattices follow it) or whose trace shows (DESIGN.md §1.8.3).
