@@ -5,7 +5,7 @@
 //! and the standalone runtime drive them through. They step only while seen (`El::on_visible`).
 use crate::el::{El, Font, Paint, Point, col, row, space, text};
 use crate::gesture::{Animated, Spring};
-use crate::widgets::{CaptionParam, Edit, Spec, caption};
+use crate::widgets::{CaptionParam, Edit, Spec};
 
 /// One experiment: state that draws itself, hears its messages, and steps with the clock.
 pub trait Experiment: Default + Clone + 'static {
@@ -13,37 +13,63 @@ pub trait Experiment: Default + Clone + 'static {
     /// The whole cell (`frame`), keyed under `key`.
     fn view(&self, key: &str) -> El<Self::Msg>;
     fn update(&mut self, m: Self::Msg, now: f32);
-    /// Advance to `now` (s); whether anything changed. The host calls it while the cell can be seen
-    /// and either input came less than `IDLE_S` ago (its idle motion: drift, growth) or it is still
-    /// settling (`moving`).
+    /// Advance to `now` (s); whether anything changed. The host calls it on every frame while the cell
+    /// can be seen (the Lab's living pieces, DESIGN.md §5.3), unless motion is reduced; then only while
+    /// it is still settling (`moving`).
     fn step(&mut self, now: f32) -> bool;
     /// Whether it is still settling by itself (a spring, a coast): frames until it rests.
     fn moving(&self) -> bool;
 }
-/// How long after the last input (or arriving) a cell's idle motion runs before the page comes to rest.
+/// How long after the last input a cell's idle motion runs when motion is reduced (then the page comes
+/// to rest); with motion allowed, a seen cell runs on.
 pub const IDLE_S: f32 = 1.2;
+/// The stage's height over its width: every piece fills a stage of this shape.
+pub const STAGE: f32 = 0.75;
+/// The parameter index that opens and closes a cell's parameters (`Params::edit`), sent by `[ params ]`.
+pub const TOGGLE: usize = usize::MAX;
 
-/// The cell, in the lab's look: `[ NAME ]` and the hint on top, the piece, the formula line printed
-/// from the numbers that drive it with those numbers as controls, and a small label.
+/// The cell, in the lab's look: `[ NAME ]` and the hint on top, the stage with the piece filling it
+/// (the hero: about three quarters of the cell), the formula on one line printed from the numbers that
+/// drive it, then the label and a `[ params ]` toggle that opens those numbers as controls.
 #[allow(clippy::too_many_arguments)]
-pub fn frame<M: Clone + 'static>(key: &str, name: &str, hint: &str, piece: El<M>, formula: String, params: &[CaptionParam], msg: impl Fn(usize, Edit) -> M + 'static, label: &str) -> El<M> {
-    col().key(key.to_owned()).fill_width().min_width(0.0).pad(14.0, 12.0).gap(10.0).border(1.0, Paint::FAINT)
+pub fn frame<M: Clone + 'static>(key: &str, name: &str, hint: &str, piece: El<M>, formula: String, params: &Params, msg: impl Fn(usize, Edit) -> M + 'static, label: &str) -> El<M> {
+    let msg = std::rc::Rc::new(msg);
+    let mut stage = col().key(format!("{key}/stage")).fill_width().min_width(0.0).clip().child(piece.fill_width().fill_height());
+    stage.style.aspect_ratio = Some(1.0 / STAGE);
+    let toggle = { let m = msg.clone(); text(if params.open { "[ − params ]" } else { "[ params ]" }, 11.0, if params.open { Paint::TEXT } else { Paint::DIM }).font(Font::Mono)
+        .key(format!("{key}/params")).focusable(true).role(crate::el::Role::Button).label("params").cursor(crate::el::Cursor::Pointer).on_press(m(TOGGLE, Edit::Cancel)) };
+    let mut c = col().key(key.to_owned()).fill_width().min_width(0.0).pad(12.0, 10.0).gap(8.0).border(1.0, Paint::FAINT)
         .child(row().fill_width().gap(8.0)
             .child(text(format!("[ {} ]", name.to_uppercase()), 11.0, Paint::TEXT).font(Font::Mono).key(format!("{key}/name")))
             .child(space(0.0, 0.0).grow(1.0))
             .child(text(hint, 11.0, Paint::DIM).font(Font::Mono).key(format!("{key}/hint"))))
-        .child(piece)
-        .child(caption(&format!("{key}/cap"), formula, params, msg))
-        .child(text(label, 11.0, Paint::FAINT).font(Font::Mono).key(format!("{key}/label")))
+        .child(stage)
+        .child(col().fill_width().min_width(0.0).clip().child(text(formula, 11.0, Paint::DIM).font(Font::Mono).nowrap().key(format!("{key}/formula")).recompose(false)))
+        .child(row().fill_width().wrap().gap(8.0)
+            .child(text(label, 11.0, Paint::FAINT).font(Font::Mono).key(format!("{key}/label")))
+            .child(space(0.0, 0.0).grow(1.0))
+            .child(toggle));
+    if params.open {
+        let mut nums = row().key(format!("{key}/nums")).wrap().gap(4.0);
+        for (i, p) in params.caption().iter().enumerate() {
+            let m = msg.clone();
+            nums = nums.child(crate::widgets::number(&format!("{key}/p{i}"), &p.name, p.value, p.spec, p.draft.as_deref(), move |e| m(i, e)).width(176.0).zoom(0.72));
+        }
+        c = c.child(nums);
+    }
+    c
 }
 
 /// Numbered parameters: their names and ranges, their values, and what is being typed into one.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Params { pub defs: &'static [(&'static str, Spec)], pub v: Vec<f32>, pub draft: Option<(usize, String)> }
+pub struct Params { pub defs: &'static [(&'static str, Spec)], pub v: Vec<f32>, pub draft: Option<(usize, String)>, /** The controls are shown. */ pub open: bool }
 impl Params {
-    pub fn new(defs: &'static [(&'static str, Spec)], v: &[f32]) -> Self { Self { defs, v: v.to_vec(), draft: None } }
+    pub fn new(defs: &'static [(&'static str, Spec)], v: &[f32]) -> Self { Self { defs, v: v.to_vec(), draft: None, open: false } }
     pub fn get(&self, i: usize) -> f32 { self.v[i] }
+    /// An edit of parameter `i`, or (`TOGGLE`) opening and closing the controls.
     pub fn edit(&mut self, i: usize, e: Edit) {
+        if i == TOGGLE { self.open = !self.open; self.draft = None; return; }
+        if i >= self.v.len() { return; }
         match e {
             Edit::Draft(s) => self.draft = Some((i, s)),
             Edit::Set(x) => { self.v[i] = self.defs[i].1.clamp(x); self.draft = None; }
@@ -108,11 +134,11 @@ pub fn ink(tone: f32, a: f32) -> Paint { if a > 0.5 { Paint::ACCENT.alpha(tone.m
 pub fn ui<E: Experiment>(faces: Vec<crate::text::Face>, w: u32, h: u32, scale: f32) -> crate::ui::Ui<Solo<E>, E::Msg> {
     fn view<E: Experiment>(s: &Solo<E>) -> El<E::Msg> { col().fill_width().fill_height().pad(24.0, 24.0).fonts(crate::style::LAB.roles()).child(s.e.view("cell")) }
     fn update<E: Experiment>(s: &mut Solo<E>, m: E::Msg) { let now = s.now; s.until = now + IDLE_S; s.e.update(m, now); }
-    crate::ui::Ui::new(Solo::<E> { e: E::default(), now: 0.0, until: IDLE_S }, view::<E>, update::<E>, faces, w, h, scale)
+    crate::ui::Ui::new(Solo::<E> { e: E::default(), now: 0.0, until: IDLE_S, live: true }, view::<E>, update::<E>, faces, w, h, scale)
         .on_look(|_| crate::style::Look { theme: crate::style::LAB, material: crate::style::Material::Plain, ..crate::style::Look::default() })
-        .on_tick(|s, t| { s.now = t; (t < s.until || s.e.moving()) && s.e.step(t) })
-        .on_wake(|s, t| (t < s.until || s.e.moving()).then_some(t))
+        .on_tick(|s, t| { s.now = t; (s.live || t < s.until || s.e.moving()) && s.e.step(t) })
+        .on_wake(|s, t| (s.live || t < s.until || s.e.moving()).then_some(t))
 }
 /// One experiment and the clock, for `ui`.
 #[derive(Clone)]
-pub struct Solo<E> { pub e: E, pub now: f32, pub until: f32 }
+pub struct Solo<E> { pub e: E, pub now: f32, pub until: f32, /** Runs on every frame (false: motion reduced). */ pub live: bool }
