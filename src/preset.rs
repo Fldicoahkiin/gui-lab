@@ -1,8 +1,8 @@
 //! Presets as data (DESIGN.md §4.1): a style preset is plain, serialisable data — theme, material and its
 //! numbers, type, annotation, how it answers (interaction character) and how it arrives (a transition).
 //! A transition is a small program of up to four steps over the same primitives (reveals with a shape,
-//! bands, fades, a light bar, colour planes, a loosening, layers, a melt, detection boxes, a carve, an
-//! outline-first draw, a peel), each a kind and five numbers, run by the material pass between the
+//! bands, fades, a light bar, colour planes, a loosening, layers, detection boxes, a carve, an
+//! outline-first draw), each a kind and five numbers, run by the material pass between the
 //! frame as it was and the new one. It plays for "switch to this style" and for "enter a page in this
 //! style": always the target's.
 use crate::el::Response;
@@ -35,20 +35,15 @@ pub enum StepKind {
     Loosen,
     /// The layers part by up to a px at angle b (the brighter the nearer), swap, and close again.
     Layers,
-    /// The old frame melts down by a px into blobs and runs off; a highlight b px wide and c bright
-    /// sweeps over the new one.
-    Melt,
     /// Boxes find up to a elements (the largest), drawn with b px lines, and replace what is in them.
     Boxes,
     /// Strokes grow along the new outlines up to a px from them; the ink floods from b (0–1) on.
     Carve,
     /// Outlines (a px) and frames draw first, in reading order; the content fills from b (0–1) on.
     Outline,
-    /// The old layer tears along a noisy line at angle a (b px of noise) and peels off by c px.
-    Peel,
 }
 impl StepKind {
-    pub const ALL: [StepKind; 13] = [StepKind::None, StepKind::Reveal, StepKind::Bands, StepKind::Fade, StepKind::Bar, StepKind::Planes, StepKind::Loosen, StepKind::Layers, StepKind::Melt, StepKind::Boxes, StepKind::Carve, StepKind::Outline, StepKind::Peel];
+    pub const ALL: [StepKind; 11] = [StepKind::None, StepKind::Reveal, StepKind::Bands, StepKind::Fade, StepKind::Bar, StepKind::Planes, StepKind::Loosen, StepKind::Layers, StepKind::Boxes, StepKind::Carve, StepKind::Outline];
     pub fn id(self) -> f32 { Self::ALL.iter().position(|k| *k == self).unwrap_or(0) as f32 }
     /// The names of `a`–`e` for this kind (empty: unused), for number controls.
     pub fn params(self) -> [&'static str; 5] {
@@ -61,11 +56,9 @@ impl StepKind {
             StepKind::Planes => ["行数", "色数", "", "", ""],
             StepKind::Loosen => ["松开", "", "", "", ""],
             StepKind::Layers => ["层距", "角度", "", "", ""],
-            StepKind::Melt => ["下落", "高光宽", "高光", "", ""],
             StepKind::Boxes => ["框数", "线宽", "", "", ""],
             StepKind::Carve => ["刻痕", "灌墨", "", "", ""],
             StepKind::Outline => ["线宽", "填充", "", "", ""],
-            StepKind::Peel => ["角度", "撕边", "揭开", "", ""],
         }
     }
 }
@@ -296,11 +289,7 @@ pub fn presets() -> Vec<Preset> {
             // A short fade and a small move.
             "cyberminimal" => (Interaction { press_ms: 160.0, front_width: 12.0, ..base }, Transition::of(120.0, &[step(Fade, 0.0, 1.0, [6.0, 90.0, 0.0, 0.0, 0.0])])),
             // Flat colour planes slide across and uncover the new page.
-            "bauhaus" => (Interaction { press_ms: 380.0, front_speed: 680.0, front_width: 40.0, ..base }, Transition::of(860.0, &[step(Planes, 0.0, 1.0, [5.0, 3.0, 0.0, 0.0, 0.0])])),
-            // Melt into blobs, re-form, a chrome highlight sweeps.
-            "y2k" => (Interaction { press_ms: 420.0, ..base }, Transition::of(900.0, &[step(Melt, 0.0, 0.75, [90.0, 60.0, 0.9, 0.0, 0.0]), step(Loosen, 0.0, 0.8, [0.7, 0.0, 0.0, 0.0, 0.0])])),
-            // The old layer tears along a noisy edge and peels away.
-            _ => (Interaction { press_ms: 360.0, ..base }, Transition::of(820.0, &[step(Peel, 0.0, 1.0, [20.0, 26.0, 40.0, 0.0, 0.0])])),
+            _ => (Interaction { press_ms: 380.0, front_speed: 680.0, front_width: 40.0, ..base }, Transition::of(860.0, &[step(Planes, 0.0, 1.0, [5.0, 3.0, 0.0, 0.0, 0.0])])),
         };
         // How scrolling looks in each: the same speeds, the trace sized to the preset's character.
         let mut interaction = interaction;

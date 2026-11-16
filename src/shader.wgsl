@@ -4,16 +4,12 @@
 //                   (premultiplied); the colour is ground × (1 − r − g) + ink × r + hue × g, linear, so
 //                   an anti-aliased edge over another paint decodes to the blend of the two colours.
 //                   Pictures: rgb = their colour, a = coverage.
-//                   b = a code (straight, b / a): below 0.45 it is hue × 0.15 + is-shape × 0.05 (so a glyph's
-//                   anti-aliased edge over a shape of the same hue keeps its hue); from 0.5
-//                   up the instance is one the height materials (chrome, liquid) shade, and b is
-//                   0.5 + 0.49 × its height coordinate (0 at the top of its line or shape, 1 at the bottom).
+//                   b = a code (straight, b / a): hue × 0.15 + is-shape × 0.05 (so a glyph's
+//                   anti-aliased edge over a shape of the same hue keeps its hue).
 //     near (rgba8, max-blended): r = signed nearness to the outline, by true outline: 0.5 on it, 1 at
 //                   SPREAD px inside, 0 at SPREAD px outside; g = where a picture is, (PicFx slot + 1) / 8;
 //                   b = the instance's own looseness (held, born, or set at rest); a = a material
 //                   override (≥ 128/255: 128 + level × 16 + id) or else the print pitch of glyphs × 2 / 255.
-//     soft (rgba8, added; only when liquid is in use): a metaball field of the instances liquid shades,
-//                   a = field / 2, rgb = their colour × a.
 //   Stage 2 (the material) reads both plus the field and decides the final pixel. Pictures turn into
 //   marks by their own PicFx slot (DESIGN.md §1.6.1); text and shapes follow the material.
 
@@ -37,7 +33,7 @@ struct U {
   third: vec4f,
   burst: vec4f,    // a burst's rect, device px (x0, y0, x1, y1)
   burst_t: vec4f,  // its start time, strength, length (s); w: the legibility cap (Look::legible_cap)
-  mats: array<vec4f, 24>, // every material's numbers, two vec4s each (style.rs MAT_PARAMS)
+  mats: array<vec4f, 18>, // every material's numbers, two vec4s each (style.rs MAT_PARAMS)
   calm: array<vec4f, 4>,  // boxes fronts pass by (x0, y0, x1, y1, device px)
   qual: vec4f,     // the material resolution: 1 / q for the reduced pass (1 otherwise), q, its size w, h
   scopes: array<vec4f, 8>, // each front's scope box (x0, y0, x1, y1, device px): it reaches instances centred inside
@@ -60,10 +56,9 @@ struct U {
 @group(0) @binding(6) var chars: texture_2d<f32>;    // character tiles cut per device pitch (marks.rs char_tiles)
 @group(0) @binding(7) var before: texture_2d<f32>;   // the frame before the last commit
 @group(0) @binding(9) var lo: texture_2d<f32>;       // the material at reduced resolution (DESIGN.md §1.12)
-@group(0) @binding(8) var soft: texture_2d<f32>;     // the liquid's field
 
 const PLAIN: i32 = 0; const DOT: i32 = 1; const HALFTONE: i32 = 2; const ASCII: i32 = 3; const PRINT: i32 = 4;
-const LINO: i32 = 5; const GLITCH: i32 = 6; const XRAY: i32 = 7; const CHROME: i32 = 8; const LIQUID: i32 = 9; const COLLAGE: i32 = 10; const NEAR: i32 = 11;
+const LINO: i32 = 5; const GLITCH: i32 = 6; const XRAY: i32 = 7; const NEAR: i32 = 8;
 fn mp(m: i32, i: i32) -> vec4f { return u.mats[m * 2 + i]; }
 /// The material an instance (or a pixel) is drawn with: its override, or the global one.
 fn eff_mat(code: f32) -> i32 { if (code >= 127.5) { return i32(round(code)) % 16; } return i32(u.fd.x); }
@@ -125,8 +120,6 @@ fn exact_i(iv: VOut) -> VOut {
 }
 
 @vertex fn vs_inst(i: VIn) -> VOut { return vs_pad(i, u.fd.z); }
-// The liquid's field reaches further than the nearness, as far as shapes fuse.
-@vertex fn vs_soft(i: VIn) -> VOut { return vs_pad(i, max(u.fd.z, mp(LIQUID, 0).x * u.res.z)); }
 fn vs_pad(i: VIn, spad: f32) -> VOut {
   let c = vec2f(f32(i.vi & 1u), f32((i.vi >> 1u) & 1u));
   // Glyph rects already include the spread; shapes and pictures are padded here so their nearness fits.
@@ -226,27 +219,8 @@ fn mesh_px(i: VOut) -> vec4f {
   return c;
 }
 
-/// Whether the height materials (chrome, liquid) shade this instance: shapes whose shorter side and
-/// glyphs whose type size is at least their `min_px`.
-fn is_big(i: VOut) -> bool {
-  let m = eff_mat(i.look.x);
-  if (m != CHROME && m != LIQUID) { return false; }
-  let min_px = mp(CHROME, 0).w * u.res.z;
-  if (i.paint.w < 0.5) { return i.look.w >= min_px * 1.25; }
-  if (i.paint.w > 2.5) { return i.extra.x < 0.5 && min(i.size.x, i.size.y) >= min_px; }
-  // Filled shapes, and rings whose band is wide enough to carry a bevel.
-  return i.paint.w < 1.5 && min(i.size.x, i.size.y) >= min_px && (i.extra.x == 0.0 || i.extra.x >= min_px * 0.25);
-}
 /// The ink code in b (see the top of this file).
-fn ink_code(i: VOut) -> f32 { return ink_code_as(i, is_big(i)); }
-fn ink_code_as(i: VOut, big: bool) -> f32 {
-  if (big) {
-    var ly = (i.pos.y - i.look.z) / max(i.look.w, 1.0);
-    if (i.paint.w < 0.5) { ly = fract(ly); }
-    return 0.5 + 0.49 * clamp(ly, 0.0, 1.0);
-  }
-  return round(i.look.y) * 0.15 + select(0.0, 0.05, i.paint.w > 0.5);
-}
+fn ink_code(i: VOut) -> f32 { return round(i.look.y) * 0.15 + select(0.0, 0.05, i.paint.w > 0.5); }
 /// How loose an instance is here: its own looseness and the fronts passing.
 fn loose1(i: VOut) -> f32 { return clamp(own_loose(i) * loose_scale(), 0.0, u.rip.x); }
 /// An instance's own looseness here (held, born, set at rest) plus what the fronts that reach it add,
@@ -280,7 +254,7 @@ fn ink_of(i: VOut, solid: bool) -> vec4f {
       let col = u.bg.rgb * max(1.0 - r - g, 0.0) + u.fg.rgb * r + hue_col(hue) * g;
       return vec4f(col * a, a);
     }
-    let code = select(hue * 0.15 + 0.07, ink_code_as(i, true), is_big(i) && !solid);
+    let code = hue * 0.15 + 0.07;
     // Transparent electronics: a solid is drawn as its edges (the silhouette and the creases, from the
     // resolved nearness) in its unlit colour over a faint shaded fill, as shapes are drawn by their
     // outline, so what is behind it shows through. Loosened, the edges break into dashes that run along
@@ -332,10 +306,9 @@ fn ink_of(i: VOut, solid: bool) -> vec4f {
       contour = clamp(line * 0.5 + 0.5 - f, 0.0, 1.0) * 0.7 * (1.0 - smoothstep(0.0, 0.6, k));
     }
     a = max(max(stroke, contour), s.x * fill * (1.0 - 0.5 * k)) * i.paint.z;
-    if (solid) { return vec4f(i.paint.x * (1.0 - i.paint.y) * a, i.paint.y * a, ink_code_as(i, false) * s.x * i.paint.z, s.x * i.paint.z); }
+    if (solid) { return vec4f(i.paint.x * (1.0 - i.paint.y) * a, i.paint.y * a, ink_code(i) * s.x * i.paint.z, s.x * i.paint.z); }
   }
-  // The modal layer is not metal or liquid: a dialog's panel and its labels stay what they are.
-  return vec4f(i.paint.x * (1.0 - i.paint.y) * a, i.paint.y * a, ink_code_as(i, is_big(i) && !solid) * a, a);
+  return vec4f(i.paint.x * (1.0 - i.paint.y) * a, i.paint.y * a, ink_code(i) * a, a);
 }
 fn near_of(i: VOut) -> vec4f {
   let s = inst(i);
@@ -351,21 +324,6 @@ fn near_of(i: VOut) -> vec4f {
   if (i.look.x >= 127.5 && s.y > select(0.02, 0.42, i.paint.w < 0.5)) { code = i.look.x / 255.0; }
   return vec4f(s.y * step(0.01, i.paint.z), slot, loose, code);
 }
-// The liquid's field: half at the outline, falling to nothing `fuse` px outside (glyphs only know their
-// nearness that far), so two outlines closer than `fuse` add up past the threshold and join.
-@fragment fn fs_soft(iv: VOut) -> @location(0) vec4f {
-  let i = exact_i(iv);
-  let s = inst(i);
-  if (!is_big(i) || eff_mat(i.look.x) != LIQUID) { discard; }
-  var reach = max(mp(LIQUID, 0).x * u.res.z, 1.0);
-  if (i.paint.w < 0.5) { reach = min(reach, u.fd.z); }
-  var f = select(0.5 * clamp(1.0 - s.w / reach, 0.0, 1.0), 0.5 + 0.5 * clamp(-s.w / reach, 0.0, 1.0), s.w < 0.0);
-  if (i.paint.w < 0.5 && s.y < 0.01) { f = 0.0; }
-  f *= step(0.01, i.paint.z);
-  let col = mix(mix(u.bg.rgb, u.fg.rgb, i.paint.x), hue_col(i.look.y), i.paint.y);
-  return vec4f(col * f * 0.5, f * 0.5);
-}
-
 // ── Stage 3: annotations, exactly, in the gaze colour (paint.y mixes toward the page ground, for
 // the plates under labels) ─────────────────────────────────────────────────────────────────────────
 @vertex fn vs_annot(i: VIn) -> VOut {
@@ -1005,184 +963,6 @@ fn m_xray(p: vec2f) -> vec3f {
   return mix(gnd(p), d.rgb, d.a * mix(1.0, hollow, smoothstep(0.1, 0.6, k)));
 }
 
-/// Classic chrome: the reflected direction looks up a band of sky over a hard horizon: deep blue-black
-/// overhead, bright white-cyan just above the horizon, a dark horizon line, warm brown and orange
-/// just below, a pale ground further down. `e` is where on that band it lands (negative = sky).
-fn chrome_env(e: f32, x: f32) -> vec3f {
-  let sky = mix(mix(vec3f(0.02, 0.04, 0.16), vec3f(0.30, 0.52, 0.92), smoothstep(-0.75, -0.28, e)), vec3f(0.92, 1.0, 1.0), smoothstep(-0.30, -0.03, e));
-  let ground = mix(mix(vec3f(0.30, 0.14, 0.05), vec3f(0.95, 0.52, 0.18), smoothstep(0.02, 0.18, e)), vec3f(1.0, 0.94, 0.84), smoothstep(0.22, 0.6, e));
-  var c = select(ground, sky, e < 0.0);
-  c = mix(c, vec3f(0.02, 0.02, 0.05), smoothstep(0.028, 0.012, abs(e - 0.004)));
-  return c + vec3f(0.04) * sin(x * 0.02);
-}
-/// The height field of the height materials: 0 at the outline, 1 at `bevel` px inside.
-fn chrome_h(q: vec2f, bevel: f32) -> f32 { return smoothstep(0.0, bevel, sdist(q)); }
-/// Metal at a point, at looseness `k` (0..0.6 the bevel softens and dulls before anything breaks up).
-fn chrome_shade(p: vec2f, ly: f32, k: f32) -> vec3f {
-  let a0 = mp(CHROME, 0); let a1 = mp(CHROME, 1);
-  let soft = smoothstep(0.0, 0.6, k);
-  let bevel = clamp(a0.x * u.res.z * (1.0 + soft), 1.0, u.fd.z - 0.5);
-  let hx = chrome_h(p + vec2f(1.0, 0.0), bevel) - chrome_h(p - vec2f(1.0, 0.0), bevel);
-  let hy = chrome_h(p + vec2f(0.0, 1.0), bevel) - chrome_h(p - vec2f(0.0, 1.0), bevel);
-  let n = normalize(vec3f(-hx * bevel * 0.8, -hy * bevel * 0.8, 1.0));
-  // The band is read by the height in the line and by the normal's y: bevels facing up see the sky,
-  // facing down the ground.
-  let e = (ly - 0.5) * a0.y * 1.15 - n.y * 0.85 * (1.0 - 0.5 * soft);
-  var c = chrome_env(e, p.x + n.x * 60.0);
-  // A sharp white rim on the bevels that face the light (upper left), and a soft sheen.
-  let facing = dot(normalize(n.xy + vec2f(1e-4)), normalize(vec2f(-0.7, -0.75))) * length(n.xy) / 0.62;
-  let rim = smoothstep(0.55, 0.8, facing) * a0.z * (1.0 - soft);
-  let hv = normalize(vec3f(-0.45, -0.6, 0.66) + vec3f(0.0, 0.0, 1.0));
-  let sp = pow(max(dot(n, hv), 0.0), 60.0) * a0.z * 0.9;
-  c = mix(c, vec3f(1.0), clamp(rim + sp, 0.0, 1.0));
-  // A broad reflection that follows the pointer: a soft band of light, slanted a little, strongest on
-  // the faces that look at the viewer and riding up the bevels.
-  if (u.pointer.x > -1e4) {
-    let bw = 70.0 * u.res.z;
-    let dx = ((p.x - u.pointer.x) + 0.45 * (p.y - u.pointer.y) - n.x * bw * 0.6) / bw;
-    let band = exp(-dx * dx) * (0.35 + 0.65 * n.z) * a0.z * (1.0 - soft);
-    c = mix(c, mix(vec3f(0.92, 0.97, 1.0), vec3f(1.0), smoothstep(0.6, 1.0, band)), clamp(band * 0.8, 0.0, 0.85));
-  }
-  // A dark rim right at the outline keeps the letterform crisp.
-  c *= mix(0.25, 1.0, smoothstep(0.0, 1.2 * u.res.z, sdist(p)));
-  c = mix(c, c * (u.accent.rgb * 1.6 + 0.2), a1.x);
-  return clamp(c, vec3f(0.0), vec3f(1.0));
-}
-/// Whether a point just outside the ink belongs to a big chrome element: a thin dark outline there.
-fn chrome_outline(p: vec2f) -> f32 {
-  let sd = sdist(p);
-  if (sd >= 0.0 || sd < -1.6 * u.res.z - 0.5) { return 0.0; }
-  let w = ink_inward(p);
-  if (w.a < 0.02 || w.ly < 0.0) { return 0.0; }
-  return smoothstep(-1.6 * u.res.z - 0.5, -0.8 * u.res.z, sd);
-}
-// chrome: large shapes and type become bevelled metal at rest (its one rest treatment), with a thin
-// dark outline; small text stays flat. Loosened, the bevel softens first; past 0.6 it melts into
-// dots of the same metal.
-fn m_chrome(p: vec2f) -> vec3f {
-  let d = dec(p);
-  let k = kt(p);
-  let s = u.res.z;
-  if (k > 0.6) {
-    let pitch = max(1.5, u.fa.x * s * 1.4);
-    let cell = floor(lat(p) / pitch);
-    let centre = (cell + 0.5) * pitch - anc;
-    let kc = kt(centre);
-    if (kc > 0.62 + 0.35 * h1(cell + 2.2)) {
-      let e = pitch * 0.25;
-      let avg = (ink_t(centre + vec2f(-e, -e)) + ink_t(centre + vec2f(e, -e)) + ink_t(centre + vec2f(-e, e)) + ink_t(centre + vec2f(e, e))) * 0.25;
-      let dc = dec_at(avg, centre);
-      let r = pitch * 0.52 * sqrt(avg.a);
-      let m = smoothstep(r + 0.6, r - 0.6, length(p - centre)) * step(0.05, avg.a);
-      var col = dc.rgb;
-      if (dc.ly >= 0.0) {
-        // A little sphere of chrome per dot.
-        let l = (p - centre) / max(r, 1.0);
-        let nz = sqrt(max(1.0 - dot(l, l), 0.0));
-        col = chrome_env((dc.ly - 0.5) * mp(CHROME, 0).y + l.y * 0.8, p.x) + vec3f(pow(max(dot(normalize(vec3f(l, nz)), normalize(vec3f(-0.3, -0.5, 1.0))), 0.0), 30.0)) * 0.8;
-      }
-      return mix(gnd(p), col, m);
-    }
-  }
-  if (d.ly < 0.0) {
-    let o = chrome_outline(p);
-    return mix(exact(p), vec3f(0.03, 0.03, 0.08), o * (1.0 - smoothstep(0.3, 0.6, k)));
-  }
-  return mix(gnd(p), chrome_shade(p, d.ly, k), d.a);
-}
-
-// liquid: the large shapes join where they come closer than `fuse` (a metaball field from stage 1),
-// shaded as a glossy liquid that bends what is behind its thin edges; the pointer pulls a bulge out
-// of it. Loosened, it drips.
-fn soft_t(p: vec2f) -> vec4f { return textureLoad(soft, vec2i(clamp(floor(p), vec2f(0.0), u.res.xy - 1.0)), 0); }
-fn lfield(p: vec2f) -> f32 {
-  var f = soft_t(p).a * 2.0;
-  let d = (p - u.pointer.xy) / (max(u.fc.y, 1e-3) * 0.45 * u.res.z);
-  // The pointer is a blob of its own only next to the liquid, so it pulls a bulge rather than drawing.
-  f += exp(-dot(d, d)) * 0.62 * u.pointer.z * smoothstep(0.05, 0.3, f);
-  return f;
-}
-fn lfield_drip(p: vec2f, k: f32) -> f32 {
-  var f = lfield(p);
-  if (k > 0.0) {
-    let s = u.res.z;
-    let colx = floor(p.x / (4.0 * s));
-    let len = mp(LIQUID, 0).w * s * k * pow(h1(vec2f(colx, 4.0)), 2.0);
-    for (var j = 1; j <= 4; j++) {
-      let t = f32(j) / 4.0;
-      f = max(f, lfield(p - vec2f(0.0, len * t)) - t * 0.18 - abs(fract(p.x / (4.0 * s)) - 0.5) * 0.25 * t);
-    }
-  }
-  return f;
-}
-fn m_liquid(p: vec2f) -> vec3f {
-  let a0 = mp(LIQUID, 0);
-  let s = u.res.z;
-  let k = kt(p);
-  let f = lfield_drip(p, k);
-  let base = exact(p);
-  if (f < 0.42) { return base; }
-  // Small things (a control, a label, the modal layer) are not swallowed by a body next to them.
-  let own = dec(p);
-  if (own.a > 0.5 && own.ly < 0.0) { return base; }
-  let e = 1.5;
-  let gx = lfield_drip(p + vec2f(e, 0.0), k) - lfield_drip(p - vec2f(e, 0.0), k);
-  let gy = lfield_drip(p + vec2f(0.0, e), k) - lfield_drip(p - vec2f(0.0, e), k);
-  let gl = max(length(vec2f(gx, gy)) / (2.0 * e), 1e-3);
-  let alpha = clamp((f - 0.5) / gl + 0.5, 0.0, 1.0);
-  if (alpha <= 0.0) { return base; }
-  let h = smoothstep(0.5, 0.75, f);
-  let n = normalize(vec3f(-gx * 3.0, -gy * 3.0, 1.0) * vec3f(1.0, 1.0, 0.6 + h));
-  // Colour: the field's own, so joins between two colours blend.
-  var sc = soft_t(p);
-  var colr = select(u.accent.rgb, sc.rgb / max(sc.a, 1e-3), sc.a > 0.004);
-  // Behind its thin edges, the page is bent by the surface.
-  let behind = gnd(p + n.xy * a0.y * s * 4.0) ;
-  let body = mix(behind, colr * (0.72 + 0.38 * h), 0.6 + 0.4 * smoothstep(0.0, 0.4, h));
-  let r = vec3f(2.0 * n.z * n.x, 2.0 * n.z * n.y, 2.0 * n.z * n.z - 1.0);
-  let env = mix(vec3f(1.0), vec3f(0.55, 0.6, 0.75), smoothstep(-0.3, 0.6, r.y));
-  let hv = normalize(vec3f(-0.4, -0.65, 0.65) + vec3f(0.0, 0.0, 1.0));
-  let sp = pow(max(dot(n, hv), 0.0), 90.0) * 1.5 + pow(max(dot(n, hv), 0.0), 10.0) * 0.18;
-  let fres = pow(1.0 - n.z, 2.5);
-  var c = body + (env * fres * 0.55 + vec3f(sp)) * a0.z;
-  c = mix(c, c * 0.55, smoothstep(0.55, 0.5, f) * 0.6);
-  return mix(base, clamp(c, vec3f(0.0), vec3f(1.0)), alpha);
-}
-
-// collage: the base of mixed media. Shapes are torn paper: their outline wanders by low-frequency
-// noise, with a lighter lip of paper fibre and a small shadow. Text is untouched; other materials come
-// in per element (`El::material`).
-fn m_collage(p: vec2f) -> vec3f {
-  let s = u.res.z;
-  let a0 = mp(COLLAGE, 0);
-  let k = kt(p);
-  let tear = a0.x * s * (1.0 + 1.5 * k); let lip = a0.y * s;
-  let sd = sdist(p);
-  let w = ink_inward(p);
-  let d = dec(p);
-  // Text is pasted on whole: any glyph in the pixel (a label's edge over a torn panel too) is exact.
-  if (!w.shape || (d.a > 0.02 && d.txt)) { return exact(p); }
-  // The torn edge grows out of the shape and bites into it by less than a pixel, so a thin track or a
-  // hairline outline stays whole.
-  let pa = lat(p);
-  var nsd = sd + max((vnoise(pa / (22.0 * s)) - 0.5) * 2.0 * tear + (vnoise(pa / (4.0 * s)) - 0.5) * tear * 0.35 - tear * 0.2, -0.4 * s);
-  // A 3D object is cut from several papers, one per face: loosened, the creases open into torn gaps
-  // (the nearness of a mesh is its silhouette and its creases), each with its lip of fibre.
-  let ng = near_t(p).g;
-  if (ng > 0.5 / 255.0 && ng < 0.05 && k > 0.0) {
-    nsd -= k * (3.0 + 4.0 * vnoise(pa / (9.0 * s))) * s;
-  }
-  // Shadow, from the same edge a little up and to the left.
-  let ps = p - vec2f(2.0, 3.0) * s;
-  let sh = sdist(ps) + (vnoise(lat(ps) / (22.0 * s)) - 0.5) * 2.0 * tear - tear * 0.2;
-  var g = gnd(p) * (1.0 - 0.16 * smoothstep(-3.0 * s, 1.0, sh) * step(nsd, 0.0));
-  let paper = mix(u.third.rgb, vec3f(1.0), 0.4);
-  g = mix(g, paper, smoothstep(-lip - 0.6, -lip + 0.6, nsd) * step(nsd, 0.0));
-  let inside = smoothstep(-0.6, 0.6, nsd);
-  let top = select(w.rgb, d.rgb, d.a > 0.5);
-  return mix(g, top, inside * max(w.a, d.a));
-}
-
 // near: the intermediate images made visible. The signed nearness in bands every `pitch` px, warm
 // inside the ink and cool outside, fading toward the edge of its reach; the outline in the ink colour;
 // the ink itself as a faint fill; the looseness of each instance as a tint over it.
@@ -1301,14 +1081,14 @@ fn scroll_trace(col: vec3f, q: vec2f, m: i32, sc: Sc) -> vec3f {
     let o = clamp(line + 0.5 - abs(sdist(at)), 0.0, 1.0) * step(0.02, near_t(at).r);
     return mix(c, u.accent.rgb, o * 0.7 * k);
   }
-  if (m == GLITCH || m == NEAR || m == CHROME) { return c; }
-  // plain (and collage, liquid): a soft trailing edge, at most.
-  let L = u.scrp.x * k * select(0.45, 1.0, m == LIQUID);
+  if (m == GLITCH || m == NEAR) { return c; }
+  // plain: a soft trailing edge, at most.
+  let L = u.scrp.x * k * 0.45;
   var a = 0.0; var tc = vec3f(0.0);
   for (var j = 1; j <= 3; j++) {
     let t = f32(j) / 3.0;
     let e = dec(q + d * L * t);
-    let w = trace_w(e, q + d * L * t) * (1.0 - t * 0.85) * select(0.14, 0.4, m == LIQUID);
+    let w = trace_w(e, q + d * L * t) * (1.0 - t * 0.85) * 0.14;
     if (w > a) { a = w; tc = e.rgb; }
   }
   return mix(c, tc, a * k);
@@ -1367,10 +1147,7 @@ fn shade_new(pf: vec2f) -> vec3f {
       case 5: { col = m_lino(p); }
       case 6: { col = m_glitch(p, is_pic); }
       case 7: { col = m_xray(p); }
-      case 8: { col = m_chrome(p); }
-      case 9: { col = m_liquid(p); }
-      case 10: { col = m_collage(p); }
-      case 11: { col = m_near(p); }
+      case 8: { col = m_near(p); }
       default: { col = m_plain(p); }
     }
     col = scroll_trace(col, p, m, sc);
@@ -1508,16 +1285,6 @@ fn tr_step(p: vec2f, x: f32, k: i32, s: ptr<function, TS>) {
     (*s).offn = (*s).offn - dv * sin(3.14159 * max(e * 2.0 - 1.0, 0.0)) * 0.7;
     (*s).m = max((*s).m, smoothstep(0.45, 0.55, e));
   } else if (kind == 8) {
-    // Melt: the old frame runs down in blobs; a chrome highlight sweeps the new one.
-    let n = vnoise(vec2f(p.x / (34.0 * sc), 0.0) + 2.3);
-    (*s).offo = (*s).offo + vec2f(0.0, -a * sc * e * e * (0.4 + 1.2 * n));
-    let blob = vnoise(p / (26.0 * sc) + vec2f(0.0, -e * 6.0));
-    (*s).m = max((*s).m, smoothstep(-0.05, 0.05, e * 1.25 - 0.15 - blob));
-    let hx = (p.x + p.y) / (u.res.x + u.res.y);
-    let hp = e * 1.6 - 0.3;
-    let hl = exp(-((hx - hp) * (hx - hp)) * (u.res.x + u.res.y) * (u.res.x + u.res.y) / max(b * b * sc * sc, 1.0));
-    (*s).tint = max((*s).tint, vec4f(1.0, 1.0, 1.0, hl * c * smoothstep(0.3, 0.5, e) * (1.0 - smoothstep(0.9, 1.0, e))));
-  } else if (kind == 9) {
     // Boxes find elements one after another, then what is in them is the new page.
     let n = i32(clamp(round(a), 0.0, 16.0));
     let lw = max(b * sc, 1.0);
@@ -1538,26 +1305,20 @@ fn tr_step(p: vec2f, x: f32, k: i32, s: ptr<function, TS>) {
       if (inside && e > st + 0.25) { (*s).m = max((*s).m, 1.0); }
     }
     (*s).m = max((*s).m, smoothstep(0.8, 1.0, e));
-  } else if (kind == 10) {
+  } else if (kind == 9) {
     // Carved in: the old fades to the ground, strokes grow along the new outlines, the ink floods.
     let sd = sdist(p);
     let reach = a * sc * smoothstep(0.1, b, e);
     (*s).fade = max((*s).fade, smoothstep(0.0, 0.3, e));
     if (abs(sd) < reach && near_t(p).r > 0.02) { (*s).m = max((*s).m, 1.0); }
     (*s).m = max((*s).m, smoothstep(b, 1.0, e));
-  } else if (kind == 11) {
+  } else if (kind == 10) {
     // Outlines first, in reading order, then the content fills.
     let sd = sdist(p);
     let o = along(p, 30.0);
     (*s).fade = max((*s).fade, smoothstep(0.0, 0.25, e));
     if (abs(sd) < max(a * sc, 0.8) && near_t(p).r > 0.02 && o < (e - 0.05) / 0.45) { (*s).m = max((*s).m, 1.0); }
     (*s).m = max((*s).m, smoothstep(b, 1.0, e));
-  } else if (kind == 12) {
-    // Paper tears along a noisy line; the old layer slides off as it peels.
-    let o = clamp(along(p, a) + ((vnoise(p / (70.0 * sc)) - 0.5) * 1.6 + (vnoise(p / (9.0 * sc)) - 0.5) * 0.5) * b * sc / diag(), 0.0, 1.0);
-    let edge = e * 1.15;
-    if (o < edge) { (*s).m = max((*s).m, 1.0); }
-    (*s).offo = (*s).offo - dir_of(a) * c * sc * e;
   }
 }
 /// The state the steps build at `x` (0–1 of the transition). The loop's bound is a uniform, so it is
