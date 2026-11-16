@@ -13,7 +13,7 @@ const TEXT: &str = "文字绕着东西的真实轮廓走，而不是绕着它的
 
 #[test]
 fn free_pieces() {
-    let a = Around { obstacles: vec![Silhouette::rounded(100.0, 0.0, 50.0, 40.0, 0.0)], gap: 10.0, min: 20.0 };
+    let a = Around { obstacles: vec![Silhouette::rounded(100.0, 0.0, 50.0, 40.0, 0.0)], gap: 10.0, min: 20.0, ..Around::new(vec![], 0.0) };
     assert_eq!(a.free(300.0, 0.0, 20.0, a.min), vec![(0.0, 90.0), (160.0, 300.0)]);
     // Below the obstacle (and its gap), the whole width.
     assert_eq!(a.free(300.0, 60.0, 80.0, a.min), vec![(0.0, 300.0)]);
@@ -23,7 +23,7 @@ fn free_pieces() {
     let e = (100.0f32 - 25.0).sqrt();
     assert!(f.len() == 2 && (f[0].1 - (100.0 - e)).abs() < 0.01 && (f[1].0 - (150.0 + e)).abs() < 0.01, "{f:?}");
     // A piece narrower than `min` is not used.
-    let b = Around { obstacles: vec![Silhouette::rounded(15.0, 0.0, 50.0, 40.0, 0.0)], gap: 0.0, min: 20.0 };
+    let b = Around { obstacles: vec![Silhouette::rounded(15.0, 0.0, 50.0, 40.0, 0.0)], gap: 0.0, min: 20.0, ..Around::new(vec![], 0.0) };
     assert_eq!(b.free(300.0, 0.0, 20.0, b.min), vec![(65.0, 300.0)]);
 }
 

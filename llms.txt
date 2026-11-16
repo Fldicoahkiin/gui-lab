@@ -96,3 +96,4 @@ Every documentation page as Markdown, at `md/en/<page>.md` and `md/zh-Hans/<page
 - [src/el.rs](src/el.rs): the element tree and its builders
 - [src/ui.rs](src/ui.rs): the runtime
 - [src/drive.rs](src/drive.rs): scripted input and the render tool
+- [src/wrap.rs](src/wrap.rs): text around true outlines (`.around(Around)`); a piece beside an obstacle is justified flush on both edges, at most `Around::justify_max` ems per gap (default 0.25), between Latin letters only with `Around::justify_latin_letters` (default off)
