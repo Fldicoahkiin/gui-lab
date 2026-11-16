@@ -2357,6 +2357,9 @@ impl<S, M: Clone> Ui<S, M> {
                 let (cx, cy) = unit[i].map_or(n.rect, |u| self.nodes[u].rect).center();
                 resp = [resp[0], 2.0, cx * s, cy * s];
             }
+            // The lens (DESIGN.md §1.15): a picture or a 3D element that fronts may loosen and that the
+            // pointer is not there to operate (no handler on it or above it) shows its marks under it.
+            if resp[0] > 0.0 && resp[1] < 1.5 && matches!(n.content, Content::Picture { .. } | Content::Scene3d(_)) && !operated(&self.nodes, i) { resp[3] = 1.0; }
             let loose = if held[i] { own_cap } else if under { n.loose.max(n.loosen).max(beneath) } else { n.loose.max(n.loosen) };
             let loose = loose.max(pulled(&self.nodes, i).min(own_cap));
             let mat = n.mat;
@@ -3493,6 +3496,18 @@ use crate::decode::Decode;
 /// What the field may do to a node (DESIGN.md §1.15): how much looseness fronts may add (0 when it is
 /// ignored or only nudged; `legible_cap` for legible elements that loosen; else 1), how loose a press held
 /// or a pull may make it (0 when ignored, `legible_cap` when legible, else 1), and its instances' `resp`.
+/// Whether the pointer operates node `i` or something around it (presses, drags, picks or hears moves):
+/// the lens stays out of the way of what is being used.
+fn operated<M>(nodes: &[Node<M>], i: usize) -> bool {
+    let mut k = Some(i);
+    while let Some(j) = k {
+        let n = &nodes[j];
+        if n.active() || n.on_pick.is_some() || n.on_move.is_some() { return true; }
+        k = n.parent;
+    }
+    false
+}
+
 fn response_caps<M>(n: &Node<M>, legible_cap: f32) -> (f32, f32, [f32; 4]) {
     let cap = if n.legible { legible_cap } else { 1.0 };
     let (front, own) = match n.respond { Response::Ignore => (0.0, 0.0), Response::Nudge => (0.0, cap), Response::Loosen => (cap, cap) };

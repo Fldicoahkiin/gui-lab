@@ -92,7 +92,9 @@ struct VOut {
   @location(3) @interpolate(flat) paint: vec4f,
   @location(4) @interpolate(flat) clip: vec4f,
   @location(5) @interpolate(flat) extra: vec4f,
-  @location(6) @interpolate(flat) radius: f32,
+  // Corner radius, and whether the lens may touch it (1: a picture or 3D element that responds `Loosen`
+  // and that the pointer does not operate, DESIGN.md §1.15 "the lens").
+  @location(6) @interpolate(flat) radius: vec2f,
   @location(7) @interpolate(flat) look: vec4f,
   // How the field may move it (scene.rs Instance::resp): looseness cap, push gain; and its centre.
   @location(8) @interpolate(flat) resp: vec4f,
@@ -148,7 +150,7 @@ fn vs_pad(i: VIn, spad: f32) -> VOut {
   o.local = c * r.zw - vec2f(pad);
   o.size = i.rect.zw;
   o.uv = select(i.uv.xy + o.local / i.rect.zw * (i.uv.zw - i.uv.xy), mix(i.uv.xy, i.uv.zw, c), i.paint.w < 0.5);
-  o.paint = i.paint; o.clip = i.clip; o.extra = i.extra; o.radius = i.uv.x; o.look = i.look;
+  o.paint = i.paint; o.clip = i.clip; o.extra = i.extra; o.radius = vec2f(i.uv.x, select(0.0, 1.0, i.paint.w > 1.5 && i.resp.y < 1.5 && i.resp.w > 0.5)); o.look = i.look;
   o.resp = vec4f(i.resp.x, i.resp.y, centre);
   o.org = i.rect.xy + push;
   o.uvr = i.uv;
@@ -194,7 +196,7 @@ fn inst(i: VOut) -> vec4f {
     }
     return vec4f(g.r, g.g, 0.0, (0.5 - g.g) * 2.0 * u.fd.z);
   }
-  var d = box_d(i.local, i.size, i.radius);
+  var d = box_d(i.local, i.size, i.radius.x);
   if (i.extra.x > 0.0) { d = abs(d + i.extra.x * 0.5) - i.extra.x * 0.5; }
   let near = clamp(0.5 - d / (2.0 * u.fd.z), 0.0, 1.0);
   return vec4f(clamp(0.5 - d, 0.0, 1.0), near, 0.0, d);
@@ -230,8 +232,11 @@ fn own_loose(i: VOut) -> f32 {
   let k = max(i.extra.z, 1.0 - born);
   if (i.resp.x <= 0.0) { return k; }
   var w = wave_in(i.pos.xy, i.resp.zw, 0.6);
-  // A 3D element also loosens under the lens and a hover's burst, as pictures do.
-  if (i.paint.w > 2.5) { w = max(w, max(lens(i.pos.xy), burst_k(i.pos.xy))); }
+  // The lens is a source of the field like a front: it reaches pictures and 3D elements that may be
+  // loosened and that the pointer is not operating (the flag in radius.y), up to their cap.
+  if (i.radius.y > 0.5) { w = max(w, lens(i.pos.xy)); }
+  // A 3D element also loosens under a hover's burst.
+  if (i.paint.w > 2.5) { w = max(w, burst_k(i.pos.xy)); }
   return k + clamp(w, 0.0, max(i.resp.x - k, 0.0));
 }
 
@@ -313,7 +318,10 @@ fn ink_of(i: VOut, solid: bool) -> vec4f {
 fn near_of(i: VOut) -> vec4f {
   let s = inst(i);
   let born = clamp((u.res.w - i.extra.w) / max(u.fc.z, 1e-3), 0.0, 1.0);
-  let loose = min(own_loose(i), 1.0) * step(0.02, s.y) * step(0.01, i.paint.z);
+  // Looseness belongs to the instance's own ink: where it has ink (coverage over a half) it is written
+  // as 0.5 + k / 2, in its halo as 0.49 k. Max-blended, any ink beats any halo, so one instance's
+  // looseness never spills onto a neighbour's ink (a new marker beside a column of dots).
+  let loose = enc_loose(min(own_loose(i), 1.0), s.x * i.paint.z > 0.5) * step(0.02, s.y) * step(0.01, i.paint.z);
   var slot = select(0.0, (i.paint.y + 1.0) / 8.0 - select(0.0, 1.0 / 32.0, i.resp.y > 1.5), s.z > 0.5);
   // A 3D element drawn through the material marks its pixels (within the nearness) with the projected
   // normal's code, 1..9 / 255: below any picture's flag, so nothing else reads it (ascii does).
@@ -336,7 +344,7 @@ fn near_of(i: VOut) -> vec4f {
   o.uvr = i.uv;
   o.size = i.rect.zw;
   o.uv = mix(i.uv.xy, i.uv.zw, c);
-  o.paint = i.paint; o.clip = i.clip; o.extra = i.extra; o.radius = 0.0; o.look = i.look;
+  o.paint = i.paint; o.clip = i.clip; o.extra = i.extra; o.radius = vec2f(0.0); o.look = i.look;
   o.xf = vec4f(0.0);
   return o;
 }
@@ -408,6 +416,12 @@ fn lens(p: vec2f) -> f32 {
   let disc = 1.0 - step(1.0, length(d));
   return mix(bell, disc, clamp(u.pointer.w, 0.0, 1.0)) * u.pointer.z * step(0.5, u.fc.y);
 }
+/// Looseness as stage 1 writes it into near.b (8 bits): on an instance's own ink 128 + 127 k, in its
+/// halo 125 k, so any ink is above any halo and 0 is exactly 0 either way.
+fn enc_loose(k: f32, owns: bool) -> f32 { return select(round(125.0 * k), 128.0 + round(127.0 * k), owns) / 255.0; }
+fn dec_loose(b: f32) -> f32 { let v = round(b * 255.0); return select(v / 125.0, (v - 128.0) / 127.0, v >= 128.0); }
+/// How loose the ink (or the halo) at an exact texel is.
+fn loose_t(p: vec2f) -> f32 { return dec_loose(near_t(p).b); }
 fn ink(p: vec2f) -> vec4f { return textureSampleLevel(tex0, samp, p / u.res.xy, 0.0); }
 fn near(p: vec2f) -> vec4f { return textureSampleLevel(tex1, samp, p / u.res.xy, 0.0); }
 // Exact texels (no filtering), for averaging cells and for pitch 1 to be the image itself.
@@ -502,11 +516,9 @@ fn mark(s: f32, col: f32, uv: vec2f, lod: f32) -> vec2f {
 /// instance's own (held, born, set at rest).
 // A picture to read (a picture in a control: legible, so its instances carry the push code 2) is marked
 // in near.g a little below its slot's step; the lens loosens it at most to the legibility cap.
-fn pic_legible(g: f32) -> bool { return g > 0.05 && g * 8.0 - round(g * 8.0) < -0.1; }
 fn pic_k(q: vec2f) -> f32 {
-  let n = near_t(q);
-  let l = select(lens(q), min(lens(q), u.burst_t.w), pic_legible(n.g));
-  return clamp(half_plane(q) + l + n.b + u.rip.y, 0.0, u.rip.x);
+  // The lens reaches a picture through its own looseness (stage 1), as the fronts do.
+  return clamp(half_plane(q) + loose_t(q) + u.rip.y, 0.0, u.rip.x);
 }
 /// Step 2: the pitch grows from 1 to `pitch` over the first half of loosening.
 fn pic_p(k: f32, pitch: f32) -> f32 {
@@ -675,7 +687,7 @@ fn burst_k(p: vec2f) -> f32 {
 }
 /// How loose text and shapes are here: fronts and their tails, the half-plane, and each instance's
 /// own looseness, scaled by the style.
-fn kt(p: vec2f) -> f32 { return clamp((half_plane(p) + near_t(p).b + u.rip.y) * loose_scale(), 0.0, u.rip.x); }
+fn kt(p: vec2f) -> f32 { return clamp((half_plane(p) + loose_t(p) + u.rip.y) * loose_scale(), 0.0, u.rip.x); }
 /// Whatever is drawn at a point, pictures as their marks: for materials that move the picture around.
 fn scene_at(q: vec2f) -> vec3f {
   let n = near_t(q);
@@ -687,7 +699,7 @@ fn scene_at(q: vec2f) -> vec3f {
 // lets a partial looseness (beneath a dialog) read clearly; fully loose is 0.3.
 fn m_plain(p: vec2f) -> vec3f {
   let d = dec(p);
-  return mix(gnd(p), d.rgb, d.a * mix(1.0, 0.3, sqrt(clamp(near_t(p).b * loose_scale(), 0.0, 1.0))));
+  return mix(gnd(p), d.rgb, d.a * mix(1.0, 0.3, sqrt(clamp(loose_t(p) * loose_scale(), 0.0, 1.0))));
 }
 
 // dot: the global lattice; text loosens into units sized by the ink under them, the ground is a field
@@ -700,13 +712,13 @@ fn m_dot(frag: vec2f) -> vec3f {
   let w0 = wave(vec2f(p.x, (band + 0.5) * bh - anc.y), 0.6);
   let pick = step(0.55, h1(vec2f(band, floor(t * 9.0))));
   // Only what is really loose slips: nudged text, and text held at the legibility cap, stays in place.
-  p.x += (h1(vec2f(band, floor(t * 17.0))) - 0.5) * 70.0 * s * u.fa.w * pick * smoothstep(0.2, 0.9, w0) * smoothstep(0.2, 0.45, near_t(frag).b);
+  p.x += (h1(vec2f(band, floor(t * 17.0))) - 0.5) * 70.0 * s * u.fa.w * pick * smoothstep(0.2, 0.9, w0) * smoothstep(0.2, 0.45, loose_t(frag));
   let here = near_t(frag);
   let pitch = max(1.5, u.fa.x * s);
   let cell = floor(lat(p) / pitch);
   let block = (cell + 0.5) * pitch - anc;
   let centre = block + (h2(cell) - 0.5) * u.fa.z * pitch;
-  let loose = min((half_plane(centre) + near(centre).b + (h1(cell + 7.0) - 0.5) * 0.22) * loose_scale(), u.rip.x);
+  let loose = min((half_plane(centre) + loose_t(centre) + (h1(cell + 7.0) - 0.5) * 0.22) * loose_scale(), u.rip.x);
   let printed = select(0.0, here.a * 255.0 * 0.5, here.a < 0.5);
   let printed_b = select(0.0, near_t(block).a * 255.0 * 0.5, near_t(block).a < 0.5);
   var col: vec3f; var alpha: f32;
@@ -981,7 +993,7 @@ fn m_near(p: vec2f) -> vec3f {
   let tint = select(u.second.rgb, u.accent.rgb, sd > 0.0);
   col = mix(col, tint, line * 0.85);
   col = mix(col, u.fg.rgb, clamp(1.0 - abs(sd) / (0.8 * s), 0.0, 1.0));
-  col = mix(col, u.third.rgb, clamp(n.b + half_plane(p), 0.0, 1.0) * 0.35 * step(0.5, n.r));
+  col = mix(col, u.third.rgb, clamp(loose_t(p) + half_plane(p), 0.0, 1.0) * 0.35 * step(0.5, n.r));
   return col;
 }
 
