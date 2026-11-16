@@ -110,6 +110,7 @@ pub struct Node<M> {
     on_pick: Option<crate::el::OnPick<M>>,
     on_wheel: Option<crate::el::OnWheel<M>>,
     on_move: Option<crate::el::OnMove<M>>,
+    guide: Option<Rc<Vec<(f32, f32)>>>,
     /// The box layout gave it, relative to its parent (scrolling does not change it).
     local: taffy::Layout,
     tid: NodeId,
@@ -2972,6 +2973,32 @@ impl<S, M: Clone> Ui<S, M> {
     /// Stage 3: the annotation records of this frame and their instances, exact, in Departure Mono at
     /// whole multiples of its size.
     fn paint_gaze(&mut self) {
+        self.paint_gaze_marks();
+        self.paint_guides();
+    }
+    /// Guides (`El::guide`): each a closed outline drawn as dots a device px or two across, every 4
+    /// logical px, in the annotation colour, over everything, whatever the annotation mode.
+    fn paint_guides(&mut self) {
+        let s = self.scale;
+        let col = self.gaze_of.map_or(Gaze::default().colour, |f| f(&self.state).colour);
+        let t = s.round().max(1.0) * 1.5;
+        for n in self.nodes.iter().filter(|n| !n.hidden) {
+            let Some(g) = &n.guide else { continue };
+            let clip = [n.clip.x * s, n.clip.y * s, n.clip.right() * s, n.clip.bottom() * s];
+            let (ox, oy) = (n.rect.x, n.rect.y);
+            for k in 0..g.len() {
+                let (a, b) = (g[k], g[(k + 1) % g.len()]);
+                let len = (b.0 - a.0).hypot(b.1 - a.1);
+                let steps = (len / 4.0).ceil().max(1.0) as usize;
+                for j in 0..steps {
+                    let f = j as f32 / steps as f32;
+                    let (x, y) = ((ox + a.0 + (b.0 - a.0) * f) * s, (oy + a.1 + (b.1 - a.1) * f) * s);
+                    self.scene.annot.push(Instance { rect: [(x - t * 0.5).round(), (y - t * 0.5).round(), t.round(), t.round()], paint: [0.0, 0.0, 0.95, SHAPE], clip, look: [col[0], col[1], col[2], 0.0], ..Default::default() });
+                }
+            }
+        }
+    }
+    fn paint_gaze_marks(&mut self) {
         self.scene.annot.clear();
         let g = match self.gaze_of { Some(f) => f(&self.state), None => { self.annots.clear(); return; } };
         if g.mode == GazeMode::Off { self.annots.clear(); self.gaze_seen.clear(); self.gaze_until = f32::NEG_INFINITY; return; }
@@ -3391,7 +3418,7 @@ fn measure_key(c: &Content) -> u64 {
 /// A virtual list's rows are built here, for what its viewport shows.
 #[allow(clippy::too_many_arguments)]
 fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], off: (bool, bool), flow: Option<(Rc<str>, usize)>, inh: Inherit, vx: &mut VirtCtx, built: &mut Built, nodes: &mut Vec<Node<M>>) -> usize {
-    let El { key, style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, annotate, gaze_scope, material, loosen, anchor, clips, calm, mut on_text, multiline, selectable, cursor, virt, access, ripple, mut on_pick, mut on_wheel, mut on_move, rtl, mut children } = el;
+    let El { key, style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, annotate, gaze_scope, material, loosen, anchor, clips, calm, mut on_text, multiline, selectable, cursor, virt, access, ripple, mut on_pick, mut on_wheel, mut on_move, guide, rtl, mut children } = el;
     let mut style = style;
     let mut inh = inh;
     if let Some(r) = rtl { inh.rtl = r; }
@@ -3448,7 +3475,7 @@ fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], of
         content, fill, border, radius, on_press, on_key, on_drag, on_blur, loose, wipe, bar, reveal, commit, modal, hidden, shift, shed, flow_field, flow: flow.clone(),
         mat: inh.code(), loosen: inh.loosen, annotate, scope: gaze_scope, anchor, clips, calm, on_text, multiline, selectable: inh.select, cursor,
         virt: virt_info, access, respond, legible, ripple: inh.scope.clone(), ripple_scope: ripple.container, recompose, recompose_always: is_text && ripple.recompose == Some(true), unframed: ripple.unframed, keyed,
-        on_pick, on_wheel, on_move, local: taffy::Layout::new(), tid: placeholder,
+        on_pick, on_wheel, on_move, guide, local: taffy::Layout::new(), tid: placeholder,
     });
     built.styles.push(style);
     built.kids.push(vec![]);

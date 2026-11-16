@@ -677,6 +677,25 @@
       ],
       "response": "nudge (a control: pushed as one piece by fronts, held and condensing at most to Look::legible_cap)",
       "recompose": "keyed labels recompose when their text changes"
+    },
+    {
+      "name": "nested_menu",
+      "title": "多级菜单",
+      "group": "navigation",
+      "functions": [
+        "nested_menu"
+      ],
+      "description": "行可以打开子菜单的菜单，按指针往哪里去来决定：指针在“上一处位置到子菜单两个近角”的三角形里朝子菜单移动时，经过的兄弟行不会接管（每次移动重新等 close_delay_ms，默认 200 ms）；在三角形外，停在一行上 submenu_delay_ms（默认 120 ms）后它接管。方向键、Enter、Esc；可以把三角形画出来（标注层）。",
+      "description_en": "A menu whose rows open submenus, steered by where the pointer heads: moving toward an open submenu inside the triangle from its previous position to the submenu's near corners does not switch rows (each move waits close_delay_ms again, 200 ms); outside it, a row takes over after submenu_delay_ms (120 ms). Arrow keys, Enter, Esc; the triangle can be drawn (annotation layer).",
+      "files": [
+        "src/widgets/nested_menu.rs"
+      ],
+      "recipe": "docs/recipes/submenu.md",
+      "dependencies": [
+        "base"
+      ],
+      "response": "nudge (a control: pushed as one piece by fronts, held and condensing at most to Look::legible_cap)",
+      "recompose": "keyed labels recompose when their text changes"
     }
   ]
 }

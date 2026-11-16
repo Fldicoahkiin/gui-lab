@@ -315,6 +315,16 @@ chrome 的环境带：上面深蓝近黑，接近地平线变成很亮的白青�
 - **浮动窗口**（`widgets::floating`，`Floating { size, area, corner_inset 16, projection_decel 0.998, spring, rubber }`）：随便拖，越过区域边按橡皮筋；松手时按投射的终点选最近的角（不是松手的位置），x、y 两个弹簧带着松手的速度过去；方向键换角。
 - 验收：`gesture.rs`、`bottom_sheet.rs`、`floating.rs` 的单元测试（解析步可组合、静止、带子有界、投射）；`tests/gesture.rs` 通过运行时以 60 Hz 模拟：慢拖回到原档、快甩收起且速度传进弹簧、往上拉越拉越少且不超过界、列表在顶上往下拉变成拖面板、角由投射选、静止时不要帧。样张 `craft <目录> sheet floating`。
 
+### 1.8.5 多级菜单和安全区
+
+`widgets::nested_menu`（`Menu { items, submenu_delay_ms 120, close_delay_ms 200, row_h 30, width 200, pad 4, overlap 4, show_safe_zone }`）。打开的路径是状态；几何也是状态自己的（每行 `row_h`、每个菜单 `width`、子菜单在它那一行旁边），所以不排版也能判断三角形。指针在菜单上的移动是消息（新的 `El::on_move`：鼠标和笔在元素上移动时给它局部坐标，离开时给 `None`；手指没有悬停）。
+
+- 安全区：从指针**上一次**的位置到最深一层子菜单两个近角的三角形。指针在三角形里时经过的兄弟行不接管：切换等 `close_delay_ms`，每次在里面移动重新计时；在三角形外，停在一行上 `submenu_delay_ms` 后这一行接管（有子菜单就打开）。最深一层里的行立刻变成当前行，它的子菜单 `submenu_delay_ms` 后打开。
+- 等待中 `Menu::due()` 给出时间，应用的 `on_wake` 返回它：等待时只在那个时刻要一帧，不是每帧。
+- 键盘：上下在最深一层里走，右或 Enter 打开子菜单（第一行为当前行），左或 Esc 关一层，Enter 在叶子上选中；`update` 返回选中的路径。
+- 调试层：`show_safe_zone` 时三角形用 `El::guide`（一条闭合的折线，局部坐标）交给标注层，按标注的颜色画成点线，不管标注层开不开。
+- 验收：`nested_menu.rs` 的单元测试；`tests/menu.rs`：对角线经过兄弟行子菜单不换、三角形画在标注层、进了子菜单以后不再要帧；三角形外直着往下，`submenu_delay_ms` 后换行、等待时有定时唤醒。样张 `craft <目录> menu`。
+
 ### 1.9 平台
 
 - 原生：winit 窗口（`window`，macOS 上走 Metal）；离屏渲染出 PNG（`shot`、`pages`）用于验收。

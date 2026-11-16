@@ -89,6 +89,7 @@ Every documentation page as Markdown, at `md/en/<page>.md` and `md/zh-Hans/<page
 - [bottom sheet](md/en/bottom-sheet.md): A panel that rises from the bottom edge: dragged by its handle or body between detents, swiped down to dismiss.
 - [floating](md/en/floating.md): A small box floating over an area (picture in picture): drag it anywhere; let go, the throw's projected end picks the nearest corner and a spring takes it th…
 - [caption](md/en/caption.md): A small monospaced line under a live demo that prints the parameters driving it (read from the same fields, never typed by hand), each also a number control.
+- [nested menu](md/en/nested-menu.md): A menu whose rows open submenus, steered by where the pointer heads: moving toward an open submenu inside the triangle from its previous position to the subm…
 - [AGENTS.md](md/en/ai-agents.md): gui-lab is a self-drawn interface framework in Rust (wgpu; the same code runs natively and on the web).
 - [llms.txt](md/en/ai-llms.md): Start with AGENTS.
 - [Registry](md/en/ai-registry.md): {
