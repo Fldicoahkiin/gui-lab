@@ -1255,7 +1255,7 @@ impl Renderer {
             tr: if split[3] > 0.0 { self.tr } else { [[0.0; 4]; 9] }, boxes: self.boxes,
             scrolls: field.scrolls, scrollo: field.scrollo,
             scrp: [look.scroll.trail * scale, look.scroll.misreg * scale, look.scroll.slip * scale, look.scroll.band.max(4.0) * scale],
-            scrq: [look.scroll.slip_ms.max(16.0) / 1000.0, if look.beat.on() { self.t_cont } else { t }, 0.0, 0.0],
+            scrq: [look.scroll.slip_ms.max(16.0) / 1000.0, if look.beat.on() { self.t_cont } else { t }, th.press_keep(look.legible_cap), 0.0],
             post: post.0, pal: post.1, fmap: self.fmap_u,
         };
         self.queue.write_buffer(&self.ubuf, 0, bytemuck::bytes_of(&u));

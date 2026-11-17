@@ -124,3 +124,38 @@ fn text_a_material_wears_away_at_rest_is_found() {
     let f = amenui::audit::eroded(&ui, (&half, &ground), (&px, &ground), "half");
     assert!(has(&f, Kind::Eroded, Level::P1, "title"), "{f:?}");
 }
+
+/// Filled controls to press: the accent button, the outlined one, a switch on and off.
+#[derive(Clone)] struct Pressed { m: amenui::style::Material, theme: usize, on: bool }
+fn controls(s: &Pressed) -> El<()> {
+    use amenui::widgets::{button, button_as, Variant};
+    col().pad(24.0, 24.0).gap(14.0)
+        .child(button_as("send", "Send", Variant::Accent, ()))
+        .child(button("save", "Save", ()))
+        .child(amenui::widgets::switch("live", "Live", s.on, None, ()))
+}
+fn press_page(page: &str, faces: Vec<amenui::text::Face>, (w, h, s): (u32, u32, f32), (m, theme, _): (Option<amenui::style::Material>, Option<usize>, Option<amenui::i18n::Locale>)) -> Result<Box<dyn Driven>, LookError> {
+    let on = page == "controls-on";
+    let st = Pressed { m: m.unwrap_or(amenui::style::Material::Plain), theme: theme.unwrap_or(0), on };
+    Ok(Box::new(Ui::new(st, controls, |s, _| s.on = !s.on, faces, w, h, s).on_look(|s| amenui::style::Look { material: s.m, theme: amenui::style::THEMES[s.theme], ..amenui::style::Look::default() })))
+}
+
+#[test]
+fn a_press_never_takes_a_filled_control_s_label_under_four_and_a_half_to_one() {
+    // Every frame of the press's flash, both themes, plain and the default material: no P0, and no P1
+    // for contrast.
+    let Ok(mut o) = Offscreen::try_new(W, H) else { eprintln!("no GPU adapter here: skipped"); return };
+    for key in ["send", "save", "live"] {
+        for theme in ["dark", "light"] {
+            for material in ["plain", "dottr"] {
+                let events = amenui::drive::parse_events(&format!(r#"[{{"at_ms": 800, "kind": "press", "target": "{key}"}}, {{"at_ms": 1000, "kind": "release", "target": "{key}"}}]"#), "the press").expect("events");
+                let spec = RenderSpec { page: "controls".into(), w: W, h: H, scale: 1.0, material: Some(material.into()), theme: Some(theme.into()), at_ms: 0.0, events, locale: None };
+                let mut worst: Vec<(u32, Finding)> = vec![];
+                amenui::drive::audit_frames(&spec, 46..90, 60, fonts(), Some(&mut o), &press_page, &mut |n, _, f| {
+                    for f in f.iter().filter(|f| (f.level == Level::P0 && f.kind != Kind::Restless) || (f.level == Level::P1 && f.kind == Kind::Contrast)) { worst.push((n, f.clone())); }
+                }).expect("frames");
+                assert!(worst.is_empty(), "{key}, {theme}, {material}: {:?}", worst.iter().map(|(n, f)| format!("frame {n}: {:?} {} {:?} {:.2} < {:.2}", f.level, f.key, f.kind, f.measured, f.limit)).collect::<Vec<_>>());
+            }
+        }
+    }
+}

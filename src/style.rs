@@ -53,6 +53,32 @@ pub struct Theme {
 impl Theme {
     /// display, body, mono: what a subtree's `Font::Display` / `Body` / `Mono` resolve to.
     pub fn roles(&self) -> [u8; 3] { [self.display, self.body, self.mono] }
+    /// How much of a control's ink `plain` keeps while it is held at the legibility cap `cap` (a press's
+    /// flash): what plain would keep at that looseness (`1 − 0.7 √cap`), but never so little that a
+    /// filled control's label (the ground on the accent, dim text, text or ink on the ground) falls under 4.5:1 (it
+    /// keeps 4.8:1, for the antialiased strokes);
+    /// where that leaves less than 6 % of a flash to see, the flash goes the other way instead (above 1:
+    /// the ink stands further from the ground, which only adds contrast). A pair already under 4.5:1 at
+    /// rest is the theme's own and is not counted.
+    pub fn press_keep(&self, cap: f32) -> f32 {
+        // The colours are mixed as they are written (sRGB values); luminance decodes them.
+        let lin = |v: f32| if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
+        let lum = |c: [f32; 3]| 0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2]);
+        let ratio = |a: [f32; 3], b: [f32; 3]| { let (x, y) = (lum(a), lum(b)); (x.max(y) + 0.05) / (x.min(y) + 0.05) };
+        let g = self.ground;
+        let tone = |t: f32| std::array::from_fn::<f32, 3, _>(|i| g[i] + (self.ink[i] - g[i]) * t);
+        // Fill and label, each as it is drawn: mixed toward the ground by `a`.
+        let pairs = [(self.accent, g), (g, tone(0.66)), (g, tone(0.86)), (g, self.ink)];
+        let at = |c: [f32; 3], a: f32| std::array::from_fn::<f32, 3, _>(|i| (g[i] + (c[i] - g[i]) * a).clamp(0.0, 1.0));
+        // 4.8 rather than 4.5: a label's thin strokes come out a little lighter than its colour.
+        let ok = |a: f32| pairs.iter().filter(|(f, l)| ratio(*f, *l) >= 4.8).all(|(f, l)| ratio(at(*f, a), at(*l, a)) >= 4.8);
+        let plain = 1.0 - 0.7 * cap.clamp(0.0, 1.0).sqrt();
+        if ok(plain) { return plain; }
+        // The least ink that still reads, found by halves.
+        let (mut lo, mut hi) = (plain, 1.0f32);
+        for _ in 0..24 { let m = 0.5 * (lo + hi); if ok(m) { hi = m; } else { lo = m; } }
+        if 1.0 - hi >= 0.06 { hi } else { 1.0 + 0.5 * (1.0 - plain) }
+    }
 }
 
 const SIZES: TypeScale = TypeScale { display: 34.0, title: 20.0, body: 16.0, small: 13.0 };

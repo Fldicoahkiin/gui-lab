@@ -43,7 +43,7 @@ struct U {
   scrolls: array<vec4f, 8>, // scroll nodes' viewports (x0, y0, x1, y1, device px), DESIGN.md §1.8.3
   scrollo: array<vec4f, 8>, // their content offsets (x, y, whole device px), trace strength, the way the content moves (±1 down/up, ±2 right/left)
   scrp: vec4f,     // the trace's lengths (device px): trail, misregistration, glitch slip, glitch band
-  scrq: vec4f,     // the least time between two glitch slips (s); the beat clock off the grid (condensing)
+  scrq: vec4f,     // the least time between two glitch slips (s); the beat clock off the grid (condensing); how much ink plain keeps at the legibility cap (Theme::press_keep)
   post: array<vec4f, 6>, // the finishing pass (post.rs Post::pack): dither kind, levels, palette size, on; bloom strength, threshold, radius, dither strength; chroma offset, scanline strength, period, grain; vignette strength, radius, curvature, grain cell; invert
   pal: array<vec4f, 16>, // the palette, sRGB 0–1
   fmap: vec4f,     // the field map (DESIGN.md §1.29): cell (device px), drift (device px), nodes across, down (0: all zero, not read)
@@ -170,6 +170,9 @@ fn vs_pad(i: VIn, spad: f32) -> VOut {
   // The field map's flow carries what may be pushed and reads it (look.z), by its centre; not a picture
   // or a 3D view (look.w), which loosens in place.
   if (!still && i.look.z > 0.5 && i.look.w < 0.5) { push += fmap_flow(centre) * u.fmap.y; }
+  // A legible piece moves by whole device pixels, so its glyphs are never sampled between texels (a
+  // label pushed by a press would blur for that frame and lose its contrast).
+  if (i.resp.y > 1.5) { push = round(push); }
   p += push;
   var o: VOut;
   o.pos = vec4f(p.x / u.res.x * 2.0 - 1.0, 1.0 - p.y / u.res.y * 2.0, 0.0, 1.0);
@@ -255,7 +258,9 @@ fn loose1(i: VOut) -> f32 { return clamp(own_loose(i) * loose_scale(), 0.0, u.ri
 /// which only fills up to its cap: text to read never passes `legible_cap` by the field.
 fn own_loose(i: VOut) -> f32 {
   let born = clamp((u.scrq.y - i.extra.w) / max(u.fc.z, 1e-3), 0.0, 1.0);
-  let k = max(i.extra.z, 1.0 - born);
+  // Text to read and controls (a piece pushed as one) are born up to the legibility cap only: a control
+  // that changes (a switch turned) is born again, and its label and track stay readable while it does.
+  let k = max(i.extra.z, select(1.0 - born, min(1.0 - born, u.burst_t.w), i.resp.y > 1.5));
   if (i.resp.x <= 0.0) { return k; }
   var w = wave_in(i.pos.xy, i.resp.zw, 0.6);
   // The lens is a source of the field like a front: it reaches pictures and 3D elements that may be
@@ -1281,11 +1286,14 @@ fn dither_t(kind: f32, p: vec2f) -> f32 {
   return vec4f(shade(p), 1.0);
 }
 
-/// Whether nothing is loose at `p`: no front, half-plane, burst or lens here, no looseness of its own,
-/// a picture's marks not showing.
+/// Whether nothing is really loose at `p` (it is shaded at full resolution): nothing past the
+/// legibility cap from fronts, the half-plane or its own looseness (what is held there, a pressed
+/// control, keeps the material's resting look, sharp), no lens, no burst over a 3D element, a
+/// picture's marks not showing.
 fn rest_at(p: vec2f) -> bool {
-  if (near_t(p).g > 0.05) { return pic_k(p) <= 0.0; }
-  return kt(p) < 0.02 && burst_k(p) <= 0.0 && lens(p) < 0.02;
+  let n = near_t(p);
+  if (n.g > 0.05) { return pic_k(p) <= 0.0; }
+  return kt_loose(p) < 0.02 && (n.g < 0.002 || burst_k(p) <= 0.0) && lens(p) < 0.02;
 }
 /// After the reduced pass: where any of the reduced texels around this pixel was at rest, the
 /// pixel is shaded here at full resolution (so a page at rest is exactly what quality 1 draws, and the
