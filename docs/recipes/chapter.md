@@ -1,3 +1,7 @@
+---
+kind: howto
+---
+
 # A chapter: one scene with actors that flow in
 
 A film is scenes that share a few actors. Give each actor a key of its scene and a flow id of the film; to cut, push `Cmd::Commit` (keep the frame as it is, then play the target look's transition — here a preset applied in `on_look`) and `Cmd::Flow` (the actors travel from where they are to where the new scene puts them), then change the scene. Everything else changes by the transition. A second cut during the first goes on from the frame on screen and from where the actors are: no queue. `src/gallery/film.rs` is the same thing at twelve scenes, with a 2.39:1 stage, a grid and a scripted autoplay.

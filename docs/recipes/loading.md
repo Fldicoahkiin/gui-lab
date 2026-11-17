@@ -1,3 +1,7 @@
+---
+kind: howto
+---
+
 # A list that loads
 
 The rules are numbers (`widgets::Loading`): what does not depend on the data (the title, the button) draws at once; a skeleton appears only if the data takes longer than `skeleton_after_ms` (300), so a quick answer never flashes one; when the data comes, row `i` takes its place `i × swap_stagger_ms` (40) later. The skeleton is the real row with `El::skeleton()`: laid out exactly the same, its text drawn as bars as wide as each line measures and its picture as a block, so the content replaces it without anything moving (`tests/loading.rs` checks every box).

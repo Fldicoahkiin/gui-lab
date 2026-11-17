@@ -1,3 +1,7 @@
+---
+kind: howto
+---
+
 # A dialog
 
 Declare the dialog next to the button that opens it; when `open` is true the runtime lifts it over the window, moves focus into it, keeps Tab inside, holds the page beneath at 0.35 looseness and sends the close message on Esc.

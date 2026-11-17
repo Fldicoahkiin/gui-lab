@@ -1,3 +1,7 @@
+---
+kind: howto
+---
+
 # A counter with recomposition and a scoped ripple
 
 The count is keyed text, so a new value recomposes only the changed digits (the old glyph's pixels fly to the new glyph's shape). The row is a `ripple_scope()` and the button sends its fronts to `Scope::Container(None)`: the shape beside it loosens, the label and digits only nudge (they are legible).

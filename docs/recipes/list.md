@@ -1,3 +1,7 @@
+---
+kind: howto
+---
+
 # A list with selection
 
 `list` is one focus stop: Up / Down / Home / End move the selection, a press picks a row. Rows are keyed `key:i`, so a script can press `files/list:3`.

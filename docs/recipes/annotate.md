@@ -1,3 +1,7 @@
+---
+kind: howto
+---
+
 # The annotation layer on a subtree
 
 `on_gaze` turns the third pass on; `gaze_scope()` limits it to one subtree; `annotate(..)` gives an element a callout and, with `only_marked`, only those are framed.

@@ -1,3 +1,7 @@
+---
+kind: howto
+---
+
 # Morph A into B
 
 Both elements are in the tree in the same place (`stack`); the one not shown is `hidden_until_morphed`. `Cmd::Morph` loosens the source, flies its lattice tiles and tightens the target; asking for the reverse mid-flight turns the tiles around.

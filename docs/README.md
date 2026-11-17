@@ -1,3 +1,7 @@
+---
+kind: readme
+---
+
 # Documentation
 
 Start with [AGENTS.md](../AGENTS.md) to write an interface, then the [recipes](recipes/) for complete
@@ -39,3 +43,10 @@ Each recipe is a page in [recipes/](recipes/) and a file in `examples/`, compile
   languages, components, styles and scenes, with the numbers and acceptance checks for each.
   Code comments cite its sections (`DESIGN.md §1.8.2`).
 - [Changelog](../CHANGELOG.md): what changed, newest first.
+
+## Conventions
+
+Every page under `docs/` starts with front matter naming its kind: `readme` (an index), `howto`
+(guides and recipes), `reference` (facts to look up) or `explanation` (the design). Each fact has one
+home; other pages link to it. Files at the repository root (README, AGENTS.md, CHANGELOG.md, llms.txt)
+have no front matter because the website renders them as they are.

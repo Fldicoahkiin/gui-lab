@@ -1,3 +1,7 @@
+---
+kind: howto
+---
+
 # Gestures: a bottom sheet and a floating box
 
 Both widgets keep their physics in the state (`amenui::gesture`): a drag is reported as `SheetMsg::Drag` / `FloatMsg::Drag`, the update hands it to `Sheet::update` / `Floating::update` with the time, and the tick steps the springs while `moving()` — so a still page draws nothing. Letting go hands the finger's velocity to the spring; where it comes to rest is decided by where that velocity would carry it (`gesture::project`), not by where the finger let go. Past a limit the drag is rubber-banded (`gesture::RubberBand`, 0.55).

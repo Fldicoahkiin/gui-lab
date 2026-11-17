@@ -1,3 +1,7 @@
+---
+kind: reference
+---
+
 # Fonts
 
 The fonts in `assets/` are all under the SIL Open Font License 1.1. Their licenses are in

@@ -1,3 +1,7 @@
+---
+kind: reference
+---
+
 # Architecture
 
 amenui is one Cargo package: a library, the `amenui` command line and two tools. Everything except
