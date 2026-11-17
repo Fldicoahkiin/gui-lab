@@ -578,6 +578,8 @@ pub struct Ui<S, M> {
     strand_hold: HashMap<String, (i64, f32, Vec<crate::strand::Seg>)>,
     strand_drawn: Vec<(String, f32, Vec<crate::strand::Seg>)>,
     trace_drawn: Vec<(String, Vec<[f32; 2]>)>,
+    /// The INK leaders of the last frame: the element's key and the whole path, device px.
+    leaders: Vec<(String, Vec<[f32; 2]>)>,
     trace_head: HashMap<String, [f32; 2]>,
 }
 
@@ -836,7 +838,7 @@ impl<S, M: Clone> Ui<S, M> {
             scrolling: Scrolling::default(), touch: None, touches: HashSet::new(), touching: false, fling: None, over: HashMap::new(), motion: HashMap::new(), scroll_paint: false, event_t: None,
             recs: HashMap::new(), recomps: HashMap::new(), slides: HashMap::new(), no_recompose: false,
             meshes: crate::mesh::Library::default(), mesh_hover: None, glyphs: Default::default(), prep: Default::default(), move_over: None, particle_gpu: false, motes: vec![], shed_at: HashMap::new(), shed_owed: HashMap::new(), field_marks: HashMap::new(), seen: HashMap::new(), outlines: HashMap::new(), decodes: HashMap::new(), decode_last: HashMap::new(), last_morph: None, left: Default::default(), queued: vec![], flushing: false, motes_made: 0,
-            fmap: crate::fieldmap::FieldMap::default(), stirr_at: HashMap::new(), fmap_size: (0.0, 0.0), fmap_ink: u64::MAX, strand_faded: HashMap::new(), strand_cache: HashMap::new(), strand_hold: HashMap::new(), strand_drawn: vec![], trace_drawn: vec![], trace_head: HashMap::new(),
+            fmap: crate::fieldmap::FieldMap::default(), stirr_at: HashMap::new(), fmap_size: (0.0, 0.0), fmap_ink: u64::MAX, strand_faded: HashMap::new(), strand_cache: HashMap::new(), strand_hold: HashMap::new(), strand_drawn: vec![], trace_drawn: vec![], leaders: vec![], trace_head: HashMap::new(),
         };
         ui.resize(w, h, scale);
         ui
@@ -3593,6 +3595,9 @@ impl<S, M: Clone> Ui<S, M> {
     /// The threads scribblr drew in the last frame: each element's key, its looseness and its pieces
     /// (device px; DESIGN.md §1.30).
     pub fn strands(&self) -> &[(String, f32, Vec<crate::strand::Seg>)] { &self.strand_drawn }
+    /// The INK leaders of the last frame (`Gaze` with INK): each annotated element's key and its leader's
+    /// whole path, device px, from its free end to the point on the element's true outline.
+    pub fn leaders(&self) -> &[(String, Vec<[f32; 2]>)] { &self.leaders }
     /// The drawn paths (`El::trace`) of the last frame: each element's key and its whole path as kept
     /// clear of pictures and text to read (device px), before progress and dashes cut it.
     pub fn traces(&self) -> &[(String, Vec<[f32; 2]>)] { &self.trace_drawn }
@@ -4247,6 +4252,7 @@ impl<S, M: Clone> Ui<S, M> {
     }
     fn paint_gaze_marks(&mut self) {
         self.scene.annot.clear();
+        self.leaders.clear();
         self.readout = gaze::Readout::default();
         let g = match self.gaze_of { Some(f) => f(&self.state), None => { self.annots.clear(); return; } };
         if g.mode == GazeMode::Off { self.annots.clear(); self.gaze_seen.clear(); self.gaze_until = f32::NEG_INFINITY; return; }
@@ -4360,18 +4366,42 @@ impl<S, M: Clone> Ui<S, M> {
                 run(&mut out, x1 - t, y0, x1 - t, y1);
                 run(&mut out, x0, y1 - t, x1, y1 - t);
                 run(&mut out, x0, y0, x0, y1);
-                // The leader: from the layout box's corner to the outline, as dots (it may run at any angle).
-                if let Some((ex, ey)) = end {
-                    let (ax, ay) = (dev(a.rect.x), dev(a.rect.y));
-                    let len = (ex - ax).hypot(ey - ay);
-                    if len > 6.0 * t {
-                        let steps = (len / (3.0 * t)).floor() as usize;
-                        for k in 0..=(steps as f32 * p) as usize {
-                            if k % 2 == 1 { continue; }
-                            let f = k as f32 / steps.max(1) as f32;
-                            bar(&mut out, (ax + (ex - ax) * f - t * 0.5).round(), (ay + (ey - ay) * f - t * 0.5).round(), t, t, 1.0, false);
+                // The leader (DESIGN.md §1.7): dashed, 4 on and 4 off, drawn on from its free end to the
+                // point of the true outline nearest that end. The free end is that corner,
+                // or the first other corner of the box, that is 12 px clear of every other element's text
+                // to read; the line between is routed round that text as threads are (control points
+                // moved, then curved), so no dash crosses it.
+                if let Some(&(ex, ey)) = end.as_ref() {
+                    let own = Rect::new(b[0] / s, b[1] / s, (b[2] - b[0]) / s, (b[3] - b[1]) / s);
+                    let read: Vec<[f32; 4]> = avoid.iter().filter(|r| r.intersect(&own).w <= 0.0 || r.intersect(&own).h <= 0.0)
+                        .map(|r| [r.x * s, r.y * s, r.right() * s, r.bottom() * s]).collect();
+                    let clear = |q: [f32; 2]| read.iter().all(|r| q[0] < r[0] - 12.0 * s || q[0] > r[2] + 12.0 * s || q[1] < r[1] - 12.0 * s || q[1] > r[3] + 12.0 * s);
+                    let r = a.rect;
+                    let from = [[r.x, r.y], [r.right(), r.y], [r.right(), r.bottom()], [r.x, r.bottom()]].into_iter().map(|c| [c[0] * s, c[1] * s]).find(|q| clear(*q));
+                    // The end is the point of the outline nearest where the leader starts, so it never
+                    // crosses the element to reach its far side.
+                    let (ex, ey) = match from {
+                        Some(f) if (f[0] - r.x * s).abs() > 0.5 || (f[1] - r.y * s).abs() > 0.5 => crate::hit::ink_of(&self.scene.instances, &self.owners[..self.page_len.min(self.owners.len())], |n| within(&self.nodes, n, a.node), (f[0], f[1]), &text.pixels)
+                            .and_then(|(_, e)| e).unwrap_or((ex, ey)),
+                        _ => (ex, ey),
+                    };
+                    if let Some(f) = from && (ex - f[0]).hypot(ey - f[1]) > 6.0 * t {
+                        let n = (((ex - f[0]).hypot(ey - f[1]) / (4.0 * s)).ceil() as usize).max(2);
+                        let line: Vec<[f32; 2]> = (0..=n).map(|k| { let u = k as f32 / n as f32; [f[0] + (ex - f[0]) * u, f[1] + (ey - f[1]) * u] }).collect();
+                        let mut path = crate::strand::clear_path(line, &[], 0.0, &read, 12.0 * s);
+                        // Its end stays on the outline.
+                        if let Some(e) = path.last_mut() { *e = [ex, ey]; }
+                        self.leaders.push((a.key.clone(), path.clone()));
+                        for piece in crate::strand::dashes(&path, p, 4.0 * s, 4.0 * s) {
+                            for ab in piece.windows(2) {
+                                let (dx, dy) = (ab[1][0] - ab[0][0], ab[1][1] - ab[0][1]);
+                                let len = dx.hypot(dy);
+                                if len <= 0.0 { continue; }
+                                let (cx, cy) = ((ab[0][0] + ab[1][0]) * 0.5, (ab[0][1] + ab[1][1]) * 0.5);
+                                let (c, sn) = (dx / len, dy / len);
+                                out.push(Instance { rect: [cx - len * 0.5, cy - t * 0.5, len, t], paint: [0.0, 0.0, 1.0, SHAPE], clip, look: col, xf: [c - 1.0, -sn, sn, c - 1.0], ..Default::default() });
+                            }
                         }
-                        bar(&mut out, (ex - t).round(), (ey - t).round(), t * 2.0, t * 2.0, 1.0, false);
                     }
                 }
                 if p >= 1.0 {

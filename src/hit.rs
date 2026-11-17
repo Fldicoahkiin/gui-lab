@@ -165,14 +165,15 @@ pub fn ink_of(instances: &[Instance], owners: &[(usize, u64)], owned: impl Fn(us
         let r = [r[0].max(c[0]), r[1].max(c[1]), r[2].min(c[2]), r[3].min(c[3])];
         if r[2] <= r[0] || r[3] <= r[1] { continue; }
         b = Some(match b { None => r, Some(o) => [o[0].min(r[0]), o[1].min(r[1]), o[2].max(r[2]), o[3].max(r[3])] });
-        if inst.paint[3] == GLYPH {
+        // Glyphs and shapes have an outline to end on (a picture's or a 3D view's is its box).
+        if inst.paint[3] == GLYPH || inst.paint[3] == crate::scene::SHAPE {
             let d = (corner.0 - corner.0.clamp(r[0], r[2])).hypot(corner.1 - corner.1.clamp(r[1], r[3]));
             if near.is_none_or(|(nd, _)| d < nd) { near = Some((d, k)); }
         }
     }
     let end = near.and_then(|(_, k)| {
         let inst = &instances[k];
-        let r = crate::form::ink_box(inst);
+        let r = if inst.paint[3] == GLYPH { crate::form::ink_box(inst) } else { inst.bounds(0.0) };
         let mut best: Option<(f32, (f32, f32))> = None;
         let mut y = r[1].floor();
         while y < r[3] {
