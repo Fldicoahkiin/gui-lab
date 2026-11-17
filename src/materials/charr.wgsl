@@ -21,10 +21,21 @@ fn m_charr(p: vec2f) -> vec3f {
   let cell = floor(lat(p) / P);
   // Characters only where the ink is really loose: text held at the cap stays as it is.
   if (kt_loose((cell + 0.5) * P - anc) <= 0.1 + 0.4 * h1(cell + 1.3)) { return exact(p); }
-  let avg = cell_avg(cell, P);
   let centre = (cell + 0.5) * P - anc;
+  // A cell over a picture's edge is not made into characters: the picture keeps its own edge.
+  let o0 = cell * P - anc;
+  for (var j = 0; j < 3; j++) { for (var i = 0; i < 3; i++) {
+    if (near_t(o0 + (vec2f(f32(i), f32(j)) * 0.5) * P).g > 0.05) { return exact(p); }
+  } }
+  let avg = cell_avg(cell, P);
   let d = dec_at(avg, centre);
   var n = clamp(floor(avg.a * levels), 0.0, levels - 1.0);
+  // A thin accent element (a rule) under a cell larger than it still shows as a row of characters in
+  // the accent, so the rule never breaks up: at least a middle character wherever it lies.
+  var acc_ink = ink_t(centre);
+  for (var j = -3; j <= 3; j++) { let t = ink_t(centre + vec2f(0.0, f32(j) * P * 0.15)); if (t.a > acc_ink.a) { acc_ink = t; } }
+  let rule = dec_at(acc_ink, centre).acc > 0.5 && acc_ink.a > 0.3;
+  if (rule) { n = max(n, floor(levels * 0.55)); }
   var m = -1.0;
   // On a 3D element (DESIGN.md §1.18): density by the light on it, and on its edges and slanted faces a
   // stroke (| / - \) along the edge or across the slope, by the projected normal, as often as
@@ -53,6 +64,7 @@ fn m_charr(p: vec2f) -> vec3f {
     }
   }
   if (m < 0.0) { m = char_mark(round(n * 15.0 / (levels - 1.0)), fract(lat(p) / P), P); }
-  let colour = select(d.rgb, u.fg.rgb, a0.z >= 0.5);
+  var colour = select(d.rgb, u.fg.rgb, a0.z >= 0.5);
+  if (rule) { colour = dec_at(acc_ink, centre).rgb; }
   return mix(gnd(p), colour, m);
 }

@@ -10,7 +10,10 @@ const H: u32 = 300;
 
 /// The frames from the press on the Crack button to `ms` after it, one every 1/60 s, and the frame
 /// before the press.
-fn crack(o: &mut Offscreen, ms: f32) -> (Vec<u8>, Vec<Vec<u8>>) {
+fn crack(o: &mut Offscreen, ms: f32) -> (Vec<u8>, Vec<Vec<u8>>) { let (b, f, _) = crack_from(o, ms); (b, f) }
+/// The same, and where the press was (device px). Frame `k` (from 0) is at `(k + 1) / 48` of the
+/// transition.
+fn crack_from(o: &mut Offscreen, ms: f32) -> (Vec<u8>, Vec<Vec<u8>>, [f32; 2]) {
     let mut ui = amenui::recipes::preset::ui(fonts(), W, H, 1.0);
     ui.relayout();
     let mut t = 0.0;
@@ -29,7 +32,7 @@ fn crack(o: &mut Offscreen, ms: f32) -> (Vec<u8>, Vec<Vec<u8>>) {
         out.push(o.render(&mut ui, &look));
         ui.frame_drawn();
     }
-    (before, out)
+    (before, out, [x, y])
 }
 
 fn px(f: &[u8], i: usize) -> &[u8] { &f[i * 4..i * 4 + 4] }
@@ -68,9 +71,61 @@ fn the_page_cracks_open_onto_the_new_one() {
 fn crack_has_its_numbers() {
     use amenui::preset::StepKind;
     assert_eq!(StepKind::Crack.params(), ["裂块", "角度", "偏向", "毛边", "硬边"]);
-    assert_eq!(StepKind::CRACK, [120.0, 70.0, 0.6, 3.0, 1.0]);
+    assert_eq!(StepKind::CRACK, [120.0, 70.0, 0.6, 2.0, 1.0]);
     assert!(StepKind::ALL.contains(&StepKind::Crack));
     let p = amenui::recipes::preset::cracked();
     assert_eq!(p.transition.steps[0].kind, StepKind::Crack);
     assert!(p.transition.duration_ms <= 900.0);
+}
+
+#[test]
+fn the_cracks_run_out_from_the_press_and_the_pieces_leave_whole() {
+    let Ok(mut o) = Offscreen::try_new(W, H) else { eprintln!("no GPU adapter here: skipped"); return };
+    let (before, frames, at) = crack_from(&mut o, 1000.0);
+    let last = frames.last().expect("frames").clone();
+    let n = (W * H) as usize;
+    let new = |f: &[u8], i: usize| px(f, i) == px(&last, i) && px(f, i) != px(&before, i);
+    let at_progress = |x: f32| &frames[((x * 48.0).round() as usize).saturating_sub(1)];
+    let diag = ((W * W + H * H) as f32).sqrt();
+    let far = |i: usize| { let (x, y) = ((i as u32 % W) as f32 + 0.5, (i as u32 / W) as f32 + 0.5); ((x - at[0]).powi(2) + (y - at[1]).powi(2)).sqrt() > 0.6 * diag };
+    // A fifth of the way in the cracks have not reached what is far from the press.
+    let f2 = at_progress(0.2);
+    let reached = (0..n).filter(|&i| far(i) && new(f2, i)).count();
+    assert_eq!(reached, 0, "{reached} px of the new page show far from the press at 0.2");
+    // At 0.3 the cracks are thin: under 12 % of the page shows the new one.
+    let f3 = at_progress(0.3);
+    let shown = (0..n).filter(|&i| new(f3, i)).count() as f32 / n as f32;
+    assert!(shown < 0.12, "{:.1} % shows at 0.3", shown * 100.0);
+    // The pieces: what is still the old page once the cracks are all there (0.35), split by them.
+    let f35 = at_progress(0.35);
+    let mut id = vec![usize::MAX; n];
+    let mut sizes = vec![];
+    for s0 in 0..n {
+        // Where the two pages are alike says nothing: it parts pieces like a crack.
+        if id[s0] != usize::MAX || new(f35, s0) || px(&before, s0) == px(&last, s0) { continue; }
+        let k = sizes.len();
+        let mut stack = vec![s0];
+        id[s0] = k;
+        let mut size = 0;
+        while let Some(i) = stack.pop() {
+            size += 1;
+            let (x, y) = (i as u32 % W, i as u32 / W);
+            for (dx, dy) in [(-1i32, 0i32), (1, 0), (0, -1), (0, 1)] {
+                let (nx, ny) = (x as i32 + dx, y as i32 + dy);
+                if nx < 0 || ny < 0 || nx >= W as i32 || ny >= H as i32 { continue; }
+                let j = (ny as u32 * W + nx as u32) as usize;
+                if id[j] == usize::MAX && !new(f35, j) && px(&before, j) != px(&last, j) { id[j] = k; stack.push(j); }
+            }
+        }
+        sizes.push(size);
+    }
+    // At 0.6 few pieces are on their way: whole (under 15 % gone) or gone (over 85 %).
+    let f6 = at_progress(0.6);
+    let mut gone = vec![0usize; sizes.len()];
+    for i in 0..n { if id[i] != usize::MAX && new(f6, i) { gone[id[i]] += 1; } }
+    let pieces: Vec<f32> = sizes.iter().zip(&gone).filter(|(s, _)| **s >= 200).map(|(s, g)| *g as f32 / *s as f32).collect();
+    let between = pieces.iter().filter(|f| **f > 0.15 && **f < 0.85).count();
+    eprintln!("{} pieces, {between} on their way at 0.6", pieces.len());
+    assert!(pieces.len() >= 6, "only {} pieces", pieces.len());
+    assert!(between * 4 <= pieces.len(), "{between} of {} pieces are partly gone at 0.6", pieces.len());
 }
