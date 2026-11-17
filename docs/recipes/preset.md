@@ -1,3 +1,7 @@
+---
+kind: howto
+---
+
 # A custom preset
 
 A style preset is plain data (`amenui::preset::Preset`): theme, material and its numbers, faces, annotation, the interaction character (press feedback, fronts, default responses, recomposition) and a transition. Start from one of the twelve and change what you want, or read one from JSON (`Preset::from_json`; the website's styles page exports any preset). `Preset::apply` gives the look; when a commit applies it, its transition plays between the frame as it was and the new one — here rows that reveal from the top. A second press in the middle goes on from what is on the screen.

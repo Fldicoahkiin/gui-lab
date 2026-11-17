@@ -1,3 +1,7 @@
+---
+kind: howto
+---
+
 # A custom material on one element
 
 `El::material(id)` draws a subtree with another material whatever the global one is. The card is marked as decoration (`respond(Loosen)`, `legible(false)`) so a front shows the material, and the button sends its front only over the card (`Scope::Container(Some("card"))`).

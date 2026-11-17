@@ -1,3 +1,7 @@
+---
+kind: howto
+---
+
 # A 3D object in a card
 
 A `scene3d` element (here through the `orbit` widget) is laid out like a picture: it takes the width it is given and the height you set. The meshes are generated in code (`MeshId::TORUS`); the global material draws it, because the renderer turns the mesh into the same ink and nearness images that text and shapes make (DESIGN.md §1.18). Drag it, turn the wheel over it, or focus it and use the arrow keys; after a fast drag it coasts to a stop, which is why the runtime steps the orbit on every tick.

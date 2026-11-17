@@ -1,3 +1,7 @@
+---
+kind: howto
+---
+
 # A dot chart
 
 `widgets::dot_chart` draws a `DotChart` (a few control points, a Catmull-Rom curve through them) as a field of dots: in column c, dot r covers the band [r, r + 1) of the rows, and how much of that band lies under the curve sets its diameter (`pitch × (0.25 + 0.65 k)`) and tone (`0.25 + 0.75 k`), so the field is the area under the curve. The range is drawn in the accent colour; the pointer scrubs a marker with the value (`El::on_move`); the control points on the axis drag the curve up and down live.

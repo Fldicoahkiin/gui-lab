@@ -1,3 +1,7 @@
+---
+kind: howto
+---
+
 # A stack of cards that fans
 
 `widgets::card_stack` draws a `Stack` as a 3D element, one card each. Hovering or pressing a card (the element's `Pick`) fans the cards beneath it about their bottom-left corners: card n below turns `angle(n) = angle0 × falloff^n` (42° × 0.7^n) and starts `delay(n) = delay_ms × n` (28 ms) later, each on its own spring. The look follows the material (`StackLook::of`): flat cards, thick cards with visible edges, or cards drawn in marks.

@@ -1,3 +1,7 @@
+---
+kind: howto
+---
+
 # Development
 
 The [architecture reference](../reference/architecture.md) maps what each module owns. This guide covers

@@ -1,3 +1,7 @@
+---
+kind: howto
+---
+
 # A page change with a shared part
 
 Give the part both pages share the same `flow` id, and push `Cmd::Flow` in `update` when the page changes. The runtime takes the commands before the next layout, pairs the instances by flow id and moves them; the rest of the old page loosens and fades.

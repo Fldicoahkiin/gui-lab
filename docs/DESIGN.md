@@ -1,412 +1,1027 @@
-# 设计
+---
+kind: explanation
+---
 
-一个自绘的界面框架。屏幕上的任何东西（字、图、形状、控件）都能按自己的真实轮廓松开、变形、再合回去；风格是可以换的材质。Rust + wgpu，同一份代码跑原生和网页（WebGPU，回退 WebGL2）。
+# Design
 
-这份文档是实现的依据。改设计先改这里。
+A self-drawn interface framework. Anything on screen (text, pictures, shapes, controls) can loosen along
+its own true outline, morph, and come back together; the look is a swappable material. Rust and wgpu,
+one codebase for native and web (WebGPU, falling back to WebGL2).
 
-## 0. 三条规矩
+This document is what the implementation follows. A design change starts here.
 
-1. **没有方框。** 任何效果都按真实轮廓算（字形、形状、图片的边），不按文本框、不按格子。
-2. **只有一种让东西动的办法。** 事件往场里放东西，场和每个实例自己的时间决定画面。组件不直接写动画。
-3. **静止时收敛，变化时给足。** 指针经过文字，文字不变。停下来的界面是一张干净、可读的页面。
+## Terms
 
-## 1. 流水线
+| Term | Meaning | In the code |
+| --- | --- | --- |
+| Coverage buffer | RGBA8 render target: tone, accent and a type code plus anti-aliased coverage; pictures write premultiplied colour | `ink` |
+| Signed distance field (SDF) buffer | RGBA8 target, max-blended: R signed distance (0.5 on the outline, ±`SPREAD` px), G picture slot, B looseness, A material override or print pitch | `near` |
+| G-buffer stage | The first pass: every instance drawn into the coverage and SDF buffers | stage 1 |
+| Screen-space shading stage | The second pass: the material reads both buffers and the wave field and writes the frame | stage 2 |
+| Looseness | How far an instance has come apart, 0 (intact) to 1 | `loose`, `loosen` |
+| Wave field | Ripple fronts, the pointer lens and other sources, evaluated analytically | `Field`, `Fx` |
+| Front | One expanding ripple ring from a press or a commit | `Front` |
+| Mark | A small pattern a loosened picture is redrawn with (a character, a dither cell, a stroke…) | `marks` |
+| Field map | A coarse energy and flow grid over the window | `fieldmap` |
+
+## 0. Three rules
+
+1. **No boxes.** Every effect follows true outlines (the edges of glyphs, shapes and pictures), never a
+   text box or a grid cell.
+2. **One way to make things move.** Events put things into the wave field; the field and each
+   instance's own clock decide the picture. Components never animate directly.
+3. **Calm at rest, generous in change.** The pointer passing over text leaves the text alone. An
+   interface that has stopped is a clean, readable page.
+
+## 1. The pipeline
 
 ```
-view(state) → 界面树 → 布局(taffy + parley) → 场景(实例) ─┐
-事件 → 命中 → 消息 → update(state)                        │
-事件 → 场(波、指针、滚动速度…)                           │
-                                                          ▼
-          第一遍：实例原样画进中间图（ink、near）
-          第二遍：材质读中间图和场 → 最终画面
-          第三遍：标注层（可选）
+view(state) → element tree → layout (taffy + parley) → scene (instances) ─┐
+event → hit test → message → update(state)                                │
+event → wave field (fronts, pointer, scroll velocity…)                    │
+                                                                          ▼
+          G-buffer stage: instances drawn as they are into the coverage and SDF buffers
+          Screen-space shading stage: the material reads both buffers and the field → frame
+          Annotation layer (optional)
 ```
 
-### 1.1 描述（`el.rs`）
+### 1.1 Describing (`el.rs`)
 
-`El<M>`：`key`、taffy `Style`、内容（无 / 文字 / 图片）、填充、边框、`on_press: M`、`on_key`、`on_drag`（按下和随后的拖动：阶段、指针在元素里的位置、元素的大小、离按下处的位移）、`on_blur`、`focusable`、`scroll`（纵向，或 `scroll_x` 横向；`bar` 显示位置细条）、`disabled`（这棵子树不接受输入，画得淡）、`modal`（对话框那种层，见 §1.8）、`commit`（按下它是一次提交，见 §1.5）、`reveal`（按键改了状态后滚到看得见它，比如选中的行）、`fonts`（这棵子树里标题、正文、等宽三种字体角色各用哪个字体）、`loose`（静止时的松开度）、`wipe`（对比擦除线）、子节点。文字内容带字体（角色或直接指定）、印成像素的点距和插入点（只在它所属的控件有焦点时画）；图片内容带它用的 `PicFx` 槽号。`El::map` 把一棵树的消息换成另一种，一个应用可以嵌进另一个应用的视图。视图是 `fn(&S) -> El<M>`，更新是 `fn(&mut S, M)`（Elm 式，消息是普通值）。没写 key 的节点用路径当 key。另有：`on_text`、`multiline`、`selectable`（§1.8.1），`cursor`（§1.8.2），`virtual_rows`（§1.13），`role`、`label` 等（§1.14）。
+`El<M>`: `key`, a taffy `Style`, content (none, text or picture), fill, border, `on_press: M`, `on_key`,
+`on_drag` (a press and the drag that follows: phase, pointer position in the element, the element's
+size, offset from the press), `on_blur`, `focusable`, `scroll` (vertical, or `scroll_x` horizontal; `bar`
+shows a thin position bar), `disabled` (the subtree takes no input and is drawn faint), `modal` (a
+dialog-style layer, §1.8), `commit` (pressing it is a commit, §1.5), `reveal` (after a key changes the
+state, scroll it into view, such as the selected row), `fonts` (which face each of the three type roles,
+display, body and mono, uses in this subtree), `loose` (looseness at rest), `wipe` (the compare wipe
+line), and children. Text content carries its face (a role or a face directly), the pitch it is printed
+as pixels at, and the caret (drawn only while its control has focus); picture content carries the
+`PicFx` slot it uses. `El::map` turns a tree's messages into another type, so one application can be
+embedded in another's view. A view is `fn(&S) -> El<M>` and an update is `fn(&mut S, M)` (Elm style;
+messages are plain values). A node without a key uses its path as its key. Also: `on_text`, `multiline`,
+`selectable` (§1.8.1), `cursor` (§1.8.2), `virtual_rows` (§1.13), `role`, `label` and the rest (§1.14).
 
-### 1.2 布局
+### 1.2 Layout
 
-taffy 树在两次布局之间保留，只改新视图里和上次不一样的地方（§1.13）。文字叶子用 parley 量：给定宽度，返回高度。单位是逻辑像素，字号任意，不要求等宽。输出：每个节点的绝对矩形和裁剪矩形。
+The taffy tree is kept between layouts, and only what differs from the last view is changed (§1.13).
+Text leaves are measured by parley: given a width, they return a height. Units are logical pixels; any
+font size, no monospace requirement. Output: every node's absolute rect and clip rect.
 
-滚动容器：`scroll` 的节点裁剪子节点，偏移量存在运行时里，按 key 记；横向的按 x 偏移。`El::clip()` 只裁剪、不滚动（场景里的窗口、走字条）。
+Scroll containers: a `scroll` node clips its children; the offset lives in the runtime, keyed by `key`;
+horizontal scrolling offsets x. `El::clip()` clips without scrolling (windows in scenes, tickers).
 
-**绕开轮廓排字**（`src/wrap.rs`，不依赖显卡）。文字元素写 `.around(Around)`，正文就绕开障碍物的真实轮廓排，不绕它的方框。障碍物是 `Silhouette`：从某一行起，每一逻辑像素一行，记下这一行墨覆盖的横向范围（`circle`、`rounded`、`from_alpha`——按图片的 alpha 逐行取第一个和最后一个过半的像素）；坐标是这段文字自己内容框里的坐标。`Around { obstacles, gap, min }`：断行时从上往下，每次取一个行高的带子，算出这条带子在列宽里没有被挡住的几段（每个障碍物在这条带子整个高度里最宽的横向范围，左右各扩 `gap`；带子碰不到墨、但上下离墨不到 `gap` 时，按沿轮廓扫过的半径 `gap` 的圆挡住，所以上下也留出间隔），带子按行盒的样子取整像素，比 `min` 窄的段不用；每一段排一行（左右两段就排两行，从左到右），从这一段的起点排；一边挨着障碍物的段（不是段落的最后一行）两端对齐：剩下的宽度分到字群之间（挨着中日韩字的每个字后面，西文在空格处；一段西文里没有空格、并且 `Around::justify_latin_letters` 开着时才分到字母之间，默认关），所以左边的段从列的左边起、到轮廓减 `gap` 止，右边的段从轮廓加 `gap` 起、到列的右边止，两边都齐，字离轮廓左右都是 `gap`。每个间隙最多加 `Around::justify_max`（以字号为单位，默认 `wrap::JUSTIFY_MAX_EM` = 0.25）；要加得更多时，按多放一个字群（西文一个词）重新断这一行，每个间隙收紧不超过 `wrap::SHRINK_EM`（0.05，全是空格时 `SHRINK_SPACE_EM` = 1/9）就用它，否则这一段从起点排、在障碍物那一侧参差。实现：先照常断行，记下每行的起点、带子、文字范围和每个间隙加多少；有要对齐的行时，用同一段文字、在这些字群上加 parley 的 `LetterSpacing` 再排一次，按记下的字数（`break_next_with_length`）原样断开，所以断点（含行首不放收尾标点的规则）和第一次一样，绘制、选区、插入点、行盒都按对齐以后的样子；排版只在障碍物换了网格位置时才发生，指针移动不排版；一个词比这一段还宽时这一段空着，带子里的段用完了再往下一个行高；一段也没有时往下挪 4 像素再找。断行仍然由 parley 做，只是每行用 `BreakerState::set_line_x / set_line_y / set_line_max_advance` 给它不同的起点和宽度，所以中西文混排、标点、字号行高照常。测量（`Text::measure_around`）和绘制走同一个函数，缓存按障碍物的哈希。高度到最后一行的底。验收：`tests/wrap.rs` 读字形图集，验每个有墨的像素离圆的墨至少 `gap − 1`（在圆旁边按它这一行的带子量横向距离，在圆的上下量直线距离；带一个忽略障碍物的对照）；`tests/wrap_around.rs` 在小志的二十个位置、两种语言下，按每一行的行盒（`Ui::line_boxes`）量左右两边离轮廓的距离，两边都有字的带子里相差不超过 2 像素、右边的段离轮廓是 `gap`（加减网格的一步）（左边的段因为上限没对齐的带子除外）；同一个测试文件在二十个位置、两种语言下验圆旁边除最后一行以外的每一段外边离列边不超过 1 像素、里边离轮廓是 `gap` 加减网格的一步，或者是因为上限从起点排的段，两种语言都不超过 15%（英文先拉空格到上限，再在字母之间加至多 `wrap::TRACK_MAX_EM`（0.08 em）的字距，还不够时把下一个词按 Liang 的 en-US 断词表（`hyphenation` 库，MIT/Apache，词典约 90 KB，编进库里）断开一部分、加连字符放进这一段；连字符是排版之后在这一行最后一个字形后面多画的一个字形，`line_boxes` 也把它算进行宽；`Around::hyphenate` 默认开、`track_max` 可以设 0 关掉；`tests/wrap_around.rs` 里还验了二十个位置中有断词的行）；字形两两不重叠（两种语言）；`check` 第 8 条在浅色主题下读回像素验同一件事（圆和剪影胸像，几种间隔）。
+**Text around true outlines** (`src/wrap.rs`, no GPU). A text element with `.around(Around)` sets its body
+around the true outline of obstacles, not their boxes. An obstacle is a `Silhouette`: from some row on,
+one row per logical pixel, the horizontal span the ink covers in that row (`circle`, `rounded`,
+`from_alpha`, which takes the first and last pixel above half alpha in each row of a picture);
+coordinates are in the text's own content box. `Around { obstacles, gap, min }`: line breaking runs top to
+bottom, taking one line-height band at a time and finding the pieces of the column width the band leaves
+free (each obstacle's widest span over the band's full height, widened by `gap` on each side; where the
+band misses the ink but comes within `gap` of it above or below, a circle of radius `gap` swept along the
+outline blocks it, so there is a gap above and below too). The band is snapped to whole pixels like a line
+box, and pieces narrower than `min` are skipped. Each piece takes one line (two pieces, left and right,
+take two lines, left first), set from the piece's start. A piece that touches an obstacle on one side
+(and is not the paragraph's last line) is justified: the remaining width goes between clusters (after
+every character next to CJK; at spaces in Latin text; between letters only for a Latin piece without
+spaces and with `Around::justify_latin_letters` on, off by default). So a left piece runs from the
+column's left edge to the outline minus `gap`, a right piece from the outline plus `gap` to the column's
+right edge, both edges flush, and the text is `gap` from the outline on both sides. Each gap grows by at
+most `Around::justify_max` (in ems, default `wrap::JUSTIFY_MAX_EM` = 0.25). Where more would be needed,
+the line is broken again with one more cluster (one more Latin word); if every gap then shrinks by at most
+`wrap::SHRINK_EM` (0.05, or `SHRINK_SPACE_EM` = 1/9 when all gaps are spaces) that is used, otherwise the
+piece is set from its start and is ragged on the obstacle side.
 
-层：`modal` 的元素不管写在视图的哪里，都被运行时提出来，作为根的最后一个子节点铺满窗口，所以画在最上面。字体缺字时用第一个注册的字体（Noto Sans SC）补，所以等宽字体里也能有中文。
+Implementation: lines are first broken as usual, recording each line's start, band, text range and how
+much each gap grows. If any line is justified, the same text is laid out again with parley's
+`LetterSpacing` on those clusters and broken at the recorded lengths (`break_next_with_length`), so the
+break points (including the rule that closing punctuation never starts a line) are the same as the first
+time, and drawing, selection, the caret and line boxes all follow the justified result. Layout happens
+only when an obstacle moves to a different grid position; pointer movement never lays out. A word wider
+than its piece leaves the piece empty; when a band's pieces are used up, the next line height is tried;
+with no piece at all, the band moves down 4 px. Line breaking is still parley's; each line just gets its
+own start and width through `BreakerState::set_line_x / set_line_y / set_line_max_advance`, so mixed CJK
+and Latin text, punctuation, font sizes and line heights work as usual. Measuring
+(`Text::measure_around`) and drawing go through the same function, cached by the obstacles' hash. The
+height reaches the bottom of the last line.
 
-### 1.3 场景（`scene.rs`）
+Acceptance: `tests/wrap.rs` reads the glyph atlas and checks that every inked pixel is at least
+`gap − 1` from the circle's ink (beside the circle, the horizontal distance in that line's band; above
+and below, the straight-line distance; with a control that ignores the obstacle). `tests/wrap_around.rs`
+measures, at twenty positions of the bust and in two languages, each line box (`Ui::line_boxes`) against
+the outline on both sides: in bands with text on both sides the two distances differ by at most 2 px, and
+a right piece is `gap` from the outline (plus or minus one grid step), except left pieces that stopped at
+the justification limit. The same file checks, at twenty positions and in two languages, that every piece
+beside the circle except the last line has its outer edge within 1 px of the column edge and its inner
+edge `gap` from the outline plus or minus one grid step, or is a piece set from its start because of the
+limit, at most 15% in either language. English first stretches spaces to the limit, then adds up to
+`wrap::TRACK_MAX_EM` (0.08 em) between letters, and if that is still short, breaks part of the next word
+with Liang's en-US patterns (the `hyphenation` crate, MIT/Apache, a dictionary of about 90 KB compiled in)
+and puts it in this piece with a hyphen. The hyphen is one more glyph drawn after the line's last glyph
+after layout, and `line_boxes` counts it in the line width. `Around::hyphenate` is on by default and
+`track_max` can be set to 0 to turn tracking off; `tests/wrap_around.rs` also checks lines with
+hyphenation among the twenty positions. Glyphs never overlap each other (both languages). `check` item 8
+reads pixels back in the light theme to check the same (a circle and the bust silhouette, several gaps).
 
-三种实例，同一个记录（112 字节）：`rect`、`uv`、`paint`（色调、强调色、透明度、种类；图片的强调色位放 `PicFx` 槽号）、`clip`、`extra`（边框宽 / 图片号 / 字形的印刷点距、静态松开度、出生时间）、`look`（材质覆盖码、强调色的色相 0/1/2、高度材质量高度用的框：文字行或形状本身的顶和高，设备像素）、`resp`（场能把它松开多少、怎么推，§1.15）。
+Layers: a `modal` element, wherever it is written in the view, is lifted out by the runtime and made the
+root's last child, filling the window, so it is drawn on top. A face missing a glyph falls back to the
+first registered face (Noto Sans SC), so even the monospace face can show Chinese.
 
-- 字形：一个字一个实例。图集每个像素存两样：覆盖率、离最近笔画的近度（距离变换，12 像素内）。
-- 形状：矩形，解析距离。填充或只有边框。
-- 图片：一张纹理一个实例。纹理有 alpha 时（剪影，比如 `demo::CUTOUT`），alpha 不到一半的地方算作没有东西：不写墨、不算图片，所以图片有真实的轮廓。
+### 1.3 The scene (`scene.rs`)
 
-实例的身份是 `key + 序号`。第一次出现记下出生时间，材质据此让它凝结出来。文字内容变了算新实例。场景记下层从第几个实例开始（`layer`），一批实例不跨过这个位置。
+Three kinds of instance share one record (112 bytes): `rect`, `uv`, `paint` (tone, accent, opacity,
+kind; for a picture the accent bits hold its `PicFx` slot), `clip`, `extra` (border width, picture index
+or a glyph's print pitch; looseness at rest; birth time), `look` (material override code; the accent's hue
+0/1/2; the box a height material measures height in, the top and height of the text line or the shape
+itself, in device pixels) and `resp` (how far the field may loosen it and how it pushes it, §1.15).
 
-### 1.4 两张中间图
+- Glyphs: one instance per glyph. Each atlas pixel stores coverage and the signed distance to the
+  nearest stroke (a distance transform, within 12 px).
+- Shapes: rectangles with an analytic distance, filled or border only.
+- Pictures: one instance per texture. Where a texture has alpha (a cutout such as `demo::CUTOUT`),
+  pixels under half alpha count as nothing: no ink written, not counted as picture, so the picture has
+  a true outline.
 
-- `ink`（RGBA8）：这里有什么。文字和形状 r 写色调、g 写强调色、b 写一个码（直通值 b / a）：小于 0.45 时是 `(色相 + 3 × 是形状) / 14`。图片写原色，a 是覆盖率。
-- `near`（RGBA8，取最大值混合）：r 是**带符号**的近度：轮廓上 0.5，向内 `SPREAD` 像素到 1，向外 `SPREAD` 像素到 0（字形图集存的就是这个，内外各算一次精确的欧氏距离变换；形状解析计算）。取最大值正好是距离场的并。g 是不是图片，是的话存 `(槽号 + 1) / 8`；b 这个实例自己的松开度（出生、按下、静止时设定的），加上到得了它的波前和透镜补到它的上限（§1.15）；松开度属于实例自己的墨：有墨的地方（覆盖率过半）写 `128 + 127k`，墨外的近度圈里写 `125k`（八位），取最大值时任何墨都压过任何别人的近度圈，所以一个实例的松开度不会漏到旁边另一个实例的墨上（图表上悬停时新出现的竖线原来让旁边三列点变暗、松开）；着色器里 `loose_t(p)` 解码；a 是材质覆盖（≥ 128/255 时是 `128 + 层级 × 16 + 材质号`，层级是覆盖的嵌套深度，所以最大值混合下最里面的覆盖赢），否则是字形的印刷点距 × 2 / 255（0 是不印）。
+An instance's identity is `key + index`. Its birth time is recorded the first time it appears, and the
+material condenses it from that. Text content that changes counts as a new instance. The scene records
+which instance a layer starts at (`layer`); no batch crosses that position.
 
-WebGL2 不能每个目标各用一种混合，所以同一批几何画两遍，不用多目标。
+### 1.4 The two G-buffer targets
 
-层里的实例画 near 时不混合、只在有墨处写：它在自己的轮廓里盖掉下面的松开度和图片标记，对话框本身不松开，下面的图片也不会透过卡片变成记号。
+- The coverage buffer (`ink`, RGBA8): what is here. Text and shapes write tone in r, accent in g and a
+  code in b (a pass-through value b / a): below 0.45 it is `(hue + 3 × is_shape) / 14`. Pictures write
+  their colour, with coverage in a.
+- The SDF buffer (`near`, RGBA8, max-blended): r is the **signed** distance, 0.5 on the outline, rising
+  to 1 at `SPREAD` px inside and falling to 0 at `SPREAD` px outside (the glyph atlas stores exactly
+  this, from exact Euclidean distance transforms inside and outside; shapes compute it analytically).
+  Taking the maximum is exactly the union of distance fields. g says whether this is a picture, storing
+  `(slot + 1) / 8` if so. b is the instance's own looseness (set by birth, a press or at rest) plus the
+  fronts and lens that reach it, up to its cap (§1.15). Looseness belongs to the instance's own ink:
+  where there is ink (coverage over half) it writes `128 + 127k`, in the distance band outside the ink
+  `125k` (eight bits), so under max blending any ink wins over anyone else's distance band and one
+  instance's looseness never leaks onto another's ink (a hover line appearing on a chart used to dim and
+  loosen the three columns of dots beside it). The shader decodes it with `loose_t(p)`. a is the material
+  override (at or above 128/255 it is `128 + depth × 16 + material`, depth being how deeply overrides are
+  nested, so under max blending the innermost override wins), otherwise a glyph's print pitch × 2 / 255
+  (0 means not printed).
 
-### 1.5 场
+WebGL2 cannot blend each target differently, so the same geometry is drawn twice instead of into
+multiple targets.
 
-现在：最多 8 道波前（位置、起始时间、强度）、指针、一个半平面源（对比擦除：一条竖线的 x、强度、作用的矩形），解析计算，作为 uniform。之后：一张低分辨率的场纹理在 GPU 上逐帧演算（能量、流向），输入加上滚动速度、拖拽、音频频谱。
+Instances in a layer write the SDF buffer without blending and only where they have ink: inside their
+own outline they replace the looseness and picture marking beneath, so a dialog itself does not loosen
+and a picture beneath a card does not turn into marks through it.
 
-事件到场的对应：
+### 1.5 The wave field
 
-| 事件 | 放进场里的东西 |
+Now: up to 8 fronts (position, start time, strength), the pointer, and one half-plane source (the compare
+wipe: the x of a vertical line, a strength and the rect it acts on), computed analytically and passed as
+uniforms. Later: a low-resolution field texture stepped on the GPU each frame (energy, flow), with scroll
+velocity, drags and an audio spectrum as inputs.
+
+How events map to the field:
+
+| Event | What goes into the field |
 |---|---|
-| 按下 | 一道波前，只到它的范围（默认是按下的控件自己，§1.15）；按在空白处没有 |
-| 指针移动 | 透镜（只松开图片和背景，不碰文字） |
-| 按住不放 | 透镜持续增强，松开时放出一道波前 |
-| 拖拽 | 沿路径的尾迹 |
-| 滚动 | 按速度给整屏一个剪切 |
-| 输入一个字 | 这个字形从松开凝结出来 |
-| 提交（换页、切主题、切材质） | 从触发位置出发的一道波前，新旧状态以波前为界 |
+| Press | One front, reaching only its scope (by default the control pressed, §1.15); nothing for a press on empty space |
+| Pointer move | The lens (loosens only pictures and the background, never text) |
+| Press and hold | The lens grows stronger; release sends a front |
+| Drag | A trail along the path |
+| Scroll | A shear over the whole screen by velocity |
+| Typing a character | That glyph condenses from loose |
+| Commit (page change, theme or material switch) | A front from where it was triggered, with the old and new state on either side of it |
 
-提交的实现：按下带 `commit` 的控件（或它的祖先带）时，运行时把当前的场景和场留一份（`Split`）。渲染器第一次看到它时，用上一帧的外观把这份旧画面完整画进一张 `before` 图，以后每帧在材质最后一步按到起点的距离取：波前（半径 = 经过的时间 × 波速）以外是旧画面，以内是新画面；波前出了屏幕就丢掉。主题和材质的切换走这条路。换页不是提交：只有按下处的波前，新页的实例是新的身份，从松开凝结出来；顶栏和左栏的身份不变，不重新凝结；两页共有的部分流动过去（§1.10）。
+How a commit works: pressing a control with `commit` (or with an ancestor that has it) makes the runtime
+keep a copy of the current scene and field (`Split`). The first time the renderer sees it, it draws that
+old picture in full into a `before` image with the previous frame's look; after that, the material's last
+step chooses by distance from the origin: outside the front (radius = elapsed time × wave speed) is the old
+picture, inside is the new. The front is dropped once it leaves the screen. Theme and material switches
+go this way. A page change is not a commit: there is only the front at the press, the new page's
+instances have new identities and condense from loose, the top bar and side rail keep their identities
+and do not condense again, and the parts both pages share flow across (§1.10).
 
-### 1.6 材质
+### 1.6 Materials
 
-第二遍是一个全屏着色器。每个材质是一组函数：`loosened(p)`（松开时这里画什么）、`ground(p)`（背景）、`resolve(...)`（合成）。材质按“全局 + 实例覆盖”选择。所有参数是 `Fx` 里的数，一个参数一个名字、范围和步长。
+The screen-space shading stage is one full-screen shader. Each material is a set of functions:
+`loosened(p)` (what to draw here when loose), `ground(p)` (the background) and `resolve(...)` (the
+composite). A material is chosen as global plus per-instance override. Every parameter is a number in
+`Fx`, each with a name, a range and a step.
 
-共九种（§1.6.2；后来加了 `scribblr`，§1.30）。图片在哪种材质下都按自己的 `PicFx` 槽变成记号，槽号就是实例覆盖（glitch 例外：它把整个画面错位，但图片内的取样不会离开图片）。`plain` 里松开度 `b` 让文字和形状变淡到 `mix(1, 0.3, √b)`：开平方是为了对话框下面 0.35 的松开度也看得出来。
+There are nine (§1.6.2; `scribblr` was added later, §1.30). Under any material a picture turns into marks
+by its own `PicFx` slot, the slot being its instance override (`glitch` is the exception: it displaces the
+whole frame, but sampling inside a picture never leaves it). In `plain`, looseness `b` fades text and
+shapes to `mix(1, 0.3, √b)`: the square root makes the 0.35 looseness under a dialog visible.
 
-材质按“全局 + 实例覆盖”选：`El::material(id)` 给一棵子树另一种材质（嵌套时里面的赢），任何全局材质下都有效。
+`El::material(id)` gives a subtree another material (the inner one wins when nested); it works under any
+global material.
 
-### 1.6.1 图片怎么变成记号
+### 1.6.1 How a picture turns into marks
 
-图片松开时，是**图片自己变成记号**，不是在图片上面盖一层网格。规矩：
+When a picture loosens, **the picture itself turns into marks**; no grid is laid over it. The rules:
 
-1. **记号之间露出来的永远是图片自己的暗部或黑，不是页面的底色。** 浅色主题下也一样。图片有自己的底。
-2. **先像素化，再刻记号。** 第一步是无缝的色块：每一格取它底下的平均色，格与格之间没有缝。点距趋近 1 像素时，它就是原图。第二步才在每一格里画记号。
-3. **深浅用“换记号”表达，不用“把形状缩小”表达。** 把亮度量化成几级（级数是参数），每一级对应记号表里的一个记号。
-4. **记号表可换**，每张表是图集里的一排小图：
-   - 色块抖动：实心、棋盘、疏点、密点（海报上那种低像素）。
-   - 字符：按疏密排的一串字符。
-   - 笔触：短线，方向跟着图片的明暗梯度走（草浪那种）。
-   - 光点：带一圈辉光的点，暗处直接没有。
-5. **上色方式**是参数：原色、单色（主题的墨色）、双色、指定色。
-6. 可选：按亮度把记号向外推一点（有纵深的字符肖像）；辉光。
+1. **What shows between marks is always the picture's own dark or black, never the page's background.**
+   The same holds in the light theme. A picture has its own ground.
+2. **Pixelate first, then cut marks.** The first step is seamless blocks of colour: each cell takes the
+   average colour beneath it, with no seams between cells. As the pitch approaches 1 px it is the
+   original picture. Only the second step draws a mark in each cell.
+3. **Tone is expressed by changing the mark, not by shrinking a shape.** Luminance is quantized into a
+   number of levels (a parameter), each level mapped to one mark of the mark set.
+4. **Mark sets are swappable**; each set is one row of small tiles in the atlas:
+   - Ordered dither blocks: solid, checkerboard, sparse dots, dense dots (the low-resolution poster look).
+   - Characters: a run of characters ordered by density.
+   - Strokes: short lines whose direction follows the picture's luminance gradient (like waving grass).
+   - Light points: dots with a halo of glow; dark areas have none.
+5. **Colouring** is a parameter: original, monochrome (the theme's ink), two-tone, or a given colour.
+6. Optional: pushing marks outward by luminance (a character portrait with depth); glow.
 
-参数：图的点距、亮度级数、记号表、上色方式、底的暗度、方向跟随强度、纵深、辉光。
+Parameters: the picture's pitch, the number of levels, the mark set, the colouring, the ground's
+darkness, how strongly orientation follows the gradient, depth, and glow.
 
-文字和形状没有自己的底，它们松开时露出的是页面，这是对的。
+Text and shapes have no ground of their own; when they loosen, the page shows through, which is right.
 
-#### 实现
+#### Implementation
 
-**记号图集**（`marks`，RG8：r 是记号覆盖率，g 是高度，给浮雕用；启动时在 CPU 上生成，带 6 级 mip，一次上传）：
+**The mark atlas** (`marks`, RG8: r is the mark's coverage, g its height for relief; generated on the CPU at
+start-up with 6 mip levels and uploaded once):
 
-- 一行是一张记号表，一列是一个亮度级，固定 16 列。每块 32×32 像素，四边可以无缝拼接。`levels` 小于 16 时，第 n 级取第 `round(n × 15 / (levels − 1))` 列。
-- mip 一直做到每块一个像素：格子比 32 像素小时按 `log2(32 / P)` 取 mip，读到的是记号的平均，不是几个走样的像素。取样坐标收在块内半个像素，不会读到隔壁块。
-- 色块抖动表：第 k 级 = 把 8×8 Bayer 阈值矩阵和 k/15 比较得到的黑白图案，放大到整块（每个元素 4×4 像素）。第 0 级全空，最后一级全实。
-- 字符表：用排版系统把可打印 ASCII 各画一遍，**量出每个字符实际的墨量**，然后在 0 到最大墨量之间取 16 个等间隔的目标，每个目标取墨量最接近、且比上一级多的字符。不凭印象排疏密。字体是 Departure Mono，画成 2 倍，再横向拉宽一倍，让 7×14 的字格填满方块（像 ASCII 画那样一格一字）。
-- **字符按显示的点距另切一套**（`char_tiles`）。32 像素的块缩小到 16 像素以下就糊了，图看起来是一片灰色的噪点。所以从设备点距 4 到 40，每个点距各切一行 P×P 的块：用 Departure Mono 的整数倍字号（大写字母高 8 像素，倍数取 `P / 9`），字形本来就落在整像素上，不重采样；放不进块的字符（比如带下伸部分的）在这个点距不用；比所有普通字符都密的粗体形式（字形向右叠一个字面像素）也参加挑选，让最亮的几级更亮。每个点距按自己的墨量重新挑 16 个。8 像素以下用 8 像素的块平均缩小。着色器在这个范围内对字符表直接按像素读（`textureLoad`），范围外仍读 32 像素图集。
-- 笔触表：一条接近整块长的线，两端圆，粗细随级数增加。方向不放进图集，由着色器旋转取样坐标；转过的线在块边上绕到隔壁，连起来像排线。
-- 光点表：径向衰减的圆，半径和亮度随级数增加，边缘是软的。
+- A row is a mark set and a column a luminance level, always 16 columns. Each tile is 32×32 px and tiles
+  seamlessly on all four sides. With fewer than 16 `levels`, level n uses column
+  `round(n × 15 / (levels − 1))`.
+- Mips go down to one pixel per tile: when cells are smaller than 32 px the mip `log2(32 / P)` is read,
+  which gives the mark's average rather than a few aliased pixels. Sample coordinates are clamped half a
+  pixel inside the tile, so a neighbouring tile is never read.
+- Ordered dither: level k is the black-and-white pattern from comparing the 8×8 Bayer threshold matrix
+  with k/15, scaled up to the tile (4×4 px per element). Level 0 is empty and the last level solid.
+- Characters: every printable ASCII character is drawn once with the text system and **its actual ink is
+  measured**; then 16 evenly spaced targets are taken between 0 and the maximum ink, each target taking
+  the character whose ink is closest and greater than the previous level's. Density is never ordered by
+  eye. The face is Departure Mono, drawn at 2× and then stretched to twice the width so the 7×14 character
+  cell fills the square tile (one character per cell, as in ASCII art).
+- **Characters are cut again for the pitch they are shown at** (`char_tiles`). A 32 px tile shrunk below
+  16 px blurs, and the picture reads as grey noise. So for each device pitch from 4 to 40, one row of P×P
+  tiles is cut using an integer multiple of Departure Mono's size (capital height 8 px, multiple
+  `P / 9`); the glyphs already sit on whole pixels and are never resampled. Characters that don't fit the
+  tile at that pitch (descenders, for example) are not used there. Bold forms (the glyph stacked one face
+  pixel to the right), denser than every regular character, join the selection so the brightest levels
+  are brighter. Each pitch picks its own 16 by measured ink. Below 8 px, the 8 px tiles are averaged
+  down. In that range the shader reads the character set pixel by pixel (`textureLoad`); outside it, it
+  reads the 32 px atlas.
+- Strokes: a line almost the length of the tile, with round ends, thicker at higher levels. Direction is
+  not stored in the atlas; the shader rotates the sample coordinates, and a turned line wraps into the
+  neighbouring tile at the edge, so strokes join into hatching.
+- Light points: a disc with radial falloff, radius and brightness growing with the level, soft-edged.
 
-**参数**（`PicFx`，一个 uniform 结构；最多 8 组，实例用 `extra` 里的槽号选一组）：
+**Parameters** (`PicFx`, one uniform struct; up to 8 sets, an instance picks one by the slot in `extra`):
 
-| 名字 | 含义 | 范围 |
+| Name | Meaning | Range |
 |---|---|---|
-| `pitch` | 点距，逻辑像素 | 1–64 |
-| `levels` | 亮度级数 | 2–16 |
-| `set` | 记号表的行号 | 整数 |
-| `colour` | 0 原色，1 主题墨色，2 双色，3 指定色 | 整数 |
-| `ground` | 底的亮度：0 是黑，1 是这一格的原色 | 0–1 |
-| `gamma` | 亮度到级数的曲线 | 0.3–3 |
-| `spread` | 相邻两级之间用抖动过渡的宽度，0 是硬分级 | 0–1 |
-| `follow` | 记号朝向跟随明暗梯度的强度 | 0–1 |
-| `depth` | 按亮度把取样位置推开的距离，逻辑像素 | 0–24 |
-| `glow` | 辉光强度 | 0–2 |
-| `palette`、`colours` | 调色板的行号；用其中前几种，0 是不限色 | 整数；0–16 |
-| `relief` | 浮雕强度，0 是不算 | 0–3 |
-| `regions`、`region_by`、`region_count`、`region_sets` | 分区的大格是几格；按哈希（0）还是按大格亮度分档（1）；用几张表；四个表号 | 整数 |
-| `tint_a`、`tint_b` | 双色和指定色用的两种颜色 | 0–1 |
+| `pitch` | Pitch, in logical px | 1–64 |
+| `levels` | Number of luminance levels | 2–16 |
+| `set` | Row of the mark set | integer |
+| `colour` | 0 original, 1 the theme's ink, 2 two-tone, 3 a given colour | integer |
+| `ground` | The ground's brightness: 0 black, 1 the cell's own colour | 0–1 |
+| `gamma` | Curve from luminance to level | 0.3–3 |
+| `spread` | Width of the dithered transition between neighbouring levels; 0 is hard steps | 0–1 |
+| `follow` | How strongly marks turn to follow the luminance gradient | 0–1 |
+| `depth` | How far samples are pushed apart by luminance, in logical px | 0–24 |
+| `glow` | Glow strength | 0–2 |
+| `palette`, `colours` | Palette row; how many of its first colours to use, 0 for unlimited | integer; 0–16 |
+| `relief` | Relief strength, 0 for none | 0–3 |
+| `regions`, `region_by`, `region_count`, `region_sets` | Cells per region; by hash (0) or by the region's luminance band (1); how many sets; four set indices | integer |
+| `tint_a`, `tint_b` | The two colours for two-tone and a given colour | 0–1 |
 
-`pitch` 是逻辑像素，设备上的点距是 `round(pitch × 缩放)`；1 倍屏上 `pitch = 1` 就是 1 个设备像素。
+`pitch` is in logical pixels; the device pitch is `round(pitch × scale)`, so on a 1× display
+`pitch = 1` is one device pixel.
 
-**着色器里，图片上的一个像素这样算**（`k` 是这里的松开度，0 到 1）：
+**In the shader, one pixel of a picture is computed like this** (`k` is the looseness here, 0 to 1):
 
-1. `k = 0`：直接输出 `ink` 里的原色。结束。
-2. 当前点距 `P = round(mix(1, pitch, smoothstep(0, 0.5, k)))` 个设备像素。`cell = floor(p / P)`。全屏共用一张格，所以相邻的图片和文字对得上。`k` 在这一点所在格子的格心取（先按这一点的 `k` 求一次格子），所以一格里只有一种点距。
-3. 这一格的颜色 `c` = 在格内取 4 个点（`P > 16` 时取 9 个）对 `ink` 逐像素读取（不插值）求平均。此时输出 `c` 就是无缝的像素化；`P = 1` 时等于原图。
-4. 亮度 `L = dot(c, 0.299, 0.587, 0.114) ^ gamma`（用限色之前的 `c`）。级数 `n = floor(L * levels + (bayer(cell) - 0.5) * spread)`，夹在 0 到 `levels - 1`。
-5. 格内坐标 `uv = fract(p / P)`。若 `follow > 0`：用左右、上下两对相邻格子的平均亮度之差求梯度角，θ 是它转 90°（沿等亮线，记号顺着形体走），把 `uv` 绕格心旋转 θ（乘以 `follow`）。图片平的地方（梯度很小）不转。
-6. 记号 `m = marks[set][n](uv)`。
-7. 墨色按 `colour` 取：`c`、主题墨色、两色之间按 `L` 插值、或指定色。底色 `g = c * ground`。字符表用原色时，墨色是 `c` 提到最亮（色相不变，除以最大的分量）：字符靠换字表达深浅，墨再按格子本身的暗度变暗就把暗算了两遍，暗的图会整片消失。
-8. 这一格的结果 `r = mix(g, 墨色 * 浮雕系数, m) + glow * 辉光`。辉光是这一格和周围八格各自按亮度发的光，随到格心的距离衰减，所以亮的记号会把光洒到格子之间（只用本格软化的 `m` 时，光出不了格子，看起来是一格一格的）。
-9. 输出 `mix(c, r, smoothstep(0.5, 1, k))`。前一半时间只变粗，后一半时间记号才浮出来。
+1. `k = 0`: output the colour in the coverage buffer. Done.
+2. The current pitch is `P = round(mix(1, pitch, smoothstep(0, 0.5, k)))` device pixels and
+   `cell = floor(p / P)`. One grid is shared by the whole screen, so neighbouring pictures and text line
+   up. `k` is taken at the center of the cell the point is in (the cell is found once from this point's
+   `k`), so a cell has only one pitch.
+3. The cell's colour `c` = the average of 4 points in the cell (9 when `P > 16`) read from the coverage
+   buffer pixel by pixel (no filtering). Outputting `c` here gives seamless pixelation; with `P = 1` it
+   equals the original.
+4. Luminance `L = dot(c, 0.299, 0.587, 0.114) ^ gamma` (with `c` before palette limiting). The level
+   `n = floor(L * levels + (bayer(cell) - 0.5) * spread)`, clamped to 0 … `levels - 1`.
+5. Coordinates in the cell `uv = fract(p / P)`. If `follow > 0`: the gradient angle comes from the
+   differences of the mean luminance of the left/right and up/down neighbouring cells, θ is that turned
+   by 90° (along the isophote, so marks follow the form), and `uv` is rotated about the cell center by
+   θ (times `follow`). Flat parts of the picture (a small gradient) are not turned.
+6. The mark `m = marks[set][n](uv)`.
+7. The ink colour by `colour`: `c`, the theme's ink, an interpolation between two colours by `L`, or a
+   given colour. The ground `g = c * ground`. For the character set in original colour, the ink is `c`
+   raised to full brightness (same hue, divided by its largest component): characters express tone by
+   changing glyph, and darkening the ink again by the cell's own darkness would count darkness twice and
+   make dark pictures vanish.
+8. The cell's result `r = mix(g, ink * relief_factor, m) + glow * halo`. The halo is the light this cell
+   and its eight neighbours each emit by luminance, falling off with distance from their centers, so
+   bright marks spill light between cells (with only this cell's softened `m`, light could not leave the
+   cell and would look blocky).
+9. Output `mix(c, r, smoothstep(0.5, 1, k))`: in the first half of the time cells only coarsen; marks
+   emerge in the second half.
 
-`depth > 0` 且有指针时，第 3 步之前先把 `p` 沿“指向指针的方向”推 `L(p) * depth`，得到随指针变化的视差（`L` 直接读这一点，不用上一帧）。
+With `depth > 0` and a pointer, before step 3 `p` is pushed by `L(p) * depth` in the direction toward the
+pointer, giving parallax that follows the pointer (`L` is read at this point, not from the last frame).
 
-一个像素的格子刻不下记号：记号、限色、视差和辉光都按 `w = clamp(P − 1, 0, 1)` 进来，第 9 步实际是 `mix(c, r, smoothstep(0.5, 1, k) * w)`。所以 `pitch = 1` 时任何 `k` 都输出原图，这正是验收要的。
+A one-pixel cell has no room for a mark: marks, palette limiting, parallax and glow all come in through
+`w = clamp(P − 1, 0, 1)`, and step 9 is really `mix(c, r, smoothstep(0.5, 1, k) * w)`. So with
+`pitch = 1` any `k` outputs the original, which is exactly what acceptance requires.
 
-**页面底色在这九步里没有出现过。** 这就是第 1 条规矩在代码里的样子：图片的像素只由图片自己的颜色、记号和黑算出来。
+**The page background appears nowhere in these nine steps.** That is rule 1 in code: a picture's pixels are
+computed only from the picture's own colours, its marks and black.
 
-**验收**：浅色主题下把一张图完全松开，截图里图片矩形内不出现页面底色的像素（取样比对）；`pitch = 1` 且 `k` 任意时输出与原图逐像素相等（允许 1/255 的误差）。`check` 读回像素检查这两条（每张演示图 × 每张记号表 × 几种点距、底的亮度和上色方式，加限色、浮雕、辉光、分区），并且各带一个对照，证明比对本身看得见底色和记号。
+**Acceptance**: in the light theme, fully loosen a picture; no pixel inside the picture's rect in the
+screenshot has the page background colour (compared by sampling). With `pitch = 1` and any `k`, the output
+equals the original pixel for pixel (within 1/255). `check` reads pixels back to test both (every sample
+picture × every mark set × several pitches, ground brightnesses and colourings, plus palettes, relief,
+glow and regions), each with a control showing that the comparison itself can see the background and the
+marks.
 
-#### 记号表清单和三个补充（参照 ASCII Magic 的分类）
+#### Mark sets and three additions (after ASCII Magic's categories)
 
-| 记号表 | 一块里画什么 | 需要的额外能力 |
+| Mark set | What a tile draws | Extra capability needed |
 |---|---|---|
-| 字符 | 按墨量排序的字符 | 无 |
-| 抖动 | Bayer 图案 | 限色 |
-| 像素画 | 实心块，带一条极淡的格线 | 限色 |
-| 马赛克 | 实心块，四边略暗，像一片片瓷砖 | 浮雕 |
-| 积木 | 实心块加一个圆形凸点 | 浮雕 |
-| 圆点 / 十字 / 斜线 / 菱形 / 横线 | 对应的几何记号，大小或粗细随级数 | 无 |
-| 光点 | 软边的点 | 辉光 |
-| 笔触 | 短线，朝向跟随梯度 | 朝向 |
-| 混合 | 不同区域用不同的记号表 | 分区 |
+| Characters | Characters ordered by ink | none |
+| Dither | Bayer patterns | palette |
+| Pixel art | Solid blocks with a very faint grid line | palette |
+| Mosaic | Solid blocks with slightly darker edges, like tiles | relief |
+| Bricks | A solid block with a round stud | relief |
+| Dots / crosses / diagonals / diamonds / dashes | The matching geometric mark, size or weight by level | none |
+| Light points | Soft-edged dots | glow |
+| Strokes | Short lines following the gradient | orientation |
+| Mixed | A different mark set per region | regions |
 
-三个补充能力，都是 `PicFx` 里的参数：
+Three additional capabilities, all parameters in `PicFx`:
 
-1. **限色**（`palette`、`colours`）。把这一格的颜色换成调色板里最近的一种。调色板是 16×1 的一行，所有调色板叠成一张小纹理，`palette` 是行号；`colours` 是用其中前几种，0 是不限色。双色抖动就是 `colours = 2`。在第 3 步之后做：`c = nearest(palette, c + (bayer(cell) - 0.5) * spread)`。现有六种：黑白（2 色）、孔版三色（3 色）、掌机绿（4）、CGA（4）、暖色五级（5）、PICO-8（16）。低像素的限色海报是“像素画”表加限色加 `spread`。
-2. **浮雕**（`relief`）。记号图集多一个通道存“高度”。第 8 步里用高度的梯度算一个明暗系数乘到墨色上，得到瓷砖的斜边和积木的凸点。`relief = 0` 时不算。
-3. **分区**（`regions`）。把屏幕按 `P * regions` 的大格再分一层，每个大格用自己的记号表：`set = region_sets[hash(大格) 或 这一大格的平均亮度分档]`，用前 `region_count` 张（最多 4 张）。大格的边界是阶梯状的，这就是“混合”那种分区感。
+1. **Palette limiting** (`palette`, `colours`). The cell's colour becomes the nearest colour of a palette.
+   A palette is a 16×1 row; all palettes stack into one small texture and `palette` is the row; `colours`
+   is how many of its first colours are used, 0 for no limit. Two-colour dithering is `colours = 2`. It
+   happens after step 3: `c = nearest(palette, c + (bayer(cell) - 0.5) * spread)`. There are six: black
+   and white (2 colours), risograph three-colour (3), handheld green (4), CGA (4), warm five-step (5) and
+   PICO-8 (16). The low-resolution limited-palette poster is the pixel-art set plus a palette plus
+   `spread`.
+2. **Relief** (`relief`). The mark atlas has one more channel for height. In step 8, the height gradient
+   gives a shading factor multiplied into the ink, producing the bevels of mosaic tiles and the studs of
+   bricks. Nothing is computed with `relief = 0`.
+3. **Regions** (`regions`). The screen is divided again into large cells of `P * regions`, each using its
+   own mark set: `set = region_sets[hash(region) or the region's mean luminance band]`, from the first
+   `region_count` sets (at most 4). Region boundaries are stepped, which gives the mixed look.
 
-**对比擦除**是一种交互，不是材质：一条可以拖动的竖线，线的一侧 `k = 0`，另一侧 `k = 1`。它就是一道不动的、直线形的波前，用同一个场来表达（场里加一种“半平面”源，和波前取最大值，限在图片可见的矩形里）。图片元素写 `.wipe(位置)` 就带上它，拖图片（`on_drag`）改位置，位置也能用数字控件精确设置。线本身用强调色画一像素宽。
+**The compare wipe** is an interaction, not a material: a draggable vertical line, `k = 0` on one side and
+`k = 1` on the other. It is a still, straight front expressed by the same field (the field gains a
+half-plane source, max-combined with fronts and limited to the picture's visible rect). A picture element
+gets it with `.wipe(position)`; dragging the picture (`on_drag`) moves it, and the position can be set
+exactly with a number control. The line itself is drawn one pixel wide in the accent colour.
 
-### 1.6.2 材质清单
+### 1.6.2 The materials
 
-材质是第二遍里的一个函数 `(ink, near, field, 坐标, 时间, 参数) → 颜色`，按 uniform 里的材质号（或这一点 `near.a` 里的覆盖）分派。每种材质的参数是 8 个数，全部放在一个 uniform 数组里（`style::MAT_PARAMS` 有名字、范围、步长和默认值；材质页上每个都是数字控件）。松开度 `k = (场 + near.b) × 风格的松开比例`；`k = 0` 时除注明的以外都输出 `plain` 的样子（规矩 3）。共用的工具：`sdist(p)`（near.r 换成带符号的设备像素距离）和它的梯度；`ink_inward(p)`（沿梯度走回最近轮廓取那里的墨色，给轮廓外画的东西上色，碰到图片就不取）；值噪声。
+A material is a function in the screen-space shading stage,
+`(coverage, SDF, field, position, time, parameters) → colour`, dispatched by the material number in a
+uniform (or the override in this point's `near.a`). Each material has 8 parameters, all in one uniform
+array (`style::MAT_PARAMS` has their names, ranges, steps and defaults; on the material page each is a
+number control). Looseness is `k = (field + near.b) × the style's looseness scale`; with `k = 0` every
+material outputs what `plain` does unless noted (rule 3). Shared helpers: `sdist(p)` (`near.r` as a signed
+distance in device pixels) and its gradient; `ink_inward(p)` (walk back along the gradient to the nearest
+outline and take the ink colour there, to colour what is drawn outside the outline; pictures are never
+sampled); value noise.
 
-| 材质 | 静止 | 松开 | 参数 |
+| Material | At rest | Loose | Parameters |
 |---|---|---|---|
-| `plain` | 原样 | 变淡 | — |
-| `dot` | 底色上有随场起伏的小点 | 文字按格散成点，点的大小 = 格里的墨 | （`Fx::pitch`） |
-| `halftone` | 原样 | 旋转网屏：每格在格心取 4 点平均，点半径 ∝ √(覆盖 × 增益)；格按 `k(格心) > 0.12 + 0.5 × 哈希` 逐格切换；`split > 0` 时三个网屏（15°/75°/0° 加上 `angle − 45°`）各管一个颜色通道，各自错开 `split` | 点距、角度、分色错开、增益 |
-| `ascii` | 原样 | 每格从字符记号表（§1.6.1 按点距切的那套）里按格里的墨量挑字符；`k < 0.6` 时用一半的点距，再松开变粗 | 点距、级数、上色方式（0 墨色 / 1 单色） |
-| `print` | 纸纹（两层噪声，幅度 `grain × 2.75%`）；强调色的墨单独从 `(misreg, 0.6 misreg)` 处取样，浅底上按正片叠底套印 | 墨沿轮廓外扩 `spread × k × 噪声`，按噪声阈值化成复印的硬边，纸上起墨点、墨里掉点 | 纸纹、套印错位、斑点、洇开 |
-| `lino` | 原样 | 只有墨和底：轮廓按两层噪声移动（刀走的慢摆和崩口）；轮廓两侧 `band × k` 的带里，里面刻出长短不一、从边缘向内收尖的白色楔形刀痕，外面留下沿轮廓的断续墨线 | 刻痕、刻带、刀长、刀距、抖动 |
-| `glitch` | 原样 | 按 `slice` 高的行，以 `hold` ms 为一拍取哈希：一部分行横移、个别块重复左边的块、RGB 三个通道错开 `split × k`、个别行反相；`burst`（悬停或按下控件时运行时放在场里的矩形，`Field::burst`）也让这里松开 | 行高、位移、色差、保持、块 |
-| `near` | 中间图：近度的等距线（墨里暖、墨外冷）、轮廓、淡的墨 | 松开处叠一层颜色 | 间距、填充 |
-| `scribblr` | 原样（第二遍就是 `exact`） | 填充淡出，墨变成一根等粗的细线：贴轮廓 → 用桥连成一笔 → 游走、打结、甩出线头；线是第一遍里的形状实例（§1.30） | 线宽、取样、游走、打结、结的半径、线头、跟场走、折角 |
+| `plain` | As it is | Fades | — |
+| `dot` | Small dots on the ground that rise and fall with the field | Text breaks into dots by cell, dot size = the ink in the cell | (`Fx::pitch`) |
+| `halftone` | As it is | Rotated screen: each cell averages 4 points at its center, dot radius ∝ √(coverage × gain); cells switch one by one where `k(center) > 0.12 + 0.5 × hash`; with `split > 0`, three screens (15°/75°/0° plus `angle − 45°`) each take one colour channel, each offset by `split` | pitch, angle, separation offset, gain |
+| `ascii` | As it is | Each cell picks a character from the character mark set (the per-pitch set of §1.6.1) by the ink in the cell; at `k < 0.6` half the pitch, coarser as it loosens | pitch, levels, colouring (0 ink / 1 mono) |
+| `print` | Paper grain (two layers of noise, amplitude `grain × 2.75%`); accent ink is sampled separately at `(misreg, 0.6 misreg)` and overprinted with multiply on light grounds | Ink spreads outward along the outline by `spread × k × noise`, thresholded by noise into photocopy edges; specks on the paper, dropouts in the ink | grain, misregistration, specks, bleed |
+| `lino` | As it is | Ink and ground only: the outline moves by two layers of noise (the slow sway and chips of a knife); in a band of `band × k` on both sides of the outline, white wedge-shaped cuts of varying length tapering inward are carved inside, and broken ink lines along the outline are left outside | cuts, band, cut length, cut spacing, jitter |
+| `glitch` | As it is | Rows of height `slice`, hashed per beat of `hold` ms: some rows shift sideways, a few blocks repeat the block to their left, the RGB channels separate by `split × k`, a few rows invert; a `burst` (a rect the runtime puts in the field while a control is hovered or pressed, `Field::burst`) loosens it there too | row height, displacement, channel separation, hold, blocks |
+| `near` | The G-buffer itself: iso-distance lines of the SDF (warm inside ink, cool outside), the outline, faint ink | A colour overlay where loose | spacing, fill |
+| `scribblr` | As it is (the shading stage is exact) | The fill fades and the ink becomes one thin line of constant width: along the outline → bridged into one stroke → wandering, knotting, throwing out tails; the thread is shape instances drawn in the G-buffer stage (§1.30) | line width, sampling, wander, knot, knot radius, tail, follow the map, angularity |
 
-验收（`check` 第 5、6 条）：除 near，每种材质在松开度 0 时正文区域与 `plain` 逐像素相同（print 在纸纹幅度内，默认参数下 ≤ 4/255；dot 只比较字形自己的像素，它的底色上本来就有点），并有对照证明松开后比对看得出不同；浅色主题下每种材质（含波前经过时）完全松开的图片里没有页面底色的像素。
+Acceptance (`check` items 5 and 6): except `near`, every material at looseness 0 matches `plain` pixel for
+pixel in body text (`print` within its grain amplitude, ≤ 4/255 by default; `dot` compares only the glyphs'
+own pixels, since its ground has dots anyway), with a control showing the comparison sees a difference once
+loosened; in the light theme, no fully loosened picture under any material (including while a front passes)
+contains a page-background pixel.
 
-**字重**（`El::weight(px)`）：文字实例在 `extra.x` 里带一个设备像素的偏移，第一遍用字形图集里的带符号近度重新算覆盖率（轮廓往外移 `px`），没有粗体字文件也能把标题加重；粒子取样用同样的算法。Lino、包豪斯、小志和 Glitch 的标题用 +1.5 到 +3。
+**Weight** (`El::weight(px)`): a text instance carries an offset in device pixels in `extra.x`, and the
+G-buffer stage recomputes coverage from the signed distance in the glyph atlas (moving the outline out by
+`px`), so headings can be made heavier without a bold font file; particle sampling uses the same
+computation. Lino, Bauhaus, Zine and Glitch headings use +1.5 to +3.
 
-`near`（第 8 种，id 7）：把中间图画出来——带符号的近度画成每 `间距` 像素一圈的等距线，墨里暖色（强调色）、墨外冷色（第二强调色），轮廓本身用墨色，墨本身按 `填充` 淡淡地画，松开的地方叠一层第三强调色。它是看机制的视图，静止时就有自己的样子。参数：间距 3 px、填充 0.25。透视场景用它。
+`near` (the eighth, id 7) draws the G-buffer: the signed distance as iso-lines every `spacing` px, warm
+(the accent) inside ink and cool (the second accent) outside, the outline in ink, the ink itself faintly by
+`fill`, and a layer of the third accent where loose. It is a view for seeing the mechanism and has a look of
+its own at rest. Parameters: spacing 3 px, fill 0.25. The exploded scene uses it.
 
+### 1.6.3 Pixel type
 
-### 1.6.3 像素字
+Both routes are needed:
 
-两条路，都要有：
+- **Faces that are pixel fonts.** The face is a value in the theme. Two open-source pixel fonts are bundled:
+  Fusion Pixel for CJK (SIL OFL; upstream has 8, 10 and 12 px faces, and only the 12 px proportional
+  Simplified Chinese one is bundled) and Departure Mono for Latin (SIL OFL, 11 px). A pixel font must be
+  rendered at an integer multiple of its face size with anti-aliasing off when rasterizing (coverage
+  thresholded at 0.5), or it blurs. Implementation: `Text` can register several faces and each text
+  element picks one; a face can be marked as a pixel font with its face size, its font size snaps to the
+  nearest integer multiple in device pixels (at least 1×), layout and drawing use that size, and glyphs
+  land on whole device pixels with no subpixel offset.
+- **Any face can be printed as pixels.** The material samples the glyph through a coarse grid and fills each
+  cell whose coverage is over half. The pitch is the size of a "pixel" and can be set as a number. Type from
+  this route is less tidy than a real pixel font and suits transitions and large headings. Implementation:
+  a text element with `.print(pitch)`; the glyph instance carries the pitch into `near.a`, and the material
+  averages coverage per cell there and fills it when over half.
 
-- **字体本身是像素的。** 字体是主题里的一个值。收两套开源像素字体：中日韩用 Fusion Pixel（SIL OFL；上游有 8、10、12 像素三种字面，现在只收 12 像素的比例宽度简体中文版），西文用 Departure Mono（SIL OFL，11 像素）。像素字体必须按字面的整数倍字号渲染，并且栅格化时关掉抗锯齿（覆盖率按 0.5 取阈值），否则会糊。实现：`Text` 里可以注册多个字体，每个文字元素选一个；字体可以标成像素字体并带上字面大小，它的字号按设备像素取最近的整数倍（至少 1 倍），排版和绘制都用这个字号，字形落在整设备像素上，不做亚像素偏移。
-- **任何字体都能被印成像素。** 材质把字形透过一张粗格取样，每格按覆盖率是否过半决定填不填。点距就是“像素”的大小，可以用数字调。这条路出来的字不如专门的像素字体整齐，适合变化的过程和大标题。实现：文字元素写 `.print(点距)`，字形实例把点距带进 `near.a`，材质在那里按格取平均覆盖率、过半就填满。
+Acceptance: in screenshots of pixel fonts at 1× and 2×, stroke edges hold only two colours (ink and ground),
+with no grey fringe.
 
-验收：像素字体在 1 倍和 2 倍屏上的截图里，笔画边缘只有两种颜色（墨色和底色），没有灰边。
+### 1.7 The annotation layer
 
-### 1.7 标注层
+A third pass, drawn after the material, pixel exact, never loosened, in integer multiples of Departure
+Mono (edge notes use the serif, §4.2). Its data comes from the real layout (`src/gaze.rs` is the part that
+needs no GPU; `Ui::paint_gaze` turns its records into instances, and the renderer draws them over the final
+frame with a blend-only pipeline that honours each instance's own `xf`, used only to turn edge notes by
+90°).
 
-第三遍，在材质之后画，按像素精确，从不松开，用 Departure Mono 的整数倍字号（边注用衬线体，§4.2）。数据来自真实的排版结果（`src/gaze.rs` 是不依赖显卡的部分，`Ui::paint_gaze` 把记录变成实例，渲染器用一条只混合的管线画在最终画面上；这条管线认实例自己的 `xf`，只用来把边注转 90 度）。
+- **Settings** (`Gaze`, in `Look`): `mode` (off / hover: the deepest element under the pointer and its
+  ancestors / all / focus path: the focused element and its ancestors), `kinds` (a bit set), `density` (at
+  most how many, larger areas first and those with `El::annotate` before all), `draw_ms`, `colour` and
+  `only_marked` (annotate only elements with a note). `El::gaze_scope()` limits annotation to a subtree (the
+  whole window without one); `El::annotate(text)` is an explicit note.
+- **Candidates**: drawn, more than half visible, at least 6 × 6, not the root, and not a wrapper the same
+  size as its parent. Once chosen they are numbered in tree order (01, 02…).
+- **Kinds**: `FRAME` corner marks 6 px outside the element's rect (so they don't cover its own ink); `BOX`
+  a 1 px box exactly on the rect's edges; `INDEX` the number; `KIND` the element type (text / image /
+  control / shape / box) or its note; `SIZE` "w×h" at the element's bottom-right inside it; `LEADER` an
+  elbow leader from the element's near side to a column of labels at the scope's left or right edge, the
+  labels packed greedily downward at their wanted heights without overlapping and pushed back up from the
+  end when they pass the bottom (`gaze::pack`); `RULER` rulers along the scope's top and left edges (10 /
+  50 / 100) marking the pointer; `CROSS` a crosshair and coordinates at the pointer; `GRID` a baseline
+  every 8 px and 12 columns; `EDGE` edge notes (§4.2); `OSC` a waveform and `LEVEL` a level bar (§4.3).
+  Two labels on the same corner step aside to the right. The last three are readouts of the whole scope,
+  not tied to elements: always present in "all" mode, and in hover and focus-path modes while the pointer
+  is in the scope; what they drew is recorded in `Ui::readout()` (`gaze::Readout`).
+- **Appearing**: the first time an element is annotated its time is recorded; its frame draws itself in
+  over `draw_ms` (the box travels around its four sides, corner marks grow, leaders reach out and then
+  turn), and numbers and sizes count up from 0. Everything is recomputed from the current layout every
+  frame, so the numbers follow page changes, flows and window changes.
 
-- **设置**（`Gaze`，在 `Look` 里）：`mode`（关 / 悬停：指针下最深的元素和它的上级 / 全部 / 焦点路径：有焦点的元素和它的上级）、`kinds`（位集）、`density`（最多标几个，面积大的先，带 `El::annotate` 的最先）、`draw_ms`、`colour`、`only_marked`（只标带说明的）。`El::gaze_scope()` 把标注限定在这棵子树里（没有时是整个窗口）；`El::annotate(文字)` 是明确的说明。
-- **候选**：画出来的、可见面积过半、至少 6 × 6、不是根、不是和父节点一样大的包装。选出来以后按树的顺序编号（01、02…）。
-- **种类**：`FRAME` 四角的角标，在元素矩形外 6 像素（所以不压元素自己的墨）；`BOX` 1 像素的框，正好压在元素矩形的边上；`INDEX` 编号；`KIND` 元素类型（text / image / control / shape / box）或它的说明；`SIZE` “宽×高”，在元素里的右下角；`LEADER` 折线引线，从元素靠近的一侧引到范围左边或右边的一列标签，标签在列里按想要的高度贪心地往下排、互不重叠、超出底边时从后往前推回去（`gaze::pack`）；`RULER` 沿范围上边和左边的刻度尺（10 / 50 / 100），标出指针位置；`CROSS` 指针处的十字线和坐标；`GRID` 每 8 像素的基线和 12 栏；`EDGE` 边注（§4.2）；`OSC` 波形、`LEVEL` 电平条（§4.3）。同一个角上的两个标签会往右让开。后三种是整个范围的读数，不跟元素：模式是“全部”时一直在，悬停和焦点路径时指针在范围里才在；画了什么记在 `Ui::readout()`（`gaze::Readout`）里。
-- **出现**：元素第一次被标注时记下时间，框在 `draw_ms` 内画出来（框沿四边走一圈，角标变长，引线先伸出去再拐弯），编号和尺寸从 0 数上去。每一帧都按当前的排版重新算，所以换页、流动、窗口变化时数字跟着走。
+Acceptance: `cargo test` (`tests/gaze.rs`) checks the records of a known tree (rects are node rects,
+numbers, sizes, kinds, notes), density and notes only, the ancestor chains for hover and focus,
+non-overlapping labels, drawing in and counting up, and the edge notes, waveform and level bar (§4.2,
+§4.3); `check` item 7 reads pixels back and checks that each corner mark's four corners sit exactly on the
+layout rect grown by 6 px, and that the pixel beyond is not annotation colour; items 7.2 and 7.3 are in
+§4.2 and §4.3.
 
-验收：`cargo test`（`tests/gaze.rs`）验已知的树的记录（矩形就是节点矩形、编号、尺寸、类型、说明）、密度和只标说明、悬停和焦点给出祖先链、标签不重叠、画出和数上去，和边注、波形、电平条（§4.2、§4.3）；`check` 第 7 条读回像素，验每个角标的四个角正好在布局矩形外扩 6 像素的角上，再外面一像素不是标注色；7.2、7.3 见 §4.2、§4.3。
+### 1.8 Input
 
-### 1.8 输入
+Pointer position → hit test in reverse order → hover / press / focus. Tab cycles focus; Enter and Space
+activate. Hover and focus are shown by four corner marks around the target (hover frames elements that can
+take focus, be pressed or be dragged). The marks land on a new target in the frame the target changes
+(computed on pointer movement, not at the next `tick`) and never slide between targets; the only easing is
+`ui::MARKS_SETTLE` (70 ms), closing in from 3 px outside and going from half to full opacity, fading out
+over the same time on leaving. They used to chase the target each frame by `1 − e^(−16·dt)` and always
+trailed the pointer. Acceptance: `hover_marks_land_in_the_pointers_frame` in `tests/pointer.rs`. The wheel
+finds the nearest scrolling ancestor.
 
-指针位置 → 倒序命中 → 悬停 / 按下 / 焦点。Tab 轮转焦点，Enter 和空格触发。悬停和焦点的指示是四个角标，框住目标（悬停框住能获得焦点、能按或能拖的元素）。角标在目标变的那一帧就落在新目标上（指针移动时当场算，不等下一次 `tick`），不在目标之间滑；唯一的缓动是 `ui::MARKS_SETTLE`（70 ms）里从外面 3 像素收拢、从半透明到不透明，离开时在同样的时间里淡出。原来是每帧按 `1 − e^(−16·dt)` 追过去，总落后指针一段滑行。验收：`tests/pointer.rs` 的 `hover_marks_land_in_the_pointers_frame`。滚轮找最近的滚动祖先。
+- A press fires on press (not on release; fingers may differ, §1.8.2). While held, the target's instances
+  stay loose; on release they are born again and condense from loose. Hit testing uses the minimum hit
+  size of §1.8.2.
+- The corner marks follow the most recent input: with the pointer they frame the hovered control, or the
+  focus when nothing is hovered; with the keyboard they frame the focus.
+- The wheel goes to the nearest scrolling ancestor first, and to the next one out once that has reached
+  its end. When focus moves to a control outside a scroll area's view, the area scrolls to show it.
+- A number control that loses focus while being typed in behaves as if Esc were pressed.
+- **Dragging**: pressing an element with `on_drag` makes the runtime record its handler and the press
+  position (capture); later moves and the release go to it wherever the pointer is. A new press ends an old
+  capture that was never released. Because the handler is the one from the press, the values in it are
+  those at the start of the drag: a number control dragged sideways computes "start value + offset / 6 px
+  × step", so dragging back and forth accumulates no error, and less than half a step is not a drag, so a
+  click only focuses.
+- **Text input**: see §1.8.1.
+- **Layers**: while a `modal` layer is open, only elements in it can be hit, hovered and focused, and Tab
+  cycles within it. When it opens, focus moves to the first control in it that takes keys (a text field),
+  or else its first control; when it closes, focus returns to where it was. Instances outside the layer
+  stay loose at the looseness the layer gives (0.35 for a dialog). Esc, when the focused control does not
+  use it, sends the layer's close message.
+- **Disabled**: a `disabled` subtree has no handlers, cannot take focus, and all its instances' opacity is
+  multiplied by 0.4.
+- Tabs, segmented choices and lists each take a single focus stop and change inside with the arrow keys;
+  their items can be pressed only with the pointer (`focusable(false)`). A list's selected row carries
+  `reveal`, so it is scrolled into view when the keyboard changes the row.
+- The view can know the window's logical size (`Ui::on_resize`) and use another layout when narrow.
+- Elements do not shrink by default (`flex-shrink: 0`); use `grow` or `shrink` to let them. The root's
+  size is the window.
 
-- 按下即触发（不等松开；手指不一定，见 §1.8.2）。按住时目标的实例保持松开，松开时重新出生，从松开凝结回来。命中按 §1.8.2 的最小命中范围。
-- 角标跟最近一次输入走：用指针时框住悬停的控件，没有悬停就框住焦点；用键盘时框住焦点。
-- 滚轮先给最近的滚动祖先；它已经到头时交给外一层。焦点移到滚动区外的控件时，滚动区自动滚到能看见它。
-- 数字控件在输入中途失去焦点，等于按了 Esc。
-- **拖动**：按下有 `on_drag` 的元素时，运行时记下它的处理函数和按下的位置（捕获），之后的移动和松开都交给它，不管指针到了哪里；新的按下会结束没有松开的旧捕获。因为处理函数是按下时的那个，它里面的值就是拖动开始时的值：数字控件横向拖动时按“开始的值 + 位移 / 6 像素 × 步长”算，来回拖不会累积误差；位移不到半步不算拖动，所以单击只是获得焦点。
-- **文字输入**：见 §1.8.1。
-- **层**：有 `modal` 层时，只有层里的元素能被命中、悬停和获得焦点，Tab 只在层里轮转；层打开时焦点移到层里第一个接受按键的控件（输入框），没有就是第一个控件；层关上时焦点回到打开前的位置。层外的实例按层给的松开度（对话框是 0.35）保持松开；Esc 没有被焦点控件用掉时发出层的关闭消息。
-- **不可用**：`disabled` 的子树没有任何处理函数，不能获得焦点，所有实例的透明度乘 0.4。
-- 标签页、分段选项和列表各自只占一个焦点位置，用方向键在里面换；里面的项只能用指针按（`focusable(false)`）。列表选中的行带 `reveal`，用键盘换行时滚到看得见。
-- 视图可以知道窗口的逻辑大小（`Ui::on_resize`），窄窗口时换一种布局。
-- 布局里元素默认不收缩（`flex-shrink: 0`），要收缩用 `grow` 或 `shrink`。根节点的大小就是窗口。
+### 1.8.1 Text input
 
-### 1.8.1 文字输入
+**Data.** The application keeps a `TextEdit` in its state: `text`, `caret` and `anchor` (character
+indices; when `anchor ≠ caret` the text between them is selected), `preedit` (what the input method is
+composing) and undo and redo stacks (at most `UNDO = 100` steps; a run of typing is one step, a run of
+deleting is one step, anything else one step each). The field shows `TextEdit::display()`: while composing,
+the string is `text` with `preedit` inserted at the caret, and the selection, the composition range and the
+caret are byte ranges in that string, set on the text leaf (`El::select(a, b)`, `El::mark(a, b)`, `caret`).
 
-**数据。** 应用在状态里存 `TextEdit`：`text`、`caret` 和 `anchor`（字符序号；`anchor ≠ caret` 时两者之间是选区）、`preedit`（输入法正在组的字）、撤销和重做栈（最多 `UNDO = 100` 步；连续打字是一步，连续删除是一步，其余每次一步）。字段把 `TextEdit::display()` 显示出来：组字时字串是 `text` 在插入点插入 `preedit`，选区、组字范围、插入点都是这个字串里的字节范围，放在文字叶子上（`El::select(a, b)`、`El::mark(a, b)`、`caret`）。
+**Events** (`el::TextInput`, `El::on_text(fn(TextInput) -> Option<M>)`): `Key { key, mods }` (keys that are
+not text: arrows, Home / End, Backspace, Delete, Enter; A / Z / Y with Cmd), `Insert(text)` (typing, an input
+method commit, a drop), `Compose { text, cursor }` (the composition so far; an empty string cancels),
+`Paste(text)`, `Cut` (the runtime has already put the selection on the clipboard), `Pointer { at, phase,
+clicks, shift }` (press, drag, release; `at` is the byte found from the layout, on a cluster boundary;
+`clicks` 2 selects a word, 3 everything) and `Goto { at, extend }` (the runtime moves the caret by the layout
+to the previous or next line, the line start or end). `TextEdit::handle(ev, max, multiline)` computes the new
+value, or `None` when nothing changed (the key is then passed on).
 
-**事件**（`el::TextInput`，`El::on_text(fn(TextInput) -> Option<M>)`）：`Key { key, mods }`（不是文字的键：方向、Home / End、退格、Delete、回车；带 Cmd 的 A / Z / Y）、`Insert(文字)`（键入、输入法提交、放下）、`Compose { text, cursor }`（组字到现在的样子；空字串是取消）、`Paste(文字)`、`Cut`（运行时已经把选区放进剪贴板）、`Pointer { at, phase, clicks, shift }`（按下、拖动、松开，`at` 是按排版结果找到的字节，落在字簇边界上；`clicks` 2 选词、3 全选）、`Goto { at, extend }`（运行时按排版把插入点移到上一行、下一行、行首、行尾）。`TextEdit::handle(ev, max, multiline)` 算出新的值，没有变化时是 `None`（键就往下传）。
+**Editing rules** (`src/widgets/input.rs` and the boundary functions in `src/text.rs`, no GPU): Left and Right
+move by grapheme cluster (`unicode-segmentation`; a letter with combining marks is one), Cmd or Alt with
+Left and Right by word (UAX #29 word boundaries; each CJK ideograph is a word), Shift extends the selection,
+and without Shift an existing selection collapses to its end; Home / End go to the ends; Backspace / Delete
+remove the selection, or one grapheme cluster, or with Cmd / Alt a word; typing replaces the selection;
+Cmd+A selects all, Cmd+Z undoes, Shift+Cmd+Z or Cmd+Y redoes; `max` limits the length; in a single-line
+field newlines and returns become spaces, in a multi-line field Enter inserts a newline. While composing,
+keys and the pointer belong to the input method (`handle` returns `None`); starting a composition deletes
+the selection first; a commit is one `Insert` and one undo step. Pointer: a click places the caret (Shift
+extends), a drag selects, a double click selects a word and drags by words, a triple click selects all.
 
-**编辑规则**（`src/widgets/input.rs`，`src/text.rs` 里的边界函数，不依赖显卡）：左右按字素簇（`unicode-segmentation`，带组合符号的字母是一个），Cmd 或 Alt 加左右按词（UAX #29 的词界，中日韩每个表意字是一个词），Shift 扩展选区，不带 Shift 时有选区就收到选区的一端；Home / End 到两端；退格 / Delete 删选区，或一个字素簇，或带 Cmd / Alt 删一个词；键入替换选区；Cmd+A 全选，Cmd+Z 撤销，Shift+Cmd+Z 或 Cmd+Y 重做；`max` 限字数；单行里换行和回车变成空格，多行里回车换行。组字时键和指针归输入法（`handle` 返回 `None`）；开始组字时选区先删掉；提交是一次 `Insert`，是一步撤销。指针：单击放插入点（Shift 扩展），拖动选择，双击选词并按词拖，三击全选。
+**The runtime** (`src/ui.rs`): when focus is on an element with `on_text`, `key_mods(k, Mods { shift, cmd,
+alt })` goes to it first: characters as `Insert`, Up / Down and Home / End in a multi-line field as `Goto`
+(`Text::nav`: parley's `Selection::previous_line / next_line / line_start / line_end`), anything else as
+`Key`; only what it doesn't use goes on (Tab always cycles focus; Esc always goes on). Keys with Cmd go only
+to text fields. A press in a field focuses it first, then finds the byte from the text leaf's layout
+(`Text::hit`: parley `Cursor::from_point`), sends `Pointer` and captures the moves and release that follow;
+repeated presses (within 0.45 s and 5 px) are counted. Also `text_input`, `ime_preedit`, `ime_commit`,
+`paste`, `copy` (the field's selection, or a read-only selection), `cut`, `ime_rect` (the caret's rect in
+logical px, for the host to place its hidden input element and the input method's candidate window) and
+`text_focused`. After every event that is used, the caret is scrolled into view: the field and the
+scrolling nodes outside it scroll by the caret's rect (a single-line field scrolls with `scroll_x` and its
+text leaf is `nowrap`; a multi-line field scrolls vertically).
 
-**运行时**（`src/ui.rs`）：焦点在 `on_text` 的元素上时，`key_mods(k, Mods { shift, cmd, alt })` 先给它——字符作为 `Insert`，多行字段里的上下和 Home / End 作为 `Goto`（`Text::nav`：parley 的 `Selection::previous_line / next_line / line_start / line_end`），其余作为 `Key`；没被用掉才往下走（Tab 总是轮转焦点，Esc 总是往下）。带 Cmd 的键只给文字字段。按在字段里：先给焦点，再按文字叶子的排版找字节（`Text::hit`：parley `Cursor::from_point`）发 `Pointer`，并捕获之后的移动和松开；连按（0.45 秒、5 像素以内）计次。`text_input`、`ime_preedit`、`ime_commit`、`paste`、`copy`（字段的选区，或只读选区）、`cut`、`ime_rect`（插入点的矩形，逻辑像素，给宿主放隐藏的输入元素和输入法候选窗）、`text_focused`。每个用掉的事件之后，把插入点滚进视野：字段自己和它外面的滚动节点按插入点的矩形滚（单行字段是 `scroll_x`，文字叶子 `nowrap`，不折行；多行字段纵向滚）。
+**How the selection is drawn** (rule 1): each selected glyph is drawn once more beneath itself with its
+outline moved out by `SELECT_HALO = 3` px (the same mechanism as `El::weight`, from the signed distance), in
+the accent at 0.34 opacity. The halos of neighbouring glyphs join into one shape that follows the glyphs'
+outlines, not a box. A glyph belongs to the selection if its center falls in one of the line boxes
+`Selection::geometry` gives (`Text::boxes`). The composing part has a 1.5 px underline. The selection is
+drawn only while the field has focus (like the caret).
 
-**选区的画法**（规矩 1）：选中的字形各再画一遍，在它自己下面，轮廓往外移 `SELECT_HALO = 3` 像素（`El::weight` 的同一个机制，按带符号的近度），强调色、0.34 不透明。相邻字形的外圈连成一片，沿着字的轮廓，不是方框。字形属于选区，是看它的中心落在不落在 `Selection::geometry` 给出的那几个行盒里（`Text::boxes`）。组字的部分下面画一条 1.5 像素的线。选区只在字段有焦点时画（和插入点一样）。
+**Read-only selection** (`El::selectable()`, inherited by the subtree): a press on selectable text (where
+nothing can be pressed) starts a selection; dragging finds the selectable text node under or nearest the
+pointer (by line distance first, then horizontal), so a selection can span lines and elements; a double
+click selects a word, a triple click the paragraph; a press elsewhere clears it. The range follows node
+order, and `copy()` joins the pieces with newlines between them. Each line of source on the website and the
+body text of the reading scene are selectable.
 
-**只读选区**（`El::selectable()`，子树继承）：按在可选的文字上（那里没有可按的东西）开始选择，拖动时找指针下或最近的可选文字节点（先按行距离，再按横向），所以可以跨行、跨元素选；双击选词，三击整段；按在别处清掉。范围按节点的顺序，`copy()` 把每段连起来，段之间是换行。gallery 的源码每一行、读文章场景的正文是可选的。
+**Web** (the website's `web/page.html`, the way egui does it): an invisible `<textarea>` (transparent,
+2 px wide, ignoring the pointer) moves to the caret (`ime_rect`) and takes DOM focus while a field has focus,
+so the keyboard, the input method and its candidate window all happen there; without a field, focus returns
+to the canvas. `keydown`: keys during composition are ignored; with Ctrl / ⌘ only A, Z and Y are forwarded
+(C, X and V let the browser send clipboard events); printable characters are not forwarded while a field
+has focus (they arrive as `input` events); the rest go to `key_mods`. `input` (`insertText`) →
+`text_input`, `insertLineBreak` → Enter; `compositionupdate` → `ime_preedit`, `compositionend` →
+`ime_commit`; `copy` / `cut` / `paste` are heard on the document and use `clipboardData`. Presses call
+`preventDefault`; the page decides focus.
 
-**网页**（`web/page.html`，egui 的做法）：一个看不见的 `<textarea>`（透明、2 像素宽、不接指针），字段有焦点时移到插入点（`ime_rect`）并获得 DOM 焦点，所以键盘、输入法和它的候选窗都在那里；没有字段时焦点回到 canvas。`keydown`：组字中的键不管；带 Ctrl / ⌘ 的只转 A、Z、Y（C、X、V 让浏览器发剪贴板事件）；字段有焦点时可打印字符不转（它们作为 `input` 事件来），其余转 `key_mods`。`input`（`insertText`）→ `text_input`，`insertLineBreak` → 回车；`compositionupdate` → `ime_preedit`，`compositionend` → `ime_commit`；`copy` / `cut` / `paste` 在 document 上听，用 `clipboardData`。按下时 `preventDefault`，焦点由页面决定。
+**Native** (the website's `src/bin/window.rs`): while a field has focus, `set_ime_allowed(true)` and
+`set_ime_cursor_area` (updated every frame drawn), `Ime::Preedit` → `ime_preedit`, `Ime::Commit` →
+`ime_commit`; keys are not forwarded during composition; while a field has focus, a keyboard event's `text`
+goes to `text_input`. The clipboard is `arboard` (through x11rb on X11, no C libraries; default features off,
+no images): Ctrl+C / X / V (⌘ on macOS).
 
-**原生**（`src/bin/window.rs`）：字段有焦点时 `set_ime_allowed(true)` 和 `set_ime_cursor_area`（每画一帧更新一次），`Ime::Preedit` → `ime_preedit`，`Ime::Commit` → `ime_commit`；组字中按键不转；字段有焦点时键盘事件的 `text` 作为 `text_input`。剪贴板用 `arboard`（X11 上走 x11rb，不需要 C 库；默认特性关掉，不带图片）：Ctrl+C / X / V（macOS 上 ⌘）。
+**Acceptance**: `tests/text.rs`: grapheme clusters and combining marks, word jumps in Chinese and English,
+Shift selection, Cmd+A, pointer click / drag / double click and word drag / triple click / Shift click, cut,
+paste, undo and redo (≥ 50 steps, a run of typing as one), composition ("n" → "ni" → commit "你"; keys do
+nothing while composing; cancelling changes nothing; composing replaces the selection and the commit is one
+undo step), and how multi-line and single-line fields treat newlines. Through the runtime: on the website's
+input page a press in the middle of the text puts the caret there, a drag selects, a double click selects a
+word, the selection halo is exactly one per selected glyph, typing / Shift+arrows / copy / cut / paste /
+undo / select all, the composition shows in the field underlined, commit and cancel, the input method's rect
+is in the field, a long line scrolls sideways in the field with the caret inside (Home returns to 0), a
+multi-line field moves up and down by line and to the line end, and Enter inserts a newline; selecting three
+lines of source copies those three lines and a press elsewhere clears it; in the article, a double click
+selects a word and a drag selects several lines. On the web (SwiftShader, real clipboard events): after
+pressing the field the hidden textarea has focus; typing; composing with CDP `Input.imeSetComposition` (the
+composition is not text yet) and committing "你" with `Input.insertText`; cancelling a composition; the
+hidden element is over the field; Shift+arrows selects two characters, Ctrl+C puts them on the system
+clipboard (read back with `navigator.clipboard.readText()`), Ctrl+X cuts, Ctrl+V pastes into a multi-line
+field, Ctrl+Z undoes, and the console has no errors.
 
-**验收**：`tests/text.rs`：字素簇和组合符号、中文和英文的词跳、Shift 选择、Cmd+A、指针的单击 / 拖动 / 双击按词拖 / 三击 / Shift 单击、剪切、粘贴、撤销和重做（≥ 50 步，连续打字一步）、组字（"n" → "ni" → 提交“你”；组字时键不动；取消不改；组字替换选区，提交是一步撤销）、多行和单行对换行的处理；通过运行时：在 gallery 输入框页上按在文字中间插入点到那里、拖动选择、双击选词、选区的外圈正好每个选中字形一个、键入 / Shift+方向 / 复制 / 剪切 / 粘贴 / 撤销 / 全选、组字显示在字段里并带下划线、提交和取消、输入法的矩形在字段里、长的一行在字段里横向滚动且插入点在字段内（Home 回到 0）、多行字段按行上下和到行尾、回车换行；源码跨三行选择后复制出那三行，按别处清掉；文章里双击选一个词、拖动选多行。网页（swiftshader、真实剪贴板事件）：按输入框以后隐藏的 textarea 有焦点；键入；CDP `Input.imeSetComposition` 组字（组字时不是文字）、`Input.insertText` 提交成“你”；取消组字；隐藏元素在字段上；Shift+方向选两个字、Ctrl+C 进系统剪贴板（`navigator.clipboard.readText()` 读回）、Ctrl+X 剪切、在多行字段里 Ctrl+V 粘贴、Ctrl+Z 撤销，控制台没有错误。
+### 1.8.2 Pointer, touch and wheel
 
-### 1.8.2 指针、触摸、滚轮
+**One pointer model** (`Ui::pointer_down / pointer_moved / pointer_up / pointer_cancel(id, PointerKind, x,
+y)`, where `PointerKind` is Mouse, Touch or Pen). Mouse and pen behave as before: a press fires on press, a
+drag is captured until release, and there is hover. A finger:
 
-**统一的指针**（`Ui::pointer_down / pointer_moved / pointer_up / pointer_cancel(id, PointerKind, x, y)`，`PointerKind` 是 Mouse、Touch、Pen）。鼠标和笔照旧：按下即触发，拖动捕获到松开，有悬停。手指：
+- **Has no hover**: finger movement sets no hover, gives no burst and the lens doesn't follow (`touching`);
+  no hover remains after the finger lifts.
+- **Press**: when what is under the finger is something dragged (a slider, a divider, a compare line) or a
+  text field, or when nothing there can scroll, it presses at once the mouse way (captured, fires on press).
+  Otherwise the press is only shown first: in the same frame a front is sent, a burst given and the control
+  held loose (as with a mouse held down), but no message is sent.
+- **Swipe**: moving more than `slop` (8 px) from the press is a scroll: the nearest scrolling ancestor of the
+  press whose direction matches the finger's main direction is taken (or the nearest scrolling ancestor);
+  the held control is let go and condenses again; then the content follows the finger (`drag_scroll`).
+  Lifting before that is a tap, and only then are press and release sent.
+- **Fling**: on lift, the velocity from the last 0.1 s of samples (the host's event times, `Ui::event_time`;
+  on the web the event's `timeStamp`) is clamped to `max_velocity` (5000 px/s), and above 50 px/s scrolling
+  continues: `v(t) = v₀ e^(−friction·t)` (`friction` 3.5 /s), each `tick` moving by the exact integral
+  `v (1 − e^(−f dt)) / f` (`fling_step`), stopping below 20 px/s. A new press stops it. A virtual list keeps
+  building new rows during a fling (`scrolled`).
+- **At the end**: content never goes past either end. As the finger keeps pulling, the overscroll `over`
+  grows by `rubber_band` (each time `rubber` (0.55) × the finger's movement, less and less, at most
+  `max_over` 140 px); a fling that reaches the end turns its remaining velocity into a little overscroll.
+  Overscroll does not move the content out (there is no bouncing box); **what is at that edge loosens**:
+  every element in the scrolling node has a looseness of at least
+  `0.85 × √(|over| / max_over) × (1 − distance from that edge / 160)`, so under `dot` the text at the bottom
+  breaks into dots and under `plain` it fades. Pushing back first pays off the overscroll; on release it
+  returns to 0 exponentially by `spring` (9 /s) and is removed below 0.5 px.
+- **A second finger** (a pinch): whatever the first finger was doing is abandoned (a held control is let
+  go, a drag ends as a release), and nothing is sent until all fingers lift.
+- `pointer_cancel`: the system took the pointer; nothing is sent.
+- `needs_frame` is true while a fling or overscroll is in progress (§1.11). The parameters are numbers in
+  `Ui::scrolling` (`Scrolling`).
 
-- **没有悬停**：手指移动不设悬停、不给 burst、透镜不跟（`touching`）；手指抬起以后也不留悬停。
-- **按下**：手指下面是拖动的东西（滑块、分界线、对比线）或文字字段，或者那里没有可以滚动的东西时，立刻按鼠标的方式按下（捕获，按下即触发）。否则先只“显示”按下：同一帧里放波前、给 burst、把要按的控件按住松开（和鼠标按住时一样），但不发消息。
-- **滑动**：离按下处超过 `slop`（8 像素）就是滚动：取按下处最近的、方向和手指移动的主方向一致的滚动祖先（没有就取最近的滚动祖先）；按住的控件放开、重新凝结；之后内容跟着手指走（`drag_scroll`）。没超过就抬起：这是一次点按，这时才发按下和松开。
-- **甩**：抬起时按最后 0.1 秒的样本（宿主给的事件时间，`Ui::event_time`；网页是事件的 `timeStamp`）算速度，夹在 `max_velocity`（5000 px/s）以内，超过 50 px/s 就继续滚：`v(t) = v₀ e^(−friction·t)`（`friction` 3.5 /s），每个 `tick` 按精确的积分走 `v (1 − e^(−f dt)) / f`（`fling_step`），速度低于 20 px/s 停。新的按下停止它。虚拟列表在甩的途中照常造新的行（`scrolled`）。
-- **到头**：内容不越过两端。手指继续拉时，拉过的量 `over` 按 `rubber_band`（每次 `rubber`（0.55）× 手指的移动，越拉越少，最多 `max_over` 140 像素）增加；甩到头时剩下的速度给一点拉过量。拉过量不是把内容挪出去（没有回弹的方框），而是**这一边的东西松开**：滚动节点里每个元素的松开度至少是 `0.85 × √(|over| / max_over) × (1 − 离这一边的距离 / 160)`，所以 dot 下边上的字散成点、plain 下变淡；手指往回推先还掉拉过量；放开后按 `spring`（9 /s）指数回到 0（小于 0.5 像素时去掉）。
-- **第二根手指**（捏合）：第一根手指正在做的事作废（按住的放开，拖动按松开结束），什么也不发，直到手指都抬起。
-- `pointer_cancel`：系统拿走了这个指针，什么也不发。
-- 甩和拉过量进行中 `needs_frame` 为真（§1.11）。参数在 `Ui::scrolling`（`Scrolling`）里，都是数。
+**Wheel**: pixel deltas are used as they are; line deltas (web `deltaMode = 1`, native `LineDelta`) are 40 px
+a line, page deltas the viewport height. A trackpad's own momentum is a stream of wheel events, so no
+momentum is added. On the web a wheel with Ctrl is a trackpad pinch: no scrolling and no page zoom
+(`preventDefault`).
 
-**滚轮**：像素增量直接用；按行的（网页 `deltaMode = 1`、原生 `LineDelta`）每行 40 像素，按页的是视口高。触控板自己的惯性是一串滚轮事件，不再加惯性。网页上带 Ctrl 的滚轮是触控板捏合：不滚、不缩放页面（`preventDefault`）。
+**Minimum hit size**: when press, hover and the cursor shape look for a target (`hit_target`), the topmost
+element under the pointer (or its ancestor) is it if it can be operated; otherwise it is the control, among
+those narrower or shorter than `MIN_HIT = 28` px whose box grown about its center to 28 × 28 contains the
+point and whose clip contains the point, with the nearest center. Only hit testing grows; drawing does not.
 
-**最小命中范围**：按下、悬停和指针形状找目标时（`hit_target`），指针下最上面的元素（或它的祖先）可以操作就是它；否则找宽或高不到 `MIN_HIT = 28` 像素、把盒子以中心扩到 28 × 28 以后包含这一点、且这一点在它的裁剪里的控件，取中心最近的。只扩命中，不改画法。
+**Cursor shape** (`Ui::cursor()`, `el::Cursor`): text while dragging a text selection; "grabbing" during a
+drag (an element that sets its own shape uses it; a divider is always `col-resize`); otherwise, from the
+element under the pointer upward: its own `El::cursor`, text for a text field, "grab" for something
+draggable, a pointing hand for something pressable, text for selectable text. The web sets
+`canvas.style.cursor`, native `Window::set_cursor`. The divider and compare lines in the printing scene are
+`col-resize`.
 
-**指针形状**（`Ui::cursor()`，`el::Cursor`）：拖动文字选择时是文字；拖动中是“抓住”（元素自己写了形状的用它的，比如分界线一直是 `col-resize`）；否则从指针下的元素往上找：自己写的 `El::cursor`、文字字段是文字、可拖动是“抓”、可按是手指、可选的文字是文字。网页设 `canvas.style.cursor`，原生 `Window::set_cursor`。印法场景的分界线和对比线是 `col-resize`。
+**Web**: `pointerdown / move / up / cancel` with `pointerType`; a press captures the pointer
+(`setPointerCapture`) and calls `preventDefault` (the page decides focus); for the mouse, only the primary
+button presses; `pointermove` uses `getCoalescedEvents()`; the canvas has `touch-action: none`,
+`user-select: none`, `-webkit-touch-callout: none` and a transparent tap highlight, and `contextmenu` is
+prevented, so double-tap zoom, the long-press menu and the browser's own panning never happen. **Native**:
+winit's `Touch` (started, moved, ended, cancelled) goes into the same model; `PinchGesture` and the like are
+not handled.
 
-**网页**：`pointerdown / move / up / cancel` 带 `pointerType`，按下时捕获指针（`setPointerCapture`）并 `preventDefault`（焦点由页面决定）；鼠标只有主键按下；`pointermove` 用 `getCoalescedEvents()`；canvas 上 `touch-action: none`、`user-select: none`、`-webkit-touch-callout: none`、透明的点按高亮，`contextmenu` 被阻止：双击缩放、长按菜单、浏览器自己的平移都不发生。**原生**：winit 的 `Touch`（开始、移动、结束、取消）进同一套；`PinchGesture` 等不处理。
+**Acceptance**: `tests/pointer.rs`: a fling travels `v₀ / friction` and stops after `ln(v₀ / 20) / friction`,
+and two steps compose into one; overscroll gets harder to pull and has a limit; one finger swiping 300 px on
+ten thousand rows moves the content exactly 300 with no row selected, then flings, is still moving after
+0.3 s and finally stops (≈ 1800 / 3.5 ≈ 514 px, ±80), after which `needs_frame` is false and the rows in
+the tree stay bounded; a tap: at the moment of the press the field has one more front, that row is held
+loose, no message yet, and it is selected on lift; fingers don't hover, the mouse does; pulling down at the
+top: the offset stays 0, overscroll < −40, the top rows loosen (> 0.3) and distant rows don't, no fling
+after release, back to 0 within 1.5 s and no more frames wanted; two fingers neither press nor scroll; a
+finger on a slider captures at once and still changes its value dragged far outside it; a 10 px control
+can be pressed 8 px outside its edge but not more than 14 px from its center, is still drawn at 10 px, and
+shows the pointing hand when hovered in the grown area; cursor shapes: text for the input field and source,
+the hand for the side rail, `col-resize` for the divider (during a drag too), "grab" for the bust,
+"grabbing" during a drag. On the web (SwiftShader, CDP `Input.dispatchTouchEvent` with time stamps 16 ms
+apart): one swipe scrolls ten thousand rows by 290 px, the fling starts on lift and stops at 716 px, a tap
+doesn't scroll, and the console has no errors.
 
-**验收**：`tests/pointer.rs`：甩的距离是 `v₀ / friction`、停的时间是 `ln(v₀ / 20) / friction`、两步合成一步；拉过量越来越难拉、有上限；一根手指在一万行上滑 300 像素，内容正好跟着走 300、没有选中行、接着甩、0.3 秒后还在走、最后停下（≈ 1800 / 3.5 ≈ 514 像素，±80）、停下后 `needs_frame` 为假、树里的行仍然有界；点按：按下的同一刻场里多了一道波前、那一行按住松开、还没有消息，抬起时选中；手指不悬停、鼠标悬停；在顶上往下拉：偏移仍是 0、拉过量 < −40、顶上的行松开（> 0.3）而远处的行不松开、放开后不甩、1.5 秒内回到 0 并且不再要帧；两根手指：既不按也不滚；手指在滑块上：立刻捕获，拖到滑块外很远仍然改它的值；10 像素的控件在它边外 8 像素处按得到，离中心超过 14 像素按不到，画出来仍是 10 像素，悬停在扩出的范围里形状是手指；形状：输入框和源码是文字、左栏是手指、分界线是 `col-resize`（拖动中也是）、胸像是“抓”、拖动中是“抓住”。网页（swiftshader，CDP `Input.dispatchTouchEvent`，事件带间隔 16 毫秒的时间戳）：一次滑动让一万行滚了 290 像素，抬起时开始甩，甩到 716 像素停下，点按不滚动，控制台没有错误。
+### 1.8.3 How scrolling looks
 
-### 1.8.3 滚动的样子
+Text "aliasing and shimmering" while scrolling had five sources (the `scroll` tool's sample
+`scroll-before.png`: an article, ten thousand rows and the button page at 120 / 800 / 3000 px/s in six
+materials). Rows scrolling into view were treated as new instances and condensed from loose (in fast
+scrolling the whole screen was condensing: grey in `plain`, dots in `dot`, three-colour halftone in
+`halftone`, characters in `ascii`); this was the largest. The scroll offset was fractional, so a shape's two
+edges rounded separately and its height jumped between n and n + 1, and glyph baselines rounded separately,
+putting rows a pixel out of line. The materials' lattices and noise (the dot ground, the paper grain, the
+halftone screen) were fixed to the screen, and text slid over them. Shapes' and glyphs' local and atlas
+coordinates in the G-buffer stage were interpolated, so the same box moved by a pixel rounded differently
+and anti-aliased edges differed by 1/255. The theme's background gradient was computed from screen y even
+without a gradient, again 1/255 off.
 
-滚动时字“走样、发抖”原来有五个来源（`scroll` 工具的样张 `scroll-before.png`：文章、一万行、按钮页，120 / 800 / 3000 px/s，六种材质）：滚进视野的行被当成新实例从松开凝结（快速滚动时整屏都在凝结：plain 发灰、dot 散成点、halftone 变成三色网点、ascii 变成字符）——这是最大的一个；滚动偏移是小数，形状的两条边各自取整，高度在 n 和 n + 1 之间跳，字形的基线各自取整，行与行之间错一个像素；材质的点阵和噪声（dot 的底、print 的纸纹、半色调的网屏）固定在屏幕上，字从它们上面滑过；形状和字形在第一遍里的局部坐标、图集坐标是插值出来的，同一个盒子移动一个像素后舍入不同，抗锯齿的边差 1/255；主题底色的渐变在没有渐变时也按屏幕的 y 算，同样差 1/255。
+Now (`style::Scroll`, in `Look::scroll` and a preset's `interaction.scroll`; the "Scrolling" section of the
+list page has number controls):
 
-现在（`style::Scroll`，在 `Look::scroll` 和预设的 `interaction.scroll` 里，列表页“滚动”一节是数字控件）：
+- **At rest and slow** (below `calm_speed`, 600 px/s by default): scrolling is a picture moved by whole
+  device pixels. When placing, the runtime rounds the offset to device pixels (the stored offset stays
+  fractional, so the fling integral loses nothing); instances that appear because of scrolling (`paint` in
+  `Ui::scrolled`) don't condense, since they were there all along; local and atlas coordinates in the
+  G-buffer stage are computed in the fragment from the pixel position minus the flat box origin (`exact_i`),
+  not interpolated; a background without a gradient is not computed from y. Inside a scrolling node, the
+  material's cells, hashes and noise use content coordinates (`anc`: the sum of the offsets of the scrolling
+  nodes this point is in, in whole device pixels), so lattices, paper grain and screens move with the
+  content. `check` item 18: in every material, scrolling the button page slowly by one device pixel per
+  frame, the scroll area (not counting 24 px from its edges) of each frame equals the previous frame moved
+  up one pixel, byte for byte; control: without movement the two frames differ. In the `scroll` tool's
+  report the "difference after moving" at slow speed is 0 for all three pages in six materials.
+- **Fast**: each scrolling node's velocity is found at every `tick` from the change in its offset (an
+  exponential average with `SPEED_TAU` = 60 ms, so one wheel notch isn't taken for a fling); the trace's
+  strength is `smoothstep(calm_speed, full_speed, |v|)` (600 to 2600 by default), settling to 0 by smoothstep
+  within `settle_ms` (140) after it stops (`Ui::scroll_motion`). The runtime puts up to eight visible
+  scrolling nodes (viewport, content offset, strength, direction of content movement) into the field
+  (`Field::scrolls` / `scrollo`), and the shader takes the strongest at this point in `scroll_here`. Traces
+  are drawn only outside the ink, behind the direction of motion, a whole row at a time; the text itself
+  stays as it is, so body text never passes the legibility cap:
+  - `plain`: a soft trail (within half of `trail`, at most 0.14 opacity);
+  - `dot`: content lands on the lattice row by row (the content offset is rounded to the pitch before
+    drawing, `latch`), leaving a few rows of phosphor dots behind (dot size by ink coverage, tinted toward
+    the accent);
+  - `halftone`: the second colour (the accent) offset behind on a fine screen, by `misreg × strength`;
+    `print`: the accent offset behind with multiply, like misregistered two-colour printing;
+  - `ascii`: lands on the character cells (`latch` with the cell pitch), leaving a few faint characters
+    behind;
+  - `glitch`: an occasional whole band offset: band height `band`, at most once every `slip_ms`, one band
+    only, offset by `slip × strength`, with a chance equal to the strength;
+  - `lino`: a carved echo: a few broken ink-and-ground-only lines behind the direction of motion;
+- The numbers in presets: Normcore has no trail, Cyberminimalism a very short one, Dotmatrix and Linocut
+  longer, Lo-Fi Print offsets by 4 px, and Glitch slips bands further and more often.
+- Drawing only what changed (§1.19): while a scrolling node's offset changes or its trace shows, its
+  viewport (grown by the material's read range, trail and band slip) goes into the shading stage's boxes.
 
-- **静止和慢速**（低于 `calm_speed`，默认 600 px/s）：滚动是一张按整设备像素移动的图。运行时放置时把偏移取整到设备像素（存的偏移仍是小数，甩的积分不丢）；因滚动而出现的实例（`Ui::scrolled` 里的 `paint`）不凝结，它们一直在那里；第一遍的局部坐标和图集坐标在片元里由像素位置减去平的盒子原点算（`exact_i`），不插值；没有渐变的底色不按 y 算。滚动节点里，材质的格子、哈希和噪声都按“内容的坐标”取（`anc`：这一点所在的滚动节点的偏移之和，整设备像素），所以点阵、纸纹、网屏跟着内容走。`check` 第 18 条：每种材质下，按钮页每帧慢滚一个设备像素，滚动区里（离边 24 像素以内不算）后一帧等于前一帧上移一个像素，逐字节；对照：不移动时两帧不同。`scroll` 工具的报告里三页六种材质慢速时“移动后的差”都是 0。
-- **快**：每个滚动节点的速度在每次 `tick` 里由偏移的变化求出（`SPEED_TAU` = 60 ms 的指数平均，所以一个滚轮刻度不会被当成甩），痕迹的强度是 `smoothstep(calm_speed, full_speed, |v|)`（默认 600 到 2600），停下后在 `settle_ms`（140）内按 smoothstep 收到 0（`Ui::scroll_motion`）。运行时把最多八个看得见的滚动节点（视口、内容偏移、强度、内容移动的方向）放进场（`Field::scrolls` / `scrollo`），着色器在 `scroll_here` 里取这一点最强的那个。痕迹只画在墨的外面、动的方向的后面，整行一起，字本身仍是原样，所以正文从不超过可读上限：
-  - plain：一点软的拖尾（`trail` 的一半以内，透明度最多 0.14）；
-  - dot：一行一行地落在点阵上（内容的偏移按点距取整再画，`latch`），后面留下几行荧光的点（墨的覆盖率决定点的大小，偏一点强调色）；
-  - halftone：第二色（强调色）按细网屏错开在后面，错开 `misreg × 强度`；print：强调色按正片叠底错开在后面，是双色套印没对准的样子；
-  - ascii：落在字格上（`latch` 用字格的点距），后面留下几格浅的字；
-  - glitch：偶尔整带错开：带高 `band`，每 `slip_ms` 至多一次，只选一带，错开 `slip × 强度`，出现的机会等于强度；
-  - lino：刻出来的回声：动的方向后面几条断续的、只有墨和底的线；
-- 预设里的数：Normcore 没有拖尾，Cyberminimalism 很短，Dotmatrix 和 Linocut 更长，Lo-Fi Print 错开 4 px，Glitch 错带更远更频。
-- 只画变了的部分（§1.19）：滚动节点的偏移变了或痕迹在显示时，它的视口（外扩材质的读取范围、拖尾和错带）进第二遍的框。
+At speed, "landing on the lattice row by row" is mostly invisible at 60 Hz (3000 px/s moves 50 px a frame at
+pitch 5); what shows is the phosphor dots. That is as specified, with nothing added. Wheel notches are not
+smoothed (the browser's `wheel` events jump one notch at a time), so a 100 px notch is one jump at 60 Hz;
+trackpads and flings are continuous.
 
-快的时候“一行一行落在点阵上”在 60 Hz 下大多看不出来（3000 px/s 一帧走 50 像素，点距 5），能看出来的是荧光的点；这是按要求做的，没有另加。滚轮刻度没有做平滑（浏览器的 `wheel` 事件给的是一格一跳），一格 100 像素的跳在 60 Hz 下就是一跳；触控板和甩是连续的。
+### 1.8.4 Gesture physics (`src/gesture.rs`)
 
-### 1.8.4 手势的物理（`src/gesture.rs`）
+Dragged things don't use animations; they use a few numbers in the state (no GPU):
 
-拖动的东西不靠动画，靠状态里的几个数（不依赖显卡）：
+- `Spring { stiffness 380, damping 36, mass 1, rest_distance 0.5, rest_speed 8 }`: a damped oscillator
+  stepped by its analytic solution (underdamped, critically damped and overdamped), so ten small steps land
+  where one large step does; damping ratio 0.92. `Animated` is a number it drives: `hold` follows the
+  finger, `to(target, v, now)` hands the release velocity to the spring, and `step(now)` moves only while
+  `moving()`, landing exactly on the target at rest and wanting no more frames (the application asks for
+  frames with `Ui::on_wake` while `moving()`).
+- `RubberBand { coeff 0.55 }`: d px past the limit shows as `(1 − 1/(d·coeff/dim + 1))·dim`; it starts at
+  0.55 of the finger's movement and never reaches `dim`.
+- `project(v, decel)`: a throw that decays by `decel` (0.998) per millisecond stops `v/1000·decel/(1−decel)`
+  further on. `Velocity`: the velocity from the last 0.1 s of samples (as for finger flings, §1.8.2).
+- **Bottom sheet** (`widgets::bottom_sheet`, `Sheet { detents [0.45, 0.9], dismiss_velocity 900,
+  projection_decel 0.998, backdrop 0.5, spring, rubber, height }`): the height is state and the sheet moves
+  with `El::shift` (dragging doesn't lay out); on release it stops at the detent nearest the projected end,
+  and dismisses when the end is below half the lowest detent, or below the lowest detent moving down faster
+  than `dismiss_velocity`; above the highest detent it rubber-bands; the backdrop is the page background at
+  opacity `backdrop × progress to the lowest detent`; Esc or a press on the backdrop dismisses it; its role
+  is dialog, and when presented focus goes to the handle (`Cmd::Focus`). It goes after the page in
+  `el::layers` (each child starts at the same box's top-left and the box does not grow with its children;
+  taffy 0.15's absolute positioning resolves insets against the root rather than the parent, so `absolute`
+  is not used).
+- **Hand-off** (runtime, in addition to §1.8.2): a finger pressing a vertical scroll area inside a dragged
+  element (one with `on_drag`) scrolls first; when the scroll area is at the top (offset 0, no overscroll)
+  and the finger pulls down, from that step the gesture passes to the element: its drag starts there (Start
+  and this step's Move), and the finger belongs to it afterwards.
+- **Floating box** (`widgets::floating`, `Floating { size, area, corner_inset 16, projection_decel 0.998,
+  spring, rubber }`): drag it anywhere, rubber-banding past the area's edges; on release the corner nearest
+  the projected end (not the release position) is chosen, and x and y springs carry the release velocity
+  there; the arrow keys change corners.
+- Acceptance: unit tests in `gesture.rs`, `bottom_sheet.rs` and `floating.rs` (analytic steps compose, rest,
+  the band is bounded, projection); `tests/gesture.rs` simulates through the runtime at 60 Hz: a slow drag
+  returns to its detent, a fast throw dismisses and hands its velocity to the spring, pulling up gets harder
+  and never passes the limit, a list pulled down at its top becomes a sheet drag, the corner is chosen by
+  projection, and no frames are wanted at rest. Samples: `craft <dir> sheet floating`.
 
-- `Spring { stiffness 380, damping 36, mass 1, rest_distance 0.5, rest_speed 8 }`：阻尼振子，按解析解走（欠阻尼、临界、过阻尼三种），十小步和一大步落在同一处；阻尼比 0.92。`Animated` 是一个由它驱动的数：`hold` 跟着手指，`to(target, v, now)` 把松手时的速度交给弹簧，`step(now)` 只在 `moving()` 时走，静止时正好落在目标上、不再要帧（应用用 `Ui::on_wake` 在 `moving()` 时要帧）。
-- `RubberBand { coeff 0.55 }`：越过界限 d 像素显示为 `(1 − 1/(d·coeff/dim + 1))·dim`，一开始是手指移动的 0.55，永远到不了 `dim`。
-- `project(v, decel)`：按每毫秒衰减 `decel`（0.998）的甩，停下的地方在 `v/1000·decel/(1−decel)` 之外。`Velocity`：最后 0.1 秒的样本求速度（和手指的甩一样，§1.8.2）。
-- **底部面板**（`widgets::bottom_sheet`，`Sheet { detents [0.45, 0.9], dismiss_velocity 900, projection_decel 0.998, backdrop 0.5, spring, rubber, height }`）：高度是状态，面板用 `El::shift` 移动（拖动不排版）；松手时按投射的终点停在最近的一档，终点低于最低一档的一半、或低于最低一档且向下快于 `dismiss_velocity` 时收起；最高一档以上按橡皮筋；背板是页面底色，不透明度 `backdrop × 到最低一档的进度`；Esc、按背板收起；角色 dialog，呈现时焦点给把手（`Cmd::Focus`）。放在 `el::layers` 里页面的后面（每个孩子从同一个盒子的左上角起，盒子不随孩子长高；taffy 0.15 的绝对定位按根而不是父节点算插入值的大小，所以不用 `absolute`）。
-- **交接**（运行时，§1.8.2 的补充）：手指按在一个被拖动的元素（有 `on_drag`）里面的纵向滚动区上时先滚动；滚动区在顶上（偏移 0、没有拉过量）而手指往下拉时，这一步起手势交给那个元素：从这里开始它的拖动（Start 和这一步的 Move），手指之后归它。
-- **浮动窗口**（`widgets::floating`，`Floating { size, area, corner_inset 16, projection_decel 0.998, spring, rubber }`）：随便拖，越过区域边按橡皮筋；松手时按投射的终点选最近的角（不是松手的位置），x、y 两个弹簧带着松手的速度过去；方向键换角。
-- 验收：`gesture.rs`、`bottom_sheet.rs`、`floating.rs` 的单元测试（解析步可组合、静止、带子有界、投射）；`tests/gesture.rs` 通过运行时以 60 Hz 模拟：慢拖回到原档、快甩收起且速度传进弹簧、往上拉越拉越少且不超过界、列表在顶上往下拉变成拖面板、角由投射选、静止时不要帧。样张 `craft <目录> sheet floating`。
+### 1.8.5 Nested menus and the safe zone
 
-### 1.8.5 多级菜单和安全区
+`widgets::nested_menu` (`Menu { items, submenu_delay_ms 120, close_delay_ms 200, row_h 30, width 200, pad 4,
+overlap 4, show_safe_zone }`). The open path is state, and so is the geometry (each row `row_h`, each menu
+`width`, a submenu beside its row), so the triangle can be tested without layout. Pointer movement over a
+menu is a message (`El::on_move`: local coordinates while a mouse or pen moves over the element, `None` on
+leaving; fingers have no hover).
 
-`widgets::nested_menu`（`Menu { items, submenu_delay_ms 120, close_delay_ms 200, row_h 30, width 200, pad 4, overlap 4, show_safe_zone }`）。打开的路径是状态；几何也是状态自己的（每行 `row_h`、每个菜单 `width`、子菜单在它那一行旁边），所以不排版也能判断三角形。指针在菜单上的移动是消息（新的 `El::on_move`：鼠标和笔在元素上移动时给它局部坐标，离开时给 `None`；手指没有悬停）。
+- The safe zone: the triangle from the pointer's **previous** position to the two near corners of the
+  deepest submenu. While the pointer is in the triangle, sibling rows it passes don't take over: switching
+  waits `close_delay_ms`, restarted on every move inside; outside the triangle, resting on a row for
+  `submenu_delay_ms` makes it take over (opening its submenu if it has one). Rows in the deepest menu become
+  current at once, and their submenus open after `submenu_delay_ms`.
+- While waiting, `Menu::due()` gives the time and the application's `on_wake` returns it, so a frame is
+  wanted only at that moment, not every frame.
+- Keyboard: Up and Down move within the deepest menu, Right or Enter opens a submenu (with its first row
+  current), Left or Esc closes one level, and Enter on a leaf chooses it; `update` returns the chosen path.
+- Debug layer: with `show_safe_zone`, the triangle goes to the annotation layer through `El::guide` (a closed
+  polyline in local coordinates), drawn dotted in the annotation colour whether the annotation layer is on
+  or not.
+- Acceptance: unit tests in `nested_menu.rs`; `tests/menu.rs`: a diagonal over sibling rows doesn't change
+  the submenu, the triangle is drawn in the annotation layer, and no frames are wanted once in the submenu;
+  straight down outside the triangle, the row changes after `submenu_delay_ms` with a timed wake while
+  waiting. Samples: `craft <dir> menu`.
 
-- 安全区：从指针**上一次**的位置到最深一层子菜单两个近角的三角形。指针在三角形里时经过的兄弟行不接管：切换等 `close_delay_ms`，每次在里面移动重新计时；在三角形外，停在一行上 `submenu_delay_ms` 后这一行接管（有子菜单就打开）。最深一层里的行立刻变成当前行，它的子菜单 `submenu_delay_ms` 后打开。
-- 等待中 `Menu::due()` 给出时间，应用的 `on_wake` 返回它：等待时只在那个时刻要一帧，不是每帧。
-- 键盘：上下在最深一层里走，右或 Enter 打开子菜单（第一行为当前行），左或 Esc 关一层，Enter 在叶子上选中；`update` 返回选中的路径。
-- 调试层：`show_safe_zone` 时三角形用 `El::guide`（一条闭合的折线，局部坐标）交给标注层，按标注的颜色画成点线，不管标注层开不开。
-- 验收：`nested_menu.rs` 的单元测试；`tests/menu.rs`：对角线经过兄弟行子菜单不换、三角形画在标注层、进了子菜单以后不再要帧；三角形外直着往下，`submenu_delay_ms` 后换行、等待时有定时唤醒。样张 `craft <目录> menu`。
+### 1.9 Platforms
 
-### 1.9 平台
+- Native: a winit window (the website's `window`, Metal on macOS); off-screen rendering to PNG (`shot`,
+  `pages`) for acceptance.
+- Web: one canvas, drawn only when needed (§1.11). The web page only forwards pointer, wheel (both
+  directions) and keyboard events and `location.hash`: at start-up it hands the hash to the application, on
+  `hashchange` (links, back) it switches to that page, and after every input it writes the current page's
+  name back to the hash. Page names are lowercase letters, digits and hyphens (`#button`, `#marks-chars`).
+  Input methods and the clipboard are in §1.8.1.
 
-- 原生：winit 窗口（`window`，macOS 上走 Metal）；离屏渲染出 PNG（`shot`、`pages`）用于验收。
-- 网页：一个 canvas。只在需要时画（§1.11）。网页只负责转发指针、滚轮（两个方向）、键盘事件和 `location.hash`：启动时把 hash 交给应用，`hashchange`（链接、后退）时切到那一页，每次输入后把当前页的名字写回 hash。页名是小写字母、数字和连字符（`#button`、`#marks-chars`）。输入法和剪贴板见 §1.8.1。
+### 1.10 Transforms
 
-### 1.10 变换
+Two things: **particles** (anything breaks into particles and flies over to become anything else) and
+**flows** (on a page change, the parts both pages share move to their new places). Both go through the
+two-stage drawing: particles and instances in flight are drawn into the coverage and SDF buffers as usual and
+the material treats them as usual; there is no separate look. The code is in `src/morph.rs` (data and pure
+functions), `src/ui.rs` (running it) and `src/particles.wgsl` (the particle pass).
 
-两件事：**粒子**（任何东西散成粒子，飞过去变成任何别的东西）和**流动**（换页时两页共有的部分移到新位置）。都走两遍绘制：粒子和流动中的实例照常画进 `ink` / `near`，材质照常处理它们，没有另一套样子。代码在 `src/morph.rs`（数据和纯函数）、`src/ui.rs`（运行）、`src/particles.wgsl`（粒子的一遍）。
+**Commands.** `update` never touches the runtime; it puts commands in its own state, and the runtime takes
+them with `Ui::on_commands(fn(&mut S) -> Vec<Cmd>)` before each layout (a flow needs the picture from before
+the layout). `Cmd::Morph { from, to, spec }` (two keys) and `Cmd::Flow(FlowSpec)`. `Ui::morph(from, to, spec)`
+can also be called directly. A subtree with `El::hidden_until_morphed(true)` is laid out as usual but not
+drawn, takes no input and can't be hit until a morph reveals it; after the morph, the view decides again.
 
-**命令。** `update` 不碰运行时，它把命令放进自己的状态；运行时用 `Ui::on_commands(fn(&mut S) -> Vec<Cmd>)` 在每次布局之前取走（流动要的是布局之前的画面）。`Cmd::Morph { from, to, spec }`（两个 key）和 `Cmd::Flow(FlowSpec)`。也可以直接调 `Ui::morph(from, to, spec)`。`El::hidden_until_morphed(true)` 的子树照常布局，但不画、不接受输入、点不中，直到某个变形把它显示出来；变形结束后由视图重新决定。
+#### Particles
 
-#### 粒子
+**A particle is a cell.** A particle is one cell of the material lattice (device pitch
+`P = max(1.5, lattice × scale)`, the same grid as the `dot` material's), and has no colour of its own: it
+shows what the source element drew in its cell, and on landing what the target draws in its cell. Both are
+read pixel by pixel from images: when a morph starts, the renderer runs the G-buffer stage once on its own
+for the source's and the target's instances (looseness 1, already born), giving four images (source
+coverage, target coverage, source SDF, target SDF), once per morph. So a particle at progress 0 is exactly
+the cell it replaces and at progress 1 exactly the target's cell, whatever the material and the content
+(text, shapes, pictures, whole subtrees).
 
-**粒子是格子。** 一个粒子是材质点阵里的一格（设备像素点距 `P = max(1.5, lattice × 缩放)`，和 `dot` 材质的格子是同一张），粒子本身没有颜色：它显示源元素在自己那一格里画的东西，落地时显示目标在它那一格里画的东西。两样都从图里逐像素读：变形开始时，渲染器把源和目标各自的实例（松开度 1、已经出生）单独画一遍第一遍，得到四张图（源的 ink、目标的 ink、源的 near、目标的 near），每个变形只画一次。所以进度 0 的粒子就是它替换的那一格，进度 1 的就是目标的那一格，不管是什么材质、什么内容（字、形状、图片、整棵子树）。
+**Sampling (CPU, once per morph).** An element's instances, within their ink grown by `SPREAD` (the SDF's
+range), are cut into cells on the screen grid; each cell's coverage is the average of four points at the
+cell center ±P/4 (the way the `dot` material reads coverage): glyphs read the CPU copy of the atlas, shapes
+compute distance on the CPU, pictures are 1; ink in the page background colour (tone and accent both 0) does
+not count as visible. Cells with coverage ≥ `threshold` fly; the rest are "dust" and stay in place, the
+source's dust fading out over the first 20% of its progress and the target's fading in over the last 20%.
+When the total passes `count_max`, cells become 2, 3 … times the lattice wide until it no longer does;
+nothing is dropped at random.
 
-**取样（CPU，每个变形一次）。** 元素的实例在墨的范围外扩 `SPREAD`（近度的范围）内，按全屏格子切成格；每格的覆盖率是格心 ±P/4 四个点的平均（和 `dot` 材质读 ink 的方式一样）：字形读图集的 CPU 副本，形状在 CPU 上算距离，图片是 1；页面底色的墨（色调和强调都是 0）不算可见。覆盖率 ≥ `threshold` 的格子会飞；其余的是“尘”：留在原地，源的尘在自己进度的前 20% 淡出，目标的尘在后 20% 淡入。总数超过 `count_max` 时，格子变成点阵的 2、3 … 倍宽，直到不超过，不随机丢。
+**Pairing.** Each side's flying cells are sorted by Morton code normalized to their element's bounds and
+paired by rank (`morph::pair`, a pure function): pairs = max(ns, nt), every source and target used at least
+once, deterministic. With more targets, the extra targets start from the source of nearest rank (one
+starting point, `SPLIT`, fading in over the first 20%); with more sources, the extras land on shared targets
+(`MERGE`, fading out over the last 20%).
 
-**配对。** 两边会飞的格子各按在自己元素范围内归一化的 Morton 码排序，按名次配对（`morph::pair`，纯函数）：对数 = max(ns, nt)，每个源和每个目标至少用一次，确定。目标多时，多出来的目标从名次最近的源出发（同一起点，`SPLIT`，前 20% 淡入）；源多时，多出来的源落到共用的目标上（`MERGE`，后 20% 淡出）。
+**The record** (`Particle`, 48 bytes, uploaded once per morph): `ab` the top-left corners of the source and
+target cells (device pixels); `run` start and end progress, delay, duration (seconds, on this flight's
+clock); `misc` kind, cell size, seed, and the progress at which the drawing style switches.
 
-**记录**（`Particle`，48 字节，每个变形上传一次）：`ab` 源格和目标格的左上角（设备像素）；`run` 起止进度、延迟、时长（秒，按这一次飞行的时钟）；`misc` 种类、格子大小、种子、换画法的进度点。
+**The shader** (`particles.wgsl`, vertex and fragment only, works on WebGL2, no per-frame CPU work):
+`l = clamp((clock − delay) / dur)`, progress `u = mix(u0, u1, ease(l))`; position
+`mix(A, B, u) + curl · sin(πu) · (normal · (0.8 + 0.5n₁) + forward · 0.35n₂)`, where `n` is smooth noise at
+the source position (neighbours drift together, so the group travels in arcs) plus jitter from the seed;
+dust doesn't drift. Delay = `stagger × flight × 0.95 × (0.6 × the side facing the target first + 0.4 ×
+noise)` and each cell's own duration = `flight × (1 − stagger)`, so the last cell lands before the flight
+ends and the front ones peel away first. Fragment: content cross-fades between the two images by `u`; where
+the two sides are drawn differently (a picture on one side, text on the other, different `near.g`) each cell
+switches at its own progress point. In the air: ink in the page background colour (the ground of a default
+button) counts tone and accent as coverage, so it doesn't punch background-coloured holes in what it passes;
+in a morph involving a picture, all text cells take the theme colours they show and are drawn as picture
+during the flight (after 30 ms and before the last 30 ms), because a pixel can only be drawn one way and a
+text cell over a picture cell would be taken for the picture's colour. `near.b = 1` (fully loose).
 
-**着色器**（`particles.wgsl`，只有顶点和片元，WebGL2 可用，没有每帧的 CPU 工作）：`l = clamp((clock − delay) / dur)`，进度 `u = mix(u0, u1, ease(l))`；位置 `mix(A, B, u) + curl · sin(πu) · (垂直方向 · (0.8 + 0.5n₁) + 前进方向 · 0.35n₂)`，`n` 是源位置的平滑噪声（相邻的一起偏，整群走成弧线）加上种子的抖动；尘不偏。延迟 = `stagger × 飞行 × 0.95 × (0.6 × 朝向目标的一侧先走 + 0.4 × 噪声)`，每格自己的时长 = `飞行 × (1 − stagger)`，所以最后一格在飞行结束前落地，前面的先剥离。片元：内容按 `u` 在两张图之间淡入淡出；两边画法不同（一边是图片、一边是文字，`near.g` 不同）时，每格在自己的进度点上换过去。飞在空中时：页面底色的墨（默认按钮的底）把色调和强调当覆盖率，不会在经过的东西上挖出底色的洞；有图片参与的变形，飞行期间（时钟 30 ms 之后、结束前 30 ms 之前）所有文字格换成它们显示的主题颜色，按图片画，因为一个像素只能按一种画法画，文字格压在图片格上会被当成图片的颜色。`near.b = 1`（完全松开）。
+**Three phases.** 1. The source's looseness goes from `k0` (usually 0) to 1 over `loosen_ms × (1 − k0)`.
+2. Hand-off: from this moment the source isn't drawn and particles take over at exactly the same positions,
+flying for `duration_ms`; the target is laid out but not drawn. 3. Particles give way to the target at
+looseness 1, which closes to 0 within `tighten_ms`. Looseness uses the existing mechanism (an instance's
+static looseness, ramped on the CPU each frame), so under `plain` it is plain's own loose look (fading).
+What a morph shows does not condense a second time.
 
-**三个阶段。** 1 源的松开度从 `k0`（通常 0）到 1，用 `loosen_ms × (1 − k0)`；2 交接：从这一刻起源不画，粒子在完全相同的位置接手，飞 `duration_ms`；目标布局好了但不画；3 粒子换成松开度 1 的目标，`tighten_ms` 内合拢到 0。松开度用现有的机制（实例的静态松开度，每帧在 CPU 上按斜坡改），所以 `plain` 下是它自己的松开的样子（变淡）。变形显示的东西不会再凝结一次。
+**Reversing.** When the morph requested is exactly the reverse of the one in progress: during the flight,
+the CPU computes each cell's current progress with the same formula, rewrites it as `u0 = now, u1 = the
+other end` with delay 0 and uploads again, so particles return from where they are along the same path;
+while still loosening, the source closes back from its current looseness; while closing, a new morph starts
+from the target's current looseness. A new morph during a different one ends the old one at once.
 
-**反向。** 要求的变形正好是进行中那个的反向时：飞行中，CPU 按同一个公式算出每格此刻的进度，改写成 `u0 = 此刻，u1 = 另一端`、延迟 0，重新上传，粒子从当前位置沿原路返回；还在松开时，源从当前松开度合拢回去；在合拢时，从目标当前的松开度开始一个新的变形。别的变形进行中又来一个新的：旧的立刻结束。
+**Parameters** (`MorphSpec`, all numbers; the website's particle page sets them with number controls and the
+easing with a segmented choice):
 
-**参数**（`MorphSpec`，都是数，gallery 的粒子页用数字控件设置，缓动用分段选项）：
-
-| 名字 | 默认 | 含义 |
+| Name | Default | Meaning |
 |---|---|---|
-| `loosen_ms` | 220 | 源松开的时长 |
-| `duration_ms` | 900 | 飞行，从第一格出发到最后一格落地 |
-| `tighten_ms` | 260 | 目标合拢的时长 |
-| `count_max` | 40000 | 粒子上限 |
-| `threshold` | 0.5 | 格子覆盖多少才飞 |
-| `curl` | 48 px | 飞行途中偏离直线最远多少 |
-| `stagger` | 0.35 | 出发时间错开占飞行的比例 |
-| `ease` | 缓入缓出 | 线性 / 缓入缓出（三次）/ 指数减速 |
-| `lattice` | 5 | 材质点阵的点距（`Fx::pitch`），由应用填 |
+| `loosen_ms` | 220 | How long the source takes to loosen |
+| `duration_ms` | 900 | The flight, from the first cell leaving to the last landing |
+| `tighten_ms` | 260 | How long the target takes to close |
+| `count_max` | 40000 | Particle limit |
+| `threshold` | 0.5 | How much coverage a cell needs to fly |
+| `curl` | 48 px | The farthest a flight strays from a straight line |
+| `stagger` | 0.35 | The share of the flight that departures are spread over |
+| `ease` | ease in-out | linear / ease in-out (cubic) / exponential deceleration |
+| `lattice` | 5 | The material lattice pitch (`Fx::pitch`), filled in by the application |
 
-#### GPU 上的粒子
+#### Particles on the GPU
 
-格子数超过 `Particles::gpu_above`（默认 20000）而渲染器能做时，变形不在 CPU 上切格子、配对，而是在 GPU 上模拟一张网格（`morph::Grid`）：两个元素的墨的范围（外扩近度）各铺一张同样行列数的网格，格子是整数个设备像素、不小于点阵（`MorphSpec::lattice`），最多 `count_max` 格；第 i 格配第 i 格（按位置排序的配对，和 CPU 的 Morton 名次一样不交叉）。出发时间、时长、弧线、换画法的点和 CPU 一样，由序号的哈希和位置算出。状态在纹理里：每格一个 texel，相对缓动路径的偏移和速度；每步 1/60 秒（固定步长，同样的时钟同样的状态）：旋度噪声（`curl`、`curl_scale`）、指针的吸引或推开（`pointer`、`pointer_radius`）、经过的波前一推（`front`）、阻尼、拉回路径的弹簧；画出来的位置是路径 + 偏移 × sin(πu)，所以进度 0 和 1 时正好在自己的格子上，交接和落地那一帧照旧不变（`check` 第 4 条对两条路都验，且 GPU 路径同一时钟两次相同）。
+When the cell count passes `Particles::gpu_above` (20000 by default) and the renderer can do it, a morph does
+not cut and pair cells on the CPU but simulates a grid on the GPU (`morph::Grid`): the ink bounds of the two
+elements (grown by the SDF range) are each covered by a grid with the same rows and columns, cells a whole
+number of device pixels and no smaller than the lattice (`MorphSpec::lattice`), at most `count_max` cells;
+cell i pairs with cell i (pairing sorted by position, non-crossing like the CPU's Morton ranks). Departure
+times, durations, arcs and the style switch point are computed from the index hash and position as on the
+CPU. State lives in a texture, one texel per cell: the offset from the eased path and its velocity, stepped
+at 1/60 s (a fixed step: the same clock gives the same state): curl noise (`curl`, `curl_scale`), pointer
+attraction or repulsion (`pointer`, `pointer_radius`), a push from passing fronts (`front`), damping, and a
+spring back to the path. The drawn position is path + offset × sin(πu), so at progress 0 and 1 each particle
+is exactly on its own cell and the hand-off and landing frames are unchanged (`check` item 4 tests both
+paths, and that the GPU path gives the same result twice on the same clock).
 
-三档（`render::ParticleTier`，宿主按适配器告诉渲染器）：WebGPU 和原生用计算着色器（`sim_cs.wgsl` 写 rgba32f 存储纹理）；WebGL2 用片元着色器往浮点目标里乒乓（rgba32f，不行就 rgba16f）；两样都不行就留在 CPU 路径，读数里写“cpu (no float targets)”。积分是同一个 WGSL 函数（`particles.wgsl` 的 `integrate`）。读数（F2）写粒子数和在哪里模拟（`gpu compute`、`gpu rgba32f`…）。粒子页（`#particles`）：网格 → 文字 → 图片 → 另一个网格，粒子数是数字控件（到 1,000,000），指针推开粒子，按舞台放波前；样张 `samples <目录> particles`。
+Three tiers (`render::ParticleTier`, which the host tells the renderer from the adapter): WebGPU and native
+use a compute shader (`sim_cs.wgsl` writes an rgba32f storage texture); WebGL2 ping-pongs with a fragment
+shader between float targets (rgba32f, or rgba16f if that fails); with neither, the CPU path stays, and the
+readout says "cpu (no float targets)". Integration is one WGSL function (`integrate` in `particles.wgsl`).
+The readout (F2) shows the particle count and where it is simulated (`gpu compute`, `gpu rgba32f`…). The
+particle page (`#particles`): mesh → text → picture → another mesh, the particle count is a number control
+(up to 1,000,000), the pointer pushes particles away, and a press on the stage sends a front. Samples:
+`samples <dir> particles`.
 
-#### 流动
+#### Flows
 
-`El::flow(id)` 给一棵子树跨页的身份。`Cmd::Flow` 之后的那次布局：两页上同一个流动 id 的子树里，按“流动 id + 在子树里的序号”配对（字形和别的实例分开数，字形还要求是同一个字形），只配旧位置消失、新位置出现的实例。配上的保留出生时间（不重新凝结），矩形（含大小）在 `flow_ms` 内按缓入缓出从旧的移到新的，松开度加一个 `flow_loose × sin(π e)` 的鼓包，飞行中间最松，到达时清晰；飞行期间它们画在页面上面的一层里（先图片和形状，再字），不会从别的东西下面穿过，也不会被当成下面的图片。在 CPU 上插值：运行时保留每个实例布局时的样子，每帧（`tick`）按流动和变形的斜坡改一份；没有动画时不做。旧页没有配上的实例留在场景里，`out_ms` 内松开到 1 并淡出；新页新的实例照常凝结。
+`El::flow(id)` gives a subtree an identity across pages. In the layout after `Cmd::Flow`, within the subtrees
+with the same flow id on both pages, instances are paired by "flow id + index in the subtree" (glyphs counted
+apart from other instances, and glyphs must be the same glyph); only instances that disappear from an old
+position and appear at a new one are paired. Paired instances keep their birth time (they don't condense
+again), and their rect (size included) moves from old to new over `flow_ms` with ease in-out, their looseness
+raised by a bump of `flow_loose × sin(π e)`, loosest in mid-flight and sharp on arrival. In flight they are
+drawn on a layer above the page (pictures and shapes first, then text), so they never pass beneath other
+things and are never taken for a picture below. Interpolation is on the CPU: the runtime keeps each
+instance as laid out and, each frame (`tick`), edits a copy by the flow and morph ramps; nothing is done
+without animation. Unpaired instances of the old page stay in the scene, loosening to 1 and fading out
+within `out_ms`; new instances of the new page condense as usual.
 
-gallery 里：换页时页标题（`page-title`）和左栏的选中底色（`rail-selection`）流动，选中底色从旧的一项滑到新的一项；换页页面上卡片的图片和标题流到详情里。参数（`FlowSpec`）：`flow_ms` 420、`flow_loose` 0.25、`out_ms` 180。
+On the website: on a page change, the page title (`page-title`) and the side rail's selection background
+(`rail-selection`) flow, the selection sliding from the old item to the new one; on the page-change page,
+the cards' pictures and titles flow into the detail view. Parameters (`FlowSpec`): `flow_ms` 420,
+`flow_loose` 0.25, `out_ms` 180.
 
-**验收。** `cargo test`：配对（每个都用到、对数、确定、不交叉）、缓动的两端、落地的精确、反向从当前进度开始并回到起点、点数上限按整数倍加大格子；运行时的各阶段时间点（松开到一半、交接前后、目标出现时松开度 1 且不凝结、结束）、飞行中反向和松开中反向；流动在 t = 0 / ½ / 1 的矩形、保留出生时间、未配上的消散、没有流动命令时直接换掉；gallery 两页的命令。`check`：交接那一帧（源松开度 1 对比粒子 t = 0）和落地那一帧（粒子 t = 1 对比目标松开度 1），`plain` 和 `dot` 下，元素范围内逐像素差 ≤ 2/255（实际是 0）；浅色主题飞行中，两个元素以外有粒子（带对照）。`film` 出每对 × 每种材质 × 七个时刻的样张，和换页往返各五个时刻。网页版在 WebGL2 下按虚拟时钟截飞行中的三帧，各不相同，控制台没有错误。
+**Acceptance.** `cargo test`: pairing (every cell used, the pair count, deterministic, non-crossing), the
+easing's ends, exact landing, reversing starts from current progress and returns to the start, and the
+count limit enlarges cells by whole multiples; the runtime's phase times (half loosened, before and after
+the hand-off, the target appears at looseness 1 without condensing, the end), reversing in flight and while
+loosening; flow rects at t = 0 / ½ / 1, kept birth times, unpaired instances dissolving, a straight swap
+without a flow command; the commands of two website pages. `check`: the hand-off frame (source at looseness 1
+against particles at t = 0) and the landing frame (particles at t = 1 against the target at looseness 1),
+under `plain` and `dot`, differ by ≤ 2/255 per pixel within the elements' bounds (in fact 0); in the light
+theme mid-flight there are particles outside both elements (with a control). `film` gives samples for every
+pair × every material × seven moments, and the page change there and back at five moments each. The web
+version under WebGL2 captures three mid-flight frames on a virtual clock, all different, with no console
+errors.
 
-### 1.11 只在有变化时画
+### 1.11 Drawing only when something changed
 
-画一帧不是每个显示刷新都做的事。运行时回答“现在要不要画”，宿主（网页、原生窗口）只在要画时画，其余时间睡着等输入或定时唤醒。
+Drawing a frame is not something done on every display refresh. The runtime answers "should a frame be
+drawn now", and the host (the web page, the native window) draws only then, sleeping the rest of the time
+until input or a timed wake.
 
-**接口**（`src/ui.rs`，不依赖显卡）：`Ui::needs_frame(now) -> bool`（先 `tick(now)`）、`Ui::next_wake(now) -> Option<f32>`（`now` 是马上要画；更晚的时间是定时唤醒；`None` 是只有输入才会改变什么）、`Ui::frame_drawn()`（渲染器每画完一帧调一次，`Renderer::draw` 里已经调了）、`Ui::invalidate()`（宿主丢了画面，比如原生窗口读回存图时没有呈现那一帧）。
+**Interface** (`src/ui.rs`, no GPU): `Ui::needs_frame(now) -> bool` (after `tick(now)`),
+`Ui::next_wake(now) -> Option<f32>` (`now` means draw right away; a later time is a timed wake; `None`
+means only input can change anything), `Ui::frame_drawn()` (called by the renderer after every frame, already
+done in `Renderer::draw`) and `Ui::invalidate()` (the host lost the picture, for example when the native
+window read back a frame for saving without presenting it).
 
-`needs_frame(now)` 为真，当且仅当下面任何一条成立：
+`needs_frame(now)` is true if and only if any of these holds:
 
-| 条件 | 怎么判断 |
+| Condition | How it is decided |
 |---|---|
-| 上一帧以后有输入或场景变了 | `dirty`：每个输入入口（指针移动、离开、按下、松开、滚轮、按键、松键、尺寸）和每次 `paint` 置位，`frame_drawn` 清掉 |
-| 有一道波前还活着 | 场里某道波前强度 > 0 且 `now − 开始 < Fx::wave_life`（着色器里波前强度在 `wave_life` 时变成 0） |
-| 提交的波前还在屏幕上 | `(now − t) × wave_speed × 缩放 < 对角线` |
-| 短暂的 `burst`（悬停、按下） | `Field::burst_at(now) > 0` |
-| 有实例在凝结 | `now < 最新的出生时间 + Fx::enter`（`paint` 时记下画出来的实例里最新的出生时间） |
-| 变形、流动、旧页消散 | `run`、`flows`、`ghosts` 非空，或最后一次动画结束后还差的那一遍（`animating`） |
-| 角标在滑动或淡入淡出 | 上一次 `tick` 里它们的位置或透明度变了；离目标不到 0.1 像素就算到了，透明度过 0.995 算 1、不到 0.02 算 0，所以滑动会结束 |
-| 标注在画出 | `now < 最晚的出现时间 + draw_ms` |
-| 时间材质下有松开的东西 | `Material::time_varying()`（glitch）且有画出来的实例带静态松开度（按它自己的覆盖材质或全局材质算） |
-| 定时唤醒到了 | 插入点闪烁的下一个相位（每 `BLINK = 0.53` 秒，从插入点最后一次移动算起），或状态通过 `Ui::on_wake(fn(&S, now) -> Option<f32>)` 要的时间 |
+| Input or a scene change since the last frame | `dirty`: set by every input entry point (pointer move, leave, press, release, wheel, key down, key up, resize) and every `paint`, cleared by `frame_drawn` |
+| A front is still alive | Some front's strength > 0 and `now − start < Fx::wave_life` (in the shader a front's strength reaches 0 at `wave_life`) |
+| A commit's front is still on screen | `(now − t) × wave_speed × scale < diagonal` |
+| A brief `burst` (hover, press) | `Field::burst_at(now) > 0` |
+| An instance is condensing | `now < latest birth time + Fx::enter` (`paint` records the latest birth time among the instances drawn) |
+| A morph, a flow, an old page dissolving | `run`, `flows` or `ghosts` non-empty, or the one more pass due after the last animation ended (`animating`) |
+| Corner marks sliding or fading | Their position or opacity changed in the last `tick`; within 0.1 px of the target counts as arrived, and opacity above 0.995 counts as 1 and below 0.02 as 0, so slides end |
+| Annotations drawing in | `now < latest appearance time + draw_ms` |
+| Something loose under a time-varying material | `Material::time_varying()` (glitch) and some drawn instance has static looseness (by its own override material or the global one) |
+| A timed wake is due | The caret's next blink phase (every `BLINK = 0.53` s from the caret's last move), or a time the state asks for through `Ui::on_wake(fn(&S, now) -> Option<f32>)` |
 
-时间从状态来：`Ui::on_look(fn(&S) -> Look)` 让运行时读到 `wave_life`、`wave_speed`、`enter` 和材质（`Timing`），每次 `tick` 和布局前读一次。gallery 的 `on_wake`：出发牌页要下一个整秒；开场的机器在走、声音在放时每帧都要；变形场景循环时要这一形态停够的时刻；其余为 `None`。
+Timing comes from the state: `Ui::on_look(fn(&S) -> Look)` lets the runtime read `wave_life`,
+`wave_speed`, `enter` and the material (`Timing`), once per `tick` and before each layout. The website's
+`on_wake`: the departure board page wants the next whole second; the opening scene's machine wants every
+frame while it runs and the sound plays; the morph scene in a loop wants the moment its current shape has
+been held long enough; otherwise `None`.
 
-**材质的时钟。** glitch 的行错位按 `hold` 毫秒一拍、dot 底上的点慢慢漂，原来都读真实时间，静止的页面也在变。现在它们读 `fa.y` 里的材质时钟 `Ui::material_clock()`：只在 `tick` 时上一刻有东西在动（`moving_at`）才往前走。所以静止的页面是一张不变的图；波前经过时 dot 的底照样漂，过后停在那里。真实时间仍然用在出生、波前、burst 这些本来就会结束的东西上。
+**The material clock.** Glitch's row slips on a beat of `hold` ms and the drifting dots on dot's ground used
+to read real time, so a still page kept changing. Now they read the material clock in `fa.y`,
+`Ui::material_clock()`, which advances at a `tick` only if something was moving the moment before
+(`moving_at`). So a still page is an unchanging picture; when a front passes, dot's ground drifts as before
+and then stops where it is. Real time is still used for births, fronts and bursts, which end by themselves.
 
-**网页**（`web/page.html`）：`frame(t)` 先 `tick`，要画才画，返回下一帧在什么时候：0 是继续 `requestAnimationFrame`，正数是 `setTimeout` 这么多秒后再开始，−1 是停下。每个输入事件、`hashchange`、尺寸变化都先把时钟带到事件的时间（输入入口都带 `t`，因为上一次 `tick` 可能是很久以前，悬停的 burst 和按下的波前要从现在开始），再 `kick()`（没有在跑时请一帧）。`frames()` 返回画了多少帧和多少次唤醒没有画（给测试和读数用）。
+**Web** (the website's `web/page.html`): `frame(t)` first `tick`s, draws only if needed, and returns when the
+next frame is due: 0 to continue with `requestAnimationFrame`, a positive number of seconds to start again
+after a `setTimeout`, −1 to stop. Every input event, `hashchange` and resize first brings the clock to the
+event's time (every input entry point takes `t`, because the last `tick` may have been long ago, and a
+hover's burst and a press's front must start now), then `kick()`s (requests a frame if none is running).
+`frames()` returns how many frames were drawn and how many wakes drew nothing (for tests and the readout).
 
-**原生**（`src/bin/window.rs`）：`about_to_wait` 里 `next_wake(now) ≤ now` 时 `request_redraw`，否则 `ControlFlow::WaitUntil`（下一次唤醒、两秒一次的帧数报告、存图、关闭里最早的那个），都没有就 `ControlFlow::Wait`。`RedrawRequested` 里 `needs_frame` 为假就不画（计入“跳过”）。标准错误上每两秒报告“画了多少帧、跳过多少次”。
+**Native** (the website's `src/bin/window.rs`): in `about_to_wait`, `request_redraw` when
+`next_wake(now) ≤ now`, otherwise `ControlFlow::WaitUntil` (the earliest of the next wake, the two-second
+frame report, a capture and closing), or `ControlFlow::Wait` if none. `RedrawRequested` doesn't draw when
+`needs_frame` is false (counted as skipped). Standard error reports frames drawn and skipped every two
+seconds.
 
-**验收**：`tests/frames.rs`：每个 gallery 页和每个场景（声音场景暂停）在输入（指针进来移动、滚一下、Tab）以后，过了这一页能起的最长动画（波前寿命、凝结、提交的波前穿过窗口、标注画出、流动）`needs_frame` 为假，下一次唤醒不是“现在”；#button 上空闲 3 秒画 0 帧，按一下以后在波前的一半寿命里至少 25 帧，波前结束后停；输入框有焦点时插入点按定时唤醒闪烁（下一次唤醒在一个相位以内，四个相位 3–5 帧）；出发牌每秒唤醒，不是每帧。网页（WebGL2、swiftshader，真实时间，480 × 360 的窗口让一帧够快）：#button 空闲 3 秒画 0 帧，在底上按一下以后的 1.5 秒（波前活 1.4 秒）画了 21 帧，之后空闲 3 秒又是 0 帧。DevTools 的虚拟时钟不适合数帧：swiftshader 画一帧要几秒真实时间，虚拟时钟不等它。原生（Xvfb + lavapipe）：#button 空闲时两秒的报告里帧数不变，xdotool 按一下以后两秒内画了约 33 帧，然后又不变。
+**Acceptance**: `tests/frames.rs`: on every website page and every scene (the sound scene paused), after
+input (the pointer enters and moves, one scroll, Tab) and the longest animation that page can start (front
+lifetime, condensing, a commit's front crossing the window, annotations drawing in, flows), `needs_frame` is
+false and the next wake is not "now"; #button draws 0 frames idle for 3 s, at least 25 frames within half a
+front's lifetime after one press, and stops when the front ends; with the input field focused the caret
+blinks by timed wakes (the next wake within one phase, 3–5 frames for four phases); the departure board
+wakes every second, not every frame. Web (WebGL2, SwiftShader, real time, a 480 × 360 window so a frame is
+quick enough): #button draws 0 frames idle for 3 s, 21 frames in the 1.5 s after a press on its ground (the
+front lives 1.4 s), then 0 again idle for 3 s. DevTools' virtual clock is not suited to counting frames:
+SwiftShader takes seconds of real time per frame and the virtual clock doesn't wait for it. Native (Xvfb and
+lavapipe): idle on #button, the two-second reports show no new frames; after one press with xdotool, about 33
+frames in two seconds, then none again.
 
-### 1.12 帧时间读数和分辨率预算
+### 1.12 The frame-time readout and the resolution budget
 
-**读数**（顶栏“性能”菜单的第一项，或 F2；`Look::overlay`）：标注层在材质之上、窗口右下角，用 Departure Mono 11 像素画一块（底是页面底色，0.92 不透明）：
+**The readout** (the first item of the top bar's Performance menu, or F2; `Look::overlay`): the annotation
+layer draws a block above the material at the window's bottom right in Departure Mono 11 px (on the page
+background at 0.92 opacity):
 
 ```
 F2 frames       58/s  drawn 1234 skipped 56
@@ -420,721 +1035,1997 @@ layouts 12  shaped 345  views 40
 quality 0.5 auto  WebGL2  dpr 2
 ```
 
-数据（`src/perf.rs`，不依赖显卡）：`Perf.pending` 是上一帧以后花掉的时间，运行时往里加——`update+layout` 是 `update`、`view`、布局（最外一层的 `send` / `relayout` 计时，减去其中建场景的时间），`scene build` 是 `paint` 和 `finish`（生成实例、动画、角标、标注）；渲染器在 `draw` 里从开始到最后一次 `queue.submit` 的 CPU 时间是 `gpu submit`，然后 `Perf::frame` 把这三样记成一帧（只留最近两秒）。`Perf::summary(now)` 给出最近一秒画了几帧、每一项的最近 / 平均 / 最大毫秒。时间用 `perf::now_ms()`：网页是 `performance.now()`，原生是 `Instant`。另有工作计数（`Counters`：布局次数、parley 排版次数、`view` 次数、场景次数），测试也用。后端名和设备像素比由宿主填（`Perf::backend`：WebGPU、WebGL2、Vulkan、Metal）。读数打开时每 0.5 秒定时唤醒一次刷新，所以静止时帧数会落到 0；关着时不唤醒。网页上读数的开 / 详细 / 关记在 `localStorage`（`amenui.readout`，读写都包在 try / catch 里，存不了也照常运行；`readout()`、`set_readout(v)`）；原生不记。
+The data (`src/perf.rs`, no GPU): `Perf.pending` is the time spent since the last frame, added to by the
+runtime. `update+layout` is `update`, `view` and layout (timing the outermost `send` / `relayout`, minus the
+scene building inside it); `scene build` is `paint` and `finish` (building instances, animation, corner marks,
+annotations); the renderer's CPU time in `draw` from the start to the last `queue.submit` is `gpu submit`;
+then `Perf::frame` records the three as one frame (keeping only the last two seconds).
+`Perf::summary(now)` gives the frames drawn in the last second and each item's last / mean / max in ms.
+Time comes from `perf::now_ms()`: `performance.now()` on the web, `Instant` natively. There are also work
+counters (`Counters`: layouts, parley layouts, `view` calls, scenes), used by tests too. The backend name and
+device pixel ratio are filled in by the host (`Perf::backend`: WebGPU, WebGL2, Vulkan, Metal). While the
+readout is open it wakes every 0.5 s to refresh, so the frame count falls to 0 at rest; when closed it
+doesn't wake. On the web the readout's on / detailed / off state is kept in `localStorage`
+(`amenui.readout`, every read and write in try / catch so it runs as usual when storage is unavailable;
+`readout()`, `set_readout(v)`); natively it isn't kept.
 
-**分辨率预算**（`Look::quality`：1、0.75、0.5，或 0 = 自动）。第二遍（材质）可以先在 `q` 倍分辨率的一张图（`lo`，`ceil(宽 × q) × ceil(高 × q)`，画面的格式）上画：`fs_material` 用 `p = frag × (1 / q)`（`qual.x`），所以小图上的像素中心落在全分辨率画面的坐标上，材质函数里的长度、点距、取样都不用改。然后全分辨率的 `fs_material_up` 逐像素决定：
+**The resolution budget** (`Look::quality`: 1, 0.75, 0.5, or 0 = automatic). The screen-space shading stage
+can first draw into an image at `q` times the resolution (`lo`, `ceil(width × q) × ceil(height × q)`, in the
+frame's format): `fs_material` uses `p = frag × (1 / q)` (`qual.x`), so pixel centers of the small image land
+on full-resolution coordinates and lengths, pitches and sampling in the material functions don't change.
+Then the full-resolution `fs_material_up` decides per pixel:
 
-- **静止的像素**（`rest_at(p)`：图片上 `pic_k(p) = 0`；其他地方 `kt(p) < 0.02`、没有 burst、透镜 < 0.02）由材质在全分辨率重新算（`shade(p)`）。对“静止时等于 plain”的材质，这就是直接取 ink；对静止时有自己样子的材质（dot 的底、print 的纸纹、near），它们静止的样子也是全分辨率的。所以静止的页面和 `q = 1` 逐像素相同，文字永远是清楚的。
-- **松开的像素**取 `lo` 双线性插值的颜色。松开的东西（记号、散开的点、刻痕）本来就在变，半分辨率看不出来，代价降到 `q²`。
+- **Pixels at rest** (`rest_at(p)`: on a picture `pic_k(p) = 0`; elsewhere `kt(p) < 0.02`, no burst, lens
+  < 0.02) are recomputed by the material at full resolution (`shade(p)`). For materials that equal `plain` at
+  rest, that just reads the coverage buffer; for materials with a look of their own at rest (dot's ground,
+  print's grain, `near`), their resting look is at full resolution too. So a still page is identical pixel
+  for pixel to `q = 1`, and text is always sharp.
+- **Loose pixels** take `lo`'s bilinearly filtered colour. Loose things (marks, scattered dots, carved cuts)
+  are changing anyway, and half resolution doesn't show, so the cost drops to `q²`.
 
-`lo` 上静止的像素不着色，只在 alpha 里记 1（松开的像素着色、alpha 记 0）；全分辨率那一遍对 `lo` 做一次双线性取样：alpha > 0（周围有静止的格）就在这里用 `shade(p)` 重新算，否则用取样的颜色。所以松开区域的边是清楚的，静止判断只在 `q²` 的像素上做一次。
+Pixels at rest are not shaded in `lo`; they only write 1 into alpha (loose pixels are shaded and write 0).
+The full-resolution pass takes one bilinear sample of `lo`: with alpha > 0 (a resting cell nearby) it
+recomputes with `shade(p)` here, otherwise it uses the sampled colour. So the edges of loose areas stay
+sharp, and the rest test runs once over `q²` of the pixels.
 
-只有松开的面积够大时才画 `lo`：`Ui::loose_estimate(now, 透镜半径)` 估计窗口里可能松开的比例（有波前、在凝结、变形或流动时是 1；否则是带静态松开度的实例、burst、图片上的透镜、对比擦除的面积之和），不到 `LO_MIN_AREA = 0.15` 时直接一遍全分辨率——一个透镜、一个按住的控件，多画一遍比省下的多。飞行中的粒子总是算大。`Renderer::always_lo` 让验收强制画 `lo`。
+`lo` is drawn only when the loose area is large enough: `Ui::loose_estimate(now, lens_radius)` estimates the
+share of the window that may be loose (1 with fronts, condensing, morphs or flows; otherwise the sum of the
+areas of instances with static looseness, bursts, the lens on pictures and compare wipes). Below
+`LO_MIN_AREA = 0.15` there is a single full-resolution pass: for one lens or one held control, the extra pass
+costs more than it saves. Particles in flight always count as large. `Renderer::always_lo` lets acceptance
+force `lo`.
 
-**自动**（`perf::AutoQuality`）：每画一帧喂一次这一帧的 CPU 时间（三项之和）；取一个短的滑动平均（新值占 0.2），连续 30 帧超过 12 ms 就降一级（1 → 0.75 → 0.5），连续 120 帧不超过就升一级。读数里写“quality 0.75 auto”。
+**Automatic** (`perf::AutoQuality`): each frame drawn feeds that frame's CPU time (the sum of the three);
+with a short moving average (the new value weighted 0.2), 30 consecutive frames above 12 ms drop one level
+(1 → 0.75 → 0.5) and 120 consecutive frames not above raise one. The readout says "quality 0.75 auto".
 
-**验收**：`tests/perf.rs`（自动档的降和升、一帧慢的不算、最近一秒的统计、F2 和菜单打开读数且读数的字在标注层里、打开时 0.5 秒唤醒一次）；`check` 第 12 条：每种材质静止时，`q = 0.5`（强制画 `lo`）和 `q = 1` 逐像素相同，正文和 plain 相同（同第 5 条的容差），并且有对照：松开以后两种分辨率看得出不同。llvmpipe 上的帧时间（只能作相对比较）见 §9。
+**Acceptance**: `tests/perf.rs` (automatic dropping and raising, a single slow frame doesn't count, last-second
+statistics, F2 and the menu open the readout and its text is in the annotation layer, it wakes every 0.5 s
+while open); `check` item 12: under every material at rest, `q = 0.5` (with `lo` forced) and `q = 1` are
+identical pixel for pixel and body text equals `plain` (with item 5's tolerance), with a control: once
+loosened, the two resolutions can be told apart. Frame times on llvmpipe (relative comparison only) are in
+§9.
 
-### 1.13 增量更新和长列表
+### 1.13 Incremental updates and long lists
 
-**视图照旧**：每个消息之后 `view(state)` 整棵重建 `El` 树（Elm 式，消息是值，状态是唯一的来源）。省的是后面的事。
+**The view is unchanged**: after every message, `view(state)` rebuilds the whole `El` tree (Elm style:
+messages are values and the state is the only source of truth). What is saved is everything after that.
 
-**按 key 比较，保留 taffy 节点**（`Ui::layout`）。`flatten` 把树摊平成节点（每个节点的样式和子节点另存），运行时保留上次的 `TaffyTree`、每个 key 的 taffy 节点（`tids`）和每个叶子量尺寸用的内容的哈希（`mkeys`：文字、字号、行高、字体、障碍物、`nowrap`；图片的宽高比）。从后往前（子节点先有 taffy 节点）：key 上次就有的，比较样式（`Style: PartialEq`）、子节点列表、叶子的内容哈希，只有不同的才 `set_style` / `set_children` / `mark_dirty`（taffy 自己把祖先标脏）；新的 key 新建；没有了的 `remove`。同一个 key 出现两次时第二个新建。有任何一处改了才跑 `compute_layout_with_measure`（`Counters::layouts`），而 taffy 只重算脏的路径，干净的子树用它的缓存；什么都没改（只换了颜色、选中底色这类不影响尺寸的）就不跑（`layouts_skipped`），用上次的盒子。
+**Comparing by key, keeping taffy nodes** (`Ui::layout`). `flatten` turns the tree into flat nodes (each
+node's style and children kept separately); the runtime keeps the last `TaffyTree`, each key's taffy node
+(`tids`) and a hash of the content each leaf is measured by (`mkeys`: text, size, line height, face,
+obstacles, `nowrap`; a picture's aspect ratio). From the back (children get taffy nodes first): for a key
+that existed last time, the style (`Style: PartialEq`), the child list and the leaf's content hash are
+compared, and only what differs gets `set_style` / `set_children` / `mark_dirty` (taffy marks the ancestors
+dirty itself); new keys are created; missing ones are removed. A key that appears twice gets a new node the
+second time. `compute_layout_with_measure` runs only if something changed (`Counters::layouts`), and taffy
+recomputes only the dirty paths, using its cache for clean subtrees; if nothing changed (only colours, a
+selection background or anything else that doesn't affect size) it doesn't run (`layouts_skipped`) and last
+time's boxes are used.
 
-**排版缓存**（`Text::layout`）：parley 的排版结果按（文字、字体、字号、行高、宽度、障碍物）缓存，两代：本代满 2048 个就把它变成上一代，用到的从上一代搬回来，两代都没用到的丢掉。量尺寸、画字形、插入点、命中、选区、按行移动都用同一份。宽度不同但不用断行的同一行字是同一个排版：有宽度限制的一行字排出来只有一行时，也记成“不限宽”的那一份；要用某个宽度时，不限宽的那一份放得下就直接用。所以 taffy 量的和画的是同一份，按钮旁边没变的字一次也不重排（`Counters::shaped` = parley 排版次数）。
+**The text layout cache** (`Text::layout`): parley's layouts are cached by (text, face, size, line height,
+width, obstacles) in two generations: when the current one reaches 2048 entries it becomes the previous one,
+entries used are moved back from the previous one, and those used in neither are dropped. Measuring, drawing
+glyphs, the caret, hit testing, the selection and line moves all use the same layout. A line of text that
+doesn't need breaking is the same layout at different widths: a width-limited layout that comes out as one
+line is also recorded as the unlimited one, and when a width is asked for and the unlimited layout fits, it is
+used. So what taffy measures and what is drawn are the same layout, and unchanged text next to a button is
+never laid out again (`Counters::shaped` = parley layouts).
 
-**滚动只移动**：节点存着布局给它的相对盒子（`local`）。滚轮、键盘滚动、把焦点或插入点滚进视野，都只改偏移，然后 `place()`（由相对盒子和偏移算绝对矩形、裁剪、滚动长度）和 `paint()`（生成实例）——不调 `view`，不跑 taffy，不排版。
+**Scrolling only moves**: a node keeps the relative box layout gave it (`local`). The wheel, keyboard
+scrolling and scrolling the focus or caret into view only change the offset, then `place()` (absolute rects,
+clips and scroll lengths from relative boxes and offsets) and `paint()` (building instances), without calling
+`view`, running taffy or laying out text.
 
-**裁掉看不见的**：`paint` 跳过矩形和裁剪不相交的节点；文字节点里，行盒（加上字号和近度边）完全在裁剪的上下之外的行不生成实例（`Text::emit_in`）。所以长的源码块、滚动区里看不见的行不上传。
+**Culling what can't be seen**: `paint` skips nodes whose rect misses their clip; within a text node, lines
+whose line box (plus size and SDF margin) lies wholly above or below the clip produce no instances
+(`Text::emit_in`). So long source blocks and rows out of view in a scroll area are never uploaded.
 
-**虚拟列表**（`El::virtual_rows(count, row_h, overscan, selected, |i| El)`，组件 `widgets::list_virtual`）：这个滚动节点的子节点由运行时在 `flatten` 时按它的滚动偏移和上次的视口高度（第一次用窗口高度）造：只造看得见的行 `floor(偏移 / 行高) .. ceil((偏移 + 视口) / 行高)`，上下各多 `overscan` 行；它们放在一列里，这一列高 `count × 行高`、上内边距是前面那些行的高度，所以滚动条的长度是整个列表的。行的 key 是 `列表:i`（组件里），没有 key 时是 `列表/row{i}`，所以同一行滚动时保留身份（出生时间、taffy 节点）。滚动时如果看得见的行还在已经造好的范围里，就只是移动；出了范围才重新布局一次（`view` 一次，taffy 只算这个列表的新行）。键盘：列表是一个焦点位置，上下、Page Up / Page Down（视口的行数减一）、Home、End 换选中的行；按键改了状态以后，运行时按选中行的序号（它可能还没造出来）把它滚进视野。
+**Virtual lists** (`El::virtual_rows(count, row_h, overscan, selected, |i| El)`, the component
+`widgets::list_virtual`): this scrolling node's children are built by the runtime in `flatten` from its scroll
+offset and last viewport height (the window height the first time): only the visible rows
+`floor(offset / row_h) .. ceil((offset + viewport) / row_h)`, plus `overscan` rows above and below. They sit
+in a column `count × row_h` tall whose top padding is the height of the rows before them, so the scroll bar's
+length is the whole list's. A row's key is `list:i` (in the component), or `list/row{i}` without a key, so a
+row keeps its identity (birth time, taffy node) while scrolling. When the visible rows stay within the range
+already built, scrolling only moves; leaving it lays out once (one `view`, and taffy computes only the
+list's new rows). Keyboard: the list is one focus stop; Up, Down, Page Up / Page Down (the viewport's rows
+minus one), Home and End change the selected row; after a key changes the state, the runtime scrolls the
+selected row into view by its index (it may not have been built yet).
 
-**计数**（`Ui::counters()`，读数里也有）：`layouts`、`layouts_skipped`、`shaped`、`views`、`scenes`。
+**Counters** (`Ui::counters()`, also in the readout): `layouts`, `layouts_skipped`, `shaped`, `views`,
+`scenes`.
 
-**验收**：`tests/incremental.rs`：一万行的页上树里的行数 ≤ 看得见的行数 + 2 × overscan，滚动长度是 10000 × 40（加边框），在造好的范围里滚动 `layouts`、`shaped`、`views` 都不变，滚到很远以后那里的行造好了、行数仍然有界，行里的开关按得到；按一行、End 到最后一行（造出来并且在视野里）、Page Up、Home 回到 0；按钮、输入框、记号、字号、对话框、粒子页上滚轮 6 次三个计数都不变（场景数变了）；按钮页上按两次，parley 排过的字全是变了的那一个（计数那行字；taffy 会在几种宽度下量它）；只改颜色的消息之后 `view` 多一次、`layouts` 和 `shaped` 不变、`layouts_skipped` 多一次；输入框页源码的裁剪下面远处没有字形实例。`bench`（不依赖显卡）的数字见 §9。
+**Acceptance**: `tests/incremental.rs`: on a page of ten thousand rows, the rows in the tree ≤ the visible
+rows + 2 × overscan and the scroll length is 10000 × 40 (plus borders); scrolling within the built range
+leaves `layouts`, `shaped` and `views` unchanged; after scrolling far, the rows there are built, the row count
+is still bounded and a switch in a row can be pressed; pressing a row, End to the last row (built and in
+view), Page Up, Home back to 0; six wheel turns on the button, input, marks, type, dialog and particle pages
+leave the three counters unchanged (the scene count changes); pressing twice on the button page lays out with
+parley only the text that changed (the count line; taffy measures it at a few widths); after a message that
+only changes a colour, `view` runs once more, `layouts` and `shaped` stay the same and `layouts_skipped`
+grows by one; on the input page there are no glyph instances far below the source's clip. The numbers from
+`bench` (no GPU) are in §9.
 
-### 1.14 无障碍镜像
+### 1.14 The accessibility mirror
 
-画面是 canvas 里自己画的，读屏软件看不见。所以运行时从界面树生成一份镜像（`Ui::a11y() -> Vec<A11yNode>`，不依赖显卡、不依赖平台）：每个元素的 key、在镜像里最近的祖先、角色、名字、状态（值和范围、文字、开关、选中、标题级别、模态、不可用、能否获得焦点）和它画在哪里。
+The picture is drawn into a canvas, invisible to screen readers. So the runtime builds a mirror from the
+interface tree (`Ui::a11y() -> Vec<A11yNode>`, no GPU, no platform): every element's key, its nearest ancestor
+in the mirror, role, name, state (value and range, text, checked, selected, heading level, modal, disabled,
+focusable) and where it is drawn.
 
-**角色**（`el::Role`，即 WAI-ARIA 的同名角色）由组件写（`El::role`、`El::label`、`El::checked`、`El::selected`、`El::value_range`、`El::text_value`、`El::heading`）：按钮 → button；开关 → switch（`aria-checked`）；滑块 → slider（`aria-valuenow / min / max`）；标签页 → tablist / tab（`aria-selected`）；输入框和多行输入 → textbox（名字是占位文字，值是文字）；对话框的卡片 → dialog（`aria-modal`，名字是标题）；列表和一万行 → list / listitem（`aria-selected`）；图片 → img（名字是说明，没有说明是“图片”）；页标题 → heading 1，各段的小标题 → heading 2。没写角色的：可按、能获得焦点的元素是 button；文字不在某个控件里面时是一段文字；图片是 img。名字没写时取元素里面的文字（按钮、标签页、列表项、开关的名字就是它们自己的字），里面的字不再单独出现。对话框打开时只有它里面的东西在镜像里（下面的页面对读屏是惰性的）。
+**Roles** (`el::Role`, the WAI-ARIA roles of the same names) are written by components (`El::role`,
+`El::label`, `El::checked`, `El::selected`, `El::value_range`, `El::text_value`, `El::heading`): a button →
+button; a switch → switch (`aria-checked`); a slider → slider (`aria-valuenow / min / max`); tabs → tablist /
+tab (`aria-selected`); text fields and multi-line fields → textbox (the name is the placeholder, the value
+the text); a dialog's card → dialog (`aria-modal`, named by its title); lists and the ten thousand rows →
+list / listitem (`aria-selected`); a picture → img (named by its caption, "Picture" without one); the page
+title → heading 1, section headings → heading 2. Without a role: something pressable and focusable is a
+button; text not inside a control is text; a picture is img. Without a name, the text inside the element is
+used (the names of buttons, tabs, list items and switches are their own text), and that text does not
+appear again on its own. While a dialog is open, only what is inside it is in the mirror (the page beneath is
+inert to screen readers).
 
-**同步**：`Ui::a11y_diff()` 和布局用同一种按 key 的比较：和上次交出去的比，变了的或新的发 `Set`，没了的发 `Remove`，焦点变了发 `Focus`。所以按一下按钮只发计数那一行和焦点。
+**Syncing**: `Ui::a11y_diff()` compares by key the way layout does: against what was last handed over,
+changed or new nodes give `Set`, missing ones `Remove`, and a focus change `Focus`. So one press of a button
+sends only the count line and the focus.
 
-**网页**（`web/page.html`）：`#a11y` 里一棵 `<div>` 树（嵌套和镜像里的父子关系一样），每个元素用 `role` 和 `aria-*` 属性，固定定位在它画的位置，整棵树 `opacity: 0`、不接指针（对读屏可见，对眼睛和指针不存在）。每次事件之后和每画一帧之后调 `a11y_update()`（JSON 的差异）更新。**焦点双向**：镜像元素获得焦点（读屏软件把焦点移过去）时调 `a11y_focus(key)`，运行时把焦点给那个控件；运行时的焦点变了，只有当 DOM 焦点本来就在镜像里时才跟着移过去（否则 canvas 或隐藏的输入元素保留键盘）。**激活**：镜像元素上的 click（读屏的“按下”）调 `a11y_activate(key)` → `Ui::activate`：和按 Enter 一样的消息、波前、提交、重新凝结。键盘事件照常从 window 进来，所以焦点在镜像的滑块上时方向键就调它。
+**Web** (the website's `web/page.html`): a tree of `<div>`s in `#a11y` (nested as in the mirror), each with
+`role` and `aria-*` attributes, fixed at the position where it is drawn; the whole tree has `opacity: 0` and
+ignores the pointer (present for screen readers, absent for eyes and the pointer). It is updated after every
+event and every frame by `a11y_update()` (a JSON diff). **Focus in both directions**: when a mirror element
+gets focus (the screen reader moves focus there), `a11y_focus(key)` gives that control the runtime's focus;
+when the runtime's focus changes, DOM focus follows only if it was already in the mirror (otherwise the canvas
+or the hidden input element keeps the keyboard). **Activation**: a click on a mirror element (a screen
+reader's "press") calls `a11y_activate(key)` → `Ui::activate`: the same message, front, commit and
+condensing as Enter. Keyboard events come from the window as usual, so with focus on the mirror's slider the
+arrow keys change it.
 
-**原生**：没有做。接口留好了：`Ui::a11y()` / `a11y_diff()` 是平台无关的，一个 AccessKit 适配器把 `A11yNode` 转成 `accesskit::Node`（角色、名字、值、范围、勾选、选中、边界）、把 `TreeUpdate` 的增量对应到 `A11yOp`，把 `ActionRequest` 的 Focus / Click 对应到 `focus_key` / `activate`，挂在 winit 窗口上（`accesskit_winit`）。
+**Native**: not done. The interface is ready: `Ui::a11y()` / `a11y_diff()` are platform-independent; an
+AccessKit adapter turns `A11yNode` into `accesskit::Node` (role, name, value, range, checked, selected,
+bounds), maps `TreeUpdate` increments to `A11yOp`s and `ActionRequest`'s Focus / Click to `focus_key` /
+`activate`, attached to the winit window (`accesskit_winit`).
 
-**验收**：`tests/a11y.rs`：#button 上有“按下”按钮（能获得焦点）、不可用的按钮、页标题是 1 级标题、计数是一段文字、按钮里的字不单独出现；第二次 `a11y_diff` 为空；`activate` 发和按下一样的消息、焦点到它身上，之后的差异只有变了的几项；#dialog 打开后有模态的对话框，其余都在它里面，有关闭按钮和输入框，下面的页面不在；滑块的值在范围里、开关有勾选、每组标签页正好一个选中、列表有选中的项、输入框的值是它的字、图片有名字；读屏把焦点给开关后空格切换它，`activate` 再切回来。网页（Playwright 的 `ariaSnapshot()`）：#button 的按钮、标题、计数、不可用；通过可访问性树点“按下”，计数变成 1；#dialog 打开后 `dialog "重命名"`、`aria-modal="true"`、页面标题不在、输入框和按钮在；#slider 有 `slider "数值"` 和 `aria-valuenow / min / max`；焦点放到镜像的滑块上按 → ，值从 40 变 41。控制台没有错误。
+**Acceptance**: `tests/a11y.rs`: #button has a focusable button, a disabled button, the page title as a
+level 1 heading and the count as text, and the button's text doesn't appear on its own; the second
+`a11y_diff` is empty; `activate` sends the same message as a press and focuses it, and the diff after it
+holds only what changed; with #dialog open there is a modal dialog with everything else inside it, a close
+button and a text field, and the page beneath is absent; the slider's value is within its range, the switch
+has a checked state, each tab list has exactly one selected tab, the list has a selected item, the text
+field's value is its text, and the picture has a name; after a screen reader gives the switch focus, Space
+toggles it and `activate` toggles it back. Web (Playwright's `ariaSnapshot()`): #button's buttons, heading,
+count and disabled state; pressing the button through the accessibility tree makes the count 1; with #dialog
+open there is a dialog with `aria-modal="true"`, the page title is absent, and the text field and buttons are
+present; #slider has a named slider with `aria-valuenow / min / max`; with focus on the mirror's slider, → takes
+the value from 40 to 41. No console errors.
 
-### 1.15 涟漪规则
+### 1.15 Ripple rules
 
-原来一次按下（哪怕按在空白处）都从按下处放一道波前，传遍整个窗口，经过的字都散成点；连点时字一直是散的。现在一道波前有**范围**，每个元素有自己的**响应**，文字和控件有一个**可读上限**，同一个元素放的波前**不叠加**。
+A press (even on empty space) used to send a front from the press that crossed the whole window, scattering
+every glyph it passed into dots; with repeated presses the text stayed scattered. Now a front has a
+**scope**, each element has its own **response**, text and controls have a **legibility cap**, and fronts from
+the same element **don't stack**.
 
-**范围**（`el::Scope`，`El::ripple(Scope)`，子树继承）：
+**Scope** (`el::Scope`, `El::ripple(Scope)`, inherited by the subtree):
 
-| 范围 | 到哪里 | 什么时候用 |
+| Scope | Reaches | When |
 |---|---|---|
-| `Own` | 按下的那个元素自己的子树 | 控件被按下时的默认 |
-| `Container(None)` / `Container(Some(key))` | 最近的标了 `El::ripple_scope()` 的祖先 / 那个 key 的元素 | 一块区域想让里面的东西一起响应（风格页、按钮页的涟漪一节） |
-| `Global` | 整个窗口 | 切主题、切材质（提交）、换页（左栏的项）、`Cmd::Front` |
-| `Off` | 没有波前 | |
+| `Own` | The pressed element's own subtree | The default for a pressed control |
+| `Container(None)` / `Container(Some(key))` | The nearest ancestor marked `El::ripple_scope()` / the element with that key | An area whose contents should respond together (the styles page, the ripple section of the button page) |
+| `Global` | The whole window | Theme and material switches (commits), page changes (side rail items), `Cmd::Front` |
+| `Off` | No front | |
 
-按在页面空白处（下面没有控件）默认什么也不放；空白处的祖先写了范围时才放。范围在运行时里变成**每道波前一个方框**（`Field::scopes`，设备像素，元素的矩形和它的裁剪的交）：第一遍里一个实例只被“方框包含它的中心”的波前推动和松开（`in_scope`）；没有实例的底（dot 的底点、glitch 的行错位）按像素是否在方框里。选方框而不是每个实例一个范围号，是因为一个实例同时在好几层范围里（按钮的子树、它所在的一块、窗口），一个号表示不了；方框按中心判断，对“自身”和“一块区域”是精确的（子元素的中心都在祖先的盒子里），代价是 uniform 里多 8 个 vec4。
+A press on the page's empty space (no control beneath) sends nothing by default; only when an ancestor of
+the empty space sets a scope. In the runtime a scope becomes **one box per front** (`Field::scopes`, device
+pixels, the element's rect intersected with its clip): in the G-buffer stage an instance is pushed and
+loosened only by fronts whose box contains its center (`in_scope`); grounds without instances (dot's ground
+dots, glitch's row slips) test per pixel whether they are in the box. Boxes are used rather than a scope index
+per instance because an instance is in several scopes at once (the button's subtree, its area, the window) and
+one index can't express that; testing by center is exact for "own" and "an area" (children's centers are
+inside their ancestors' boxes), at the cost of 8 more vec4s in the uniforms.
 
-**响应**（`el::Response`，`El::respond`，子树继承）：`Ignore`（不推、不松开：插入点、选区的外圈、焦点角标）、`Nudge`（被推一下、`burst` 的错位照常，松开度保持 0）、`Loosen`（原来的样子）。没写的时候：文字、控件（能获得焦点、能按、能拖、文字字段）和控件里面的一切是 `Nudge`；装饰的形状、图片、方框是 `Loosen`。场景里的大标题自己写 `Loosen`（声音场景的“夜行”）；材质页的样张整个写 `Loosen` 并且 `legible(false)`，因为它就是用来看材质怎么松开字的。
+**Response** (`el::Response`, `El::respond`, inherited by the subtree): `Ignore` (not pushed, not loosened:
+the caret, the selection halo, focus marks), `Nudge` (pushed a little, `burst` slips as usual, looseness
+stays 0) and `Loosen` (the original behaviour). By default, text, controls (focusable, pressable, draggable,
+text fields) and everything inside controls are `Nudge`; decorative shapes, pictures and boxes are `Loosen`.
+Large headings in scenes set `Loosen` themselves (the sound scene's title); the material page's samples set
+`Loosen` and `legible(false)` throughout, because they exist to show how a material loosens text.
 
-**可读上限**（`Look::legible_cap`，默认 0.15）：标了“要读的字或控件”（`El::legible(bool)`，继承；没写时文字和控件是）的东西，场的效果（波前、按住、按下后重新凝结、滚动拉过头）最多让它松开到这个值。变形、流动、重组和新实例的凝结是有意的，不受限。按住和拉过头不看响应是不是 `Nudge`（它们是这个元素自己的交互），只看上限：`Ignore` 是 0，可读的是 `legible_cap`，其余是 1。按下松开后的重新凝结从上限开始：出生时间记成 `now − enter × (1 − 上限)`。
+**Legibility cap** (`Look::legible_cap`, 0.15 by default): what is marked as text to read or a control
+(`El::legible(bool)`, inherited; text and controls by default) is loosened at most to this value by the
+field's effects (fronts, holding, condensing again after a press, overscroll). Morphs, flows, recomposition and
+new instances condensing are intended and not capped. Holding and overscroll ignore whether the response is
+`Nudge` (they are the element's own interaction) and look only at the cap: 0 for `Ignore`, `legible_cap` for
+legible, 1 otherwise. Condensing again after a press and release starts from the cap: the birth time is
+recorded as `now − enter × (1 − cap)`.
 
-**实例里怎么带**：实例记录加了一个 vec4 `resp`（112 字节）：x 是波前最多加多少松开度（`Ignore`、`Nudge` 是 0，可读的 `Loosen` 是 `legible_cap`，其余 1），y 是推不推（0 / 1）。第一遍的 `own_loose`：`k = max(静态松开度, 1 − 出生)`，再加上 `clamp(波, 0, max(resp.x − k, 0))`——波只能把松开度补到上限，已经比上限松的（按住的图片、对话框下面）不再加。这个值写进 `near.b`，所以波前的松开现在在第一遍里按实例算，第二遍的 `kt`、`pic_k` 只再加半平面（对比擦除）。
+**How instances carry it**: the instance record gained a vec4 `resp` (112 bytes): x is how much looseness
+fronts may add at most (0 for `Ignore` and `Nudge`, `legible_cap` for legible `Loosen`, 1 otherwise), y is
+whether it is pushed (0 / 1). The G-buffer stage's `own_loose`: `k = max(static looseness, 1 − birth)`, plus
+`clamp(wave, 0, max(resp.x − k, 0))`, so a wave only fills looseness up to the cap, and what is already
+looser than the cap (a held picture, the page under a dialog) gets nothing more. This value goes into
+`near.b`, so a front's looseness is now computed per instance in the G-buffer stage, and the shading stage's
+`kt` and `pic_k` add only the half-plane (the compare wipe).
 
-**透镜**（按第一性原理定）：透镜是指针在场里的那一份，和波前一样按实例的响应作用，而且只做一件事——让人看清一张图片或一个三维物体在这种材质下是什么记号。所以它只碰：图片和三维元素，响应是 `Loosen`、不是可读的一整块（`resp.y` < 1.5），并且它和它的祖先都不被指针操作（没有按下、拖动、`on_pick`、`on_move` 的处理）——指针在那里是为了用它，不是为了看它的材质。可以的实例 `resp.w = 1`，第一遍的 `own_loose` 把透镜加进它的松开度，补到它的上限为止；文字、形状、图（`canvas`）和控件永远不碰；页面的底（dot 的底的单元）照旧跟着透镜。原来图片在第二遍里不论是谁都加透镜、三维元素在第一遍里都加，所以卡片叠的卡片、图表这样的装饰在指针下面变暗。验收：`check` 第 15 条（透镜在图片和网格上时部分重画仍然逐字节相同）。dot 的行错位只作用在 `near.b > 0` 的地方：只被推的字不错位。
+**The lens** (decided from first principles): the lens is the pointer's share of the field. Like fronts, it
+acts through each instance's response, and it does one thing only: let a person see which marks a picture or a
+3D object becomes in this material. So it touches only pictures and 3D elements whose response is `Loosen`,
+that are not a single legible block (`resp.y` < 1.5), and that neither they nor their ancestors are operated by
+the pointer (no press, drag, `on_pick` or `on_move` handler): a pointer there is there to use it, not to look at
+its material. Eligible instances get `resp.w = 1`, and the G-buffer stage's `own_loose` adds the lens to their
+looseness up to their cap; text, shapes, drawings (`canvas`) and controls are never touched; the page's ground
+(dot's ground cells) follows the lens as before. Previously, pictures added the lens in the shading stage no
+matter what, and 3D elements in the G-buffer stage, so decoration such as the card stack's cards and charts
+darkened under the pointer. Acceptance: `check` item 15 (partial redraw stays byte-identical with the lens on
+pictures and meshes). Dot's row slips act only where `near.b > 0`, so text that is only nudged doesn't slip.
 
-**不叠加**：每道波前记着放它的元素（key 的哈希，`Field::sources`）。同一个元素的上一道波前还活着时，新的按下是把它重新开始（换起点和时间），不是再加一道（`Field::front_in`）。每个像素的松开度在所有来源加起来以后夹在 `Look::loose_max`（默认 1）以内（第二遍的 `kt`、`pic_k`、`loose1`）。
+**No stacking**: each front records the element that sent it (a hash of its key, `Field::sources`). While the
+same element's previous front is still alive, a new press restarts it (new origin and time) rather than adding
+another (`Field::front_in`). Each pixel's looseness, after all sources are added, is clamped to
+`Look::loose_max` (1 by default; the shading stage's `kt`, `pic_k`, `loose1`).
 
-**CPU 上的模型**：`Ui::looseness(key, now)` 用同样的规则（每个实例在中心处：自己的松开度 + 到得了它的波前补到上限，夹在 `loose_max` 以内，不乘风格的松开比例）给出一棵子树里最松的实例有多松，测试和树的导出用它。`Field::wave_at` 是着色器 `wave_in` 的 CPU 版。
+**The CPU model**: `Ui::looseness(key, now)` uses the same rules (for each instance at its center: its own
+looseness plus the fronts that reach it, up to its cap, clamped to `loose_max`, without the style's looseness
+scale) to give how loose the loosest instance in a subtree is; tests and the tree export use it.
+`Field::wave_at` is the CPU version of the shader's `wave_in`.
 
-**验收**：`tests/ripple.rs`：默认的响应和可读（计数按钮的字是 `Nudge`、可读；装饰形状 `Loosen`；`Ignore` 的邻居；带 key 的字会重组）；“自身”时波前的方框是按钮的矩形，外面的邻居松开度一直是 0；“这一块”时方框是那一块，`Loosen` 的邻居松开（> 0.5）、`Nudge` 和 `Ignore` 的是 0，可读的字不超过上限；按在空白处没有波前；在三种范围下，0.3 秒里连按 10 次计数按钮，按钮上字的最大松开度不超过按一次的，活着的波前不超过 2 道，最后一次按下之后在正常的静止时间（波前寿命、凝结、重组里最长的）内 `needs_frame` 为假；`loose_max = 0.4` 时 `Loosen` 的邻居最松 0.4。`tests/frames.rs`：按在空白处没有波前，按按钮有。
+**Acceptance**: `tests/ripple.rs`: default responses and legibility (the count button's text is `Nudge` and
+legible; decorative shapes `Loosen`; an `Ignore` neighbour; keyed text recomposes); with "own", the front's box
+is the button's rect and neighbours outside stay at looseness 0; with "this area", the box is the area,
+`Loosen` neighbours loosen (> 0.5), `Nudge` and `Ignore` ones stay 0, and legible text stays within the cap; a
+press on empty space sends no front; under three scopes, ten presses of the count button in 0.3 s loosen the
+button's text no more than one press does, no more than 2 fronts are alive, and `needs_frame` is false within
+the normal settling time after the last press (the longest of front lifetime, condensing and recomposition);
+with `loose_max = 0.4` a `Loosen` neighbour is at most 0.4 loose. `tests/frames.rs`: a press on empty space
+sends no front; a press on a button does.
 
-### 1.16 内容重组
+### 1.16 Recomposition
 
-带 key 的文字换了字串（计数、数字控件的值、标签、列表行的字），**变了的字簇**——只有这些——的像素重新组合成新的字：旧字形的格子飞到新字形的形状上；没变的前缀和后缀留在原地，位置变了的滑到新的 x。
+When keyed text changes its string (a count, a number control's value, a label, a list row's text), the pixels
+of **the clusters that changed**, and only those, recompose into the new text: the old glyphs' cells fly onto
+the new glyphs' shapes; the unchanged prefix and suffix stay where they are, and those whose position changed
+slide to their new x.
 
-**参数**（`morph::Recompose`，在 `Look::recompose` 里；按钮页涟漪一节里都是数字控件）：
+**Parameters** (`morph::Recompose`, in `Look::recompose`; number controls in the ripple section of the button
+page):
 
-| 名字 | 默认 | 含义 |
+| Name | Default | Meaning |
 |---|---|---|
-| `duration_ms` | 160 | 从第一格出发到最后一格落地 |
-| `stagger` | 0.2 | 出发时间错开占飞行的比例 |
-| `count_max` | 600 | 每个变了的字形最多飞多少格（超过时格子按整数个设备像素变大） |
-| `slide_ms` | 120 | 没变但挪了位置的字形滑过去的时长（缓入缓出） |
-| `min_interval_ms` | 80 | 离上一次变化不到这么久又变了：直接替换，不飞格子、不滑、不凝结（每帧都变的读数从不重组） |
-| `max_tiles` | 24000 | 整个窗口同时活着的重组格子最多这么多；超过的变化直接替换 |
+| `duration_ms` | 160 | From the first cell leaving to the last landing |
+| `stagger` | 0.2 | The share of the flight departures are spread over |
+| `count_max` | 600 | The most cells each changed glyph flies (beyond it cells grow by whole device pixels) |
+| `slide_ms` | 120 | How long unchanged glyphs that moved take to slide (ease in-out) |
+| `min_interval_ms` | 80 | A change sooner than this after the last one is replaced directly, with no cells, slides or condensing (a readout that changes every frame never recomposes) |
+| `max_tiles` | 24000 | The most recomposition cells alive across the window at once; changes beyond it are replaced directly |
 
-**开关**：`El::recompose(bool)`（继承）。没写时，有明确 key 的文字是开的；文字字段里的字（`on_text` 的子树）永远是关的——打字要立刻出现，不然会和插入点打架。数字控件的值是 `{key}/shown`，键入草稿时关。换页（这次布局带 `Cmd::Flow`）时不重组，字串照常替换（标题在流动）。在变形的两个元素里、在对话框下面的不重组。
+**Switch**: `El::recompose(bool)` (inherited). By default, text with an explicit key recomposes; text in text
+fields (subtrees of `on_text`) never does, since typing must appear at once or it fights the caret. A number
+control's value is `{key}/shown`, off while typing a draft. A page change (a layout with `Cmd::Flow`) doesn't
+recompose; strings are replaced as usual (the title is flowing). Neither do the two elements of a morph nor
+anything under a dialog.
 
-**怎么找变了的字**：运行时给每个开着重组的文字节点记下上次画出来的样子（字串、排版参数、每个字形的身份和实例，`TextRec`）。下一次 `paint` 时字串不同：按字素簇比出公共前缀和后缀，得到旧的和新的“变了的”字节范围；字形属于哪一部分，看它的中心落在哪一段的选区盒子里（`Text::boxes`，和选区的外圈同一个办法）。前缀和后缀的字形按顺序一一对应：新字形用旧字形的出生时间（不重新凝结）；矩形不同就滑过去（`Slide`）。
+**Finding what changed**: for each text node that recomposes, the runtime records how it was last drawn (the
+string, layout parameters, each glyph's identity and instance, `TextRec`). At the next `paint`, if the string
+differs, the common prefix and suffix by grapheme cluster give the old and new "changed" byte ranges; which
+part a glyph belongs to is decided by whether its center falls in that range's selection boxes (`Text::boxes`,
+the same method as the selection halo). Prefix and suffix glyphs correspond one to one in order: new glyphs
+take the old glyphs' birth time (they don't condense again), and those whose rect differs slide (`Slide`).
 
-**怎么飞**：变了的旧字形和新字形各自按全屏格子切成格（`morph::tiles`，起点 1 个设备像素，`curl = 0`，所以走直线），配对、错开、缓动都是 §1.10 的同一套（`pair`、`progress`、`position`、`alpha`）。不同的是格子怎么画：每一格是字形实例被这一格切下的那一块（`piece`：同一个字形，图集坐标按比例切），所以格子就是普通的字形实例，照常画进 ink / near，每种材质都适用，渲染器不用改。一格在它自己的换画点（`misc[3]`，0.3–0.7）之前显示旧的那几块，之后显示新的那几块，都是完全不透明的，在格子此刻的位置；SPLIT / MERGE 和尘按 `alpha` 的规则淡入淡出。像素是移动、换位，不是交叉淡变，所以飞行中的字仍然是实的（交叉淡变试过：两边都半透明，飞到一半整个字发灰）。进度 0 时所有格子拼起来正好是旧字，进度 1 时正好是新字：格子切开的是同一组设备像素，透明度为 0 的一边什么也不写（near 里 `step(0.01, alpha)`）。新的字形在飞行期间画成透明（`hide`），飞完那一刻换回真的字形，出生时间早就过了，所以没有凝结。
+**How it flies**: the changed old and new glyphs are each cut into cells on the screen grid (`morph::tiles`,
+starting at 1 device pixel, `curl = 0`, so straight lines), and pairing, stagger and easing are the same as
+§1.10 (`pair`, `progress`, `position`, `alpha`). The difference is how cells are drawn: each cell is the piece
+of a glyph instance that this cell cuts out (`piece`: the same glyph with atlas coordinates cut in
+proportion), so cells are ordinary glyph instances drawn into the coverage and SDF buffers as usual, every
+material applies, and the renderer needs no change. Before its own switch point (`misc[3]`, 0.3–0.7) a cell
+shows the old pieces and after it the new pieces, fully opaque, at the cell's current position; SPLIT / MERGE
+and dust fade by the `alpha` rule. Pixels move and swap rather than cross-fade, so text in flight stays solid
+(cross-fading was tried: both sides were half transparent and the whole glyph turned grey halfway). At
+progress 0 the cells together are exactly the old text and at progress 1 exactly the new: the cells cut the
+same set of device pixels, and the side with zero opacity writes nothing (`step(0.01, alpha)` in the SDF
+buffer). The new glyphs are drawn transparent during the flight (`hide`) and swapped back for the real glyphs
+the moment it ends, long past their birth time, so they don't condense.
 
-**中途又变**：正在重组的文字又换了字串时，从格子此刻的位置重新出发：飞着的格子就是新一轮的源，各自带着此刻显示得多的那一边的碎片接着飞（碎片只从完整的字形切一次，以后不再切，所以不会越切越多；正在淡出的合并格子和尘放掉），再加上这次新变了的旧字形切出的格子；上一轮还藏着的新字形，如果在这一次里落在前缀或后缀里，也算“变了”，跟着一起重组，不会突然跳出来。没有排队，也不从旧字重新开始。新一轮在上一轮本来要落地的时候落地（至少三分之一个飞行），所以连点时数字一直在往前走，不会每一次都从头飞、一直停在旧字上。
+**Changing again midway**: when text that is recomposing changes its string again, it sets off again from
+where the cells are: cells in flight are the new round's sources, each carrying the pieces of whichever side
+it shows more of at that moment (pieces are cut from whole glyphs once and never cut again, so they don't
+multiply; merging cells and dust that are fading out are dropped), plus cells cut from old glyphs that changed
+this time. New glyphs still hidden from the last round count as changed if they fall in this round's prefix or
+suffix, and recompose along with it rather than jumping in. There is no queue and no restart from the old
+text. The new round lands when the last round would have (at least a third of a flight), so with repeated
+presses the digits keep moving forward rather than flying from the start every time and staying on the old
+text.
 
-**验收**：`tests/ripple.rs`：“Count 19”→“Count 20”只藏起两个数字，“Count ”的出生时间和位置不变，格子在场景里，要画帧；飞到一半再变成“Count 21”仍然只有那两个字在重组；飞完以后没有藏起的字、没有格子、不凝结、`needs_frame` 为假；没有 key 的字直接替换；“9”→“10”两个字都重组。`check` 第 13 条：plain 和 dot 下，三组字串（“19”→“20”、“计数 9”→“计数 10”、“3.5 px”→“3.6 px”），第一帧和旧字的普通渲染、最后一帧（所有格子都落地之后、结束之前）和新字的普通渲染整窗逐像素比较，差为 0；飞到一半和两端都不同（对照）。`film <目录> ripple` 出三张样张（见 §9）。
+**Acceptance**: `tests/ripple.rs`: "Count 19" → "Count 20" hides only the two digits, "Count " keeps its birth
+time and position, the cells are in the scene and frames are wanted; changing to "Count 21" halfway still
+recomposes only those two characters; after the flight no glyph is hidden, there are no cells, nothing
+condenses and `needs_frame` is false; text without a key is replaced directly; "9" → "10" recomposes both
+characters. `check` item 13: under `plain` and `dot`, for three pairs of strings ("19" → "20", a Chinese label
+with "9" → "10", "3.5 px" → "3.6 px"), the first frame is compared with an ordinary rendering of the old text
+and the last frame (after every cell has landed, before the end) with the new, over the whole window, pixel for
+pixel, with a difference of 0; halfway and both ends differ (control). `film <dir> ripple` produces three
+samples (§9).
 
-### 1.17 给模型用的一面
+### 1.17 The surface for models
 
-这个框架是给模型写的：模型看不见窗口，它要的是确定的图、能读的结构和说得清的错误。
+This framework is written by models: a model can't see the window, so it needs deterministic pictures,
+readable structure and errors that say what is wrong.
 
-**`render`**（`src/bin/render.rs`，核心在 `drive::render`，测试直接调它）：`render --page <页名或 recipe-名字> --size 1280x800 --scale 1 --material <id> --theme <id> --at <毫秒> --events <file.json> --out out.png [--tree out.json] [--strict]`。页名是 gallery 的地址（`button`、`material-dot`、`scene-morph`）或配方（`recipe-form`）。时钟固定：从 0 开始每 1/60 秒一步到 `--at`，事件在它的时间或之后的第一步放进去（按给的顺序），最后正好在 `--at` 停；没有随机数（哈希都有固定的种子）。所以同样的参数给出逐字节相同的 PNG（`tests/render.rs`：同一个渲染器两次、新的渲染器一次，三张一样；换一个时刻就不一样）。`--events` 是 JSON 列表：`{at_ms, kind, ...}`，`kind` 是 `press` / `release` / `move`（`x`、`y` 逻辑像素，或 `target`：元素的 key，取它盒子的中心）、`key`（DOM 键名，`shift`、`cmd`、`alt`）、`wheel`（`dx`、`dy`）、`text`（`text`）。`--material` 是材质名或号，`--theme` 是 `drive::THEME_IDS`（dark、light、paper…）、主题名或号。视图里的问题打到标准错误，`--strict` 时退出码 1。
+**`render`** (`src/bin/render.rs`, its core in `drive::render`, which the tests call directly):
+`render --page <page or recipe-name> --size 1280x800 --scale 1 --material <id> --theme <id> --at <ms>
+--events <file.json> --out out.png [--tree out.json] [--strict]`. In this repository the pages are the recipes
+(`recipe-form`); the website's `render` also opens its own pages (`button`, `material-dot`, `scene-morph`).
+The clock is fixed: from 0 in steps of 1/60 s up to `--at`, each event put in at its time or the first step
+after it (in the order given), ending exactly at `--at`; there are no random numbers (every hash has a fixed
+seed). So the same arguments give a byte-identical PNG (`tests/render.rs`: the same renderer twice and a new
+renderer once give three identical images; another moment gives a different one). `--events` is a JSON list of
+`{at_ms, kind, ...}`, `kind` being `press` / `release` / `move` (`x`, `y` in logical px, or `target`: an
+element's key, using its box's center), `key` (a DOM key name, with `shift`, `cmd`, `alt`), `wheel` (`dx`,
+`dy`) or `text` (`text`). `--material` is a material name or number; `--theme` is one of `drive::THEME_IDS`
+(dark, light, paper…), a theme name or a number. Problems in the view are printed to standard error, and with
+`--strict` the exit code is 1.
 
-**树的导出**（`Ui::export_tree() -> tree::TreeNode`，`serde::Serialize`）：每个元素的 key（和它是不是视图写的）、类型（text / image / control / shape / box）、无障碍镜像里的角色和名字、矩形和看得见的部分、文字、材质（`global` 或覆盖的名字）、响应、可读、涟漪范围、重组、能否获得焦点 / 有焦点 / 悬停 / 按住 / 不可用、滚动偏移和内容长度、此刻最松的实例有多松（`Ui::looseness` 的规则），子节点。`tests/tree.rs` 在两种宽度的卡片上验矩形、类型、角色、响应、JSON 的形状和焦点。
+**The tree export** (`Ui::export_tree() -> tree::TreeNode`, `serde::Serialize`): each element's key (and
+whether the view wrote it), kind (text / image / control / shape / box), role and name from the accessibility
+mirror, rect and visible part, text, material (`global` or the override's name), response, legibility, ripple
+scope, recomposition, focusable / focused / hovered / pressed / disabled, scroll offset and content length, how
+loose its loosest instance is right now (by `Ui::looseness`'s rules), and its children. `tests/tree.rs` checks
+rects, kinds, roles, responses, the JSON shape and focus on a card at two widths.
 
-**写给读的人的错误**（`src/error.rs`，`thiserror`）：`FontError`（哪个文件读不到、字体在 `assets/`、怎么写路径）、`LookError`（未知的材质 / 主题 / 页名，列出能写的）、`SurfaceError`（尺寸为 0、没有显卡适配器时装 lavapipe、尺寸对不上）、`DriveError`（事件 JSON 的格式、找不到的 target 和相近的 key、没有位置、键名）、`ViewProblem`（`Ui::problems()`：同一个 key 用了两次——给出两处的路径和 `.key(format!(..))` 的写法；同一页上同一个流动 id 两次；锚到不存在的元素；涟漪容器的 key 不存在）。用户代码走得到的路径上没有裸的 `unwrap`；`Offscreen::new` 失败时用 `SurfaceError` 的话 panic，`Offscreen::try_new` 返回它。剩下的 `expect` 是内部不变量（taffy 建节点、渲染器的空白图）。
+**Errors written for their reader** (`src/error.rs`, `thiserror`): `FontError` (which file couldn't be read,
+that the fonts are in `assets/`, how to write the path), `LookError` (an unknown material / theme / page,
+listing what can be written), `SurfaceError` (a zero size, installing lavapipe when there is no GPU adapter, a
+size mismatch), `DriveError` (the event JSON's format, a target not found with the nearest keys, a missing
+position, key names) and `ViewProblem` (`Ui::problems()`: the same key used twice, giving both paths and the
+`.key(format!(..))` way to write it; the same flow id twice on a page; an anchor to an element that doesn't
+exist; a ripple container key that doesn't exist). There is no bare `unwrap` on any path user code can reach;
+`Offscreen::new` panics with `SurfaceError`'s message on failure, and `Offscreen::try_new` returns it. The
+`expect`s that remain are internal invariants (taffy creating nodes, the renderer's blank images).
 
-**文档**：仓库根的 `AGENTS.md`（三句话、心智模型、要写的十样东西各一段能编译的例子——它是 `amenui::agents` 的文档测试，`cargo test` 编译每一段——规矩、怎么用 `render` 和 `--tree` 验证、命令、位置）；`llms.txt`；`docs/recipes/` 八个配方（表单、带选中的列表、对话框、带共有部分的换页、变形、一个元素用另一种材质、子树上的标注层、会重组和有范围涟漪的计数），代码在 `examples/`，编进库里（`amenui::recipes`，`Cargo.toml` 的 `autoexamples = false`）；`tests/recipes.rs` 验每个配方页里的代码块和文件一字不差、每个配方能布局且没有视图问题、它自己的交互做了它说的事、能画出来。每个组件文件开头有 Purpose / Props / States / Messages / Usage；`registry.json` 每项加了 `response`、`recompose` 和有配方时的 `recipe`；`tests/registry.rs` 验 `src/widgets/` 里每个文件都在清单里、都有这五项。
+**Documentation**: `AGENTS.md` at the repository root (three sentences, the mental model, a compiling example
+for each of the ten things you write, which is the doc test `amenui::agents` so `cargo test` compiles every
+one, the rules, how to verify with `render` and `--tree`, commands, where things live); `llms.txt`; the recipes
+in `docs/recipes/` with their code in `examples/`, compiled into the library (`amenui::recipes`,
+`autoexamples = false` in `Cargo.toml`); `tests/recipes.rs` checks that each recipe page's code block equals its
+file exactly, that each recipe lays out without view problems, that its own interaction does what it says, and
+that it renders. Every component file starts with Purpose / Props / States / Messages / Usage; each
+`registry.json` item has `response`, `recompose` and, when there is one, `recipe`; `tests/registry.rs` checks
+that every file in `src/widgets/` is listed with these five.
 
-### 1.18 三维
+### 1.18 3D
 
-三维物体是页面上的又一种东西（第四种实例 `MESH`）：它在布局给它的矩形里画，用当前的材质，会松开、变形，可以按到，不是另一套引擎。代码：`src/mesh.rs`（不依赖显卡：矩阵、程序生成的网格、glTF 子集、场景描述、拾取）、`src/mesh.wgsl`（网格的一遍和解算）、渲染器的 `prepare_meshes`。
+A 3D object is one more thing on the page (a fourth instance kind, `MESH`): it is drawn in the rect layout
+gives it, in the current material, loosens, morphs and can be pressed; it is not a separate engine. Code:
+`src/mesh.rs` (no GPU: matrices, generated meshes, a glTF subset, scene description, picking), `src/mesh.wgsl`
+(the mesh pass and its resolve) and the renderer's `prepare_meshes`.
 
-**描述。** `el::scene3d(Scene3d)`（默认宽 100%、高 240）和 `el::mesh(MeshId)`（一个网格、默认相机和光）。`Scene3d { items: Vec<MeshInstances>, camera, light, spec: Mesh3d, picture }`：`MeshInstances { mesh, transforms: Vec<Mat4>, paint, id }` 是同一个网格的若干份，一次绘制调用画完（两千个低多边形实例是 gallery 的一页）；一个相机（`Camera`：透视 `fov` 或正交 `height`，绕 `target` 的 `yaw`、`pitch`、`distance`，`near`、`far`）；一盏平行光（`Light { dir, ambient }`）。网格在 `mesh::Library` 里：内建的立方体、经纬球、二十面体（0–3 次细分）、环面、圆柱、圆锥、平面有固定的 id，`Ui::add_mesh` 加别的（代码生成的，或 `mesh::load_gltf` 读的，在 `gltf` 特性后面：位置、法线、索引、节点变换；不读蒙皮、材质、贴图）。网格是三角形表，默认每个三角形用自己的面法线；`Mesh::normals` 给每个角自己的法线时曲面平滑、只有折痕是边（`Mesh::creased(角度)` 按相邻面的夹角算：小于它的平滑，大于它的保留折痕）。生成的基本形还有：`extrude`（闭合的二维轮廓沿 z 挤出，两面是扇形三角形，侧壁按折痕平滑）、`extrude_bored`（同样，中间有圆孔）、`tube`（垫圈、轴套）、`gear`（直齿轮：齿数、节圆半径、厚度、孔；齿形是渐开线那样从齿根陡、向齿顶圆过去的曲线，节圆处齿厚是半个齿距）、`block`（每条棱都是折痕的长方体）、`rod`（侧面平滑、两端是折痕的圆柱）。`Mesh3d` 加了 `tones`（2：亮面和暗面两种平涂色调，明暗交界在 `terminator`）和 `outline`（在轮廓和折痕上画出墨色的线，逻辑像素），平面着色的法线和明暗改成在片元里插值。颜色是 `Paint`（色调、强调色、色相），和形状一样用主题的颜色。
+**Description.** `el::scene3d(Scene3d)` (100% wide and 240 tall by default) and `el::mesh(MeshId)` (one mesh,
+default camera and light). `Scene3d { items: Vec<MeshInstances>, camera, light, spec: Mesh3d, picture }`:
+`MeshInstances { mesh, transforms: Vec<Mat4>, paint, id }` is several copies of one mesh in one draw call (two
+thousand low-poly instances are one page on the website); one camera (`Camera`: perspective `fov` or orthographic
+`height`, `yaw`, `pitch` and `distance` about `target`, `near`, `far`); one directional light
+(`Light { dir, ambient }`). Meshes live in `mesh::Library`: the built-in cube, UV sphere, icosahedron (0–3
+subdivisions), torus, cylinder, cone and plane have fixed ids, and `Ui::add_mesh` adds others (generated in
+code, or read with `mesh::load_gltf` behind the `gltf` feature: positions, normals, indices, node transforms;
+no skinning, materials or textures). A mesh is a triangle list, each triangle using its face normal by default;
+when `Mesh::normals` gives each corner its own normal the surface is smooth and only creases are edges
+(`Mesh::creased(angle)` decides by the angle between neighbouring faces: smooth below it, creased above). More
+generated primitives: `extrude` (a closed 2D outline extruded along z, both faces as triangle fans, side walls
+smoothed by crease), `extrude_bored` (the same with a round hole), `tube` (washers, bushings), `gear` (a spur
+gear: tooth count, pitch radius, thickness, hole; the tooth flank rises steeply from the root and curves to the
+tip circle like an involute, with tooth thickness half the circular pitch at the pitch circle), `block` (a box
+with every edge creased) and `rod` (a cylinder with smooth sides and creased ends). `Mesh3d` adds `tones` (2:
+flat lit and shadow tones, with the terminator at `terminator`) and `outline` (ink lines on silhouettes and
+creases, in logical px); flat-shading normals and shading are interpolated in the fragment. Colour is a `Paint`
+(tone, accent, hue), using theme colours like shapes do.
 
-**网格的一遍。** 每个 `scene3d` 元素一组离屏图，大小是元素的设备矩形 × `Mesh3d.resolution_scale`（默认 0.5，0.25–1），带 24 位深度，三个 RGBA8 目标一次画出（WebGL2 的多目标只要不混合就可用）：明暗（环境光 + 朗伯，平面）、色调、强调色、色相；视空间法线 xy 和 16 位线性深度；编号（第几份 + 1，16 位）和法线 z。没变的元素（`Scene3d::fingerprint` 和大小相同）不重画。
+**The mesh pass.** Each `scene3d` element has a set of off-screen images the size of its device rect ×
+`Mesh3d.resolution_scale` (0.5 by default, 0.25–1), with 24-bit depth and three RGBA8 targets drawn at once
+(multiple render targets work on WebGL2 without blending): shading (ambient + Lambert, flat), tone, accent and
+hue; view-space normal xy and 16-bit linear depth; the instance index (+ 1, 16 bits) and normal z. Unchanged
+elements (same `Scene3d::fingerprint` and size) are not redrawn.
 
-**解算。** 三个全屏小遍：`mask`（画到了的是轮廓；画到了且右边、下边的邻居不是同一份、深度跳过 `edge_depth`（相对深度，默认 0.04）、法线夹角大于 `edge_normal`（默认 15°）时是边，边一像素宽）、`h` 和 `v`（精确的欧氏距离，横向找最近的“里 / 外”，纵向在 ±R 行里合成，R = SPREAD / 每像素的设备长度 + 1）。结果是两个带符号的近度：只看轮廓的，和轮廓加棱的；还有投影法线的码（1 是朝向观者，2–9 是方向的八分之一半圈）。第一遍里 `MESH` 实例按双线性读近度、按最近读颜色：覆盖率来自轮廓的近度（所以剪影是平滑的），`near.r` 是轮廓加棱的近度，`ink` 按形状的编码（`r = 明暗 × 色调 × (1 − 强调)`，`g = 明暗 × 强调`，b 码是 `色相 × 0.15 + 0.07`：是形状，也认得出是网格），`near.g` 放法线码（1–9 / 255，低于任何图片标记）。于是每种材质不加代码就能画三维：棱就是近度里的轮廓，lino 沿棱刻，near 画出等距线。`ambient` 让最暗的面也不是页面底色。`Scene3d.picture = Some(槽)` 时它按图片画（§1.6.1 的记号，自己的底）。
+**The resolve.** Three small full-screen passes: `mask` (covered pixels are silhouette; a covered pixel whose
+right or lower neighbour is a different instance, whose depth jumps more than `edge_depth` (relative depth,
+0.04 by default) or whose normals differ by more than `edge_normal` (15° by default) is an edge, one pixel
+wide), then `h` and `v` (an exact Euclidean distance: the nearest inside / outside horizontally, combined
+vertically over ±R rows, R = SPREAD / device length per pixel + 1). The result is two signed distances, one for
+the silhouette only and one for silhouette plus creases, and a projected normal code (1 facing the viewer, 2–9
+one eighth of a half turn of direction each). In the G-buffer stage a `MESH` instance reads distance bilinearly
+and colour by nearest: coverage comes from the silhouette distance (so the outline is smooth), `near.r` is the
+silhouette-plus-creases distance, the coverage buffer uses the shape encoding (`r = shade × tone × (1 −
+accent)`, `g = shade × accent`, the b code `hue × 0.15 + 0.07`: a shape, recognisable as a mesh), and `near.g`
+holds the normal code (1–9 / 255, below every picture marking). So every material draws 3D without extra code:
+creases are outlines in the SDF, `lino` carves along them, `near` draws their iso-lines. `ambient` keeps the
+darkest face off the page background. With `Scene3d.picture = Some(slot)` it is drawn as a picture (the marks of
+§1.6.1, with its own ground).
 
-**ASCII 按法线**：ascii 材质在网格的格子里，字的疏密按明暗；在棱上（`|sd| < 0.75 P`）画顺着棱的笔画，在侧着的面上画横过坡度的笔画（`| / - \` 四族，取最近的一族，一笔宽 `max(1, 0.14P)`），出现的比例是 `ascii_normal_weight`（ascii 的第 4 个参数，默认 1）。
+**ASCII by normal**: in a mesh's cells, the `ascii` material sets character density by shading; on creases
+(`|sd| < 0.75 P`) it draws strokes along the crease, and on faces turned sideways strokes across the slope
+(`| / - \`, the nearest of four families, one stroke `max(1, 0.14P)` wide), in the proportion
+`ascii_normal_weight` (ascii's 4th parameter, 1 by default).
 
-**按深度的记号**（`Look::marks: Marks { depth_scale, depth_dim }`，默认都是 0，预设里也有）：网格的一遍按这一份在视空间的深度在整个场景最近到最远之间的位置（`Scene3d::depth_range`：每一份的中心加减它的包围半径）把明暗乘 `1 − depth_dim × 远`、把色调乘 `1 − depth_scale × 远`；按墨量定记号大小和疏密的材质（dot、halftone、ascii、图片的记号）因此在远处画得更小、更淡。这不是另一条按深度改格子大小的路：格子仍然是全屏共用的一张（§1.6.1），变的是格子里的墨。三维页的机件可以用 0.45 和 0.35。`check` 第 17 条（原来是第 19 条）：都是 0 时和不开逐字节相同，打开时远处变暗的像素多于 500 个、变亮的不到它的十分之一。
+**Marks by depth** (`Look::marks: Marks { depth_scale, depth_dim }`, both 0 by default, also in presets): the
+mesh pass multiplies shading by `1 − depth_dim × far` and tone by `1 − depth_scale × far`, `far` being where this
+instance's view-space depth lies between the scene's nearest and farthest (`Scene3d::depth_range`: each
+instance's center plus and minus its bounding radius); materials that size and space marks by ink (`dot`,
+`halftone`, `ascii`, picture marks) therefore draw smaller and fainter far away. This is not a second route that
+changes cell size by depth: the cells are still the one screen-wide grid (§1.6.1); what changes is the ink in
+them. The 3D page's mechanism can use 0.45 and 0.35. `check` item 17 (formerly item 19): with both at 0 it is
+byte-identical to off; turned on, more than 500 pixels far away darken and fewer than a tenth of that many
+brighten.
 
-**交互。** 拾取在 CPU 上做：同样的变换、同样的相机，按指针投一条射线（先用包围球剔除，再 Möller–Trumbore），所以无头、WebGL2（读回是异步的）和原生都一样、同步。`El::on_pick(|Pick| ..)`：指针换到另一份（或离开）时 `Pick::Hover(Option<MeshHit>)`，按下时 `Pick::Press(..)`，`MeshHit { object, instance }`；走现有的命中路径。`El::on_wheel` 在滚动之前拿到滚轮。`widgets::orbit` 是相机控件：拖动环绕（从按下时的角度算，`per_px` 度每像素），滚轮推拉（`dolly`），获得焦点后方向键（`step_deg`，Shift × 4）；松手时取最后 0.1 秒的速度，按 `v e^(−friction t)` 的精确积分减速（和 §1.8.2 的甩一样），低于 `stop` 停；`Orbit::step` 由应用在 `on_tick` 里调，`moving()` 时 `on_wake` 要帧。相机是状态，组件不自己动。
+**Interaction.** Picking happens on the CPU: the same transforms and camera cast a ray from the pointer
+(bounding-sphere culling, then Möller–Trumbore), so headless, WebGL2 (where readback is asynchronous) and native
+all behave the same, synchronously. `El::on_pick(|Pick| ..)`: `Pick::Hover(Option<MeshHit>)` when the pointer
+moves to another instance (or leaves), `Pick::Press(..)` on press, with `MeshHit { object, instance }`, through
+the existing hit-test path. `El::on_wheel` gets the wheel before scrolling does. `widgets::orbit` is the camera
+control: dragging orbits (computed from the angles at the press, `per_px` degrees per pixel), the wheel dollies
+(`dolly`), the arrow keys turn once focused (`step_deg`, Shift × 4); on release it takes the velocity of the last
+0.1 s and decelerates by the exact integral of `v e^(−friction t)` (like the fling in §1.8.2), stopping below
+`stop`; the application calls `Orbit::step` in `on_tick` and wants frames with `on_wake` while `moving()`. The
+camera is state; the component never moves by itself.
 
-**松开。** 三维元素默认是装饰（`Response::Loosen`，可读为否），哪怕能拖：波前和悬停的 burst 都按同一个场把它松开（burst 在第一遍的 `own_loose` 里加给网格），范围规则（§1.15）照常；透镜按 §1.15 的“透镜”只碰没有被指针操作的。
+**Loosening.** 3D elements are decoration by default (`Response::Loosen`, not legible), even when draggable:
+fronts and hover bursts loosen them through the same field (the burst is added to meshes in the G-buffer stage's
+`own_loose`), and the scope rules (§1.15) apply as usual; the lens, as §1.15 says, touches only those the pointer
+is not operating.
 
-**验收。** `tests/mesh.rs`（两千份是一组一次绘制；悬停和按下带着第几份，悬停的那份单独用强调色画；拖动环绕并滑行到停、停下后不要帧；滚轮、方向键；波前松开网格）；`mesh.rs` 的单元测试（基本形闭合且朝外、相机、拾取最近的、表面取样、glTF）；`check` 第 14 条：转 0 度再画、换一个新的渲染器画，逐字节相同；0.5 和 1 两种分辨率下静止的剪影每一行只有一段（凸的物体），near 材质下 CPU 投影出的每条棱上都画着轮廓（对照：阈值大于所有夹角时没有）。样张 `samples <目录> mesh`：同一个物体在每种材质下静止和松开 0.7，加四种记号表的图片画法。
+**Acceptance.** `tests/mesh.rs` (two thousand copies are one group in one draw; hover and press carry the
+instance index and the hovered instance is drawn alone in the accent; dragging orbits and coasts to a stop with
+no frames wanted after; the wheel and the arrow keys; fronts loosen meshes); unit tests in `mesh.rs`
+(primitives are closed and face outward, the camera, picking the nearest, surface sampling, glTF); `check` item
+14: drawing again after turning 0° and drawing with a new renderer are byte-identical; at resolutions 0.5 and 1
+each row of a still silhouette is one run (convex objects), and under `near` every edge projected on the CPU
+has an outline drawn on it (control: none with a threshold above every angle). Samples `samples <dir> mesh`:
+the same object in every material at rest and loosened 0.7, plus four mark sets drawing it as a picture.
 
-### 1.19 只画变了的部分
+### 1.19 Drawing only what changed
 
-第二遍原来只要有东西在动就整屏重画。现在渲染器在画之前比较这一帧和上一帧的输入（`src/dirty.rs`，不依赖显卡），得出两个框（设备像素）：第一遍的图（ink、near）可能变的地方，和最终画面可能变的地方；两遍都裁剪到各自的框（第一遍在框里先清零再画，用 `LoadOp::Load` 和一个清零的全屏三角形），框外是上一帧。画面保存在渲染器自己的一张图里，每帧整张拷到目标（网页的交换链每帧是新的图）。
+The shading stage used to redraw the whole screen whenever anything moved. Now the renderer compares this
+frame's inputs with the last frame's before drawing (`src/dirty.rs`, no GPU) and gets two boxes (device
+pixels): where the G-buffer (coverage and SDF) may change, and where the final frame may change. Both stages are
+scissored to their boxes (the G-buffer stage clears inside its box first, with `LoadOp::Load` and a clearing
+full-screen triangle), and outside is the last frame. The frame is kept in an image of the renderer's own and
+copied whole to the target each frame (the web swap chain gives a new image every frame).
 
-- 第一遍的框：记录不同的实例（逐个比较，长度不同时从分歧处起全算）、正在凝结的、被活着的波前碰到的（波前扫过的圆加宽度和推力，和它的范围框求交）、透镜下让它碰的图片和三维元素（只取和透镜范围的交）、burst 下的三维元素、网格指纹变了的三维元素；每个实例的矩形外扩近度和推力。
-- 第二遍的框：第一遍的框外扩材质的读取范围（`dirty::reach`：每种材质按自己的参数，加上图片记号的格子），加上波前作用的区域、透镜（新旧指针各 3.5 倍半径）、burst、擦除线的矩形、标注层变了的实例。
-- 整屏：外观变了（主题、材质、参数…）、窗口变了、提交正在显示、粒子在飞、在画低分辨率的那一遍、在用读材质时钟的材质（dot、glitch）而时钟走了。
+- The G-buffer box: instances whose records differ (compared one by one, everything from the point of
+  divergence when the lengths differ), those condensing, those touched by a live front (the circle the front
+  swept, plus its width and push, intersected with its scope box), pictures and 3D elements the lens may touch
+  (only their intersection with the lens's reach), 3D elements under a burst and 3D elements whose mesh
+  fingerprint changed; each instance's rect grown by the SDF range and the push.
+- The final box: the G-buffer box grown by the material's read range (`dirty::reach`: each material by its own
+  parameters, plus picture mark cells), plus the areas fronts act on, the lens (3.5 radii around both old and
+  new pointer), bursts, the wipe line's rect and changed instances of the annotation layer.
+- The whole screen: the look changed (theme, material, parameters…), the window changed, a commit is showing,
+  particles are flying, the low-resolution pass is being drawn, or a material that reads the material clock
+  (`dot`, `glitch`) is in use and the clock moved.
 
-**材质时钟**改成只跟着“场”走（波前、提交、凝结、变形、流动、重组、甩和拉过头、时间材质下有松开的东西），悬停的 burst、角标滑动、标注画出不再让它走：否则一次悬停就让 dot 的底在整个窗口里漂一下，只能整屏重画。
+**The material clock** now follows only the field (fronts, commits, condensing, morphs, flows, recomposition,
+flings and overscroll, something loose under a time-varying material); hover bursts, sliding corner marks and
+annotations drawing in no longer advance it, since otherwise one hover would set dot's ground drifting across the
+whole window and force a full redraw.
 
-**指针移动的花费**：指针移动本身不布局、不排版：视差用 `El::shift(dx, dy)`（布局以后整棵子树挪开，不进 taffy 的样式）；透镜只在它够得到的地方算进框：离指针 `dirty::LENS_REACH`（2.2）个半径以外它的钟形低于 0.01，图片的点距和 dot 底的点都不变，而且只在图片、三维元素上和 dot 材质下（别的材质的底不读透镜）；图片记号的读取范围只在有图片变了时加；标注层按集合比较（新出现和消失的那几个），一个标签多一个字不会让它后面的全部算变了。`Ui::dirty_inputs` 在没有显卡时给出渲染器会比较的那份输入。验收：`tests/pointer_moves.rs`：gallery 每一页上指针移动 200 次，悬停的东西（控件、三维的那一份、标注看的元素）没变的那些次，没有布局、没有排版（只有跟着指针写坐标的标注标签可以排），从静止开始的移动重画的框不是整屏、不超过窗口的 60%（透镜在 dot 底、图片或三维上时它自己的范围就有三分之一）；标注的十字线和刻度尺跟着指针横贯整个范围，一个框装不下，这种页不量面积。
+**What pointer movement costs**: moving the pointer neither lays out nor shapes text. Parallax uses
+`El::shift(dx, dy)` (the whole subtree moves after layout, outside taffy's styles); the lens is counted in the
+boxes only where it can reach: beyond `dirty::LENS_REACH` (2.2) radii from the pointer its bell is below 0.01,
+picture pitch and dot ground dots don't change, and only on pictures, 3D elements and under `dot` (other
+materials' grounds don't read the lens); picture marks' read range is added only when a picture changed; the
+annotation layer is compared as a set (those that appeared and disappeared), so one more character in a label
+doesn't make everything after it count as changed. `Ui::dirty_inputs` gives, without a GPU, the inputs the
+renderer would compare. Acceptance: `tests/pointer_moves.rs`: on every website page, of 200 pointer moves, those
+where what is hovered (a control, a 3D instance, the element the annotation looks at) didn't change do no layout
+and no shaping (only annotation labels that write coordinates following the pointer may shape), and a move
+starting from rest redraws a box that is not the whole screen and at most 60% of the window (the lens on a dot
+ground, a picture or 3D alone covers a third); the annotation crosshair and rulers follow the pointer across the
+whole scope and don't fit in one box, so such pages aren't measured for area.
 
-**验收**：`check` 第 15 条：按钮页上悬停、按下（带波前和计数重组）、移开，每种材质 48 帧；图片页和三维页（透镜在图片和网格上）各几种材质；浮动窗口拖动、甩出、滑到角上，每种材质 90 帧，plain 和 dot 另在 2 倍缩放下各一遍；每一帧按框画的和整帧画的逐字节相同，并且有对照：大多数帧的框不到半个窗口。`bench` 的 dirty 一节（§9）。
+**Acceptance**: `check` item 15: on the button page, hover, press (with a front and the count recomposing) and
+move away, 48 frames per material; the picture page and the 3D page (the lens on a picture and a mesh) in
+several materials; the floating box dragged, thrown and settling into a corner, 90 frames per material, with
+`plain` and `dot` again at 2× scale; every frame drawn by boxes is byte-identical to the full frame, with a
+control: most frames' boxes are less than half the window. The dirty section of `bench` (§9).
 
-### 1.20 多种语言
+### 1.20 Languages
 
-**语言是数据。** 界面上要读的字都来自消息目录：每种语言一个纯文本文件（`assets/i18n/zh-Hans.txt`、`assets/i18n/en.txt`），一行一条 `键 = 文字`；`{名字}` 是具名参数（数字按这种语言写：千位分组），`{{` 是花括号；以两个空格开头的行接在上一条后面（换行）；`键.one`、`键.other`…是复数形式，按参数 `n`（或第一个数字）用 CLDR 的基数规则选（`intl_pluralrules`）；中文只要 `other`，英文要 `one` 和 `other`。没有用 Fluent：`fluent-bundle` 要带上 `intl-memoizer`、`fluent-syntax` 和一套类型系统，这里只要“键 → 文字、参数、复数”，自己写的解析器 60 行。目录用 `include_str!` 编进库里，网页版也有。
+**Language is data.** Every string a person reads comes from a message catalog: one plain text file per
+language (`assets/i18n/zh-Hans.txt`, `assets/i18n/en.txt`), one `key = text` per line; `{name}` is a named
+argument (numbers written the language's way, with digit grouping), `{{` is a brace; a line starting with two
+spaces continues the previous entry (a newline); `key.one`, `key.other`… are plural forms, chosen by the
+argument `n` (or the first number) with CLDR's cardinal rules (`intl_pluralrules`); Chinese needs only `other`,
+English `one` and `other`. Fluent is not used: `fluent-bundle` brings `intl-memoizer`, `fluent-syntax` and a type
+system, and this needs only key → text, arguments and plurals, so the parser is 60 lines of our own. Catalogs are
+compiled in with `include_str!`, so the web version has them too.
 
-**接口**（`src/i18n.rs`）：`Locale`（`ZhHans`、`En`；`tag`、`from_tag`、`name`、`direction`、`fallback`、`plural`、`number`、`date`）；`locale.tr(键)`、`locale.tr_args(键, 参数)`、`t!(locale, "键", n = 3, name = "…")`；`try_tr` 返回 `Result`，缺的键是 `I18nError::MissingKey`，写着键、找过的语言链（zh-Hans → en）和该往哪两个文件里加哪一行；`tr` 在都找不到时显示 `⟨键⟩` 并记下来（`i18n::misses()`，测试用它列出缺什么）。回退链：简体中文缺的键用英文。
+**Interface** (`src/i18n.rs`): `Locale` (`ZhHans`, `En`; `tag`, `from_tag`, `name`, `direction`, `fallback`,
+`plural`, `number`, `date`); `locale.tr(key)`, `locale.tr_args(key, args)`, `t!(locale, "key", n = 3,
+name = "…")`; `try_tr` returns a `Result`, a missing key being `I18nError::MissingKey`, which names the key, the
+chain of languages searched (zh-Hans → en) and which line to add to which two files; `tr` shows `⟨key⟩` when
+nothing is found and records it (`i18n::misses()`, which tests use to list what is missing). The fallback chain:
+keys missing in Simplified Chinese use English. An application installs its own catalogs with
+`i18n::install`, looked up before the framework's.
 
-**语言在状态里。** 应用把 `Locale` 放在自己的状态里，换语言是一条普通的消息（gallery 的 `Msg::Locale`）；`Ui::on_locale(fn(&S) -> Locale)` 让运行时在每次 `view` 之前把它设成当前语言（`i18n::current`），组件自己的字（对话框的“关闭”、图片没有说明时的名字、数字控件两侧按钮的无障碍名字、三维视图、一万行列表的“n 行”）用 `i18n::tr` 取。换语言以后整页重新布局；排版缓存按字串本身记，所以不会拿错；带 key 的字照常重组（变了的字的像素飞成新的字，§1.16）；没有 key 的字照常替换、从松开凝结。gallery 顶栏有“语言”菜单（在主题、材质旁边），形体场景右上角的标记（只用英文，`LANGUAGE  EN` / `ZH`）按下就换；工具用 `AMENUI_LOCALE=en`，`render --locale en`。
+**Language lives in the state.** An application keeps its `Locale` in its state, and changing language is an
+ordinary message (the website's `Msg::Locale`); `Ui::on_locale(fn(&S) -> Locale)` lets the runtime set it as the
+current language (`i18n::current`) before every `view`, and components get their own strings (the dialog's
+"Close", a picture's name without a caption, the accessible names of a number control's side buttons, the 3D view,
+the ten-thousand-row list's "n rows") with `i18n::tr`. After a language change the whole page is laid out again;
+the text layout cache is keyed by the string itself, so nothing stale is used; keyed text recomposes as usual (the
+pixels of the changed characters fly into the new text, §1.16); text without a key is replaced and condenses
+from loose. The website's top bar has a Language menu (beside theme and material), and the marking at the top
+right of Body (English only, `LANGUAGE  EN` / `ZH`) changes it on press; tools use `AMENUI_LOCALE=en` and
+`render --locale en`.
 
-**方向。** `El::rtl(true)` 让一棵子树从右往左（继承）：taffy 的 `Style::direction`，行的第一个子节点在右边、起始对齐是右边、内外边距镜像。段落里的双向文字由 parley 按 Unicode 双向算法排。**没有覆盖的**：文字对齐不跟着 `rtl` 改（段落的起点由 parley 按文字本身的方向定），输入框的插入点移动和选区在 RTL 文字里没有专门验证，滚动条、标注层的引线、gallery 的左栏没有镜像；现在发的两种语言都是从左往右的。
+**Direction.** `El::rtl(true)` runs a subtree right to left (inherited): taffy's `Style::direction`, so a row's
+first child is at the right, start alignment is the right and padding and margins mirror. Bidirectional text in
+a paragraph is laid out by parley with the Unicode bidirectional algorithm. **Not covered**: text alignment does
+not follow `rtl` (a paragraph's start is decided by parley from the text's own direction); caret movement and
+selection in a text field have not been specifically verified in RTL text; scroll bars, annotation leaders and
+the website's side rail are not mirrored; both languages shipped now run left to right.
 
-**验收**：`i18n.rs` 的单元测试（解析、续行、重复键和坏行的错误、参数、千位分组、复数、日期、回退链和缺键的错误）；`tests/i18n.rs`：每个键在每种语言里都有（复数键有这种语言要的每个形式；形体页的 `body.*` 只在英文目录里）；落地的形体场景在两种语言下（文字状态和形体状态）树里都没有一个汉字、没有缺的键（形体这一页只有英文）；从右往左的行第一个子节点在右边、从右边开始。
+**Acceptance**: unit tests in `i18n.rs` (parsing, continuation lines, errors for duplicate keys and bad lines,
+arguments, digit grouping, plurals, dates, the fallback chain and the missing-key error); `tests/i18n.rs`: every
+key exists in every language (plural keys have every form the language needs; Body's `body.*` keys only in the
+English catalog); the Body landing scene in both languages (text and body states) has no Han character in its
+tree and no missing keys (that page is English only); a right-to-left row has its first child at the right and
+starts from the right.
 
-### 1.21 收尾的一遍：后期效果、抖动和调色板
+### 1.21 The finishing pass: post effects, dithering and palettes
 
-**数据**（`src/post.rs`，serde，在预设的 `post` 里，所以也在 `look:v1:` 配方里；旧的预设没有这个字段时全关）：`PostSpec { bloom, chroma, scanlines, grain, vignette, curvature, dither, palette }`，每个都是带默认值的数，默认全关：`Bloom { strength 0, threshold 0.7, radius 8 }`、`Chroma { offset 0 }`（逻辑像素，红和蓝从中心往外各错开这么多）、`Scanlines { strength 0, period 3 }`、`Grain { amount 0, size 1 }`（固定的颗粒，不随时间爬：静止的页面是一张不变的图）、`Vignette { strength 0, radius 0.55 }`（半对角线的比例）、`Curvature { amount 0 }`（离中心 d 的点显示 `d × (1 + amount × d²)` 处的东西，框外是黑）、`Dither { kind, levels 4, strength 1 }`、`Palette { kind, colors }`。`Look::post` 是它定长的样子（调色板最多 16 色）。
+**Data** (`src/post.rs`, serde, in a preset's `post`, and therefore in `look:v1:` recipes; old presets without
+the field have everything off): `PostSpec { bloom, chroma, scanlines, grain, vignette, curvature, dither,
+palette }`, each a number with a default, all off by default: `Bloom { strength 0, threshold 0.7, radius 8 }`,
+`Chroma { offset 0 }` (logical px; red and blue each offset that much outward from the center),
+`Scanlines { strength 0, period 3 }`, `Grain { amount 0, size 1 }` (fixed grain that doesn't crawl over time: a
+still page is an unchanging picture), `Vignette { strength 0, radius 0.55 }` (a fraction of the half diagonal),
+`Curvature { amount 0 }` (a point at distance d from the center shows what is at `d × (1 + amount × d²)`, black
+outside the frame), `Dither { kind, levels 4, strength 1 }` and `Palette { kind, colors }`. `Look::post` is its
+fixed-size form (palettes of at most 16 colours).
 
-**顺序是固定的**：泛光 → 色差 → 扫描线 → 颗粒 → 暗角 → 弯曲，然后是量化：抖动和调色板。弯曲是对图像做的最后一件事，所以着色器先算它的映射，前面的每一步都在映射到的位置上读；抖动按屏幕自己的像素。量化在 sRGB 里做（交换链是 sRGB 时先换过去再换回来）。
+**The order is fixed**: bloom → chromatic offset → scanlines → grain → vignette → curvature, then quantization:
+dither and palette. Curvature is the last thing done to the image, so the shader computes its mapping first and
+every earlier step reads at the mapped position; dithering uses the screen's own pixels. Quantization happens in
+sRGB (with an sRGB swap chain the colour is converted there and back).
 
-**抖动**（`DitherKind`）：`bayer2`、`bayer4`、`bayer8`（递归的 Bayer 矩阵）；`blue_noise`：不是真的蓝噪声掩模（那要带一张纹理或在启动时算 void-and-cluster），而是 R2 低差异序列 `fract(0.7549 x + 0.5698 y)`，一样均匀、没有纹理；`atkinson_like`：真正的误差扩散一个像素接一个像素地算，放不进一遍片元着色器，这里是有序的替代——4×4 Bayer 的阈值收到 1/8–7/8，所以像 Atkinson（只传 3/4 的误差）那样最暗和最亮的四分之一是实的，花纹在中间调。没有调色板时每个通道量化到 `levels` 级（阈值减 0.5 乘 `strength` 加进去），有调色板时先按大约一个调色板间距抖动，再取最近的颜色（按 0.30、0.59、0.11 加权的平方距离）。
+**Dithering** (`DitherKind`): `bayer2`, `bayer4`, `bayer8` (recursive Bayer matrices); `blue_noise`: not a real
+blue-noise mask (that would need a texture or void-and-cluster at start-up) but the R2 low-discrepancy sequence
+`fract(0.7549 x + 0.5698 y)`, as even and textureless; `atkinson_like`: real error diffusion runs pixel after
+pixel and doesn't fit one fragment pass, so this is an ordered stand-in: 4×4 Bayer thresholds squeezed into
+1/8–7/8, so that, as with Atkinson (which passes on only 3/4 of the error), the darkest and brightest quarters are
+solid and the pattern sits in the midtones. Without a palette each channel is quantized to `levels` steps (the
+threshold minus 0.5, times `strength`, added in); with a palette it dithers by about one palette step first and
+then takes the nearest colour (squared distance weighted 0.30, 0.59, 0.11).
 
-**调色板**（`PaletteKind`，数据，颜色都是这个项目自己定的）：`one_bit`（近黑和纸色）、`moss4`（四种苔绿）、`amber`（四级琥珀）、`cyan_magenta`（墨、青、品红、白）、`cga4`（黑、绿、红、黄）、`originals8`（八个有名字的原色：ink、paper、brick、ochre、moss、slate、plum、sky），和 `user`（`colors`，最多 16 色）。
+**Palettes** (`PaletteKind`, data, colours defined by this project): `one_bit` (near black and paper),
+`moss4` (four moss greens), `amber` (four steps of amber), `cyan_magenta` (ink, cyan, magenta, white), `cga4`
+(black, green, red, yellow), `originals8` (eight named colours: ink, paper, brick, ochre, moss, slate, plum, sky)
+and `user` (`colors`, at most 16).
 
-**实现**：渲染器本来每帧把保留的画面整张拷到目标（§1.19）。效果打开时这一步换成 `fs_post`（同一个全屏三角形，读保留的画面），所以不多一遍；全关时还是原来的拷贝，代价是零。保留的画面、只画变了的部分的框、提交时取的旧画面都是收尾之前的那张，所以局部重画和过渡都不受影响；泛光（两圈十二个取样）和弯曲是整屏的，但这一遍本来就是整屏的拷贝。可读规则不变：收尾不松开任何东西，静止的字仍然是完整的（抖动和调色板会改变字边缘的颜色）。
+**Implementation**: the renderer already copies the kept frame whole to the target each frame (§1.19). With
+effects on, that step becomes `fs_post` (the same full-screen triangle reading the kept frame), so there is no
+extra pass; with everything off it is the original copy and costs nothing. The kept frame, the dirty boxes and
+the old picture a commit takes are all from before finishing, so partial redraw and transitions are unaffected;
+bloom (two rings of twelve samples) and curvature are full-screen, but this pass was a full-screen copy anyway.
+The legibility rules are unchanged: finishing loosens nothing, and still text stays whole (dither and palette
+change the colours at glyph edges).
 
-**只用黑白**（`PostSpec::binary`）：调色板换成 `one_bit`、抖动关掉；不抖动时着色器对调色板取最近的颜色，也就是按亮度的中点取阈值，所以不需要新的抖动种类。线的宽度同时取整到设备像素（`scribblr` 和尾迹的线，至少 1 像素）。**翻转**（`PostSpec::invert`）：最后输出 `1 − 颜色`，在 sRGB 里、在所有东西之后（量化之后），所以版上的墨、标注层、过渡中的画面一起翻；和 `binary` 一起用时仍然只有两种颜色。两个都是开关，默认关。
+**Black and white only** (`PostSpec::binary`): the palette becomes `one_bit` and dithering is off; without
+dithering the shader takes the nearest palette colour, which is a threshold at mid luminance, so no new dither
+kind is needed. Line widths are rounded to device pixels at the same time (`scribblr` and trail lines, at least
+1 px). **Invert** (`PostSpec::invert`): the output is `1 − colour`, in sRGB, after everything (after
+quantization), so the ink on the page, the annotation layer and pictures in transition all invert together;
+with `binary` there are still only two colours. Both are switches, off by default.
 
-**用在哪里**：Neo-Dotmatrix 用琥珀调色板加 4×4 抖动（强度 0.8）和一点泛光；Glitch 用色差 1.5、扫描线 0.22、颗粒、暗角和 0.03 的弯曲；Lo-Fi Print 用颗粒和暗角；Loose Thread 的风格页上有“只用黑白”和“反相”两个开关（§4.4）。
+**Where they are used**: Neo-Dotmatrix uses the amber palette with 4×4 dithering (strength 0.8) and a little
+bloom; Glitch uses chromatic offset 1.5, scanlines 0.22, grain, vignette and curvature 0.03; Lo-Fi Print uses
+grain and vignette; the Loose Thread style page has black-and-white-only and invert switches (§4.4).
 
-**验收**：`post.rs` 的单元测试（Bayer 阈值是一个排列、2×2 是经典的 0 2 / 3 1、Atkinson 式的阈值在 1/8–7/8、调色板、JSON 往返、默认全关）；`preset.rs`（配方带着 `post.dither.levels` 往返；没有这个字段的旧预设读出来全关）；`check` 第 17 条（原来是第 19 条）：强度为 0 时和不开逐字节相同；每个效果单独打开都改变了画面、同一帧画两次逐字节相同；两级抖动以后每个通道只有 0 和 255；每个固定调色板和一个用户调色板、四种抖动下每个像素都是调色板里的颜色（±1/255；对照：不开时大部分像素不是）；打开收尾时局部重画和整屏重画逐字节相同。样张 `samples <目录> looks`。
+**Acceptance**: unit tests in `post.rs` (Bayer thresholds are a permutation, 2×2 is the classic 0 2 / 3 1,
+Atkinson-style thresholds lie in 1/8–7/8, palettes, JSON round trips, all off by default); `preset.rs` (recipes
+round-trip `post.dither.levels`; old presets without the field read as all off); `check` item 17 (formerly item
+19): at strength 0 byte-identical to off; each effect turned on alone changes the picture, and the same frame
+drawn twice is byte-identical; after two-level dithering every channel is only 0 or 255; for every fixed palette
+and one user palette under four dithers, every pixel is a palette colour (±1/255; control: most pixels are not
+when off); with finishing on, partial and full redraw are byte-identical. Samples `samples <dir> looks`.
 
-### 1.22 自己会动的小记号：掉落和流场
+### 1.22 Marks that move by themselves: shedding and flow fields
 
-`src/motes.rs`（不依赖显卡）。两种都是元素上的数据，运行时自己移动它们，画成形状实例（墨色的小方块，`Response::Ignore`，在页面之上、标注层之下）：
+`src/motes.rs` (no GPU). Both are data on elements; the runtime moves them and draws them as shape instances
+(small squares in ink, `Response::Ignore`, above the page and below the annotation layer):
 
-- **掉落**（`El::shed(Shed { rate, life_ms, gravity, drift, size })`，默认 `rate 0`、900 ms、240 px/s²、30 px/s、2.5 px）：元素的矩形中心在两次 `tick` 之间动了 d 像素，就从它的边上（在旧位置和新位置之间）放出 `rate × d / 100` 个记号（小数部分攒着），每个有自己的横向漂移、按 `gravity` 下落、在 `life_ms` 里淡出。元素不动时不放，没有记号时没有任何代价（`Ui::motes_moving` 为假，不要帧）。`Shed.clear`（默认 0，关）大于 0 时记号避开文字：离任何一行字（`line_boxes`）不到 `clear` 的地方不放，落向一行字时在 `clear` 以内按距离变淡，碰到之前一像素就没了；`tests/motes.rs` 里拖动的标志用 `clear` 10（逐帧量每个记号离每一行字的距离）。
-- **流场**（`El::flow_field(FlowField { scale, speed, density, size, alpha })`，默认 140 px、0 px/s、每一万平方像素 6 个、2 px、0.4）：元素的框里有 `density × 面积 / 10000` 个记号（位置由哈希定，同样的帧给同样的字节），按一个固定的连续噪声场的方向（值噪声换成角度，两圈）以 `speed` 移动，出了框从对边进来。`speed` 为 0 时不动、不要帧；它由页面给，所以页面让它停住时“静止时不画帧”照样成立。
+- **Shedding** (`El::shed(Shed { rate, life_ms, gravity, drift, size })`, by default `rate 0`, 900 ms,
+  240 px/s², 30 px/s, 2.5 px): when the element's rect center moves d px between two `tick`s, `rate × d / 100`
+  marks are released from its edges (between the old and new positions; fractions accumulate), each with its own
+  sideways drift, falling by `gravity` and fading out within `life_ms`. Nothing is released while the element is
+  still, and with no marks there is no cost (`Ui::motes_moving` is false, no frames wanted). With `Shed.clear`
+  above 0 (default 0, off) marks avoid text: none are released within `clear` of any line of text
+  (`line_boxes`), and a mark falling toward a line fades by distance within `clear` and is gone a pixel before
+  touching it; in `tests/motes.rs` the dragged sign uses `clear` 10 (measuring every mark's distance to every
+  line, frame by frame).
+- **Flow fields** (`El::flow_field(FlowField { scale, speed, density, size, alpha })`, by default 140 px,
+  0 px/s, 6 per ten thousand square px, 2 px, 0.4): the element's box holds `density × area / 10000` marks
+  (positioned by hash, so the same frames give the same bytes), moving at `speed` along the direction of a fixed
+  continuous noise field (value noise turned into an angle, two turns), entering from the opposite edge when
+  they leave the box. At `speed` 0 they don't move and want no frames; the page sets it, so "no frames at rest"
+  holds whenever the page stops it.
 
-验收：`motes.rs` 的单元测试（场是连续的，速度 0 时不动，个数）；`tests/motes.rs`（一页自己的字和一个能拖的标志）：静止的标志不掉，拖 185 像素至少掉 4 个，它们往下落，寿命到了全没有，之后不要帧，没有一个离字行近于 `clear`；有速度的流场的记号在动、速度 0 时 `motes_moving` 为假且两秒画 0 帧。
+Acceptance: unit tests in `motes.rs` (the field is continuous, nothing moves at speed 0, counts);
+`tests/motes.rs` (a page with its own text and a draggable sign): a still sign sheds nothing, dragging 185 px
+sheds at least 4, they fall, all are gone at the end of their life, no frames are wanted afterwards, and none
+comes closer than `clear` to a line of text; a flow field with speed has moving marks, and at speed 0
+`motes_moving` is false with 0 frames in two seconds.
 
-### 1.23 加载的样子
+### 1.23 How loading looks
 
-`El::skeleton()`（子树继承）：这棵子树照常布局，画的时候每一行字是一根条，宽度是这一行量出来的宽（`Text::line_boxes`），高是行高的 `SKELETON_BAR`（0.56），圆头；图片和三维元素是一块；填充和边框变淡；不接受输入，也不像不可用那样整体变淡。条和块有自己的身份，所以内容换上来时字按框架的规矩凝结出来，条消失；布局是同一棵树、同样的字，所以框一个像素都不动。
+`El::skeleton()` (inherited by the subtree): the subtree is laid out as usual, and when drawn each line of text is
+a bar as wide as that line measures (`Text::line_boxes`) and `SKELETON_BAR` (0.56) of the line height tall, with
+round ends; pictures and 3D elements are blocks; fills and borders fade; it takes no input, and doesn't fade as a
+whole the way disabled does. Bars and blocks have identities of their own, so when the content arrives the text
+condenses by the framework's rules and the bars disappear; the layout is the same tree with the same text, so not
+one box moves by a pixel.
 
-规则是数（`widgets::Loading { skeleton_after_ms 300, swap_stagger_ms 40 }`）：不依赖数据的部分立刻画；数据晚于 `skeleton_after_ms` 才出骨架（快的回答不闪一下骨架；在这之前行是 `hidden_until_morphed`，位置留着、什么也不画）；数据到了以后第 i 行在 `到达 + i × swap_stagger_ms` 换成内容。`Loading::show(i, now)` 给出这一行是什么，`next_change` 给出下一次变化的时刻，应用的 `on_wake` 只在那些时刻要帧。
+The rules are numbers (`widgets::Loading { skeleton_after_ms 300, swap_stagger_ms 40 }`): what doesn't depend on
+the data is drawn at once; a skeleton appears only when the data is later than `skeleton_after_ms` (a quick answer
+never flashes a skeleton; before that the rows are `hidden_until_morphed`, holding their place and drawing
+nothing); once the data arrives, row i becomes content at `arrival + i × swap_stagger_ms`. `Loading::show(i, now)`
+says what a row is, `next_change` gives the next moment of change, and the application's `on_wake` wants frames
+only at those moments.
 
-gallery 骨架组件页比较四种：转圈（八个点轮流亮，每 100 ms 一步）、骨架、进度条（按预计的时间走到 95%）、乐观更新（行立刻在，刚加的那一行淡着，直到确认）。验收：`skeleton.rs` 的单元测试；`tests/loading.rs`：300 ms 前行没有实例而按钮已经画了；骨架时每个标题的条数等于行数、条宽等于行宽（±1）；数据到了第 0 行是字、第 4 行仍是骨架；骨架和内容时所有行的框逐个相等；之后不要帧。样张 `craft <目录> loading`。
+The website's skeleton page compares four approaches: a spinner (eight dots lighting in turn, a step every
+100 ms), a skeleton, a progress bar (moving to 95% over the expected time) and an optimistic update (rows are
+there at once, the newly added one faint until confirmed). Acceptance: unit tests in `skeleton.rs`;
+`tests/loading.rs`: before 300 ms the rows have no instances while the button is drawn; during the skeleton each
+heading has as many bars as lines, each bar as wide as its line (±1); when the data arrives row 0 is text and row
+4 still skeleton; every row's box is equal in skeleton and content; no frames wanted afterwards. Samples
+`craft <dir> loading`.
 
-### 1.24 一叠卡片
+### 1.24 A stack of cards
 
-`widgets::card_stack`（`Stack { count 5, angle0 42, falloff 0.7, delay_ms 28, spring (k 260, c 24), look, card }`）。悬停或按下一张卡（三维元素的 `Pick`），它下面第 n 张（n 从 0 起）转到 `angle0 × falloff^n` 度，在 `delay_ms × n` 毫秒以后开始，各自一个带速度交接的弹簧（§1.8.4），绕自己的左下角转；它上面的不动。按下让它一直展开，Esc 收起；方向键换卡。卡片是一个 `scene3d`（每张一个立方体），所以样子跟着材质（`StackLook::of`）：plain 是正面看的平卡片（正交相机），print 等是有厚度的卡片，从斜上方看，描边、两种色调，看得见边；dot、ascii、halftone 是平卡片交给记号材质画，并且保持松开 1，所以静止时也是记号。页面下面的公式注印出这一刻的 `angle(n)` 和 `delay(n)`。验收：`card_stack.rs` 的单元测试（公式、延迟的先后、按住、Esc、样子随材质）；`tests/stack.rs`（指针拾取到顶上那张、40 ms 时第 1、2 张开始而第 3 张没有、停下后每张等于公式、静止不要帧、离开收起）。样张 `craft <目录> stack`：三种样子各一行。
+`widgets::card_stack` (`Stack { count 5, angle0 42, falloff 0.7, delay_ms 28, spring (k 260, c 24), look, card }`).
+Hovering or pressing a card (a 3D element's `Pick`) turns the n-th card beneath it (n from 0) to
+`angle0 × falloff^n` degrees, starting after `delay_ms × n` ms, each with its own spring with velocity hand-off
+(§1.8.4), about its own bottom-left corner; the cards above stay. A press keeps it fanned, Esc closes it, and the
+arrow keys change card. The cards are one `scene3d` (a cube each), so their look follows the material
+(`StackLook::of`): under `plain` they are flat cards seen face on (an orthographic camera); under `print` and the
+like they have thickness, seen from above at an angle, outlined, in two tones, with visible edges; under `dot`,
+`ascii` and `halftone` they are flat cards handed to the mark material and held at looseness 1, so they are marks
+even at rest. The formula caption under the page prints this moment's `angle(n)` and `delay(n)`. Acceptance: unit
+tests in `card_stack.rs` (the formula, the order of delays, holding, Esc, the look by material); `tests/stack.rs`
+(the pointer picks the top card, at 40 ms cards 1 and 2 have started and card 3 hasn't, after stopping each card
+equals the formula, no frames at rest, closing on leave). Samples `craft <dir> stack`: one row per look.
 
-### 1.25 点阵图表
+### 1.25 A dot chart
 
-`widgets::dot_chart`（`DotChart { knots（7 个，0..1）, cols 56, rows 16, pitch 9, range (0.42, 0.68), max 120, unit }`）。曲线是穿过控制点的 Catmull-Rom 样条，每列取一次值 v(c)。第 c 列第 r 个点（从轴往上）盖住 [r, r+1)/rows 这一带，它有多少在曲线下面是覆盖率 `k = clamp(v·rows − r, 0, 1)`：直径 `pitch × (0.25 + 0.65k)`，色调 `0.25 + 0.75k`，所以一列的覆盖率加起来正好是 v·rows，整片点就是曲线下的面积；曲线上面是最小最淡的点。范围里的列用强调色，轴下有一条强调色的线。指针在图上移动（`El::on_move`）时那一列有一条竖线和值（等宽字，即像素字）；轴上每个控制点是一个可拖动的圆柄（`Role::Slider`），上下拖改它的值，曲线和点跟着重算；获得焦点后左右移竖线、上下改最近的控制点。公式注印出 k、直径、色调的式子和范围的面积。验收：`dot_chart.rs` 的单元测试（覆盖率之和、样条过控制点、拖动）；`tests/chart.rs`（点的大小按覆盖率，±0.5 因为布局取整；扫过时竖线和值；拖控制点曲线升高、那一点变大；离开时竖线消失）。样张 `craft <目录> chart`。
+`widgets::dot_chart` (`DotChart { knots (7, 0..1), cols 56, rows 16, pitch 9, range (0.42, 0.68), max 120,
+unit }`). The curve is a Catmull-Rom spline through the control points, sampled once per column as v(c). Dot r of
+column c (counting up from the axis) covers the band [r, r+1)/rows, and how much of it lies under the curve is its
+coverage `k = clamp(v·rows − r, 0, 1)`: diameter `pitch × (0.25 + 0.65k)`, tone `0.25 + 0.75k`, so a column's
+coverages add up to exactly v·rows and the field of dots is the area under the curve; above the curve are the
+smallest, faintest dots. Columns in the range use the accent, with an accent line under the axis. While the pointer
+moves over the chart (`El::on_move`), that column shows a vertical line and its value (in the mono face, which is the
+pixel face); each control point on the axis is a draggable round handle (`Role::Slider`), dragged up and down to
+change its value, with the curve and dots recomputed; once focused, Left and Right move the line and Up and Down
+change the nearest control point. The formula caption prints the expressions for k, diameter and tone and the
+range's area. Acceptance: unit tests in `dot_chart.rs` (sums of coverage, the spline passes through its control
+points, dragging); `tests/chart.rs` (dot size by coverage, ±0.5 because layout rounds; the line and value when
+sweeping; dragging a control point raises the curve and enlarges that dot; the line disappears on leave). Samples
+`craft <dir> chart`.
 
-### 1.26 场、图和字形的姿态
+### 1.26 Fields, drawings and glyph poses
 
-场、实验室和解码过渡的实验先按第一性原理拆成原语，再看基础缺什么：
+The experiments of fields, the Lab and the decode transition were first broken down into primitives from first
+principles, to see what the foundation lacked:
 
-| 实验 | 归结为 | 原来缺的 |
+| Experiment | Comes down to | What was missing |
 |---|---|---|
-| 光照文字（Lumen） | 每个字形按到光的距离改色调 | 拿不到排好的每个字形 |
-| 等值线（Contours） | 标量场 → 网格取样 → marching squares → 折线 → 笔画 | 没有场，也没有能画斜线的东西（二维实例不能转） |
-| 丝（Silk） | 矢量场（噪声的旋度 + 指针搅进去的流）平流许多点 | `motes::FlowField` 是一套专用代码，场和画法焊在一起 |
-| 长成形状（Grown） | 反应扩散，遮罩 = 某个元素的真实覆盖 | 状态拿不到元素的真实轮廓 |
-| 水银（Mercury） | 元球标量场 → 等值线 + 按值的点 | 同等值线 |
-| 沿路径 / 球面的文字（Flow、Loupe） | 每个字形的平移、旋转、缩放、透明 | 实例没有自己的变换 |
-| 轨道、弹簧、卡片叠 | 点和笔画；弹簧 | 能画的只有元素的盒子 |
+| Lit text (Lumen) | Each glyph's tone by its distance to the light | No access to each laid-out glyph |
+| Contours | Scalar field → grid sampling → marching squares → polylines → strokes | No fields, and nothing could draw a slanted line (2D instances couldn't turn) |
+| Silk | Many points advected by a vector field (curl of noise + flow stirred by the pointer) | `motes::FlowField` was special-purpose code with field and drawing welded together |
+| Grown | Reaction–diffusion masked by an element's true coverage | The state couldn't get an element's true outline |
+| Mercury | Metaball scalar field → contours + dots by value | As for contours |
+| Text on a path / sphere (Flow, Loupe) | Each glyph's translation, rotation, scale and opacity | Instances had no transforms of their own |
+| Orbits, spring, card stack | Points and strokes; springs | Only element boxes could be drawn |
 
-所以基础改了五处，效果页里没有特例：
+So the foundation changed in five places, with no special cases in the effect pages:
 
-- **实例自己的变换**（`Instance::xf`，第八个 vec4）：绕自己矩形中心的 2×2 线性变换，存“减去单位阵”的值，所以零就是不变换，原来所有构造不用改。顶点着色器按它转四个角，`exact_i` 把像素反变换回盒子里的局部坐标，所以字形图集的覆盖和近度、形状的解析距离都在转过的轮廓上算，材质照常。`Instance::bounds` 给出转过以后的外接框，只画变了的部分用它。取样也看变换：`morph::cover_at` 先把点按 `xf` 反变换回盒子里（`morph::to_box`，和着色器的 `exact_i` 一样），`cells` 和 `ink_bounds` 用转过的外接框，所以摆了姿态、转过的字从它画在的地方松开成粒子，`on_outline` 的遮罩和解码的色块也在那里（`tests/transform.rs` 的 `a_posed_glyph_loosens_from_where_it_is_drawn`）。
-- **字形的姿态**（`El::pose(|GlyphAt| Pose)`）：画场景时对排好的每个字形问一次（序号、总数、中心、内容框、全部字形中心的范围），得到平移、转角、两个缩放、色调和透明度的乘数、强调色的下限；透明度 0 的不画。不进布局、不排版：指针移动时只重画场景。
-- **图**（`el::canvas(Drawing)`，`src/draw.rs`）：一个元素的内容是它自己坐标空间里的记号（`Mark::Dot`、`Mark::Line`），按元素的宽度缩放，高度随比例。每个记号是一个形状实例：点是圆角正方形，笔画是转到方向上的两端圆的长条，所以它们有真实的轮廓，任何材质都能画、波前能松开。记号每帧都变，所以它们不凝结（出生时间是很久以前）。画布上的指针（`on_move`、`on_drag`，和新的 `El::on_point`：移动、按下拖动、离开合成一个处理函数，手指也走它）报告的是画布空间里的坐标。
-- **场**（`src/field.rs`）：`Scalar`（任何 `Fn(x, y) -> f32` 都是）、`Noise`（带时间的值噪声）、`Bump`、`Balls`（元球）、`Sum`；`Grid`（结点上取样、双线性读回、`contours` 用 marching squares 出折线，鞍点按格子平均值决定，所以不交叉）；`curl`（无源的流）；`Flow`（矢量网格，`stir` 放进速度、`fade` 退回静止）；`Swarm`（被速度场平流的点）；`GrayScott`（有遮罩的反应扩散：遮罩外 u = 1、v = 0，轮廓上没有通量）。`motes` 的哈希和噪声换成了这里的，原来的那份删了。`Drawing::dots` 和 `Drawing::contours` 是场的两种画法。
-- **元素告诉状态的两件事**：`El::on_visible(|bool| ..)`（进入或离开视野：它的盒子和裁剪框有交集；离开视野的实验不走）、`El::on_outline(cols, rows, |Grid| ..)`（这棵子树的真实轮廓，包括藏起来的实例，按 `morph::cover_at` 在网格上取覆盖率；只有实例变了才发）。这两样都是运行时在布局或画场景之后放进队列、再一次性交给 `update` 的消息（`Ui::flush`），不在画的中途改状态。
+- **Per-instance transforms** (`Instance::xf`, the eighth vec4): a 2×2 linear transform about the instance's rect
+  center, stored as "minus the identity", so zero means no transform and no existing constructor changed. The
+  vertex shader turns the four corners by it, and `exact_i` maps pixels back into local box coordinates, so atlas
+  coverage and distance and shapes' analytic distance are computed on the turned outline and materials work as
+  usual. `Instance::bounds` gives the bounding box after turning, used by partial redraw. Sampling follows the
+  transform too: `morph::cover_at` first maps the point back into the box through `xf` (`morph::to_box`, like the
+  shader's `exact_i`), and `cells` and `ink_bounds` use the turned bounding box, so a posed or turned glyph
+  loosens into particles from where it is drawn, and `on_outline` masks and decode blocks are there as well
+  (`a_posed_glyph_loosens_from_where_it_is_drawn` in `tests/transform.rs`).
+- **Glyph poses** (`El::pose(|GlyphAt| Pose)`): asked once per laid-out glyph when the scene is built (index,
+  count, center, content box, the range of all glyph centers), giving a translation, an angle, two scales,
+  multipliers for tone and opacity, and a minimum accent; glyphs with opacity 0 aren't drawn. No layout or
+  shaping: pointer movement only rebuilds the scene.
+- **Drawings** (`el::canvas(Drawing)`, `src/draw.rs`): an element whose content is marks in its own coordinate
+  space (`Mark::Dot`, `Mark::Line`), scaled to the element's width with the height in proportion. Each mark is a
+  shape instance: a dot is a rounded square and a stroke a turned bar with round ends, so they have true
+  outlines, every material can draw them and fronts can loosen them. Marks change every frame, so they don't
+  condense (their birth time is long past). Pointer handlers on a canvas (`on_move`, `on_drag`, and
+  `El::on_point`, which combines move, press-drag and leave in one handler, fingers included) report coordinates
+  in the canvas's space.
+- **Fields** (`src/field.rs`): `Scalar` (any `Fn(x, y) -> f32`), `Noise` (value noise with time), `Bump`,
+  `Balls` (metaballs) and `Sum`; `Grid` (sampled at nodes, read back bilinearly, `contours` producing polylines
+  with marching squares, saddles decided by the cell average so lines never cross); `curl` (divergence-free
+  flow); `Flow` (a vector grid; `stir` adds velocity, `fade` returns it to rest); `Swarm` (points advected by a
+  velocity field); `GrayScott` (masked reaction–diffusion: u = 1, v = 0 outside the mask, no flux across the
+  outline). The hash and noise of `motes` were replaced by these, and the old copies deleted. `Drawing::dots`
+  and `Drawing::contours` are two ways to draw a field.
+- **Two things an element tells the state**: `El::on_visible(|bool| ..)` (entering or leaving view: its box
+  intersects its clip; experiments out of view don't step) and `El::on_outline(cols, rows, |Grid| ..)` (the
+  subtree's true outline, hidden instances included, as coverage on a grid by `morph::cover_at`; sent only when
+  the instances changed). Both are messages the runtime queues after layout or scene building and hands to
+  `update` together (`Ui::flush`); the state never changes in the middle of drawing.
 
-验收：`field.rs` 的单元测试（圆的等值线闭合且在半径上、边上开口、噪声连续且确定、旋度没有散度、反应扩散只在遮罩里长且确定、搅动的流会静止）；`tests/lab.rs`（每个实验在无头运行时里确定地跑、长成形状收到了轮廓并且只在里面长、光照文字有亮有暗）。
+Acceptance: unit tests in `field.rs` (a circle's contour is closed and on the radius, open at the edges, noise is
+continuous and deterministic, curl has no divergence, reaction–diffusion grows only inside the mask and
+deterministically, a stirred flow comes to rest); `tests/lab.rs` (each experiment runs deterministically in the
+headless runtime, Grown receives its outline and grows only inside it, lit text has light and dark).
 
-### 1.27 记号的帧预算
+### 1.27 The frame budget for marks
 
-许多小记号（变形的格子、掉落的记号、流场的记号、实验里的点群、一张图的记号）原来各有各的上限（4000、`count_max`…），多了就卡。现在它们都从一份帧预算里取（`src/budget.rs`）：`budget::grant(want)` 给出这一帧能有多少（`want × scale`，并且不超过这一帧剩下的 `MAX_MARKS` = 24000）；`budget::cap()` 是一张图最多画多少（多了按步长均匀抽掉）；运行时每次 `tick` 开始一帧（`begin_frame`），每画完一帧把这一帧的时间交给 `feed`：连续 8 帧超过 `TARGET_MS`（14 ms）比例降两成（最低 0.05），连续 60 帧低于一半升一成（到 1）。只走看得见的：流场的记号只在它的盒子在视野里时走，实验只在 `on_visible` 说看得见时走。画法只有一条：它们都是同一个实例缓冲里的形状实例（变形的格子是自己的一遍，按比例缩格子数）。读数（F2）写出这一帧用了多少、要了多少、上限和比例。验收：`budget.rs` 的单元测试，`tests/budget.rs`（要一百万个记号时实例数和一帧的时间有界）。
+Many small marks (morph cells, shed marks, flow field marks, swarms in experiments, the marks of a drawing) used to
+have limits of their own (4000, `count_max`…) and stuttered when there were many. Now they all draw from one frame
+budget (`src/budget.rs`): `budget::grant(want)` gives how many this frame may have (`want × scale`, and no more
+than what remains of `MAX_MARKS` = 24000 this frame); `budget::cap()` is the most one drawing may draw (beyond it
+marks are dropped evenly by stride); the runtime starts a frame at each `tick` (`begin_frame`) and, after each
+frame, gives its time to `feed`: 8 consecutive frames over `TARGET_MS` (14 ms) lower the scale by a fifth (to no
+less than 0.05), and 60 consecutive frames under half raise it by a tenth (up to 1). Only what can be seen moves:
+flow field marks move only while their box is in view, and experiments only when `on_visible` says they are seen.
+There is one way to draw: they are all shape instances in the same instance buffer (morph cells have their own
+pass and scale their cell count). The readout (F2) shows how many this frame used, how many were asked for, the
+limit and the scale. Acceptance: unit tests in `budget.rs`; `tests/budget.rs` (asking for a million marks keeps
+the instance count and the frame time bounded).
 
-### 1.28 解码过渡
+### 1.28 The decode transition
 
-`El::decode(Decode { tiers [32, 16, 8, 4], stagger_ms 90, duration_ms 720, seed 7, hold })`（`src/decode.rs` 是不依赖显卡的部分）：元素出现时被一层色块盖住，色块由粗到细分几档解开，最后露出真实的内容；元素从视图里消失时，运行时用它最后一帧的实例把同一个过程倒着放一遍。
+`El::decode(Decode { tiers [32, 16, 8, 4], stagger_ms 90, duration_ms 720, seed 7, hold })` (`src/decode.rs` is the
+part that needs no GPU): when an element appears it is covered by blocks that resolve from coarse to fine over a
+few tiers, finally revealing the real content; when the element leaves the view, the runtime plays the same thing
+backwards with its last frame's instances.
 
-- **用的是松开的那一套**：色块不是一个着色器里的格子，而是元素真实的轮廓按变形的取样（`morph::outline_cells`，粒子的格子就是这样切出来的）在最细一档的格子上取覆盖率，有墨的格子再按每一档的格子大小归到粗的格子里，所以每一档都盖住全部的墨，盖不到方框外面没有墨的地方。覆盖率按轮廓算、不看颜色（`morph::cover_at`）：用底色填的面板也是一个轮廓，对话框的里面在最细一档也被盖住；只有变形飞的格子用 `morph::ink_at`（看得见的墨，底色的格子飞起来是看不见的）。色块是普通的形状实例（真实的轮廓、任何材质都能画），内容是元素自己的实例，在合适的时刻显示。
-- **时间**：`T` 档，第 i 档的色块在 `[i·S, i·S + W]` 里各自按哈希的时刻出现（`S` 是错开，`W = (D − (T−1)·S) / 2`）；一个色块在它最后一个孩子出现时消失；`C = (T−1)·S + W` 时所有档都出现完了，内容在色块下面画出来，最细一档的色块在 `[C, C + W]` 里各自消失。所以中途的每一刻，墨的每一格都在某个色块下面，到 `C` 之前内容不画；进度 0 和 1 时没有任何色块（静止时没有半盖着的东西）。颜色是当前外观的前两种强调色，按哈希选。
-- `hold: Some(u)` 把它停在进度 u（文档页的时间轴）。倒放的时候，内容在 `C` 之前画的是消失前的实例。
-- 文档页（`#decode`）：一张卡片停在时间轴的进度上；同一份计划按档在深度上分开（每档一块斜着看的平面，压到 0.42 高、错切 0.55，一档比一档往下往右错开 74 像素，最下面是内容的一层；每块平面上是此刻亮着的那一档色块，右边一条引线连到它旁边的标签：格子大小、出现的时间段和此刻有几个）；一条可以拖的时间轴（每档的时间段、内容的时间段、此刻的位置）；每个数是数字控件；“打开对话框”打开一个用解码出现、关闭时倒放的对话框。
+- **It uses the loosening machinery**: blocks are not a grid in a shader; the element's true outline is sampled
+  the way morphs sample (`morph::outline_cells`, how particle cells are cut) for coverage on the finest tier's
+  grid, and inked cells are gathered into each tier's coarser cells, so every tier covers all of the ink and none
+  of the box's empty space. Coverage follows the outline, not colour (`morph::cover_at`): a panel filled with the
+  ground colour is an outline too, so a dialog's inside is covered even at the finest tier; only the cells a morph
+  flies use `morph::ink_at` (visible ink, since ground-coloured cells would fly invisibly). Blocks are ordinary
+  shape instances (true outlines, drawn by every material), and the content is the element's own instances,
+  shown at the right moment.
+- **Timing**: with `T` tiers, tier i's blocks each appear at a hashed moment in `[i·S, i·S + W]` (`S` the stagger,
+  `W = (D − (T−1)·S) / 2`); a block disappears when its last child appears; at `C = (T−1)·S + W` every tier has
+  appeared, the content is drawn beneath the blocks, and the finest blocks each disappear within `[C, C + W]`. So
+  at every moment in between each inked cell is under some block, and the content is not drawn before `C`; at
+  progress 0 and 1 there are no blocks at all (nothing half covered at rest). Colours are the current look's first
+  two accents, chosen by hash.
+- `hold: Some(u)` stops it at progress u (the documentation page's timeline). Played backwards, the content drawn
+  before `C` is the instances from before it disappeared.
+- The documentation page (`#decode`): a card held at the timeline's progress; the same plan pulled apart in depth
+  by tier (one plane per tier seen at an angle, squashed to 0.42 height and sheared 0.55, each tier 74 px further
+  down and right, the content as the bottom layer; each plane shows that tier's blocks lit at this moment, with a
+  leader on the right to a label beside it: cell size, when it appears and how many are lit now); a draggable
+  timeline (each tier's span, the content's span, the current position); every number a number control; and
+  "Open dialog" opens a dialog that appears by decoding and plays backwards when closed.
 
-验收：`decode.rs` 的单元测试（0 和 1 时没有色块；从第一档出现完到内容出现，每个最细的格子都被盖住；平均格子由大变小；确定）；`tests/decode.rs`（对话框打开时先只有色块、内容在 `C` 以后出现、结束后没有色块；关闭时倒放，结束后什么都没有）。
+Acceptance: unit tests in `decode.rs` (no blocks at 0 and 1; from the first tier being fully present until the
+content appears, every finest cell is covered; mean cell size shrinks; deterministic); `tests/decode.rs` (a dialog
+opening shows only blocks first, the content appears after `C`, and there are no blocks at the end; closing plays
+backwards and leaves nothing at the end).
 
-### 1.29 场图和尾迹
+### 1.29 The field map and trails
 
-一样东西动过的地方，后面留一小段尾迹：浮动窗口拖过、甩出、滑到角上，底部面板升起来，卡片叠展开，路过的装饰松开一点、顺着动的方向漂开几个像素，再回来；底上的点（dot）顺着歪过去、变大一点。松手以后一秒多，页面和没动过时逐像素相同，不再要帧。这是规矩 2（只有一种动法：场）的一部分，不是新的动画。
+Where something has moved, a short trail follows it: dragging, throwing and settling the floating box, the bottom
+sheet rising, the card stack fanning; the decoration it passes loosens a little and drifts a few pixels along the
+direction of motion, then returns; ground dots (`dot`) lean that way and grow a little. A second or so after
+release, the page is identical pixel for pixel to how it was before and wants no more frames. This is part of rule
+2 (one way to move: the field), not a new animation.
 
-- **一张图**（`src/fieldmap.rs`，不依赖显卡）：整个窗口一张粗网格，格距 `cell`（默认 16 逻辑像素；1280 × 800 是 82 × 52 个结点，每边多一个），结点 (i, j) 在 (i, j) × cell。每个结点三个数：能量 `e`（0..1，读它的实例当成一份松开度）和流向 `u`、`v`（长度 ≤ 1，乘 `drift` 是像素）。
-- **演算**：固定步长 1/60 秒，`tick` 把经过的时间攒起来，够一步走一步（十小步和一大步逐个相等，`render` 工具照样逐字节确定）。每一步：(1) 三个数都 `x ← mix(x, 3 × 3 平均, bleed)`；有墨的结点（`creep`）邻居里有墨的权重加大、没墨的减小，`bleed` 也加大，所以能量顺着字和形状爬；(2) `e ← max(0, e·exp(−dt/energy_life) − 0.15·dt)`，流的长度按 `flow_life` 同样衰减；`meander` 让流向按一个慢的场（两个行进的波的乘积，约 160 像素一块）每秒最多转 40°，长度不变；(3) `El::calm` 的方框里清零。线性项保证有限时间内正好到 0：最多 `τ ln(1 + e0/(0.15 τ))`，默认 1.24 秒；平均不会让最大值变大，所以带着 `bleed` 也成立。量化到字节以后看不见的就丢掉，所以图正好回到 0，`moving()` 为假，不要帧（规矩 3）。只有还有东西的结点和它外面一圈参与演算。
-- **呼吸**（`breath`、`breath_s`）：大于 0 时能量有一个按周期起伏的下限（按位置错开相位），图一直在动、一直要帧；默认 0，只给想要它的预设。减少动态效果时没有呼吸。
-- **往里放**只有一个动作，搅一下：半径 `R` 内按 `(1 − (d/R)²)²` 加能量和流向，只写范围方框里、不在 calm 里的结点。来源两个：带 `El::stirr(Stirr { energy 1, radius None, scope Container(None) })` 的元素动了（它的矩形中心在两次 tick 之间走了 `d`，不到 0.5 像素不算；沿这一段每半格搅一次，方向是 `d` 的方向，量是 `min(|d|/24, 1)`，能量再乘外观的 `stirr`，半径默认 `stirr_radius` 加元素短边的一半；窗口尺寸变的那一帧和元素刚出现的那一帧不算）；和 `Cmd::Stir { at, v, energy, radius, scope }`，`at` 是一点、一个元素的中心，或一条路径的一段（`StirAt::Path { points, from, to }`，`v` 是沿路径和横着的量，流向跟着路径的切线）。
-- **读**：第一遍的 `own_loose` 里 `w = max(w, fmap_e(这一点))`，再走原来那一句 `k + clamp(w, 0, max(resp.x − k, 0))`，所以响应和可读上限不用另写：`Ignore`、`Nudge` 是 0，可读的字到 0.15，装饰到 1。顶点里按中心处的流向平移 `flow × drift × 缩放`，只对会被波前推的实例，图片和三维元素不平移（它们在原地松开，尾迹经过时图片的方框里也不会露出页面的底，`check` 19.5）。第二遍：dot 的底点把 `fmap_e` 加进起伏，格点按流向偏最多半个点距；glitch 的行错位在底上（不在墨上）把 `fmap_e` 当成松开度。其余材质的底静止时没有东西，不加。CPU 上的模型 `Ui::looseness` 把同一个双线性的值（读量化后的字节）加进同一个规则。
-- **谁不读**：留尾迹的元素自己的子树、重组飞着的格子、变形的粒子、掉落的记号、解码的色块（实例记录 `look.z` 是 0）。留尾迹而且有底色的元素（浮动窗口、面板）像对话框一样画在上面一层：有墨的地方替换下面的 near，所以它经过的松开的装饰不会透过它变成松开的记号。
-- **纹理**：RGBA8，r = round(e·255)，g、b = 128 + round(127·u)、128 + round(127·v)，0 正好还原成 0；只在字节变了的帧上传（约 16 KB）。整张图为 0 时一个统一变量把读取关掉，静止的帧和没有场图时逐字节相同。
-- **只画变了的部分**（§1.19）：字节变了的结点的外接框，外扩一格；第一遍加上读图、会被推的、和它相交的实例（外扩 `drift`），第二遍再外扩材质的读取范围。
-- **减少动态效果时**：能量照放，流向不放，寿命减半，没有呼吸（`Ui::set_reduced_motion`）。
-- **数**（`MapFx`，在 `Look::map` 和预设的 `interaction.map` 里；每个都是数字控件）：`cell` 8–32（16）、`stirr` 0–1（0.6）、`stirr_radius` 8–160（48）、`flow` 0–2（1）、`drift` 0–24（6）、`energy_life` 0.05–3（0.45 s）、`flow_life` 0.05–3（0.5 s）、`bleed` 0–1（0.2）、`meander` 0–1（0.35）、`creep` 0–1（0.3）、`breath` 0–0.3（0）、`breath_s` 2–12（6 s）。预设：Normcore `stirr` 0；Cyberminimalism 0.25、半径 32；Tech-Manual 0.2；Gaze 0.3；Bauhaus 0.4；Lo-Fi Print 和 Linocut 0.5；Glitch 0.7、`energy_life` 0.25；Dotmatrix 0.8、`energy_life` 0.7。
-- **组件**：`floating` 的窗口、`bottom_sheet` 的面板、`card_stack` 的卡片（每张卡片远角一个看不见的小元素带尾迹，三维元素自己不读）默认带 `.stirr(Stirr::default())`，强弱由预设定。
-- **页面** `#stirr`（左栏概念一组）：一块有装饰、有图、有一段字的地方，上面一个能拖的浮动窗口；下面一行公式注，十二个数都是数字控件；“Stir”按钮发 `Cmd::Stir`。F2 读数加一行：场图里不为 0 的结点数和平均能量（`level`）。
+- **One map** (`src/fieldmap.rs`, no GPU): one coarse grid over the whole window with spacing `cell` (16 logical
+  px by default; 1280 × 800 is 82 × 52 nodes, one extra per side), node (i, j) at (i, j) × cell. Each node holds
+  three numbers: energy `e` (0..1, which the instances that read it take as looseness) and flow `u`, `v`
+  (length ≤ 1, times `drift` in px).
+- **Stepping**: a fixed step of 1/60 s; `tick` accumulates elapsed time and steps whenever there is enough (ten
+  small steps and one step of ten are equal node by node, so the `render` tool stays byte-deterministic). Each
+  step: (1) all three numbers `x ← mix(x, 3 × 3 average, bleed)`; at nodes with ink (`creep`), inked neighbours
+  weigh more and empty ones less, and `bleed` grows, so energy creeps along text and shapes; (2)
+  `e ← max(0, e·exp(−dt/energy_life) − 0.15·dt)`, and the flow's length decays the same way by `flow_life`;
+  `meander` turns the flow direction by a slow field (the product of two travelling waves, patches of about 160 px)
+  by at most 40° per second, keeping its length; (3) nodes inside an `El::calm` box are cleared. The linear term
+  guarantees reaching exactly 0 in bounded time: at most `τ ln(1 + e0/(0.15 τ))`, 1.24 s by default; averaging
+  never raises the maximum, so this holds with `bleed` too. What becomes invisible once quantized to a byte is
+  dropped, so the map returns exactly to 0, `moving()` is false and no frames are wanted (rule 3). Only nodes that
+  still hold something, and one ring around them, take part in the step.
+- **Breath** (`breath`, `breath_s`): above 0, energy has a floor that rises and falls periodically (with phase by
+  position), so the map always moves and always wants frames; 0 by default, only for presets that want it. With
+  reduced motion there is no breath.
+- **Putting things in** is one action, a stir: energy and flow added within radius `R` by `(1 − (d/R)²)²`, written
+  only to nodes in the scope box and not in a calm box. Two sources: an element with
+  `El::stirr(Stirr { energy 1, radius None, scope Container(None) })` that moved (its rect center travelled `d`
+  between two ticks, ignored under 0.5 px; a stir every half cell along that segment, in the direction of `d`, by
+  `min(|d|/24, 1)`, the energy also multiplied by the look's `stirr`, the radius by default `stirr_radius` plus
+  half the element's short side; the frame the window resizes and the frame the element first appears don't
+  count); and `Cmd::Stir { at, v, energy, radius, scope }`, where `at` is a point, an element's center, or a stretch
+  of a path (`StirAt::Path { points, from, to }`, with `v` the amounts along and across the path and the flow
+  following the path's tangent).
+- **Reading**: the G-buffer stage's `own_loose` takes `w = max(w, fmap_e(this point))` and then the existing
+  `k + clamp(w, 0, max(resp.x − k, 0))`, so responses and the legibility cap need nothing new: 0 for `Ignore` and
+  `Nudge`, up to 0.15 for legible text, up to 1 for decoration. The vertex stage translates by the flow at the
+  center, `flow × drift × scale`, only for instances that fronts push; pictures and 3D elements are not translated
+  (they loosen in place, so the page ground never shows inside a picture's box as a trail passes, `check` 19.5).
+  The shading stage: dot's ground dots add `fmap_e` to their swell and the lattice leans along the flow by at most
+  half a pitch; glitch's row slips take `fmap_e` as looseness on the ground (not on ink). Other materials' grounds
+  hold nothing at rest and add nothing. The CPU model `Ui::looseness` adds the same bilinear value (reading the
+  quantized bytes) into the same rule.
+- **What doesn't read it**: the subtree of the element leaving the trail, recomposition cells in flight, morph
+  particles, shed marks and decode blocks (instance record `look.z` is 0). An element that trails and has a ground
+  fill (the floating box, the sheet) is drawn on a layer above, like a dialog: where it has ink it replaces the SDF
+  beneath, so loosened decoration it passes doesn't show through it as loose marks.
+- **Texture**: RGBA8, r = round(e·255), g, b = 128 + round(127·u), 128 + round(127·v), with 0 restoring exactly to
+  0; uploaded only on frames where bytes changed (about 16 KB). When the whole map is 0 a uniform turns reading
+  off, so a still frame is byte-identical to having no map.
+- **Drawing only what changed** (§1.19): the bounding box of nodes whose bytes changed, grown by one cell; the
+  G-buffer box adds pushable instances that read the map and intersect it (grown by `drift`), and the final box
+  grows again by the material's read range.
+- **With reduced motion**: energy is added, flow isn't, lifetimes are halved and there is no breath
+  (`Ui::set_reduced_motion`).
+- **Numbers** (`MapFx`, in `Look::map` and a preset's `interaction.map`; each a number control): `cell` 8–32 (16),
+  `stirr` 0–1 (0.6), `stirr_radius` 8–160 (48), `flow` 0–2 (1), `drift` 0–24 (6), `energy_life` 0.05–3 (0.45 s),
+  `flow_life` 0.05–3 (0.5 s), `bleed` 0–1 (0.2), `meander` 0–1 (0.35), `creep` 0–1 (0.3), `breath` 0–0.3 (0),
+  `breath_s` 2–12 (6 s). Presets: Normcore `stirr` 0; Cyberminimalism 0.25 with radius 32; Tech-Manual 0.2; Gaze
+  0.3; Bauhaus 0.4; Lo-Fi Print and Linocut 0.5; Glitch 0.7 with `energy_life` 0.25; Dotmatrix 0.8 with
+  `energy_life` 0.7.
+- **Components**: the `floating` box, the `bottom_sheet` panel and the `card_stack` cards (an invisible small
+  element at each card's far corner carries the trail, since 3D elements don't read the map themselves) carry
+  `.stirr(Stirr::default())` by default, with the preset setting the strength.
+- **The page** `#stirr` (in the side rail's concepts group): an area with decoration, a picture and a passage of
+  text, with a draggable floating box over it; below, a formula caption whose twelve numbers are number controls; a
+  "Stir" button sends `Cmd::Stir`. The F2 readout gains a line: the number of non-zero nodes in the map and its
+  mean energy (`level`).
 
-验收：`fieldmap.rs` 的单元测试（搅动以后能量单调下降、在上限以内正好到 0；十步和攒够十步的一次逐个相等；范围外和 calm 里没被写过；流的长度不超过 1；meander 不改长度、creep 让能量顺着墨走；减少动态效果时没有流、为 0 时正好是 0）；`tests/fieldmap.rs`（60 Hz 拖浮动窗口 185 像素：路径旁的装饰大于 0.3，`Nudge` 的字是 0，可读的 `Loosen` 字不超过上限，`Ignore` 是 0，远处是 0，窗口自己是 0；松手、滑到角上以后 1.5 秒图全为 0、不要帧；Normcore 下图没被写过、两秒 0 帧；只按不拖不搅；减少动态效果时流向一直是 0；`Cmd::Stir` 的元素形式和路径形式）；`tests/render.rs`（带拖动的同一份参数三次渲染逐字节相同）；`check` 第 19 条；`bench … map`（1280 × 800 一步加上传不超过 0.2 ms）；`craft <目录> stirr`（plain、dot、print、glitch 各八帧）。
+Acceptance: unit tests in `fieldmap.rs` (after a stir energy falls monotonically and reaches exactly 0 within the
+bound; ten steps equal one accumulated step of ten, node by node; nothing is written outside the scope or in calm
+boxes; flow length never exceeds 1; meander keeps length and creep moves energy along ink; with reduced motion
+there is no flow, and at 0 it is exactly 0); `tests/fieldmap.rs` (dragging the floating box 185 px at 60 Hz:
+decoration beside the path above 0.3, `Nudge` text 0, legible `Loosen` text within the cap, `Ignore` 0, far away 0,
+the box itself 0; after release and settling into a corner, the map is all 0 within 1.5 s and no frames are wanted;
+under Normcore the map is never written and two seconds draw 0 frames; a press without a drag doesn't stir; with
+reduced motion the flow stays 0; `Cmd::Stir` in its element and path forms); `tests/render.rs` (the same arguments
+with a drag rendered three times are byte-identical); `check` item 19; `bench … map` (one step plus upload at
+1280 × 800 within 0.2 ms); `craft <dir> stirr` (eight frames each in `plain`, `dot`, `print` and `glitch`).
 
-### 1.30 线的材质 `scribblr` 和长路径
+### 1.30 The thread material `scribblr` and long paths
 
-静止的页面和 plain 逐字节相同。一个不要读的东西（标题、形状、装饰）松开时，填充淡下去，墨变成一根连续的细线：松开到 0.3 以前线正好压在字的轮廓上，字和字之间、一个字的几圈轮廓之间用直线（桥）接起来，整个元素一笔画完，是干净的空心字；再松，顶点一个个滑到两边留着的顶点连成的弦上再去掉，一笔的两侧合成一条，再合成跨几个字的长弦，留下的顶点各自游走开，松到头时只剩几十段转角明确的长折线；能量最高的一到三处缠成大的结，两根长线头一根从范围的边进来接到线的起点，一根从末尾出去走到另一条边。往回收时倒着来：结和线头收短，顶点按相反的顺序回来，线贴回轮廓，字填实。要读的字和控件不出线，一直是原样。
+A still page is byte-identical to `plain`. When something not meant to be read (a heading, a shape, decoration)
+loosens, its fill fades and its ink becomes one continuous thin line. Up to looseness 0.3 the line lies exactly on
+the glyph outlines, with straight bridges between glyphs and between a glyph's rings, so the whole element is drawn
+in one stroke as clean outlined letters. Looser, vertices one by one slide onto the chord between the vertices kept
+on either side and are removed, the two sides of the stroke merging into one line and then into long chords across
+several glyphs, while the remaining vertices wander off; fully loose, a few dozen long polylines with clear corners
+remain. The one to three places with the most energy knot into large tangles, and two long tails, one coming in from
+the scope's edge to the line's start and one going out from its end to another edge. Coming back runs in reverse:
+knots and tails shorten, vertices return in the opposite order, the line settles back onto the outline and the
+glyphs fill in. Text to read and controls never become thread and always stay as they are.
 
-- **两部分。** 第二遍的 `m_scribblr` 就是 `exact`（底是平的，`k = 0` 时等于 plain）。线是几何：运行时在 `finish` 里、解码之后（`Ui::paint_strands`）为每个松开的元素算出线，画成转过的圆头长条（`SHAPE` 实例，和 `Mark::Line` 同一种），放在页面实例的后面，照常进第一遍，有真实的轮廓。元素自己的实例按 `fill(k) = 1 − smoothstep(0.02, 0.25, k)` 淡出（在 CPU 上改实例的不透明度，原值留着，`Ui::looseness` 照原值算），所以填充在线离开轮廓之前就淡完了，没有“半透明的填充上压一条偏开的线”。
-- **线怎么算**（`src/strand.rs`，不依赖显卡）：(1) 字形按 `grain` 的点距取覆盖率（`morph::cover_at`），`Grid::contours(0.5)` 取等值线，化简到半个像素，按字形、字号、变换缓存；形状用它的圆角方框；(2) 按顺序连成一根：每圈走回起点，再用桥接到下一圈最近的顶点；再在整根线上走一遍 Ramer–Douglas–Peucker，给每个顶点记下它离自己那条弦（`Rest::chord`）的距离，不超过父顶点的值（`Rest::keep`），所以容差越大留下的顶点越少，而且总是小容差时那一组的子集；(3) 容差 `tolerance(k) = 0.5 + smoothstep(0.3, 0.5, k) × 0.3 × 行高`（文字取它的行高，形状取短边）：值低于它的顶点从容差经过它的那个松开度（0.3–0.5 之间）起、用半个松开度的跨度按 smoothstep 滑到弦上，滑完就不出段，所以松到 1 时值低于 `0.5 + 0.3 × 行高` 的顶点都去掉了。滑的时候顶点跟着弦的两端走，只是自己离弦的那一段按比例收短，所以没有跳点。没去掉的顶点移开 `smoothstep(0.3, 1, k) × (reach × (0.4 W + J) + pull × drift × (u, v))`：`W` 是平滑噪声的旋度（约 60 像素一块，解析求导，长度不超过 1，整个词一起偏），`J` 是沿路径每半个行高一格的哈希方向（长 0.3–1），格和格之间、秒和秒之间缓动，所以隔一根弦的顶点各走各的，夹在它们中间的顶点跟着走；(4) 结：一个元素 `clamp(round(路径长 / 200), 1, 3)` 个，放在一直留到最后的顶点里场图能量最高、彼此相隔 80 像素以上的几处；每个结 `round(40·knot·e·k)` 个点，第 j 个在 `中心 + knot_r·k·(0.35–1)·(cos a_j, sin a_j)`，`a_j` 每次加 2.2–2.9 弧度，所以每一段都是穿过中心的弦，缠成星形的一团，最后回到中心接着走；(5) 线头两根：末尾那根沿那里的流向（流向那条路能走的不到最远那条的六成时，取最远的那条），起点那根取 8 个方向里能走最远、又不和末尾那根同向的那条，倒过来接到线的起点；长度至少 `max(tail, 0.6 × 范围的长边)`，并且够走到范围的边；大体是直的，在四分之一、一半、四分之三处向两边交替偏出约 `0.12 × 长度`，所以中间有三四处明确的转折；方向在静止点上读，每个点都和 `k` 成比例地收回；出范围方框时最后一段切在边上，进要读的字和控件的方框（以及 calm）之前停下；(6) `angular` 小于 1 时切一次角（`q = 0.25·(1 − angular)`）。线的不透明度 `smoothstep(0, 0.12, k)`，桥、结和线头 `smoothstep(0.1, 0.3, k)`，线宽全程 `weight`。`k = 0` 时没有线的实例（规矩 3 按构造成立）。
-- **要读的字和控件**（`legible`）不出线，填充不淡，也不被场图的流向推开（`scribblr` 下它们的实例在第一遍里按“原地松开”处理，`look.w` 为 1）。规矩 3 的原话：指针经过文字，文字不变。线只给标题（`legible(false)`）、形状和装饰。
-- **线从画出来的轮廓起头**：第一遍会按场图的流向把不要读的实例推开 `flow × drift`（§1.29），线的静止路径加上同一个位移，所以填充淡出时线正好压在它上面，不是旁边一个错开的影子。线的长条自己不读场图（`look.z` 为 0），波前照常推它（`resp.y` 跟元素一样）。
-- **姿势跟着材质时钟走**：游走、结和线头的时间按 `mclock` 取，`mclock` 只在场图或别的东西在动时走，所以一个静止地保持松开的元素姿势不变、不要帧；种子只看元素，不看拍子，所以姿势是缓缓变的，不是每拍重抽。`hold_ms` 大于 0 时姿势按拍取整（这一拍里线的顶点逐个相同），不透明度和填充仍然每帧连续。
-- **预算**（§1.27）：段数从帧预算里取；不够时先减每个结的点数（不减结的个数），再每隔 n 个顶点取一个，最后从末尾截短。线不会断。
-- **不出线的**：画布、变形、重组中的字、解码中的元素、角色交接和流动的元素（它们按 plain 松开）。只有全局材质是 `scribblr` 时出线（子树里另设的材质不出）。
-- **长路径** `El::trace(Trace { points, progress, weight, dash, gap, pull, stir, paint })`：一条很长的折线（元素自己的坐标），按 `progress` 画出，被流向推歪 `pull × drift`；`dash` 大于 0 时按弧长从起点切成段（`gap` 空开），所以画出时已经画好的段不动；`stir` 大于 0 时它的头每帧经过处搅动场图。任何材质下都画。`#stirr` 页的“Draw a line”按钮画一条绕圈的虚线穿过那块地方。
-- **数**（`MAT_PARAMS` 第 9 行）：`weight` 0.5–3（1）、`grain` 1–6（2）、`reach` 0–64（40）、`knot` 0–1（0.6）、`knot_r` 4–120（48）、`tail` 0–1200（480）、`pull` 0–2（1）、`angular` 0–1（0.9）；`Look::hold_ms` 0–500（0，预设的 `interaction.hold_ms`）。
-- **画好的线团** `strand::figure(seed, r, above, below)`：同一套结和线头按固定的种子生成一次的点（一个半径 `r` 的结，一根从上到下穿过它的线，结上面 `above` 长、下面 `below` 长），不读场图，给页面当内容用（`El::trace`，§4.4）。
-- **对话框打开时**：页面上的线和画好的线团都不画（它们会落进对话框那一层、画在卡片上面）；对话框里的元素照常。
-- **线头**：每一段在进要读的字的方框之前停下（不只看点落没落进去，所以不会一步跳过一行字），也不从元素自己的方框中间那一半穿回去。
-- **图片在线上面**：线（元素的线和 `El::trace`）经过图片时从图片后面过去，图片的方框里不画线（`strand::outside` 把每一段在图片的方框处剪开）。第一遍里线的墨落在图片上会被当成图片自己的颜色读出来（变成红色），所以不能画在上面。
-- **页面** `#material-scribblr`。
+- **Two parts.** The shading stage's `m_scribblr` is just `exact` (a flat ground, equal to `plain` at `k = 0`). The
+  thread is geometry: in `finish`, after decode (`Ui::paint_strands`), the runtime computes the thread for each
+  loosened element and draws it as turned round-ended bars (`SHAPE` instances, the same kind as `Mark::Line`),
+  after the page's instances, into the G-buffer stage as usual, with true outlines. The element's own instances fade
+  by `fill(k) = 1 − smoothstep(0.02, 0.25, k)` (instance opacity changed on the CPU, the original kept;
+  `Ui::looseness` uses the original), so the fill has faded before the line leaves the outline, and there is never
+  an offset line over a half-transparent fill.
+- **How the thread is computed** (`src/strand.rs`, no GPU): (1) glyphs are sampled for coverage at the `grain` pitch
+  (`morph::cover_at`), `Grid::contours(0.5)` traces the iso-line, simplified to half a pixel and cached by glyph,
+  size and transform; shapes use their rounded box. (2) They are joined in order into one line: each ring walks back
+  to its start, then a bridge goes to the nearest vertex of the next ring; one Ramer–Douglas–Peucker pass over the
+  whole line records each vertex's distance from its chord (`Rest::chord`), no greater than its parent's
+  (`Rest::keep`), so a larger tolerance keeps fewer vertices, always a subset of those kept at a smaller one. (3) The
+  tolerance is `tolerance(k) = 0.5 + smoothstep(0.3, 0.5, k) × 0.3 × line height` (a text's line height, a shape's
+  short side): a vertex whose value is below it slides onto its chord by smoothstep over half a looseness from the
+  looseness at which the tolerance passes it (between 0.3 and 0.5), and once there produces no segment, so at
+  looseness 1 every vertex with a value below `0.5 + 0.3 × line height` is gone. While sliding, a vertex follows its
+  chord's ends and only its distance from the chord shrinks in proportion, so nothing jumps. Remaining vertices move
+  by `smoothstep(0.3, 1, k) × (reach × (0.4 W + J) + pull × drift × (u, v))`: `W` is the curl of smooth noise
+  (patches of about 60 px, differentiated analytically, length at most 1, so a whole word drifts together), and `J`
+  is a hashed direction per half line height along the path (length 0.3–1), eased between cells and seconds, so
+  vertices a chord apart go their own ways and those between them follow. (4) Knots: `clamp(round(path length / 200),
+  1, 3)` per element, at the vertices kept to the end where the map's energy is highest, at least 80 px apart; each
+  knot has `round(40·knot·e·k)` points, point j at `center + knot_r·k·(0.35–1)·(cos a_j, sin a_j)`, with `a_j`
+  advancing 2.2–2.9 radians each time, so every segment is a chord through the center, tangling into a star, and the
+  line returns to the center and goes on. (5) Two tails: the one at the end follows the flow there (or, when the
+  flow's way reaches less than six tenths as far as the farthest way, the farthest way); the one at the start takes
+  whichever of 8 directions reaches farthest without running the same way as the end tail, joined backwards to the
+  line's start. Their length is at least `max(tail, 0.6 × the scope's long side)` and enough to reach the scope's
+  edge; they are mostly straight, bending alternately by about `0.12 × length` at a quarter, a half and three
+  quarters, so there are three or four clear turns; directions are read at the rest points, and every point draws
+  back in proportion to `k`. Leaving the scope box, the last segment is cut at the edge, and a tail stops before the
+  box of text to read or a control (and before calm boxes). (6) With `angular` below 1, corners are cut once
+  (`q = 0.25·(1 − angular)`). The line's opacity is `smoothstep(0, 0.12, k)`, bridges, knots and tails
+  `smoothstep(0.1, 0.3, k)`, and its width is `weight` throughout. At `k = 0` there are no thread instances (rule 3
+  holds by construction).
+- **Text to read and controls** (`legible`) don't become thread, their fill doesn't fade, and the map's flow
+  doesn't push them (under `scribblr` their instances loosen in place in the G-buffer stage, `look.w` = 1). Rule 3 in
+  its own words: the pointer passing over text leaves the text alone. Thread is only for headings
+  (`legible(false)`), shapes and decoration.
+- **The thread starts from the outline as drawn**: the G-buffer stage pushes instances that aren't for reading
+  along the map's flow by `flow × drift` (§1.29), and the thread's rest path adds the same offset, so as the fill
+  fades the line lies exactly on it, not as an offset shadow beside it. The thread's bars don't read the map
+  themselves (`look.z` = 0); fronts push them as usual (`resp.y` the same as the element's).
+- **The pose follows the material clock**: the time for wandering, knots and tails is `mclock`, which advances only
+  while the map or something else moves, so an element held loose at rest keeps its pose and wants no frames; seeds
+  depend only on the element, not the beat, so poses change gradually rather than being redrawn every beat. With
+  `hold_ms` above 0 the pose is rounded to the beat (the thread's vertices are equal one by one within a beat), while
+  opacity and fill stay continuous every frame.
+- **Budget** (§1.27): segments come from the frame budget; when short, knot points are reduced first (not the number
+  of knots), then every n-th vertex is taken, and finally the end is cut short. The thread never breaks.
+- **What never becomes thread**: canvases, morphs, recomposing text, decoding elements, and elements in a role
+  hand-off or a flow (they loosen as `plain`). Thread appears only when the global material is `scribblr` (not under
+  a subtree override).
+- **Long paths** `El::trace(Trace { points, progress, weight, dash, gap, pull, stir, paint })`: a very long polyline
+  (in the element's own coordinates) drawn by `progress`, bent by the flow by `pull × drift`; with `dash` above 0
+  it is cut into segments by arc length from the start (with `gap` between), so segments already drawn don't move as
+  it draws; with `stir` above 0 its head stirs the map where it passes each frame. It draws under every material.
+  The `#stirr` page's "Draw a line" button draws a looping dashed line through the area.
+- **Numbers** (row 9 of `MAT_PARAMS`): `weight` 0.5–3 (1), `grain` 1–6 (2), `reach` 0–64 (40), `knot` 0–1 (0.6),
+  `knot_r` 4–120 (48), `tail` 0–1200 (480), `pull` 0–2 (1), `angular` 0–1 (0.9); `Look::hold_ms` 0–500 (0, a
+  preset's `interaction.hold_ms`).
+- **A drawn tangle** `strand::figure(seed, r, above, below)`: the same knots and tails generated once from a fixed
+  seed (one knot of radius `r` and one line passing through it top to bottom, `above` long above the knot and
+  `below` long below), not reading the map, for use as page content (`El::trace`, §4.4).
+- **While a dialog is open**: the page's thread and drawn tangles are not drawn (they would land on the dialog's
+  layer, above the card); elements inside the dialog behave as usual.
+- **Tails**: every segment stops before the box of text to read (not only testing whether a point falls inside, so a
+  step never jumps over a line of text), and never passes back through the inner half of the element's own box.
+- **Pictures over the thread**: the thread (an element's and `El::trace`) passes behind pictures, and no thread is
+  drawn inside a picture's box (`strand::outside` cuts each segment at the picture's box). In the G-buffer stage,
+  thread ink over a picture would be read as the picture's own colour (turning red), so it can't be drawn on top.
+- **The page** `#material-scribblr`.
 
-验收：`strand.rs` 的单元测试（`k = 0` 没有段；`k` 不超过 0.3 时每个顶点离轮廓不到半个像素，场图在动也一样；首尾相接；顶点的排序是嵌套的，弦的两端排在滑上去的顶点前面；松到 1 时段数不超过顶点数的 15%、段长的中位数不小于 24 像素，从 1 收到 0 的 30 帧里同一个顶点每帧移动不超过 `reach / 6`；结 1–3 个，每个至少 20 段、段长中位数不小于 `0.8 × knot_r`、至少 40 处交叉，松到 0.5 时结的半径不小于 `0.5 × knot_r`；两根线头：末尾那根首尾相距不小于 300 像素、停在离范围的边 8 像素以内、2–5 处转折，起点那根不短于它的一半，都不进要读的字的方框，松到 0.33 时末尾那根不短于 100 像素；不出范围方框；不超过预算；同样输入同样字节；`figure` 两次相同、高度就是 `above + below`、结里 24–60 段；一段线在几个方框处剪开，剩下方框外面的部分；虚线每段长 `dash`、画出更多时前面的段不变、`dash = 0` 是实线）；`tests/strand.rs`（静止时没有线、不要帧；拖窗口经过大标题出线、一根、线头和流向同向；要读的字没有线，实例的不透明度和位置不变、不被流向推；停下以后线没了、不要帧；预算 0.25 时仍是一根；重组中的字没有线；`hold_ms` 83 同拍相同、跨拍不同，0 时每帧不同；“回”是四圈轮廓（两个方框各有里外两条边）三座桥；变形的两端没有线；64 像素的 “Loose thread” 松到 1、没有结和线头时：段数不超过静止顶点数的 15%，段长中位数不小于 24 像素，线的墨离静止轮廓 2 像素以内的不超过四分之一，外框每边比静止的字大至少 `0.6 × reach`；Loose Thread 风格页见 §4.4）；`check` 第 20 条（1. 松开度 0 时和 plain 逐字节相同，深浅两种底，对照：1 时不同；2. 浅色底上完全松开的图片里没有页面底色；3. 松开度 1 时在 20 处离别的段够远的地方，沿法向积分线的墨，等于 `weight × 缩放` 正负半个像素，量 1 和 2 像素宽的 1 倍、1.5 像素宽的 2 倍；4. 从 1 收到 0 的 30 帧里，线的墨（桥和线头只算看得见的时候）离静止轮廓的最远距离不增；5. `scribblr` 下浮动窗口带尾迹拖动 90 帧，只画变了的部分等于整窗重画）；`bench … strand`（200 个字形完全松开不超过 1 ms）；`craft <目录> scribblr`（一个标题从 1 收到 0 的八帧，每帧按松开度搅一下场图，画之前在整个标题上补到这一帧的松开度，所以第 1 帧标题处的能量不小于 0.8；最后一帧等场图静下来；深浅两种底）、`craft <目录> thread-ref`（风格页，标题一直松到头，黑底和纸底各一帧，和参考图并排看）。
+Acceptance: unit tests in `strand.rs` (no segments at `k = 0`; at `k` up to 0.3 every vertex is within half a pixel
+of the outline, even with the map moving; the ends join; the vertex ranking is nested, with a chord's ends ranked
+before the vertices that slide onto it; fully loose, segments are at most 15% of the vertex count with a median
+segment length of at least 24 px, and over 30 frames from 1 back to 0 no vertex moves more than `reach / 6` per
+frame; 1–3 knots, each with at least 20 segments, a median segment length of at least `0.8 × knot_r` and at least
+40 crossings, with a knot radius of at least `0.5 × knot_r` at looseness 0.5; two tails: the end tail's ends at
+least 300 px apart, stopping within 8 px of the scope's edge, with 2–5 turns, the start tail at least half as long,
+neither entering the box of text to read, and the end tail at least 100 px long at looseness 0.33; nothing outside
+the scope box; within budget; the same input gives the same bytes; `figure` twice is the same, its height is
+`above + below`, and its knot has 24–60 segments; a segment cut at several boxes keeps the parts outside them;
+dashes are `dash` long each, earlier segments don't change as more is drawn, and `dash = 0` is solid);
+`tests/strand.rs` (no thread and no frames at rest; dragging the box past a large heading makes thread, one line,
+with tails running with the flow; text to read has no thread, its instances' opacity and position unchanged and not
+pushed by the flow; once stopped the thread is gone and no frames are wanted; at budget scale 0.25 it is still one
+line; recomposing text has no thread; with `hold_ms` 83 the same beat is identical and different beats differ, with
+0 every frame differs; "回" is four rings (two boxes with inner and outer edges each) with three bridges; neither
+end of a morph has thread; "Loose thread" at 64 px fully loose without knots or tails: segments at most 15% of the
+rest vertex count, median segment length at least 24 px, at most a quarter of the thread's ink within 2 px of the
+rest outline, and the bounding box at least `0.6 × reach` larger than the still text on each side; for the Loose
+Thread style page see §4.4); `check` item 20 (1. at looseness 0 byte-identical to `plain` on dark and light
+grounds, control: different at 1; 2. no page background in a fully loosened picture on a light ground; 3. at
+looseness 1, at 20 places well clear of other segments, the thread's ink integrated along the normal equals
+`weight × scale` within half a pixel, measured for 1 and 2 px widths at 1× and 1.5 px at 2×; 4. over 30 frames from
+1 to 0, the farthest distance of the thread's ink (bridges and tails only while visible) from the rest outline never
+grows; 5. under `scribblr`, dragging the floating box with its trail for 90 frames, partial redraw equals full
+redraw); `bench … strand` (200 glyphs fully loose within 1 ms); `craft <dir> scribblr` (eight frames of a heading
+from 1 back to 0, each frame stirring the map by its looseness and filling the whole heading up to that frame's
+looseness before drawing, so the energy at the heading is at least 0.8 in frame 1; the last frame waits for the map
+to settle; dark and light grounds), and `craft <dir> thread-ref` (the style page with the heading held fully loose,
+one frame each on black and paper, to compare side by side with the reference).
 
-## 2. 参数必须能精确设置
+## 2. Parameters must be exact
 
-不用滑块当主要手段。数字控件（`number`）：
+Sliders are not the main means. The number control (`number`):
 
-- 显示当前值和单位；左右两个步进按钮。
-- 获得焦点后直接键入数字，回车确认，Esc 取消。
-- 上下方向键按步长改，按住 Shift 乘 10。
-- 在数值上横向拖动可以连续调（辅助手段）。
+- Shows the current value and unit, with a step button on each side.
+- Once focused, type a number directly; Enter confirms, Esc cancels.
+- Up and Down change it by a step; with Shift, by ten steps.
+- Dragging sideways across the value scrubs it continuously (a secondary means).
 
-`Fx` 的每个参数都通过它暴露：字的点距、不规则度、错位、波速、波的寿命、波宽、尾长、推力、透镜半径、凝结时长。图的点距和其余图片参数在 `PicFx` 里，同样每个都用数字控件。
+Every parameter of `Fx` is exposed through it: the text pitch, irregularity, misregistration, wave speed, wave
+lifetime, wave width, trail length, push, lens radius and condensing time. The picture pitch and the other picture
+parameters are in `PicFx`, each with a number control as well.
 
-## 3. 组件
+## 3. Components
 
-按钮、数字控件、输入框、开关、滑块、标签页、选项（`choice` 和分段的 `segmented`）、列表、卡片、对话框、图片、分隔线、滚动区。
+Button, number control, text field, switch, slider, tabs, choices (`choice` and the segmented `segmented`), list,
+card, dialog, image, divider, scroll area, and the rest listed in `registry.json`.
 
-组件是普通函数，返回 `El<M>`。像 shadcn 一样以源码分发：每个组件一个文件（`src/widgets/`），仓库根的 `registry.json` 列出每个组件的名字、标题、说明、文件和依赖的其他组件（都依赖 `base`，即 `src/widgets/mod.rs` 里的共用尺寸；滑块依赖数字控件的 `Spec`，对话框依赖按钮），使用者把源码拷走自己改。组件返回的树可以再用 `El` 的方法改尺寸（`.height`、`.pad`、`.radius`、`.border`、`.disabled`）。
+Components are plain functions returning `El<M>`. Like shadcn, they are distributed as source: one file per
+component (`src/widgets/`), and `registry.json` at the repository root lists each component's name, title,
+description, files and the other components it depends on (all depend on `base`, the shared sizes in
+`src/widgets/mod.rs`; the slider depends on the number control's `Spec`, the dialog on the button). Users copy the
+source and change it. The tree a component returns can be resized further with `El` methods (`.height`, `.pad`,
+`.radius`, `.border`, `.disabled`).
 
-按钮有三种：默认（描边）、安静（无边框）、强调（强调色填充，字用页面底色）；不可用是 `.disabled(true)`。
+Buttons come in three variants: default (outlined), quiet (no border) and accent (accent fill with text in the page
+background colour); unavailable is `.disabled(true)`.
 
-## 4. 风格 = 主题 × 材质 × 材质参数 × 标注 × 字体
+## 4. Style = theme × material × material parameters × annotation × faces
 
-- **主题**是数据：颜色、字号阶、间距、线宽、圆角。现在的 `Theme`：底色（可以是从上到下的渐变：`ground` 到 `ground2`）、墨色、三种强调色（`Paint::hue(0/1/2)`），标题 / 正文 / 等宽三个字体角色各用哪个字体，字号阶（标题、小标题、正文、小字），细线和粗线的宽度。有十五个：暗、明、像素，和各风格自己的（Loose Thread 有黑底和纸白两套：`THREAD`、`THREAD_PAPER`）。`style::THEME_IDS` 是它们的 ASCII 名字，和 `THEMES` 一一对应。根节点写 `.fonts(theme.roles())`，文字元素用角色（`Font::Display / Body / Mono`），也可以直接指定字体。
-- **材质**是第二遍的画法。
-- **标注**是第三遍开不开、画什么。
+- **A theme** is data: colours, type scale, spacing, line widths, corner radii. The current `Theme`: the background
+  (possibly a top-to-bottom gradient from `ground` to `ground2`), ink, three accents (`Paint::hue(0/1/2)`), which
+  face each of the display, body and mono roles uses, the type scale (heading, subheading, body, small) and thin and
+  thick line widths. There are fifteen: dark, light, pixel, and each style's own (Loose Thread has a black and a
+  paper set: `THREAD`, `THREAD_PAPER`). `style::THEME_IDS` are their ASCII names, matching `THEMES` one to one. The
+  root sets `.fonts(theme.roles())`, and text elements use roles (`Font::Display / Body / Mono`) or a face directly.
+- **A material** is how the shading stage draws.
+- **Annotation** is whether the third pass is on and what it draws.
 
-一个“风格预设”（`style::Style`，普通数据，`style::styles()` 给出十个）是：主题、材质、这种材质的参数、标注设置、松开比例（Normcore 是 0.3）、文字的点阵点距，和风格页上图片用的 `PicFx`。顶栏的“风格”菜单一次设置全部，之后主题和材质菜单照常可用；切换是从按下处传开的提交。打开一个风格页也会应用它（左栏的那一项是提交）。下表是设计时的打算，实际的预设见 `styles()`：
+A style preset (`style::Style`, plain data; `style::styles()` gives ten) is: a theme, a material, that material's
+parameters, annotation settings, a looseness scale (Normcore's is 0.3), the text lattice pitch, and the `PicFx` for
+pictures on the style page. The top bar's Style menu sets all of them at once, after which the theme and material
+menus work as usual; switching is a commit that spreads from the press. Opening a style page applies it too (its
+side rail item is a commit). The table is the design intent; the actual presets are in `styles()`:
 
-| 预设 | 主题 | 材质 | 标注 | 怎么做 |
+| Preset | Theme | Material | Annotation | How |
 |---|---|---|---|---|
-| Neo-Dotmatrix | 黑底、单色 | `dot` | 关 | 全局点阵；松开时每个点的大小是它底下墨的多少 |
-| Lo-Fi Print | 纸色、两色油墨 | `print` | 关 | 半色调网点、套印错位、纸纹、墨的洇开（对 near 取阈值） |
-| Glitch | 黑底 | `glitch` | 关 | 行带错位、通道错开、块位移、保持上一帧 |
-| Metamorphosis Linocut | 纸色、单色 | `lino` | 关 | 墨 = 对 `near + 噪声` 取阈值，边缘像刀刻；沿等距线刻留白；两个状态的 near 插值就是形变 |
-| Algorithmic / Digital Gaze | 黑底、等宽字 | 任意 | 开：框、编号、置信度式标签、追踪线 | 标注层 |
-| Tech-Manual | 网格纸、黑 + 一个信号色 | `plain` + 阴影线填充 | 开：引线、编号、尺寸线 | 标注层的另一种画法 |
-| Normcore | 系统灰、默认字号 | `plain` | 关 | 只是主题 |
-| Cyberminimalism | 近黑、发丝线、等宽 | `plain` | 关 | 只是主题 |
-| Bauhaus | 三原色、几何形 | `plain` | 关 | 主题加几何形状组件 |
-| Loose Thread | 纯黑底白线（或纸白底黑线），一种强调色 | `scribblr` | 悬停：`EDGE`、`FRAME` | 静止时是小字、一张图和一个画好的线团；被碰到的标题散成线（§4.4） |
+| Neo-Dotmatrix | Black, monochrome | `dot` | off | A global dot lattice; loosened, each dot's size is the ink beneath it |
+| Lo-Fi Print | Paper, two inks | `print` | off | Halftone dots, misregistration, paper grain, ink bleed (thresholding the SDF) |
+| Glitch | Black | `glitch` | off | Band slips, channel separation, block displacement, holding the last frame |
+| Metamorphosis Linocut | Paper, monochrome | `lino` | off | Ink = a threshold of `SDF + noise`, edges like knife cuts; white cut along iso-lines; interpolating two states' SDFs is the morph |
+| Algorithmic / Digital Gaze | Black, monospace | any | on: boxes, numbers, confidence-style labels, tracking lines | The annotation layer |
+| Tech-Manual | Grid paper, black + one signal colour | `plain` + hatched fills | on: leaders, numbers, dimension lines | Another way of drawing the annotation layer |
+| Normcore | System grey, default sizes | `plain` | off | Only a theme |
+| Cyberminimalism | Near black, hairlines, monospace | `plain` | off | Only a theme |
+| Bauhaus | Primary colours, geometric shapes | `plain` | off | A theme plus geometric shape components |
+| Loose Thread | White thread on pure black (or black on paper), one accent | `scribblr` | hover: `EDGE`, `FRAME` | At rest: small type, a picture and a drawn tangle; headings that are touched come apart into thread (§4.4) |
 
-`plain` 材质也走两遍绘制，只是不松开；波、凝结、角标仍然在。
+The `plain` material also goes through two-stage drawing; it just doesn't loosen. Waves, condensing and corner marks
+are still there.
 
-### 4.1 预设是数据，带自己的过渡
+### 4.1 Presets are data, with their own transitions
 
-`preset::Preset`（serde，`to_json` / `from_json`）：名字、主题（按名字）和三种字体、材质和它的 8 个数、标注、松开比例、点阵点距、图片的 `PicFx`、**交互的性格**（`Interaction`：按下反馈的时长、波前的速度 / 宽度 / 寿命、文字和控件与其余东西各自默认的响应、重组的参数），和一段**过渡**（`Transition { duration_ms, steps: [Step; 4] }`）。`Preset::apply(&Look)` 给出外观（`Look::press_ms`、`Look::roles`、`Look::transition` 是新加的）；运行时按 `roles` 决定没写响应的元素怎么响应，按 `press_ms` 放按下的 burst。`Preset::numbers()` 把每个数按 JSON 的路径（`transition.steps.0.a`）列出来，`set_number(路径, 值)` 改它：gallery 的数字控件就是从数据里生成的。
+`preset::Preset` (serde, `to_json` / `from_json`): a name, the theme (by name) and its three faces, the material and
+its 8 numbers, annotation, the looseness scale, the lattice pitch, the pictures' `PicFx`, an **interaction
+character** (`Interaction`: press feedback duration, front speed / width / lifetime, the default responses of text
+and controls and of everything else, recomposition parameters) and a **transition**
+(`Transition { duration_ms, steps: [Step; 4] }`). `Preset::apply(&Look)` gives the look (`Look::press_ms`,
+`Look::roles` and `Look::transition` are new); the runtime uses `roles` to decide how elements without a response
+respond and `press_ms` for the press burst. `Preset::numbers()` lists every number by its JSON path
+(`transition.steps.0.a`) and `set_number(path, value)` changes it: the website's number controls are generated from
+the data.
 
-**过渡是一个小程序**：最多四步，每步一个种类、在过渡时间里的起止（0–1）和五个数，材质的最后一步在旧画面（提交那一刻屏幕上的画面）和新画面之间按它合成：这里显示多少新的、两边各从哪里取样、叠一层什么颜色、旧的褪到底色多少、通道错开多少。种类：揭开（圆、直线、逐行、乱序格子、撕开的线；逐行时刚扫到的行只显示点阵的点）、错位的带（每带横移、通道错开、几次硬切、最后锁定）、淡入（带一点位移）、光条（复印机：光条后面是新页，墨粉噪声随距离沉降）、色块（几行平涂的主题颜色从左往右滑过，揭开新页）、松开（整页按材质松开，CPU 算出放进 `rip.y`）、分层（越亮越近地分开、交换、合上）、检测框（最大的几个元素按阅读顺序被框出来，框沿边画出，框里换成新的）、刻（旧的褪到底色，新轮廓两侧长出刀痕，最后灌墨）、先画轮廓（轮廓和框先按阅读顺序画出，内容后填）、揭开撕纸（沿带噪声的线撕开，旧的一层错开滑走）。
+**A transition is a small program**: up to four steps, each with a kind, a start and end within the transition time
+(0–1) and five numbers; the material's last step composites by it between the old picture (what was on screen at the
+moment of the commit) and the new: how much of the new shows here, where each side samples from, what colour is laid
+over, how far the old fades toward the ground, how far channels separate. Kinds: reveal (circle, line, row by row,
+shuffled cells, a torn line; row by row, the rows just swept show only lattice dots), slipping bands (each band
+shifts, channels separate, a few hard cuts, then lock), fade (with a little displacement), light bar (a photocopier:
+the new page behind the bar, toner noise settling with distance), colour blocks (a few rows of flat theme colour slide
+from left to right, revealing the new page), loosen (the whole page loosens by its material, computed on the CPU into
+`rip.y`), layers (separating nearer the brighter, swapping, closing), detection boxes (the largest few elements are
+boxed in reading order, the box drawn along its edges, and the inside swapped for the new), carve (the old fades to the
+ground, knife cuts grow on both sides of the new outline, then ink floods in), outline first (outlines and boxes are
+drawn first in reading order, the content filled in after) and torn reveal (torn along a noisy line, the old layer
+sliding away offset).
 
-十个预设的过渡（`presets()`，都 ≤ 900 ms）：Gaze 检测框；Dotmatrix 逐行点阵；Lo-Fi Print 光条；Glitch 错位带三次硬切后锁定；Linocut 刻；Tech-Manual 先画轮廓加框；Normcore 没有（0 ms）；Cyberminimalism 120 ms 的淡入和 6 像素位移；Bauhaus 色块；Loose Thread 700 ms：先松开（整页松成线，0–0.55），再先画轮廓（0.45–1）。`scribblr` 的线在 CPU 上算，所以松开的一步也在 CPU 上算一遍（`Transition::loosen`，和材质那一遍用同一个函数），要读的字仍然只到 `legible_cap`。
+The ten presets' transitions (`presets()`, all ≤ 900 ms): Gaze detection boxes; Dotmatrix row-by-row lattice; Lo-Fi
+Print light bar; Glitch slipping bands with three hard cuts and then lock; Linocut carve; Tech-Manual outline first
+with boxes; Normcore none (0 ms); Cyberminimalism a 120 ms fade with 6 px displacement; Bauhaus colour blocks; Loose
+Thread 700 ms: loosen first (the whole page into thread, 0–0.55), then outline first (0.45–1). `scribblr`'s thread is
+computed on the CPU, so the loosen step is computed once more on the CPU (`Transition::loosen`, the same function as
+the material pass), and text to read still goes only to `legible_cap`.
 
-**用在哪里**：切到一个风格（顶栏菜单、风格页的左栏项、场景）和进入一个风格的页面都是提交（§1.5），用的是目标风格的过渡（外观在提交之后已经是新的）。**可打断**：提交时 `before` 取的是此刻屏幕上的画面（渲染器保留的那一帧，§1.19），所以过渡中途再切，从当时的样子接着过渡到新的目标；输入一直可用。过渡结束的那一帧（时间 ≥ 1）直接是新画面，不经过程序。没有过渡的外观（`duration_ms` 0）用原来的从按下处传开的波前。
+**Where they are used**: switching to a style (the top bar menu, a style page's side rail item, a scene) and entering a
+style's page are commits (§1.5) using the target style's transition (the look is already the new one after the commit).
+**Interruptible**: the commit's `before` is the picture on screen at that moment (the frame the renderer keeps, §1.19),
+so switching again mid-transition continues from how it looked then toward the new target; input stays available
+throughout. The frame where the transition ends (time ≥ 1) is the new picture directly, without the program. A look
+without a transition (`duration_ms` 0) uses the original front spreading from the press.
 
-**页面**：`#styles`（风格切换）：从 / 到两组选项（选“从”立刻应用）、“播放”（提交）、目标风格的交互和过渡的每个数（数字控件，从数据生成）、导出 / 导入 JSON（多行输入框，可以复制、粘贴）。**验收**：`preset.rs` 的单元测试（JSON 往返、数的路径、≤ 900 ms）；`check` 第 16 条：十二个预设，过渡结束后的那一帧和直接用目标预设画的同一页逐字节相同（材质时钟按过渡的那一边对齐），过渡中途和两端都不同（Normcore 除外）；样张 `samples <目录> transitions`（每个过渡 6 帧，一行一个）。
+**The page**: `#styles` (style switching): from / to choices (choosing "from" applies it at once), Play (a commit),
+every number of the target style's interaction and transition (number controls generated from the data), and JSON
+export / import (a multi-line field that can be copied and pasted). **Acceptance**: unit tests in `preset.rs` (JSON
+round trip, number paths, ≤ 900 ms); `check` item 16: for every preset, the frame after the transition ends is
+byte-identical to the same page drawn directly with the target preset (the material clock aligned to the transition's
+side), and mid-transition and both ends differ (except Normcore); samples `samples <dir> transitions` (6 frames per
+transition, one row each).
 
-### 4.2 小字和边注
+### 4.2 Small type and edge notes
 
-**字距**：`El::tracking(em)`，−0.05–1.5，默认 0。交给 parley 排（`text::Setting { around, track }`），所以量出来的宽度、选区、重组、`scribblr` 的轮廓都跟着。
+**Tracking**: `El::tracking(em)`, −0.05–1.5, 0 by default, laid out by parley (`text::Setting { around, track }`), so
+measured widths, selection, recomposition and `scribblr`'s outlines follow it.
 
-**小声的字**：`Font::Whisper` 是一个固定的字体，不是主题的角色：Source Serif 4 定在 8 pt 的光学尺寸、400 的字重，只留西文（82 KB，OFL，`assets/licenses/source-serif`；`text::SERIF`）。`El::whisper()` 把这段字转成小写、用这个字体、字距 0.6 em；字号自己定，11–13 像素。没有中文衬线体：演示里小字只写西文，汉字落到回退的字体上。
+**Quiet type**: `Font::Whisper` is a fixed face, not a theme role: Source Serif 4 at its 8 pt optical size and weight
+400, Latin only (82 KB, OFL, `assets/licenses/source-serif`; `text::SERIF`). `El::whisper()` makes the text lowercase,
+in this face, with 0.6 em tracking; the size is set by the caller, 11–13 px. There is no Chinese serif: in demos small
+type is Latin only, and Han characters fall back to the fallback face.
 
-**边注**（`gaze::EDGE`）：范围右边一条 1 个设备像素的细线，正好压在范围矩形最右的那一列上；线上每 10 / 50 / 100 像素一个刻度（3 / 6 / 9 像素，往里），指针的高度上一道 14 像素的记号。线左边竖排几条小字，从下往上读（逆时针转 90 度），衬线体 12 像素、字距 0.12 em，每条之间空 18 像素，放不下时在左边另起一列，出不了范围。写的都是此刻的值：范围的宽 × 高、指针在范围里的坐标（不在时 `x — y —`）、材质和主题（`THEME_IDS` 的名字）、此刻最松的实例有多松（`Ui::looseness` 的同一个规则）、场图里不为 0 的结点数。转 90 度的字：每个字形的实例绕自己的中心转（`xf = [−1, 1, −1, −1]`），中心移到转过的那一行上它的位置；宽高都是整数，转过以后仍落在整像素上，所以不重采样。
+**Edge notes** (`gaze::EDGE`): a one-device-pixel hairline at the scope's right edge, exactly on the scope rect's
+rightmost column; ticks every 10 / 50 / 100 px (3 / 6 / 9 px, inward), and a 14 px mark at the pointer's height. To the
+line's left, a few lines of small type set vertically, read bottom to top (turned 90° counter-clockwise), in the serif
+at 12 px with 0.12 em tracking and 18 px between lines, starting a new column to the left when they don't fit and never
+leaving the scope. They all state current values: the scope's width × height, the pointer's coordinates in the scope
+(`x — y —` when it isn't there), the material and theme (`THEME_IDS` names), how loose the loosest instance is right now
+(by `Ui::looseness`'s rule) and the number of non-zero nodes in the field map. Turned text: each glyph instance turns
+about its own center (`xf = [−1, 1, −1, −1]`), the center moved to its place on the turned line; widths and heights
+are integers, so after turning glyphs still land on whole pixels and are not resampled.
 
-验收：`tests/gaze.rs` 的 `edge_notes_say_what_is_true_now`：每条字等于运行时此刻的值（范围、指针、材质和主题、`looseness("root")`、`fieldmap().nonzero()`），细线在范围的右边，每条字在范围里、互不重叠。`check` 第 7.2 条（1× 的 dot 和 plain、2× 的 plain）：细线是范围最后一列的每一行、外面一列没有、刻度之间只有一个设备像素宽；字的每个像素都是底色和标注色之间的混合（plain 下，差不超过 2/255），每条有满色的像素、三成以上的墨是实的（覆盖 > 0.6）。第 7.3 条：1920 × 1080、缩放 1 时每条边注三成以上的墨是实的（现在至少 42%）。
+Acceptance: `edge_notes_say_what_is_true_now` in `tests/gaze.rs`: every line equals the runtime's current value
+(scope, pointer, material and theme, `looseness("root")`, `fieldmap().nonzero()`), the hairline is at the scope's right
+edge, and every line is inside the scope without overlapping. `check` item 7.2 (`dot` and `plain` at 1×, `plain` at
+2×): the hairline is every row of the scope's last column, not the column outside, one device pixel wide between ticks;
+every pixel of the type is a mix between ground and annotation colour (within 2/255 under `plain`), each line has
+full-colour pixels, and over 30% of its ink is solid (coverage > 0.6). Item 7.3: at 1920 × 1080 and scale 1, over 30%
+of each edge note's ink is solid (currently at least 42%).
 
-### 4.3 场图的读数：波形和电平条
+### 4.3 Reading the field map: a waveform and a level bar
 
-场图（§1.29）就是“这一页此刻有多乱”，所以把它当仪表读，不接音频。
+The field map (§1.29) is how disturbed the page is right now, so it is read like an instrument; no audio is involved.
 
-- **`OSC`**：横贯范围的一条线（开着边注时停在离右边 40 像素处，不压字）。场图每一列结点取一个点，`x` 是那一列的位置，高度是那一列在某一行上的能量（量化以后的字节，和着色器读的一样）乘 `osc_amp`，从基线 `范围的上边 + 高 × osc_y` 往上。行取指针所在的那一行，指针不在范围里时取能量最大的那一行（`FieldMap::strongest_row`）。画成一个设备像素粗、没有抗锯齿的折线：每个设备列一段竖着的整像素，覆盖这一列里线进出的高度，所以颜色正好是标注色，不和下面的材质混。
-- **`LEVEL`**：范围左边一根 6 像素宽的竖条，从下往上，高度是 `范围的高 × min(1, 平均能量 / level_full)`（`gaze::level_height`，平均能量是 `FieldMap::level`）。
-- 数（`Gaze` 里，gallery 的标注页有数字控件）：`osc_amp` 4–120 像素，默认 40；`osc_y` 0–1，默认 0.5；`level_full` 0.01–0.5，默认 0.08。
-- 场图为 0 时波形是直的、电平条高 0，不要帧（场图不动就不要帧，读数不另外要）。导出的树在根上多一个 `field: { level, nonzero }`。
+- **`OSC`**: a line across the scope (stopping 40 px from the right edge when edge notes are on, so it doesn't cover
+  them). One point per column of map nodes: `x` is that column's position, and the height is that column's energy in
+  some row (the quantized byte, as the shader reads it) times `osc_amp`, upward from the baseline
+  `scope top + height × osc_y`. The row is the pointer's row, or the row with the most energy when the pointer isn't in
+  the scope (`FieldMap::strongest_row`). It is drawn as a one-device-pixel polyline without anti-aliasing: each device
+  column gets one vertical run of whole pixels covering the heights where the line enters and leaves that column, so
+  the colour is exactly the annotation colour, never mixed with the material beneath.
+- **`LEVEL`**: a 6 px vertical bar at the scope's left edge, rising from the bottom to
+  `scope height × min(1, mean energy / level_full)` (`gaze::level_height`, the mean energy being `FieldMap::level`).
+- Numbers (in `Gaze`, with number controls on the website's annotation page): `osc_amp` 4–120 px, default 40; `osc_y`
+  0–1, default 0.5; `level_full` 0.01–0.5, default 0.08.
+- With the map at 0 the waveform is flat and the level bar 0 high, and no frames are wanted (no frames while the map is
+  still; the readouts ask for none of their own). The exported tree's root gains `field: { level, nonzero }`.
 
-验收：`tests/gaze.rs` 的 `the_waveform_and_the_level_read_the_field_map`：场图为 0 时每个点都在基线上、电平为 0、两秒 0 帧；在 x 处搅一下，最高点离 x 不到一格，高出基线的量是那里的能量乘 `osc_amp`（差 ≤ 1 像素），读的是能量最大的那一行；电平条等于公式，`export_tree().field.level` 和画的相等；场图静下来以后两者回到平的。`check` 第 7.2 条：基线以外的每个设备列里标注色是连续的一段，平的地方正好一个设备像素，紧挨着的像素没有混进标注色；电平条的高度等于读数（±1 像素）；对照：搅过以后波形不是直的。
+Acceptance: `the_waveform_and_the_level_read_the_field_map` in `tests/gaze.rs`: with the map at 0 every point is on the
+baseline, the level is 0 and two seconds draw 0 frames; after a stir at x, the highest point is within a cell of x and
+rises above the baseline by the energy there times `osc_amp` (within 1 px), reading the row with the most energy; the
+level bar equals the formula, and `export_tree().field.level` equals what was drawn; once the map settles both are flat
+again. `check` item 7.2: in every device column away from the baseline the annotation colour is one continuous run,
+exactly one device pixel where flat, with no annotation colour mixed into the pixels next to it; the level bar's height
+equals the readout (±1 px); control: after a stir the waveform is not flat.
 
 ### 4.4 Loose Thread
 
-把上面几样合成第十个预设。
+The pieces above, combined into the tenth preset.
 
-| 项 | 值 |
+| Item | Value |
 |---|---|
-| 主题 | `THREAD`（纯黑底、白墨、一种强调色 `[1.0, 0.33, 0.20]`，另外两种强调色就是墨色），或 `THREAD_PAPER`（纸白底、近黑的墨）。强调色是标注色，只在指针碰到的地方出现 |
-| 材质 | `scribblr` |
-| 字 | 标题和正文照旧；小字用 `El::whisper()` |
-| 标注 | 悬停，`EDGE` 和 `FRAME` |
-| 交互 | 文字默认也松开（`roles` 的文字是 `Loosen`）；要读的字在 `scribblr` 下不出线、不动（§1.30） |
-| 场图 | `stirr` 1.0、`meander` 0.5、`creep` 0.15、`energy_life` 2.0、`bleed` 0.06、`breath` 0（指针扫过不要读的标题，松开度到 0.8 以上，一秒后还有三成以上，三秒内回到 0） |
-| 保持 | `hold_ms` 83 |
-| 过渡 | 700 ms：`Loosen`（0–0.55）接 `Outline`（0.45–1） |
-| 收尾 | 默认不开；风格页上可以开“只用黑白”（`binary`）和“反相”（`invert`） |
+| Theme | `THREAD` (pure black ground, white ink, one accent `[1.0, 0.33, 0.20]`, the other two accents being the ink), or `THREAD_PAPER` (paper white ground, near-black ink). The accent is the annotation colour and appears only where the pointer touches |
+| Material | `scribblr` |
+| Type | Headings and body as usual; small type with `El::whisper()` |
+| Annotation | Hover, `EDGE` and `FRAME` |
+| Interaction | Text loosens by default too (`roles` gives text `Loosen`); text to read doesn't become thread or move under `scribblr` (§1.30) |
+| Field map | `stirr` 1.0, `meander` 0.5, `creep` 0.15, `energy_life` 2.0, `bleed` 0.06, `breath` 0 (when the pointer sweeps a heading not meant for reading, its looseness passes 0.8, is still over 0.3 a second later, and returns to 0 within three seconds) |
+| Hold | `hold_ms` 83 |
+| Transition | 700 ms: `Loosen` (0–0.55) then `Outline` (0.45–1) |
+| Finishing | Off by default; the style page can turn on black and white only (`binary`) and invert (`invert`) |
 
-风格页（`#style-loose-thread`）是一页真正的东西，范围里不论界面语言都只有英文（`Locale::En.tr`，`thread.*` 只在英文目录里）：顶上一行小声的字 `amenui — no. 10`；标题 `loose thread`，`Font::Whisper` 30 像素、小写、字距 0.3 em；一张图和它的图注 `fig. 1`；右边一句 14 像素的正文；页脚一行小声的字是三个控件（`black · paper` 两项单选、`1-bit` 和 `invert` 两个开关），选中的用强调色，不画开关和边框，键盘照样能到，无障碍镜像里是单选组、单选和开关。右边留出 72 像素给边注。页面里有一个画好的线团当内容：一个半径 70 的结在图片右下角（结的一角在图片后面），一根线从页面顶上穿过它到页脚上面，1 像素、墨色，不压要读的字（`El::trace`，点是 `strand::figure` 按固定种子生成的）；进这一页时 700 毫秒画出来，之后静止、不要帧；它在任何材质下都画，所以规矩 3 不受影响，指针经过时被场图的流向推开一点再回来（`pull` 2.5）。指针在构图上移动时，构图里一个跟着指针的 1 像素的点搅动场图（`El::stirr`，半径 72），所以只有被碰到的地方出线；标题设成不要读的字（`legible(false)`），会散成整根线、打结、甩出两根线头；正文和控件不变。窄窗口里没有线团。样张 `craft <目录> loose-thread`、`craft <目录> thread-ref`。
+The style page (`#style-loose-thread`) is a real piece, English only within its scope whatever the interface language
+(`Locale::En.tr`, with `thread.*` only in the English catalog): a line of quiet type at the top, `amenui — no. 10`; the
+title `loose thread` in `Font::Whisper` at 30 px, lowercase, 0.3 em tracking; a picture with the caption `fig. 1`; a
+sentence of 14 px body text on the right; and a footer line of quiet type that is three controls (a two-option radio
+`black · paper` and two switches, `1-bit` and `invert`), the selected one in the accent, drawn without switches or
+borders but reachable by keyboard and in the accessibility mirror as a radio group, radios and switches. 72 px on the
+right are left for edge notes. The page has a drawn tangle as content: a knot of radius 70 at the picture's bottom right
+(one corner of the knot behind the picture) and a line passing through it from the top of the page to above the footer,
+1 px in ink, never covering text to read (`El::trace`, with points from `strand::figure` on a fixed seed); it draws in
+over 700 ms on entering the page, then rests and wants no frames; it draws under every material, so rule 3 is
+unaffected, and the map's flow pushes it a little and lets it return as the pointer passes (`pull` 2.5). As the pointer
+moves over the composition, a 1 px point following the pointer stirs the map (`El::stirr`, radius 72), so thread
+appears only where touched; the title is set as text not for reading (`legible(false)`) and comes apart into a single
+thread with knots and two tails; body text and controls stay. Narrow windows have no tangle. Samples
+`craft <dir> loose-thread` and `craft <dir> thread-ref`.
 
-验收：`preset.rs` 的单元测试和 `check` 第 16 条（十个预设，过渡结束那一帧等于直接画）自动包含它。`tests/strand.rs` 的 `the_loose_thread_page_loosens_its_title_all_the_way_and_text_to_read_holds`：静止时没有线、两秒 0 帧，线团高度不小于范围的八成、不进任何要读的字的方框；指针扫过标题以后标题松开度不小于 0.8，两根线头（末尾那根首尾相距不小于 `300 × k`，起点那根不短于它的一半），线的每一点在范围里，线头不进要读的字的方框；指针离开一秒时不小于 0.3，三秒时为 0、没有线、不要帧；整个过程里没有一条线属于要读的元素，要读的字形的位置和不透明度和静止时逐个相同。`tests/i18n.rs` 的 `loose_thread_shows_no_chinese_in_either_language`：两种界面语言下范围里的字和名字相同、没有一个汉字，标题小写、是 `text::SERIF`，三个控件的角色和键盘可达。`tests/gaze.rs` 的 `corner_marks_never_lie_on_ink`：指针停在小字、标题、图、正文和两个开关上，角标没有一个像素落在任何字形的方框里（角标在元素矩形外 6 像素）。`check` 第 20.6 条：`binary` 时画面读回只有两种颜色；字和线按覆盖率取阈值（覆盖不小于一半就是墨，不看它的颜色多亮，很淡的填充仍是底），图片是 4 × 4 的两级有序抖动（按从底色到墨色那段的平方根，暗的图片在暗底上也留得住中间调），标注层按同样的覆盖率；正文、小字、控件标签的每个字形和每条边注，开和不开时墨的像素数（不开时按“离底色到它最满的颜色至少一半”数）相差不超过两成，图片里墨占两成到八成。第 20.7 条：`invert` 时每个像素是原图的 `255 − 值`（差 ≤ 1，现在 0），关掉以后和原图逐字节相同；和 `binary` 一起时仍然只有两种颜色。
+Acceptance: the unit tests in `preset.rs` and `check` item 16 (every preset's end frame equals drawing it directly)
+include it automatically. `the_loose_thread_page_loosens_its_title_all_the_way_and_text_to_read_holds` in
+`tests/strand.rs`: at rest there is no thread and two seconds draw 0 frames, the tangle is at least 80% of the scope's
+height and enters no box of text to read; after the pointer sweeps the title its looseness is at least 0.8, with two
+tails (the end tail's ends at least `300 × k` apart, the start tail at least half as long), every point of the thread
+inside the scope, and the tails entering no box of text to read; a second after the pointer leaves it is at least 0.3,
+and at three seconds 0, with no thread and no frames wanted; throughout, no thread belongs to an element for reading,
+and the glyphs to read keep their rest positions and opacity one by one. `loose_thread_shows_no_chinese_in_either_language`
+in `tests/i18n.rs`: under both interface languages the text and names in the scope are the same with no Han character,
+the title is lowercase in `text::SERIF`, and the three controls have their roles and are reachable by keyboard.
+`corner_marks_never_lie_on_ink` in `tests/gaze.rs`: with the pointer resting on the small type, the title, the picture,
+the body text and the two switches, no pixel of a corner mark falls in any glyph's box (corner marks are 6 px outside the
+element rect). `check` item 20.6: with `binary` the read-back frame has only two colours; text and thread are
+thresholded by coverage (coverage of at least half is ink, however bright its colour; a very faint fill is still
+ground), pictures get a two-level 4 × 4 ordered dither (by the square root along the ground-to-ink range, so dark
+pictures keep their midtones on a dark ground), and the annotation layer uses the same coverage rule; for every glyph of
+body text, small type and control labels and every edge note, the inked pixel counts with and without it (without, a
+pixel counts when at least halfway from the ground to its fullest colour) differ by at most a fifth, and ink takes 20% to
+80% of the picture. Item 20.7: with `invert` every pixel is `255 − value` of the original (within 1, currently 0), and
+turned off it is byte-identical to the original; together with `binary` there are still only two colours.
 
-## 5. Gallery
+## 5. The gallery
 
-用框架自己写，是一个应用（`src/gallery/`），也是网页版的主页面：
+Written with the framework itself, it is an application and the web version's main page. It now lives in the
+[website repository](https://github.com/amenui-dev/website) (`src/gallery/`):
 
-- 顶栏：左边是名字 `amenui`；右边是主题、材质、风格三个菜单（`menu`：按钮显示当前项，按下后在它下方的一层里列出全部；`El::anchor` 把列表放在按钮下面）和“恢复默认”。菜单里的项是提交（§1.5），从按下的那一项传开。
-- 左栏 220 逻辑像素，八组：组件、记号（每张记号表一页）、材质（每种一页：固定的样张——标题、段落、图片、一排控件、卡片和几个形状——可以用数字固定松开度，材质的每个参数，一个放出波前的“涟漪”按钮）、标注（模式、种类、密度和画出时长作用在一个样例上）、风格（每个预设一页）、变换、排版、场景（列表和七个场景，§6）。窗口窄于 720 时，左栏变成顶栏下面一行可以横向滚动的标签。
-- 每个组件一页，从上到下：标题（显示字号）和要调用的函数名；一句话说它做什么；预览（页面底色上的实时组件，四周留得宽）；变体（每种变体和状态各一格，自动换行，下面一行淡色的说明）；参数（这个组件自己的数，用数字控件改）；源码（这个组件的文件，`include_str!`，等宽字体，行号用淡色，在滚动区里，长行在自己的行号下面折行）。
-- 记号页：一张图用这张记号表，带对比线，`PicFx` 的每个数都能改，可以换图。
-- 每个风格预设一页：各自的一个小构图，不是同一个样张换颜色——Gaze 是被框住、量出尺寸的图片流（可筛选）；Dotmatrix 是每秒走字的出发牌；Lo-Fi Print 是一页小志；Glitch 是一张经过就错位的标题卡和一排控件；Linocut 是刻出来的大标题、太阳和一张笔触印出的图；Tech-Manual 是分解图和零件表，指针在一行上时图上对应的部件被标出来（反过来也一样，运行时用 `Ui::on_hover` 把悬停告诉状态）；Normcore 是一张设置表单；Cyberminimalism 是一行命令和筛选出的结果；Bauhaus 是几何海报和一组能改它的控件。每页都有真实的交互，按下就有波前，可以看到这种风格松开的样子。
+- Top bar: the name `amenui` on the left; on the right the theme, material and style menus (`menu`: the button shows
+  the current item, and pressing it lists them all in a layer below; `El::anchor` places the list under the button) and
+  Reset. Menu items are commits (§1.5), spreading from the item pressed.
+- A 220 logical px side rail in eight groups: components, marks (one page per mark set), materials (one page each: a
+  fixed sample of a heading, a paragraph, a picture, a row of controls, a card and a few shapes, with looseness that can be
+  fixed by number, every material parameter, and a Ripple button that sends a front), annotation (mode, kinds, density
+  and draw time acting on an example), styles (one page per preset), transforms, type, and scenes (the list and seven
+  scenes, §6). Below 720 px wide, the side rail becomes a horizontally scrolling row of tabs under the top bar.
+- One page per component, top to bottom: the title (display size) and the function to call; one sentence on what it
+  does; a preview (the live component on the page background with generous space around it); variants (one cell per
+  variant and state, wrapping, with a faint caption under each); parameters (the component's own numbers, changed with
+  number controls); and the source (the component's file via `include_str!`, in the mono face with faint line numbers, in
+  a scroll area, long lines wrapping under their own line number).
+- Mark pages: a picture in this mark set with a compare line, every number of `PicFx` editable, and a choice of picture.
+- One page per style preset, each a small composition of its own rather than the same sample in other colours: Gaze is a
+  stream of boxed, measured pictures (filterable); Dotmatrix a departure board ticking every second; Lo-Fi Print a zine
+  page; Glitch a title card that slips as you pass and a row of controls; Linocut a carved headline, a sun and a picture
+  printed in strokes; Tech-Manual an exploded view and a parts list, where the pointer on a row marks the matching part in
+  the drawing and the other way round (the runtime tells the state about hover with `Ui::on_hover`); Normcore a settings
+  form; Cyberminimalism a command line and its filtered results; Bauhaus a geometric poster and a set of controls that
+  change it. Every page has real interaction; a press sends a front, showing how the style loosens.
 
-### 5.2 公式注
+### 5.2 Formula captions
 
-实时演示下面一行等宽小字（`widgets::caption`，`El::caption_params(key, formula, params, msg)`），印出驱动这个演示的真实参数：这一行由演示读的同一些字段格式化出来，从不手写；下面每个参数是一个小的数字控件（`number` 缩到 0.8），改的就是那个字段。gallery 的交互页（底部面板、浮动窗口、多级菜单、加载、卡片叠、点阵图表）每页一个；实验室的每一格都是这样（§5.3）。
+A line of small mono type under a live demo (`widgets::caption`, `El::caption_params(key, formula, params, msg)`) that
+prints the real parameters driving the demo: the line is formatted from the same fields the demo reads, never written by
+hand, and each parameter below it is a small number control (`number` scaled to 0.8) that changes that field. The
+website's interaction pages (bottom sheet, floating box, nested menu, loading, card stack, dot chart) have one each, and
+every cell of the Lab works this way (§5.3).
 
-### 5.3 实验室
+### 5.3 The Lab
 
-`#lab`：一格只做一件事的小实验，每格是 `examples/lab/` 里的一个文件（`amenui::recipes::lab`），只用公开的接口写（`experiment::Experiment`：视图、更新、走一步、要不要下一帧）。样子是一套主题（`style::LAB`）：近黑的底、灰白的细线和点、只有一种蓝，只在指针碰到或影响到的地方出现；字都是等宽的像素字。页面读起来应该是“一墙活着的作品”，不是“带小图的表单”：每格左上 `[ 名字 ]`、右上一句操作提示；中间是**舞台**（`experiment::STAGE`，高 : 宽 = 3 : 4，裁剪），作品填满舞台，占格子高度的七成以上（图的坐标是 240 × 180，文字的作品按舞台的宽高摆）；下面一行公式（等宽、不折行、超出的裁掉），数字是此刻驱动它的值；最下面一行左边小标签、右边 `[ params ]`，按下才展开这一格的数字控件（缩到 0.72，`Params::open`，`experiment::TOGGLE` 这个下标的消息开关它），不用滑块。格子按至少 340 像素一列排，窄窗口一列。十格：光照文字（铺满舞台的一块等宽小字，柔和的光）、等值线、丝（每个记号是顺着流的一小段线，快的长、慢的短，看上去是流动的丝）、长成形状（f 0.029、k 0.057、120 × 90 的迷宫条纹，点按浓度定大小；每 `T` 秒自己换一个形状：字母 → 开关 → 圆角方块，换的时候旧花纹解码消失、新的解码出现）、水银、沿路径的文字（四行沿着各自相位的波）、球面上的文字（球填满舞台，背面透过来、暗且反）、轨道、弹簧、卡片叠（实验室样子的卡：接近底色的面、细的轮廓线，指针下的那张是强调色）；每个实验另有一页（`#lab-<名字>`，`docs/site/<语言>/lab-<名字>.md`：公式和参数表）。指针碰到的地方一定出现那一种蓝：亮起的字、弯了的等值线、被搅动的丝、播下的种子、被拉住的球、被拉弯的那段字、球面上指针下的字、被吸引的点、按住的弹簧、指针下的卡。
+`#lab`: small experiments that each do one thing, each a file in the website's `examples/lab/`, written only against the
+public interface (`experiment::Experiment`: view, update, step, whether the next frame is wanted). The look is one theme
+(`style::LAB`): a near-black ground, grey-white hairlines and dots, and a single blue that appears only where the pointer
+touches or has an effect; all type is the mono pixel face. The page should read as a wall of living pieces, not a form
+with small pictures: each cell has `[ name ]` at the top left and a one-line hint at the top right; in the middle the
+**stage** (`experiment::STAGE`, height : width = 3 : 4, clipped), which the piece fills, taking over 70% of the cell's
+height (drawings use 240 × 180 coordinates; text pieces are placed by the stage's width and height); below it one line of
+formula (mono, unwrapped, cut off when too long) whose numbers are the values driving it now; and at the bottom a small
+label on the left and `[ params ]` on the right, which opens the cell's number controls only when pressed (scaled to 0.72,
+`Params::open`, toggled by the message at index `experiment::TOGGLE`), with no sliders. Cells are laid out in columns of
+at least 340 px, one column in narrow windows. Ten cells: lit text (a block of small mono type filling the stage, under a
+soft light), contours, silk (each mark a short line segment along the flow, long when fast and short when slow, so it
+looks like flowing silk), grown (f 0.029, k 0.057, maze stripes on 120 × 90, dots sized by concentration; every `T`
+seconds it changes shape by itself: a letter → a switch → a rounded square, the old pattern decoding away as the new one
+decodes in), mercury, text on a path (four lines along waves of their own phase), text on a sphere (the sphere fills the
+stage, the back showing through, dark and reversed), orbits, a spring and the card stack (lab-style cards: faces close
+to the ground with thin outlines, the one under the pointer in the accent); each experiment also has a page
+(`#lab-<name>`, the website's `docs/site/<lang>/lab-<name>.md`: the formula and a table of parameters). Wherever the
+pointer touches, that one blue appears: lit text, bent contours, stirred silk, sown seeds, a held ball, a stretch of text
+pulled into a curve, the text under the pointer on the sphere, attracted points, the held spring, the card under the
+pointer.
 
-**活着的格子（§0 第 3 条“每页都会静止”的明确例外）**：实验室的格子只要看得见（`El::on_visible`）就每帧都走，滚出视野就停，所以实验室页不会静止；它们的记号都从同一份帧预算里取（§1.27），多了按比例缩；帧超出预算时（`budget::usage().scale` < 1）每帧只轮到这一比例的看得见的格子走（`Lab::turn`），所以整页的花费跟着降。用户要求减少动态效果时（网页 `prefers-reduced-motion`，`set_reduced_motion`；`Lab::reduced`）回到原来的规矩：到了这一页或最后一次输入以后的 `experiment::IDLE_S`（1.2 秒）里走，之后只有还在收尾的（弹簧、滑行、跟着指针的点）继续，然后整页静止、不要帧。验收：`tests/frames.rs` 的 `the_labs_pieces_run_while_seen_and_stop_when_scrolled_out`（看得见时一直要帧、滚出去不要、减少动态效果时静止），`every_page_comes_to_rest`（减少动态效果下包括实验室）。
+**Living cells (an explicit exception to "every page comes to rest", §0 rule 3)**: Lab cells step every frame while they
+can be seen (`El::on_visible`) and stop when scrolled out of view, so the Lab page never rests; their marks all come
+from the one frame budget (§1.27) and shrink in proportion when there are too many; when frames exceed the budget
+(`budget::usage().scale` < 1), only that proportion of the visible cells step each frame (`Lab::turn`), so the page's
+cost falls with it. When the viewer asks for reduced motion (the web's `prefers-reduced-motion`, `set_reduced_motion`;
+`Lab::reduced`) the original rule returns: cells step for `experiment::IDLE_S` (1.2 s) after arriving on the page or
+after the last input, then only those still finishing (springs, coasting, points following the pointer) continue, and
+then the whole page rests and wants no frames. Acceptance:
+`the_labs_pieces_run_while_seen_and_stop_when_scrolled_out` in `tests/frames.rs` (frames wanted while seen, none when
+scrolled out, at rest with reduced motion) and `every_page_comes_to_rest` (the Lab included, with reduced motion).
 
-### 5.1 文档站
+### 5.1 The documentation site
 
-gallery 现在按 shadcn/ui 的样子组织成一个文档站（`src/gallery/docs.rs`）。左栏按节：开始（介绍、安装、命令行、第一个视图、项目结构、表单）、概念（树和消息、布局、文字、材质与松开、涟漪规则、变换、预设、标注、三维、粒子、多语言、无障碍、性能、用 render 和树测试）、组件（每个一页，按 `registry.json` 的 `group` 分成六组：输入、展示、反馈、导航、布局、数据，和 shadcn 一样）、风格 / 预设、给 AI（AGENTS.md、llms.txt、组件清单和配方）、更新记录（`CHANGELOG.md`），后面是原来的实验页（记号、材质、标注、变换、排版、场景）。长的文字是 `docs/site/<语言>/*.md`（两种语言，原文），由一个小的 Markdown 子集渲染器（`src/markdown.rs`：标题、段落、列表、代码块、表格、链接、行内代码）画出来；行内代码和链接画在段落自己的一段字里（一个段落一段字，断行仍归排版系统），链接的目标列在段落下面，是可以按的。
+The gallery is organized as a documentation site after shadcn/ui (the website's `src/gallery/docs.rs`). The side rail
+has sections: Getting started (introduction, installation, command line, your first view, project structure, forms),
+Concepts (the tree and messages, layout, text, materials and looseness, ripple rules, transforms, presets, annotation,
+3D, particles, languages, accessibility, performance, testing with render and the tree), Components (one page each, in
+six groups by `registry.json`'s `group`: inputs, display, feedback, navigation, layout, data, as shadcn does), Styles /
+presets, For AI (AGENTS.md, llms.txt, the component registry and recipes) and the Changelog (`CHANGELOG.md`), followed by
+the original experimental pages (marks, materials, annotation, transforms, type, scenes). Long prose is in the website's
+`docs/site/<lang>/*.md` (two languages, original text), drawn by a small Markdown subset renderer (`src/markdown.rs`:
+headings, paragraphs, lists, code blocks, tables, links, inline code); inline code and links are drawn within the
+paragraph's own text (one text per paragraph, so line breaking stays with the layout system), and link targets are listed
+under the paragraph and can be pressed.
 
-**组件页的顺序**每页一样：标题和一句话；预览（预览 / 代码两个标签，代码是这个组件的示例文件 `examples/components/<名字>.rs`，可以选、有复制按钮）；安装（`amenui add <名字>` 和它拷贝的文件）；用法（第一个示例的代码）；示例（示例文件里的每个 `ex_*` 函数：它画出的样子和它自己的源码）；接口（从 `registry.json` 和组件文件的文件头生成：函数、参数、文件、依赖、对波前的响应、重组）；键盘与无障碍（文件头的状态和消息，加网页上的无障碍镜像怎么给它角色和名字）；从右往左（第一个示例放在 `El::rtl(true)` 的子树里，和还没有镜像的部分）；各材质下（第一个示例在十二种材质下各画一遍）。有自己实时预览的十三个组件，gallery 的预览、变体、参数和源码放在预览下面。示例文件编进库里（`amenui::recipes::components`），所以页面上的每段代码都编译过；同一个示例在页上出现几次时用 `El::rekey` 把它的 key 放到不同的前缀下。
+**The order of a component page** is the same on every page: the title and one sentence; a preview (Preview / Code tabs,
+the code being the component's example file `examples/components/<name>.rs`, selectable with a copy button);
+installation (`amenui add <name>` and the files it copies); usage (the first example's code); examples (each `ex_*`
+function in the example file: how it looks and its own source); API (generated from `registry.json` and the component
+file's header: functions, parameters, files, dependencies, the response to fronts, recomposition); keyboard and
+accessibility (the header's states and messages, plus the role and name the web accessibility mirror gives it); right to
+left (the first example in an `El::rtl(true)` subtree, and what isn't mirrored yet); and under each material (the first
+example drawn once in each of twelve materials). For the thirteen components with live previews of their own, the
+gallery's preview, variants, parameters and source sit below the preview. The example files are compiled into the
+library, so every piece of code on the pages has been compiled; when the same example appears more than once on a page,
+`El::rekey` puts its keys under different prefixes.
 
-**页内**：右边“本页内容”跟着滚动（`Ui::on_scrolled` 告诉状态滚到哪里、每一节在哪里），按一项滚到那一节（`Cmd::ScrollTo`）；底部是上一页 / 下一页；⌘K / Ctrl+K（`Ui::on_shortcut`）或 `/` 打开搜索（命令面板，在一个对话框里，筛选所有页的名字，↑ ↓ Enter）；每页的地址是 `#名字`（`#docs-layout`、`#checkbox`、`#ai-registry`）。复制按钮把文字交给宿主（`Gallery::clipboard`，网页 `take_clipboard()` 写进 `navigator.clipboard`，原生用 arboard）。
+**Within a page**: "On this page" on the right follows the scroll (`Ui::on_scrolled` tells the state where it has
+scrolled to and where each section is), and pressing an item scrolls to its section (`Cmd::ScrollTo`); at the bottom are
+Previous and Next; ⌘K / Ctrl+K (`Ui::on_shortcut`) or `/` opens search (a command palette in a dialog filtering every
+page name, ↑ ↓ Enter); each page's address is `#name` (`#docs-layout`, `#checkbox`, `#ai-registry`). Copy buttons hand
+text to the host (`Gallery::clipboard`; on the web `take_clipboard()` writes it to `navigator.clipboard`, natively
+arboard).
 
-**`amenui add`**（`src/bin/amenui.rs`，逻辑在 `src/add.rs`）：`amenui add dialog --to ../my-app` 按清单解析依赖，把每个文件拷到目标下同样的路径，已经有的不覆盖（`--force` 覆盖）；名字写错时说最接近的是哪个。
+**`amenui add`** (`src/bin/amenui.rs`, logic in `src/add.rs`): `amenui add dialog --to ../my-app` resolves dependencies
+from the registry and copies each file to the same path under the target, never overwriting existing files (`--force`
+overwrites); a misspelt name gets the nearest match.
 
-**验收**：`tests/docs.rs`（每个组件在两种语言下都有一页、八节都不空、从右往左的示例从右边开始、属于六组之一、左栏有六个组名、没有视图问题、没有缺的键；每段示例代码都编进了库并且和预览一一对应；文档里每个站内链接都指向一页）；`tests/add.rs`；`tests/widgets.rs`（新组件的角色和键盘）。
+**Acceptance**: `tests/docs.rs` (every component has a page in both languages, none of its sections empty, the
+right-to-left example starts from the right, it belongs to one of the six groups, the side rail has the six group names,
+there are no view problems and no missing keys; every example is compiled into the library and matches its preview one
+to one; every internal link in the docs points to a page); `tests/add.rs`; `tests/widgets.rs` (roles and keyboard of the
+new components).
 
-## 6. 场景
+## 6. Scenes
 
-原来的影片（序章加十一章、场记板和时间线、前后对比的分界线、每章的公式注）按负责人的决定整个删掉了：它只是一组展示，透视材质（xray）和它的预设（Transparent Electronics）也随之删除。通用的基础（提交、流动、重组、掉落、流场、绕排、机件的三维）都留在库里，有自己的页面和测试。落地页现在是形体（§6.2）。
+The original film (a prologue and eleven chapters, the slate and timeline, the before-and-after divider, each chapter's
+caption) was removed entirely by the owner's decision: it was only a showcase. The xray material and its preset
+(Transparent Electronics) were removed with it. The general foundations (commits, flows, recomposition, shedding, flow
+fields, text around obstacles, 3D mechanisms) stay in the library, with their own pages and tests. The landing page is
+now Body (§6.2). The scenes live in the website repository.
 
-### 6.1 七个场景（在 gallery 里）
+### 6.1 Seven scenes (in the gallery)
 
-七个场景，每个是一整页（顶栏下面的整个窗口，没有左栏），地址 `#scene-<名字>`；`#scenes` 是列表页，七张卡片，每张有一个用同样零件做的小缩略构图，按下后卡片的标题流动（`El::flow`）到场景的标题位置。顶栏左边换成“‹ 场景”，风格、主题、材质菜单照常可用；顶栏还有一个“场景”入口。代码在 `src/gallery/scenes.rs`。
+Seven scenes, each a whole page (the whole window under the top bar, without the side rail), at `#scene-<name>`;
+`#scenes` is the list page, seven cards each with a small thumbnail composition built from the same parts, and pressing
+one flows the card's title (`El::flow`) to the scene's title position. The top bar's left side becomes "‹ Scenes", and the
+style, theme and material menus work as usual; the top bar also has a Scenes entry. Code: the website's
+`src/gallery/scenes.rs`.
 
-共同的规矩：静止时安静，只有一个明显的开始方式；动的东西只靠松开、飞行、合拢（场里的波前、变形、流动、凝结）；文字和后面的东西之间没有方框。底部一条可以收起的参数条，场景的数都是数字控件，加“重置”。Esc（没有被控件用掉时，`Ui::on_unused_key`）回到列表；Tab 能到每个控件（分段选项和标签页各占一个位置，`tests/scenes.rs` 验）。窄于 720 时参数条变成一行横向滚动。每个场景打开时应用自己的默认风格（下表），之后风格菜单照常切换；`scenes` 工具每个场景出默认风格和另外两种风格的样张，和 420 × 800 的窄窗口。
+Shared rules: quiet at rest, with one obvious way to start; what moves moves only by loosening, flying and closing (fronts
+in the field, morphs, flows, condensing); no boxes between text and what is behind it. A collapsible parameter bar at the
+bottom, the scene's numbers as number controls, plus Reset. Esc (when no control uses it, `Ui::on_unused_key`) returns to
+the list; Tab reaches every control (segmented choices and tabs take one stop each, checked by `tests/scenes.rs`). Below
+720 px the parameter bar becomes one horizontally scrolling row. Each scene applies its own default style on opening
+(table below), after which the style menu switches as usual; the `scenes` tool gives samples of each scene in its default
+style and two others, and in a 420 × 800 narrow window.
 
-| # | 地址 | 默认风格 | 是什么 | 交互 | 参数 |
+| # | Address | Default style | What it is | Interaction | Parameters |
 |---|---|---|---|---|---|
-| 1 | `scene-opening` 开场 | Neo-Dotmatrix | 满屏的圆点（一段由 ● 组成的文字）、一个“开始”按钮。按下后点散成粒子聚成标题“同一种机制”，停一下，标题再散开拼出一页（标题、搜索框、三张图片卡、开关、数字、按钮、标签页）。然后一台“机器”按节拍操作这一页：它的记号是一个约 34 像素的指针样的东西（十字线、四个角括号、中心点），标注层框出它、在旁边写出它的坐标（`{xy}`），也框出它所在的控件、写出它在做什么。每一步记号从上一个控件飞到下一个（§1.10 的变形，错开很大，所以是一小串粒子），落下后才动手，动手的地方放一道波前；它在输入框里打“点与线”（每个字凝结出来）、拨开关、把数字加 4、换标签页、按“发布”。底部一行字说它正在做什么（“02 / 09　输入“点””）。按下、滚动或键入任何东西就是你接手：机器停下，记号消失，底部换成“你接手了”和“继续演示”。演示结束后这一页就是普通的页面。 | 开始（按钮、回车）；任何操作接手；继续演示；页面上的每个控件 | 节拍、飞行、弧度、点距 |
-| 2 | `scene-reading` 读一篇文章 | Lo-Fi Print | 一篇约 900 字的文章，正文用 `.around` 绕开障碍物排：剪影的石膏像（带 alpha 的图片）、一个圆，或两个都有。障碍物把一行分成两段时左右各排一行。 | 拖动胸像和圆（方向键也能移动，Shift 乘 4），正文每一步重新断行；分段选项换障碍物 | 间隔、图宽、字号、行高 |
-| 3 | `scene-printing` 一张图的印法 | Cyberminimalism | 一张图铺满整个舞台（按比例裁切居中），被四条分界线切成五个窗口，每个窗口是同一张图在同一位置、用自己的 `PicFx` 槽（字符、像素画限色、顺形体的笔触、光点、积木浮雕）；每个窗口上方写着编号、记号名和点距。字符这一块在暗底上也读得清：点距至少 9，16 个字符，原色提亮。分界线在窗口之间的缝里，标签在图的上方：图上的每个像素都是图自己的。静止时是原图；指针的透镜是硬边的（`Fx::lens_hard`）：半径以内完全松开，就是这一块真正的记号，半径以外不动，没有半松开的像素块。第二种模式“一种记号”：整张图只有一块，记号、点距、级数、调色板都在参数条里用数字调，一条对比线（`El::wipe`）左边是原图、右边是记号，拖图或图下的圆点移动它。 | 移动指针；拖动或用方向键移动分界线；五种 / 一种；换图；拖对比线 | 五种：点距、级数、透镜、松开；一种：点距、级数、记号、调色板 |
-| 4 | `scene-morph` 变形 | Neo-Dotmatrix | 同一个位置上四种形态，舞台几乎占满窗口：一个很大的粗重的词“山与水”（`El::weight`）、一张图、同一张图的记号（静止松开 1）、一个完整的小界面（卡片：标题、图、一句说明、“收藏”开关、“份数”数字、“出发”按钮）。每次换形态都是 §1.10 的变形：源松开、粒子飞、目标合拢。小界面落地以后就能用；按“出发”变回那个词。舞台下面一行是步骤（01 字 — 02 图 — 03 记号 — 04 界面），按哪一步就变到哪一步；“循环”开关让它每一形态停 2.6 秒后自己往下走。 | 按舞台、“下一步”、→ / 空格 / 回车，← 往回；按步骤直接跳；循环开关；小界面上的控件 | 飞行、弧度、错开、点距 |
-| 5 | `scene-xray` 拆开 | Tech-Manual | 一个小应用（标题、图片、列表、按钮）。按住空格（或按住“按住拆开”）时，最上一层流动着飞到右边，原处凝结出它的轮廓层（只画边框）和中间图层（`near` 材质，面板不填充，否则填充的面板会盖住上面所有东西的近度），每层上面写着名字；标注层框出标题、图片、列表和按钮，写出编号、名字和尺寸。松开，上层飞回来，另外两层松开淡出。窄窗口时三层上下排。 | 按住空格或按钮；“保持拆开”开关 | 层距、标注数、等距线间距 |
-| 6 | `scene-sound` 声音 | Glitch | 程序生成的信号（不用音频输入）：每拍一个底鼓（低频带按指数衰减）、偶数拍的军鼓、反拍的镲（高频带）、中频的和弦，按种子加一点颗粒。32 条频谱柱的高度是各频带的电平，响的柱子按电平松开（`dot` 下散成点，`glitch` 下错开）。每一拍在页面底部中间放一道波前，强度是强度 × 低频（强度为 0 时没有波前，整页不动），场的推力随之加大，所以整页随低频起伏；波前只落在标题、歌词、频谱和底上：参数条、播放按钮和顶栏是 `El::calm` 的，波前从旁边过去，不推也不撕。标题和四行歌词（当前一行变大）仍然可读。 | 播放 / 暂停（按钮、空格） | 速度 BPM、强度、低频、种子 |
-| 7 | `scene-styles` 十种风格 | Normcore | 同一个界面（天气卡：标题、图片、一段话、按钮、开关、四天的预报）和十二个风格按钮。按钮是提交：新风格从按下的地方传开。 | 按风格按钮；← → 依次切换 | 波速、波宽、尾长 |
+| 1 | `scene-opening` Opening | Neo-Dotmatrix | A screen full of dots (a passage made of ●) and a Start button. Pressed, the dots scatter into particles and gather into the title "The same mechanism", pause, then scatter again and assemble a page (title, search field, three picture cards, a switch, a number, a button, tabs). Then a "machine" operates the page on a beat: its mark is a pointer-like thing of about 34 px (a crosshair, four corner brackets, a center dot), framed by the annotation layer with its coordinates written beside it (`{xy}`), which also frames the control it is on and writes what it is doing. Each step the mark flies from the last control to the next (a §1.10 morph with a large stagger, so it is a short string of particles), acting only after landing, with a front where it acts; it types into the text field (each glyph condensing), flips the switch, adds 4 to the number, changes tab and presses Publish. A line at the bottom says what it is doing ("02 / 09  typing"). Any press, scroll or key hands control to you: the machine stops, the mark disappears, and the bottom line becomes "You took over" and "Continue the demo". When the demo ends the page is an ordinary page. | Start (button, Enter); any action takes over; continue; every control on the page | beat, flight, arc, pitch |
+| 2 | `scene-reading` Reading an article | Lo-Fi Print | An article of about 900 words, the body set with `.around` around obstacles: a plaster bust silhouette (a picture with alpha), a circle, or both. Where an obstacle splits a line into two pieces, each piece takes a line. | Drag the bust and the circle (the arrow keys move them too, Shift × 4), the body breaks again at every step; a segmented choice changes obstacles | gap, picture width, font size, line height |
+| 3 | `scene-printing` How a picture prints | Cyberminimalism | A picture filling the whole stage (cropped to fit, centered), cut by four dividers into five windows, each the same picture in the same place with its own `PicFx` slot (characters, palette-limited pixel art, strokes following form, light points, brick relief); above each window its number, mark set and pitch. The character window reads clearly even on a dark ground: pitch at least 9, 16 characters, original colour brightened. Dividers sit in the gaps between windows and labels above the picture, so every pixel on the picture is the picture's own. At rest it is the original; the pointer's lens is hard-edged (`Fx::lens_hard`): fully loose within its radius, which is this window's real marks, and untouched outside, with no half-loosened blocks. A second mode, "One mark set": the whole picture is one window, with mark set, pitch, levels and palette set by number in the parameter bar, and a compare line (`El::wipe`) with the original on the left and the marks on the right, moved by dragging the picture or the dot under it. | Move the pointer; drag the dividers or move them with the arrow keys; five / one; change picture; drag the compare line | five: pitch, levels, lens, looseness; one: pitch, levels, mark set, palette |
+| 4 | `scene-morph` Morph | Neo-Dotmatrix | Four forms in the same place, the stage filling almost the whole window: a very large heavy word (`El::weight`), a picture, the same picture's marks (held at looseness 1) and a complete small interface (a card with a title, a picture, a sentence, a Favourite switch, a Copies number and a Go button). Every change of form is a §1.10 morph: the source loosens, particles fly, the target closes. Once the small interface lands it can be used; pressing Go turns it back into the word. A row of steps under the stage (01 word — 02 picture — 03 marks — 04 interface) jumps to the step pressed; a Loop switch makes it hold each form for 2.6 s and go on by itself. | Press the stage, Next, → / Space / Enter, ← to go back; jump by step; the Loop switch; the small interface's controls | flight, arc, stagger, pitch |
+| 5 | `scene-xray` Taking it apart | Tech-Manual | A small application (a title, a picture, a list, a button). While Space (or the "Hold to take apart" button) is held, the top layer flows away to the right, and in its place its outline layer (borders only) and the G-buffer layer (the `near` material, panels unfilled, since a filled panel would cover the SDF of everything above it) condense, each labelled with its name; the annotation layer frames the title, picture, list and button with numbers, names and sizes. On release the top layer flies back and the other two loosen and fade. In narrow windows the three layers stack vertically. | Hold Space or the button; a "Keep apart" switch | layer spacing, annotation count, iso-line spacing |
+| 6 | `scene-sound` Sound | Glitch | A generated signal (no audio input): a kick on every beat (a low band decaying exponentially), a snare on even beats, hats on the offbeat (a high band) and a chord in the mids, with a little grain by seed. The heights of 32 spectrum bars are the bands' levels, and loud bars loosen by level (scattering into dots under `dot`, slipping under `glitch`). Every beat sends a front from the bottom center of the page with strength = intensity × low band (no front at intensity 0, so the page doesn't move), and the field's push grows with it, so the whole page swells with the low end; fronts land only on the title, lyrics, spectrum and ground: the parameter bar, the play button and the top bar are `El::calm`, so fronts pass beside them without pushing or tearing. The title and four lines of lyrics (the current one larger) stay readable. | Play / pause (button, Space) | tempo BPM, intensity, low band, seed |
+| 7 | `scene-styles` Ten styles | Normcore | One interface (a weather card: a title, a picture, a paragraph, a button, a switch, a four-day forecast) and twelve style buttons. The buttons are commits: the new style spreads from where it was pressed. | Press a style button; ← → switch in turn | wave speed, wave width, trail length |
 
-运行时为场景加的接口：`Ui::on_unused_key`（没有被用掉的键交给状态，Esc、空格、方向键）、`Ui::on_key_up` 和 `Ui::key_up`（网页和原生窗口都转发松开的键，透视场景用它）、`Cmd::Front`（状态放一道波前，声音场景的节拍）、`Cmd::FrontAt`（从某个元素的中心放波前，开场里机器动手的地方）、`Ui::on_input`（人每一次按下、滚动、按键之前告诉状态，开场用它让人接手）、`El::calm`（最多四个方框，波前从旁边过去：不推、不松开；场景的参数条和顶栏都是）、`Fx::lens_hard`（透镜的边：0 是原来的钟形，1 是半径以内完全松开），以及标注说明里的 `{xy}`（换成元素中心在范围里的坐标）。
+Runtime interfaces added for the scenes: `Ui::on_unused_key` (keys nothing used go to the state: Esc, Space, arrows),
+`Ui::on_key_up` and `Ui::key_up` (the web page and the native window both forward key releases; the take-apart scene uses
+them), `Cmd::Front` (the state sends a front; the sound scene's beat), `Cmd::FrontAt` (a front from an element's center,
+where the opening's machine acts), `Ui::on_input` (tells the state before every press, scroll and key from a person; the
+opening uses it to hand over), `El::calm` (up to four boxes that fronts pass beside without pushing or loosening; the
+scenes' parameter bars and the top bar), `Fx::lens_hard` (the lens's edge: 0 is the original bell, 1 fully loose within
+the radius), and `{xy}` in annotation notes (replaced by the element center's coordinates in the scope).
 
-验收：`cargo test`（`tests/scenes.rs`：地址、Esc、默认风格、每个可按的东西都能获得焦点、列表卡片打开场景时标题流动、开场的步骤、开场的记号在窗口里且大小 28–36、任何按下和按键都让人接手、继续演示接着走、拖动后重排、分界线、一种记号的对比线、按住拆开和松开、变形、按步骤跳和循环、小界面落地后能用、节拍放进场的波前、强度为 0 时没有波前、声音场景的参数条和控件是 calm 的）；`check` 第 9 条：每个场景静止时，声明的活动区域（印法的图）以外没有松开、正在凝结或在波前下的实例（带对照）；`scenes` 出每个场景的样张和 `scenes.png`、`scenes-list.png`；网页版在 WebGL2 下打开列表和每个场景、各操作一次，控制台没有错误。
+Acceptance: `cargo test` (`tests/scenes.rs`: addresses, Esc, default styles, every pressable thing can take focus, a list
+card's title flows when it opens its scene, the opening's steps, the opening's mark is in the window and 28–36 in size, any
+press or key hands over, continuing goes on, reflow after a drag, dividers, the single-set compare line, hold to take apart
+and release, the morph, jumping by step and looping, the small interface works once landed, beats put fronts in the field,
+no front at intensity 0, the sound scene's parameter bar and controls are calm); `check` item 9: in every scene at rest,
+outside the declared active area (the printing scene's picture) no instance is loose, condensing or under a front (with a
+control); `scenes` gives every scene's samples plus `scenes.png` and `scenes-list.png`; the web version under WebGL2 opens
+the list and every scene and operates each once with no console errors.
 
-### 6.2 形体（Body：落地页，第一个场景）
+### 6.2 Body (the landing page and first scene)
 
-`#body` 是网页版和 `window` 打开的第一页，也是左栏“场景”一组的第一项；代码是 `examples/body.rs`（`amenui::recipes::scenes::body`），只用公开的接口写，gallery 只把它铺满整个窗口（`src/gallery/body.rs`），没有顶栏、没有文档的外壳、没有说明文字、没有滑块和对比。它要像游戏里的一个画面或一件作品，不像演示面板。一段原创的、描写性的文字（一片潮滩的一天，`body.p1`–`body.p5`）先作为一页真正能读的文字出现，`DWELL`（2.4 秒）后自己聚成一个慢慢转动、发光的形体，形体由这段文字自己的字组成；再按一下回到文字。
+`#body` is the first page the web version and `window` open, and the first item of the side rail's scenes group; its code
+is the website's `examples/body.rs`, written only against the public interface, and the gallery only fills the window with
+it (`src/gallery/body.rs`): no top bar, no documentation shell, no explanatory text, no sliders or comparisons. It should
+look like a frame from a game or a work of art, not a demo panel. An original descriptive passage (a day on a tidal flat,
+`body.p1`–`body.p5`) first appears as a real, readable page of text, and after `DWELL` (2.4 s) gathers by itself into a
+slowly turning, luminous body made of the passage's own glyphs; another press returns it to text.
 
-- **两种静止，没有半个**：文字（这时文字根本不带 `pose`，和普通排版逐个相同）和形体（只有空闲的慢转和镜头的呼吸）。`gather` 由弹簧（k 30、c 11）在两者之间带着走；按下（不拖动的按下）、空格、回车，或画面里“聚拢 / 散开”的标记切换。
-- **皮和体**：这段文字的字是形体发亮的皮，字数守恒：第 i 个字在它排版的位置和表面一条螺线上的第 i 个点之间走（阅读顺序在前的先走，`progress` 在 0 和 1 时正好是 0 和 1），转到螺线在屏幕上的切线方向，按坡度压扁，按透视缩放，正对的最大到正文的两倍左右，背面的小。体积是第二群记号：约一万一千个小点（`VOLUME`，从帧预算里要），三分之二在外壳上（透过皮看见背面），三分之一在里面，聚拢时各自在自己的时刻出现，散开时消失；它们不是文字，不守恒。
-- **形体是带符号距离场**：`rock` 是大的低频起伏加一层中频、再被五个平面削出几个面的石头；`cloud` 是七个球的平滑并（瓣）；都由 `seed` 定。沿螺线方向从半径 2 往里步进到表面，法线是梯度。取样按（形状、种子、字数）缓存，只算一次。
-- **光**：一盏主光从左上前方。亮的一面接近白热（墨色加一点色相），中间是这种形状的色相，背光的一面是它的深色；轮廓上有一圈边光（背光一侧是亮起来的深色，所以剪影总读得出）；按深度加雾。每种形状一套颜色：石头是骨白、余烬橙、深紫；云是浅青、青、靛蓝；第三种颜色只给指针碰到的地方。底是深色带地平线的渐变，收尾的一遍有辉光（强度 1.4、阈值 0.35、半径 10；辉光的采样每个像素按噪声转一个角度，所以不再出现文字的重影，这是对 `post_bloom` 的修正）和暗角。
-- **空间**：形体下面的地上有一片光晕和一池倒影（体积的一半记号压扁了倒过来，越远越淡）；三种深度的灰尘慢慢飘，按深度有视差；镜头慢慢呼吸（缩放 ±1.8%、俯仰 ±0.03）；指针在窗口里的位置带来整个画面的视差（形体转一点、整体挪一点）。
-- **交互**：拖动有惯性地转它（`gesture::Velocity` 交给滑行，按 e^(−1.3t) 回到空闲转速 0.16 rad/s）；指针靠近时，开口（很硬的弹簧，k 520）打开：原来位置在开口里的字正好回到页面上的位置（清晰、能读），形体上本来落在开口里的字和点不画，所以口子的边是干净的；离开就合上。手指一样。← → 推一下转动。减少动态效果时不空转、不呼吸、不掉小点。
-- **只有英文**（用户定的）：这一页上的字和画面里的小标记不论界面是什么语言都只用英文（`Locale::En.tr`，`body.*` 只在英文目录里，`body.label` 除外：它也是场景列表卡片上的说明）；语言标记写 `LANGUAGE  EN` 或 `LANGUAGE  ZH`，按下换的是 gallery 其余页的语言。
-- **画面里的控件**：几个等宽小字的标记像仪器上的刻字，用细的折线引到形体的轮廓上（引线从投影出来的皮上最远的那一点出发）：形（石 / 云，按下切换）、种子（按下加一，方向键加减）、聚拢 / 散开；右上角是语言（按下换 gallery 其余页的语言，这一页仍是英文），左下角是去实验室和组件库的两个链接。窄于 700 像素时只留角上的标记。
-- **静止**：文字状态不要帧（到达后的那 2.4 秒除外）；形体只为空转和呼吸要帧（`ω` 为 0 或减少动态效果时也静止）。
+- **Two rest states, nothing in between**: text (with no `pose` at all, identical to ordinary layout glyph by glyph) and
+  body (only the idle turn and the lens's breathing). `gather` is carried between the two by a spring (k 30, c 11); a press
+  (without a drag), Space, Enter or the gather / release marking in the picture switches it.
+- **Skin and volume**: the passage's glyphs are the body's glowing skin, their count conserved: glyph i travels between its
+  laid-out position and point i of a spiral on the surface (earlier in reading order goes first; `progress` is exactly 0 and
+  1 at 0 and 1), turned to the spiral's screen-space tangent, squashed by slope and scaled by perspective, up to about twice
+  body size facing the viewer and small on the back. The volume is a second set of marks: about eleven thousand small dots
+  (`VOLUME`, asked of the frame budget), two thirds on the shell (seen through the skin from behind) and one third inside,
+  each appearing at its own moment as it gathers and disappearing as it releases; they are not text and not conserved.
+- **The form is a signed distance field**: `rock` is a stone of large low-frequency swells plus a layer of mid frequencies,
+  cut by five planes into a few facets; `cloud` is a smooth union of seven spheres (lobes); both are set by `seed`. Along
+  the spiral's direction it marches inward from radius 2 to the surface, with the normal from the gradient. Sampling is
+  cached by (form, seed, glyph count) and computed once.
+- **Light**: one key light from the upper left front. The lit side is near white hot (ink with a touch of hue), the middle
+  this form's hue, the shadow side its dark; a rim light around the silhouette (on the shadow side a lifted dark, so the
+  silhouette always reads); fog by depth. Each form has its colours: rock is bone white, ember orange and deep violet;
+  cloud is pale cyan, cyan and indigo; the third colour is only for where the pointer touches. The ground is a dark
+  gradient with a horizon, and the finishing pass has bloom (strength 1.4, threshold 0.35, radius 10; bloom samples at a
+  per-pixel noise angle, so text no longer shows ghost copies, a fix to `post_bloom`) and a vignette.
+- **Space**: on the ground under the body, a halo and a pool of reflection (half of the volume marks, squashed and
+  inverted, fainter with distance); three depths of dust drifting slowly with parallax by depth; the lens breathes slowly
+  (zoom ±1.8%, pitch ±0.03); the pointer's position in the window brings parallax to the whole picture (the body turns a
+  little and the whole shifts a little).
+- **Interaction**: dragging turns it with inertia (`gesture::Velocity` hands over to coasting, returning by e^(−1.3t) to the
+  idle speed of 0.16 rad/s); as the pointer nears, an opening (a very stiff spring, k 520) opens: glyphs whose original
+  position is in the opening return exactly to their place on the page (sharp, readable), and glyphs and dots of the body
+  that would fall in the opening aren't drawn, so its edge is clean; it closes when the pointer leaves. Fingers work the
+  same. ← → nudge the turn. With reduced motion there is no idle turn, no breathing and no falling dots.
+- **English only** (the user's decision): the text and the small markings on this page are English whatever the interface
+  language (`Locale::En.tr`, with `body.*` only in the English catalog, except `body.label`, which is also the caption on
+  the scene list card); the language marking reads `LANGUAGE  EN` or `LANGUAGE  ZH`, and pressing it changes the language
+  of the rest of the gallery.
+- **Controls in the picture**: a few markings in small mono type, like engraving on an instrument, joined by thin elbow
+  leaders to the body's outline (each leader starting from the farthest point of the projected skin): form (rock / cloud,
+  press to switch), seed (press to add one, arrow keys up and down), gather / release; language at the top right (press to
+  change the rest of the gallery's language; this page stays English), and links to the Lab and the components at the
+  bottom left. Below 700 px only the corner markings remain.
+- **Rest**: the text state wants no frames (apart from the 2.4 s after arriving); the body wants frames only for the idle
+  turn and breathing (at `ω` 0 or with reduced motion it rests too).
 
-验收：`tests/body.rs`（字数在文字、半路、形体、回来四个时刻相等；文字状态没有姿态、每个字是文字自己的颜色，回来以后每个字的矩形、变换和颜色和开始时逐个相同；到达后自己聚拢；文字状态两秒不画帧，形体空转在画、转角在增加，`ω = 0` 和减少动态效果时形体也不画帧；拖动转动、松手后在转、拖动不切换、滑回空转；指针附近的字回到平的位置、离开后口子合上）；`tests/i18n.rs`（两种语言下都没有汉字，语言标记写着当前语言）；`labsheet <目录> body` 出 `body.png`（八帧）、`body-large.png` 和 `body-cloud.png`（1600 × 1000）以及一帧的时间（一份和三份文字）。
+Acceptance: `tests/body.rs` (the glyph count is equal at four moments: text, halfway, body and back; the text state has no
+poses and each glyph has the text's own colour, and after returning each glyph's rect, transform and colour equal the start
+one by one; it gathers by itself after arriving; the text state draws no frames for two seconds, the body's idle turn draws
+and its angle grows, and at `ω = 0` and with reduced motion the body draws no frames either; dragging turns it, it keeps
+turning after release, a drag doesn't switch, and it coasts back to the idle turn; glyphs near the pointer return to their
+flat positions and the opening closes after it leaves); `tests/i18n.rs` (no Han characters in either language, and the
+language marking names the current language); `labsheet <dir> body` gives `body.png` (eight frames), `body-large.png` and
+`body-cloud.png` (1600 × 1000) and a frame's time (with one and three copies of the text).
 
-## 7. 已完成的部分和验收
+## 7. What is done and its acceptance
 
-| 内容 | 验收 |
+| Part | Acceptance |
 |---|---|
-| 竖线：两遍绘制、按轮廓走的波、原生和网页同一份代码 | 已完成 |
-| 骨架：界面树、taffy、parley、滚动、点击、焦点、数字控件 | 已完成 |
-| 图片的记号（§1.6.1 全部）、像素字（§1.6.3）、主题和 `plain` / `dot` 材质作为数据 | 已完成：`cargo test`；`check` 读回像素验 §1.6.1 和 §1.6.3 的验收；`sheet` 出每张记号表的样张 |
-| 组件和 gallery | 已完成：`cargo test` 验拖动捕获、文字编辑、对话框的焦点限制和关闭、标签页和列表的选中、滑块和数字控件的拖动、不可用的控件不响应、横向滚动、提交、页名和页面的对应；`pages` 出每页 × 每个主题 × 每种材质的截图和几个状态（对话框、切主题的中途、换页、输入、窄窗口）；`check` 仍然通过；网页版在 WebGL2 下按 hash 打开页面、打开和关闭对话框、在输入框里打字 |
-| 变换：粒子、换页时共有部分流动 | 已完成：见 §1.10 的验收 |
-| 标注层和全部材质、十二个预设、展示场景 | 已完成。材质、标注层、预设、gallery 页：`cargo test`（含 `tests/gaze.rs`）、`clippy` 无警告、`check` 第 5–7 条；`pages … materials` 出每种材质松开度 0 / 0.5 / 1 的样张、标注页的四种模式、每个风格页静止和波前经过时各一张、两张拼版；网页版在 WebGL2 下打开三个风格页和两个材质页没有错误。展示场景（§6）：`cargo test`（含 `tests/wrap.rs`、`tests/scenes.rs`）、`clippy` 无警告、`check` 第 8、9 条；`scenes` 出七个场景 × 三种风格的样张、窄窗口和拼版；网页版在 WebGL2 下打开列表和七个场景、各操作一次，没有错误 |
-| 交互和性能：只在有变化时画、帧时间读数和分辨率预算、文字输入、增量更新和长列表、指针和触摸、无障碍镜像 | 已完成：见 §1.8.1、§1.8.2、§1.11–§1.14 各自的验收；`cargo test`、`clippy` 无警告、`check` 第 1–12 条；网页（swiftshader）上帧数、文字输入、触摸、无障碍镜像的脚本；原生窗口在 Xvfb 下仍然运行 |
-| 涟漪规则、内容重组、给模型用的一面 | 已完成：`cargo test`（含 `tests/ripple.rs`、`tests/render.rs`、`tests/tree.rs`、`tests/recipes.rs`、`tests/registry.rs` 和 AGENTS.md 的文档测试）、`clippy` 无警告、`check` 第 1–13 条；`film <目录> ripple` 出三张样张 |
-| 三维、GPU 上的粒子、只画变了的部分、预设和过渡 | 已完成：`cargo test`（含 `tests/mesh.rs`、`mesh.rs`、`dirty.rs`、`preset.rs`、`orbit.rs` 的单元测试）、`clippy` 无警告、`check` 第 1–16 条；`samples <目录> mesh / particles / transitions` 出三张样张；`bench` 的粒子和 dirty 两节；网页版在 WebGL2 下打开三维、粒子、风格切换三页各操作一次，控制台没有错误 |
-| 修正（重组有界、网格表面发射粒子、xray 的网格、局部的时钟、控件里的图片可读、GPU 粒子多次反向）和影片（§6） | 已完成：`cargo test`（含 `tests/film.rs`、`tests/ripple.rs` 的两千帧和控件里的图片、`mesh.rs` 的表面投影、`morph.rs` 的多次反向）、`clippy` 无警告、`check` 第 1–17 条；`reel <目录>` 出四张样张；网页版在 WebGL2 下键盘走完十二章，控制台没有错误；原生窗口在 Xvfb 下打开影片 |
-| 场图和尾迹（§1.29）、线的材质 `scribblr` 和长路径（§1.30）、小字和边注、场图的读数、Loose Thread、只用黑白和翻转（§4.2–§4.4、§1.21） | 场图和尾迹：`fieldmap.rs` 的单元测试、`tests/fieldmap.rs`、`tests/render.rs` 的拖动、`check` 第 19 条、`bench … map`、`craft <目录> stirr`。线：`strand.rs` 的单元测试、`tests/strand.rs`、`check` 第 20 条（1–5）、`bench … strand`、`craft <目录> scribblr`。小字、读数、只用黑白和翻转（§4.2–§4.4、§1.21 的 `binary` 和 `invert`）：`tests/gaze.rs` 的边注和读数、`check` 第 7.2、7.3 条和第 20.6、20.7 条、`craft <目录> loose-thread`。`cargo test`、`clippy` 无警告、`check` 全部 |
+| The vertical slice: two-stage drawing, waves that follow outlines, one codebase for native and web | Done |
+| The skeleton: the element tree, taffy, parley, scrolling, clicks, focus, the number control | Done |
+| Picture marks (all of §1.6.1), pixel type (§1.6.3), themes and the `plain` / `dot` materials as data | Done: `cargo test`; `check` reads pixels back for §1.6.1 and §1.6.3; `sheet` samples every mark set |
+| Components and the gallery | Done: `cargo test` covers drag capture, text editing, the dialog's focus containment and closing, selection in tabs and lists, dragging sliders and number controls, disabled controls not responding, horizontal scrolling, commits, and page names matching pages; `pages` screenshots every page × theme × material and a few states (dialog, mid theme switch, page change, typing, narrow window); `check` still passes; the web version under WebGL2 opens pages by hash, opens and closes a dialog and types into a field |
+| Transforms: particles, shared parts flowing on page change | Done: see §1.10's acceptance |
+| The annotation layer and every material, twelve presets, showcase scenes | Done. Materials, annotation, presets, gallery pages: `cargo test` (with `tests/gaze.rs`), no `clippy` warnings, `check` items 5–7; `pages … materials` samples every material at looseness 0 / 0.5 / 1, the annotation page's four modes, every style page at rest and with a front passing, and two contact sheets; the web version under WebGL2 opens three style pages and two material pages without errors. Showcase scenes (§6): `cargo test` (with `tests/wrap.rs`, `tests/scenes.rs`), no `clippy` warnings, `check` items 8 and 9; `scenes` samples seven scenes × three styles, a narrow window and contact sheets; the web version under WebGL2 opens the list and the seven scenes and operates each once without errors |
+| Interaction and performance: drawing only on change, the frame-time readout and resolution budget, text input, incremental updates and long lists, pointer and touch, the accessibility mirror | Done: see the acceptance of §1.8.1, §1.8.2 and §1.11–§1.14; `cargo test`, no `clippy` warnings, `check` items 1–12; scripts on the web (SwiftShader) for frame counts, text input, touch and the accessibility mirror; the native window still runs under Xvfb |
+| Ripple rules, recomposition, the surface for models | Done: `cargo test` (with `tests/ripple.rs`, `tests/render.rs`, `tests/tree.rs`, `tests/recipes.rs`, `tests/registry.rs` and the AGENTS.md doc tests), no `clippy` warnings, `check` items 1–13; `film <dir> ripple` gives three samples |
+| 3D, GPU particles, drawing only what changed, presets and transitions | Done: `cargo test` (with `tests/mesh.rs` and the unit tests of `mesh.rs`, `dirty.rs`, `preset.rs`, `orbit.rs`), no `clippy` warnings, `check` items 1–16; `samples <dir> mesh / particles / transitions` give three samples; the `bench` sections for particles and dirty boxes; the web version under WebGL2 opens the 3D, particle and style switching pages and operates each once with no console errors |
+| Fixes (bounded recomposition, particles from mesh surfaces, xray meshes, local clocks, legible pictures in controls, repeated GPU particle reversal) and the film (§6) | Done: `cargo test` (with `tests/film.rs`, the two thousand frames and the pictures in controls of `tests/ripple.rs`, surface projection in `mesh.rs`, repeated reversal in `morph.rs`), no `clippy` warnings, `check` items 1–17; `reel <dir>` gives four samples; the web version under WebGL2 walks through twelve chapters by keyboard with no console errors; the native window opens the film under Xvfb |
+| The field map and trails (§1.29), the `scribblr` thread material and long paths (§1.30), small type and edge notes, field map readouts, Loose Thread, black and white only and invert (§4.2–§4.4, §1.21) | Field map and trails: unit tests in `fieldmap.rs`, `tests/fieldmap.rs`, the drag in `tests/render.rs`, `check` item 19, `bench … map`, `craft <dir> stirr`. Thread: unit tests in `strand.rs`, `tests/strand.rs`, `check` item 20 (1–5), `bench … strand`, `craft <dir> scribblr`. Small type, readouts, black and white only and invert (§4.2–§4.4, `binary` and `invert` in §1.21): the edge note and readout tests in `tests/gaze.rs`, `check` items 7.2, 7.3, 20.6 and 20.7, `craft <dir> loose-thread`. `cargo test`, no `clippy` warnings, all of `check` |
 
-## 8. 目录
+Since the split into two repositories, the tools `check`, `pages`, `scenes`, `film`, `samples`, `craft`, `bench`, `shot`,
+`labsheet`, `scroll` and `window`, and the tests that drive gallery pages, are in the website repository.
+
+## 8. Layout
 
 ```
-src/el.rs        描述
-src/text.rs      排版、多字体、像素字体、字形图集
-src/scene.rs     实例记录、场、Fx
-src/morph.rs     变形和流动：参数、取样、配对、粒子记录（不依赖 GPU）
-src/style.rs     主题、材质、PicFx、Look
-src/marks.rs     记号图集和调色板（CPU 上生成）
-src/ui.rs        运行时：布局、命中、焦点、滚动、出生时间；不依赖 GPU
-src/render.rs    wgpu：中间图、两遍绘制
-src/shader.wgsl  着色器
-src/particles.wgsl 粒子的一遍
-src/widgets/     组件
-src/gaze.rs      标注层：选哪些元素、编号、标签排布（不依赖 GPU）
-src/wrap.rs      绕开轮廓排字：剪影、每条带子的空段（不依赖 GPU）
-src/perf.rs      帧时间、计数、自动质量（不依赖 GPU）
-src/offscreen.rs 离屏渲染和读回（原生工具用）
-src/pictures.rs  示例图片（代码生成）
-src/sources.rs   编进库里的文字和组件源码（给文档站和工具用）
-src/bin/sheet.rs 记号表样张
-src/bin/render.rs 一帧和它的树（给模型用，§1.17）
-src/mesh.rs      三维：矩阵、网格、glTF 子集、场景、拾取（不依赖 GPU）
-src/mesh.wgsl    网格的一遍和解算
-src/sim_cs.wgsl  粒子模拟的计算着色器（接在 particles.wgsl 后面）
-src/dirty.rs     只画变了的部分：两个框（不依赖 GPU）
-src/preset.rs    预设和过渡（数据）
-src/drive.rs     脚本化的输入、打开页面或配方、render 的核心
-src/tree.rs      导出的树
-src/error.rs     公开路径上的错误
-src/recipes.rs   配方（examples/ 里的文件）
-examples/        配方的代码；docs/recipes/ 配方页
-AGENTS.md、llms.txt  给模型看的入口
-registry.json    组件清单（§3）
-tests/           框架的测试
+src/el.rs        the description
+src/text.rs      shaping, multiple fonts, pixel fonts, the glyph atlas
+src/scene.rs     instance records, the field, Fx
+src/morph.rs     morphs and flows: parameters, sampling, pairing, particle records (no GPU)
+src/style.rs     themes, materials, PicFx, Look
+src/marks.rs     the mark atlas and palettes (generated on the CPU)
+src/ui.rs        the runtime: layout, hit testing, focus, scrolling, birth times (no GPU)
+src/render.rs    wgpu: the intermediate buffers, the two passes
+src/shader.wgsl  the shaders
+src/particles.wgsl the particle pass
+src/widgets/     components
+src/gaze.rs      the annotation layer: which elements, numbering, label placement (no GPU)
+src/wrap.rs      setting text around outlines: silhouettes, the free spans of each band (no GPU)
+src/perf.rs      frame times, counters, automatic quality (no GPU)
+src/offscreen.rs offscreen rendering and readback (for native tools)
+src/pictures.rs  sample pictures (generated in code)
+src/sources.rs   text and component sources compiled into the library (for the docs site and tools)
+src/bin/sheet.rs the mark sheet sample
+src/bin/render.rs one frame and its tree (for models, §1.17)
+src/mesh.rs      3D: matrices, meshes, a glTF subset, scenes, picking (no GPU)
+src/mesh.wgsl    the mesh pass and resolve
+src/sim_cs.wgsl  the compute shader for particle simulation (follows particles.wgsl)
+src/dirty.rs     drawing only what changed: the two boxes (no GPU)
+src/preset.rs    presets and transitions (data)
+src/drive.rs     scripted input, opening a page or recipe, the core of render
+src/tree.rs      the exported tree
+src/error.rs     errors on public paths
+src/recipes.rs   recipes (the files in examples/)
+examples/        recipe code; docs/recipes/ holds the recipe pages
+AGENTS.md, llms.txt  entry points for models
+registry.json    the component list (§3)
+tests/           the framework's tests
 ```
 
-官网（gallery 外壳和各页、骨架演示、形体和实验室的代码、站点文档、网页壳和打包脚本、原生窗口，以及 pages、scenes、film、samples、shot、check、bench 这些样张、验收和计时工具）在单独的仓库 [amenui-dev/website](https://github.com/amenui-dev/website)，文件路径和这里写的一样。
+The website (the gallery shell and its pages, the skeleton demo, the code for the body and the Lab, the site docs, the web
+shell and its packaging script, the native window, and the sample, acceptance and timing tools pages, scenes, film,
+samples, shot, check and bench) is in a separate repository, [amenui-dev/website](https://github.com/amenui-dev/website),
+with the same file paths as written here.
 
-## 9. 和设计不一样的地方
+## 9. Where the implementation differs from the design
 
-（影片和 xray 材质后来删掉了；下面提到它们的条目是当时的记录。）
+(The film and the xray material were removed later; entries below that mention them are the record of the time.)
 
-组件和 gallery：
+Components and the gallery:
 
-- §5 原来写的左栏是“组件、材质、场景”。现在按设计负责人的决定是“组件、记号、排版”三组；材质在顶栏切换，场景和风格预设后来另做。
-- 输入框没有选区，也没有输入法（§1.9 早就把输入法放到以后）。点输入框不会把插入点移到点的位置，插入点留在原处。（后来做了，§1.8.1。）
-- 换页时新页从松开凝结，旧页直接换掉，没有旧页留在波前外面（只有主题和材质的切换是两种状态以波前为界）。共有部分流动后来另做（§1.10）。
-- 记号页的默认值里，抖动用图片原色而不是主题墨色：明主题的墨色是深色，深色的记号落在黑底上看不见。
-- 对话框下面的松开度是对话框的参数（默认 0.35），不是写死的常数。
-- 窄窗口时，从 hash 直接打开的页，它在标签行里的那一项不会自动滚进视野。
-- 原生窗口在 macOS 目标上只做过类型检查。Linux 上收尾时在 Xvfb + lavapipe 下实际运行过，用 xdotool 的真实 X 输入操作（见 README）；第一次运行缺 `libxkbcommon-x11.so`（winit 在 X11 上要它），装上以后不用改代码就能运行。为了验证，窗口加了 `--shot 路径@毫秒`（读回自己的帧）和 `--exit-after`。
+- §5 first had the sidebar as "components, materials, scenes". By the design lead's decision it is now three groups,
+  "components, marks, typesetting"; the material is switched in the top bar, and scenes and style presets came later.
+- The text field had no selection and no IME (§1.9 put IME off long before). Clicking a field didn't move the caret to the
+  click; the caret stayed where it was. (Done later, §1.8.1.)
+- On a page change the new page condenses from loose and the old page is simply replaced; no old page stays outside the
+  front (only theme and material switches split two states along a front). Shared parts flowing came later (§1.10).
+- In the defaults of the marks page, dithering uses the picture's own colours rather than the theme's ink: the light
+  theme's ink is dark, and dark marks on a black ground can't be seen.
+- The looseness under a dialog is a dialog parameter (default 0.35), not a fixed constant.
+- In a narrow window, a page opened directly from the hash doesn't scroll its item in the tab row into view.
+- The native window was only type-checked for macOS targets. On Linux it was actually run at the end under Xvfb +
+  lavapipe, driven by real X input from xdotool (see README); the first run lacked `libxkbcommon-x11.so` (winit needs it on
+  X11), and once installed it ran without code changes. For verification the window gained `--shot path@ms` (reading back
+  its own frame) and `--exit-after`.
 
-变换：粒子和流动：
+Transforms: particles and flows:
 
-- 粒子不是单色的点。按单色点做，交接那一帧对不上：`plain` 下松开的元素是变淡的原样，不是点；`dot` 下覆盖率在 0.06 到阈值之间的格子也画成小点，按阈值丢掉就少了。所以粒子是一格一格的图（见 §1.10），颜色从源和目标的第一遍里读；规格里的 src rgba、dst rgba 不在记录里。
-- 低于阈值的格子不飞，留在原地淡出（尘），而不是不存在，同样是为了交接那一帧不变。
-- 有图片参与的变形，飞行期间文字格按图片的画法画（换成主题颜色）。不这样，文字格压在图片格上时会被当成图片的颜色（一片红点）。代价是交接后 30 ms 文字从 `dot` 的圆点变成这张图片的记号，落地前 30 ms 换回来。
-- 字形按“流动 id + 序号”配对时还要求是同一个字形，只配旧位置消失、新位置出现的实例。否则换页时标题的字会换成别的字却不凝结，左栏的标签会多出一份飞走。
-- 飞行中的流动部分画在单独的一层（和对话框的层一样，在 near 里替换下面的东西）。层的 near 原来只在覆盖率过半的地方替换，现在是只要有墨就替换，字的半透明边缘才不会被当成下面的图片。有对话框打开时，流动部分不单独成层。
-- 变形开始后元素的位置就定了：滚动、窗口尺寸变化不跟（尺寸变化直接结束变形）。一次只有一个变形；新的变形会立刻结束进行中的那个（不是它的反向时），粒子会跳到旧目标的样子再出发。
-- 网页版的验收用 DevTools 的虚拟时钟推进时间：swiftshader 下一帧要画大约 10 秒，按真实时间截不到飞行中的画面。
+- Particles are not single-colour dots. Done as single-colour dots, the handover frame doesn't match: under `plain` a
+  loosened element is its faded self, not dots; under `dot` cells with coverage between 0.06 and the threshold are also
+  drawn as small dots, and dropping them by threshold loses them. So particles are cell-by-cell images (see §1.10), with
+  colours read from the source's and target's first pass; the spec's src rgba and dst rgba are not in the record.
+- Cells below the threshold don't fly; they stay and fade (dust) rather than not existing, again so the handover frame
+  doesn't change.
+- In morphs involving a picture, text cells in flight are drawn the way the picture is drawn (in the theme's colours).
+  Otherwise text cells over picture cells are taken for the picture's colour (a patch of red dots). The cost is that for
+  30 ms after handover the text turns from `dot`'s round dots into this picture's marks, and turns back 30 ms before
+  landing.
+- Pairing glyphs by "flow id + index" also requires the same glyph, and only pairs instances that vanish in the old place
+  and appear in the new one. Otherwise on a page change the title's characters would turn into other characters without
+  condensing, and the sidebar labels would gain a copy flying off.
+- Flowing parts in flight are drawn on a separate layer (like the dialog's layer, replacing what's below in near). A
+  layer's near used to replace only where coverage was over half; now it replaces wherever there is any ink, so the
+  translucent edges of glyphs aren't taken for the picture below. While a dialog is open, flowing parts don't get their own
+  layer.
+- Once a morph starts, element positions are fixed: scrolling and window resizes aren't followed (a resize ends the morph).
+  There is one morph at a time; a new morph immediately ends the one in progress (unless it is that one's reverse), and the
+  particles jump to the old target's look before setting off.
+- Web acceptance advances time with DevTools' virtual clock: under SwiftShader a frame takes about 10 s, and real time
+  can't capture frames in flight.
 
-标注层、全部材质、十二个预设：
+The annotation layer, every material, twelve presets:
 
-- `near.r` 改成带符号的近度（轮廓上 0.5），原来只有轮廓外。lino、print 都要知道“在里面多深”；只有外面的距离就得在第二遍里一圈圈搜，太慢。所有读 near.r 的地方（dot 的底、粒子）都跟着换算，原有的 `check` 结果不变（0/255）。
-- 实例记录加了一个 vec4（`look`，96 字节）：材质覆盖码、色相、高度框。`paint` 里塞不下，强调色号和覆盖码都要在第一遍里用。
-- 色相（三种强调色）放在 `ink.b`。
-- 等距线只有离边缘三条以内：每 7 像素一条画满整个大形状会出摩尔纹。
-- dot 材质静止时底色上就有点，所以“正文与 plain 相同”对 dot 只比较字形自己的像素。print 的纸纹是静止时的处理，比较时允许纸纹的幅度（默认 ≤ 4/255）。
-- 原来说 dot 下波前经过图片时会有暗的点状洞。改写以后图片像素在每种材质下都只走 §1.6.1 的记号，底色的点不再算到图片上；`pages … materials` 的 `dot-ripple-picture.png` 和 `check` 第 6 条（带波前）验这件事。
-- 标注层的“实例数”和“中间图的缩略视图”没有做。SIZE 标签放在元素里面的右下角，放在下面会和相邻的说明文字叠在一起。
-- 主题从三个变成十五个，顶栏的主题、材质也换成了菜单（分段控件放不下）。
-- Dotmatrix 的走字靠 `Ui::on_tick`（每次 tick 告诉状态现在的时间），这是给“自己会变的东西”的一个小接口，不是动画：变的只是视图。
-- 风格页的图片用单独的 `PicFx` 槽（4）；Linocut 和 Lo-Fi Print 页上的图静止时就保持完全松开，用它们的记号（笔触、双色网点）印出来。
-- 页面数变多以后左栏比窗口长，测试里点左栏的项要先确认它在视野里。
+- `near.r` became a signed nearness (0.5 on the outline); it used to be outside the outline only. lino and print both need
+  to know "how deep inside"; with only the outside distance the second pass would have to search ring by ring, too slow.
+  Everything that reads near.r (dot's ground, particles) converts accordingly, and the existing `check` results don't
+  change (0/255).
+- The instance record gained a vec4 (`look`, 96 bytes): material override code, hue, height box. They didn't fit in
+  `paint`, and both the accent number and the override code are needed in the first pass.
+- The hue (three accent colours) is in `ink.b`.
+- Contour lines are only within three lines of the edge: one every 7 px across a whole large shape gives moiré.
+- The dot material has dots on the ground even at rest, so "body text the same as plain" compares only the glyphs' own
+  pixels for dot. print's paper grain is a rest-time treatment, and comparisons allow its amplitude (default ≤ 4/255).
+- It was first said that under dot a front passing a picture leaves dark dotted holes. After the rewrite, picture pixels
+  take only the §1.6.1 marks under every material, and the ground's dots no longer land on pictures; `pages … materials`'
+  `dot-ripple-picture.png` and `check` item 6 (with a front) verify this.
+- The annotation layer's "instance count" and "thumbnail of the intermediate buffer" were not done. The SIZE label sits
+  inside the element at the bottom right; placed below it overlapped the neighbouring caption.
+- Themes went from three to fifteen, and the top bar's theme and material became menus (segmented controls didn't fit).
+- Dotmatrix's ticking text relies on `Ui::on_tick` (each tick tells the state the current time), a small interface for
+  "things that change by themselves", not animation: only the view changes.
+- The style pages' pictures use a separate `PicFx` slot (4); the pictures on the Linocut and Lo-Fi Print pages stay fully
+  loose at rest and are printed with their marks (strokes, two-colour halftone).
+- With more pages the sidebar is longer than the window, so tests that click a sidebar item first make sure it is in view.
 
+Showcase scenes:
 
-展示场景：
+- §6 only gave one sentence for each of seven scenes; what was built is in §6's table. Several intents in the task were
+  folded into these seven: "a machine operating the interface, the page building itself" into the opening; "a wall of
+  styles, several wipe lines" into one picture's printings (five windows on the same picture, with draggable dividers);
+  "annotation gaze" into the perspective scene.
+- Several wipe lines are not several half-planes in the field (the field has only one) but the same picture drawn once in
+  each of several clip windows, each window with its own `PicFx` slot; the dividers sit in the 6 px gaps between windows.
+  The reason: shapes and text drawn over a picture are taken for the picture's colour by the material (the entry in §9
+  "Transforms: particles and flows"), so the printings scene draws nothing on the picture and the labels sit above it.
+- Text over a picture is still taken for the picture (the first pass's near takes the maximum, and the picture mark can't
+  be overridden). The scenes avoid that arrangement.
+- "Hold a key" uses Space, and counts only when not consumed by a focused control (with focus on a button, Space presses
+  the button). There is also a hold-to-take-apart button and a "keep apart" switch, for touch and screenshots.
+- The perspective scene's "intermediate buffer" is drawn with the new `near` material on a copy rather than showing the
+  renderer's intermediate texture directly: the copy is laid out elsewhere and has its own nearness. The copy's panel isn't
+  filled, otherwise the filled panel's nearness would cover everything above it (nearness takes the maximum).
+- In the opening, the "machine" marker is a small absolutely positioned element inside the current control, with a new key
+  and the same flow id at each step, flying to the next control with `Cmd::Flow`; it has no animation of its own.
+- The sound scene lays out again every frame (the spectrum bars' heights are view), about 24 ms a frame at 1280 × 800 on
+  llvmpipe (layout included).
+- Scenes are the last group in the sidebar (first would push the style page items out of the 1800 px test window), with a
+  separate "Scenes" entry in the top bar.
+- Font weight applies the same offset to particle sampling, but outside `plain` weight only affects coverage and nearness
+  moves with it (recomputed in the first pass), so materials that read nearness, like lino, see the bolded outline.
+- The scenes' "quiet at rest" is verified only from instances (the first pass's looseness comes only from the instance's
+  own looseness, birth time and fronts, and the lens is 0 once the pointer leaves), not by reading back the near buffer.
 
-- §6 只写了七个场景的一句话；这里做成的样子写在 §6 的表里。任务里提到的几种意图并进了这七个：“机器操作界面、页面自己搭起来”并进开场；“风格墙、多条擦除线”并进一张图的印法（同一张图的五个窗口，分界线可拖）；“标注注视”并进透视。
-- 多条擦除线不是场里的多个半平面（场里只有一个），而是同一张图在几个裁剪窗口里各画一遍，每个窗口用自己的 `PicFx` 槽；分界线放在窗口之间 6 像素的缝里。原因：画在图片上面的形状和文字会被材质当成图片的颜色（§9“变换：粒子和流动”里那条），所以印法场景里图上什么也不画，标签在图的上方。
-- 文字在图片上面仍然会被当成图片（第一遍的 near 取最大值，图片标记压不掉）。场景都避开了这种摆法。
-- “按住一个键”用空格：没有被焦点控件用掉时才算（焦点在按钮上时空格是按按钮）。另有按住即拆开的按钮和“保持拆开”开关，给触摸和截图用。
-- 透视场景的“中间图”用新加的 `near` 材质画在一份副本上，而不是把渲染器的中间纹理直接贴出来：副本按布局放在别处，它的近度是它自己的。副本的面板不填充，否则填充面板的近度会盖住上面所有东西的（近度取最大值）。
-- 开场里“机器”的记号是放在当前控件里面的一个绝对定位的小元素，每一步换 key、带同一个流动 id，靠 `Cmd::Flow` 飞到下一个控件；它没有自己的动画。
-- 声音场景每一帧都重新布局（频谱柱的高度是视图），1280 × 800 在 llvmpipe 上一帧约 24 ms（含布局）。
-- 场景放在左栏最后一组（放在最前会把风格页的项挤出 1800 高的测试窗口），顶栏另有“场景”入口。
-- 字重对粒子取样做了同样的偏移，但字重在 `plain` 以外的材质里只影响覆盖率，近度也跟着移（第一遍里重算），所以 lino 等读近度的材质看到的是加粗后的轮廓。
-- 场景的“静止时安静”只按实例验（第一遍的松开度只来自实例自己的松开度、出生时间和波前，指针离开时透镜为 0），没有读回 near 图。
+Finishing (components × materials):
 
-收尾（组件 × 材质）：
+- The first pass's ink r became "tone × (1 − accent)", and colour is solved linearly as
+  `ground × (1 − r − g) + ink × r + hue × g`. The old nested mix wasn't linear: the anti-aliased edges of text over another
+  colour solved toward the ink, and accent text over a panel had edges read as the other two hues (blue dots). b's code
+  also became "hue × 0.15 + shape × 0.05", so text over a shape of the same hue still mixes into that hue; `Ink.txt` means
+  this pixel has text (even just an edge).
+- print's misregistration doesn't apply to text: where there's text (here or at the offset sample) the accent is taken in
+  place, so text knocked out of an accent doesn't ghost or shift. Shape edges still shift.
+- In a dialog layer, the very faint outer fringe of glyphs doesn't replace the nearness of the panel below (lino would take
+  the text's edge for the panel's outline).
+- `check` items 10 and 11; `pages … components` gives samples and contact sheets of each component page × each material.
 
-- 第一遍 ink 的 r 改成“色调 × (1 − 强调)”，颜色按 `底色 × (1 − r − g) + 墨色 × r + 色相 × g` 线性解出。原来的嵌套 mix 不是线性的：字的抗锯齿边压在别的颜色上时解出来偏向墨色，强调色的字压在面板上，边缘还会被读成另外两种色相（蓝点）。b 的代码也改成“色相 × 0.15 + 形状 × 0.05”，同一色相的字压在形状上，混出来的值仍然落在这个色相里；`Ink.txt` 表示这个像素里有字（哪怕只是边）。
-- print 的套印错位不作用在字上：有字的地方（这里或错位取样的地方）强调色从原位取，所以从强调色里挖出来的字不会重影或偏移。形状的边仍然错位。
-- 对话框层里字形外圈很淡的边不替换下面面板的近度（lino 会把字的边当成面板的轮廓）。
-- `check` 第 10、11 条；`pages … components` 出每个组件页 × 每种材质的样张和拼版。
+Finishing (four scenes):
 
-收尾（四个场景）：
+- The opening's machine marker used to sit in an absolute element inside the control, positioned by its right inset; taffy
+  gives such an absolute element inside a grid the window as its containing block, so the marker was placed outside the
+  window (invisible; "too small" was really "not in the picture"). Now the marker is an ordinary child after the control,
+  pulled to the control's top right by negative margins that sum to zero, so the page doesn't move as the marker comes and
+  goes. Going from one control to the next is a morph (the source is the previous step's marker, hidden and kept for
+  sampling), not a flow: the morph's stagger gives a trail of particles.
+- "Any input lets a person take over" counts only presses, wheel and keys, not plain pointer motion: a pointer crossing the
+  window isn't a wish to take over.
+- The five panels of the printings scene each fix a suitable pitch (characters at least 9, pixel art 0.6×, bricks 1.3×), and
+  the parameter strip's "pitch" is their common base; the single-mark mode uses `PicFx` slot 5.
+- The morph scene's "cycle" holds each form for a constant 2.6 s (one more number wouldn't fit on the parameter strip's
+  line).
+- `El::calm` is a box, not a per-instance flag: the material reads the field per pixel in the second pass and instances
+  have no room for another flag; pixels in the box read a wave of 0, and instances centred in the box aren't pushed.
 
-- 开场里机器的记号原来放在控件里一个用右边距定位的绝对元素里；taffy 给这种嵌在网格里的绝对元素的包含块是窗口，记号被放到了窗口外面（看不见，“太小”其实是不在画面里）。现在记号是控件后面的一个普通子元素，用加起来为零的负外边距压到控件的右上角，所以记号来去时页面不动。它从一个控件到下一个控件是变形（源是上一步的记号，藏起来留着做采样），不是流动：变形的错开给出一串粒子。
-- “任何输入都让人接手”只算按下、滚轮和按键，不算单纯的指针移动：指针从窗口上划过不是要接手。
-- 印法场景的五块各自固定了合适的点距（字符至少 9、像素画 0.6 倍、积木 1.3 倍），参数条的“点距”是它们共同的基准；一种记号的模式另用 `PicFx` 槽 5。
-- 变形场景的“循环”每一形态停的时间是常数 2.6 秒（参数条再多一个数字就放不下一行）。
-- `El::calm` 是方框，不是每个实例的标记：材质在第二遍里按像素读场，实例上没有地方再放一个标记；方框里的像素读到的波是 0，中心在方框里的实例不被推。
+Interaction and performance (§1.11 on):
 
-交互和性能（§1.11 起）：
+- The time-varying parts of materials (glitch's beat, the drift of dot's ground) now read the material clock, which only
+  runs while something moves (§1.11). dot's ground used to drift slowly even at rest; now a page at rest is a still image,
+  and the drift only advances during fronts, condensing and hover. "The material declares itself time-varying and something
+  on screen is loose" counts only for glitch (its time term acts on loose things); dot's drift doesn't count and stops at
+  rest.
+- The departure board's ticking used to rely on `on_tick` every frame. Now `on_tick` is only called when there are frames,
+  so `Ui::on_wake` was added: the state says when it next needs a tick; the departure board wants the next whole second, and
+  the scenes' machine and beat want every frame (they are drawing anyway while they move).
+- The resolution budget (§1.12) changed "pixels at rest take ink directly" to "pixels at rest are recomputed by the
+  material at full resolution": materials with their own look at rest (dot's ground, print's grain) would be wrong taking ink
+  directly; for materials that equal plain at rest the two are the same. Rest is judged per `lo` cell (if any neighbouring
+  cell is at rest, full resolution), not per pixel.
+- Numbers on llvmpipe (`pages … perf` with each material's page fully loose, `scenes perf` with each scene in interaction,
+  ms per frame, only comparable to each other, often 10–20% apart between two runs of the same command on the same
+  machine): the second pass isn't the bottleneck. At 1280 × 800 plain takes about 33 ms a frame, of which CPU recording and
+  submission is under 4 ms and the rest is llvmpipe drawing the first pass (each glyph drawn twice, with its 12 px nearness
+  margin); each material adds only 2–10 ms over plain. So `q = 0.5` saves little here: scenes (before / after at q = 1 /
+  q = 0.5) opening 40.4 / 39.5–42.4 / 28.7–37.0, morph 48.5 / 50.3–50.4 / 38.9–50.5, reading 26.1 / 25.5–26.5 / 27.1–30.3,
+  printings 33.5 / 31.6–36.0 / 33.8–37.7, perspective 18.1 / 18.1–20.0 / 15.9–18.9, sound 23.0 / 23.2–23.7 / 20.3–25.1,
+  styles 24.4 / 24.1–26.0 / 25.3–27.2; the material page at 2560 × 1600 (scale 2) is 126–166 ms at q = 1 and 125–148 ms at
+  q = 0.5 (glitch 166 → 137, dot 142 → 135, the rest within noise). The gain is in frames with large loose areas (the
+  opening's particles, morph flight, glitch's full-screen offset); when the loose area is small `LO_MIN_AREA` skips the
+  second pass, so it is never slower. The automatic level always drops to 0.5 on llvmpipe (every frame is over 12 ms), which
+  only makes the loose parts coarser and never makes the resting parts worse.
+- Text input (§1.8.1): `TextEdit::caret` and `anchor` are still character indices (the old code and tests count
+  characters), and positions in events are bytes of the displayed string. A selected space has no glyph, so a lone selected
+  space shows no outline; between characters the outlines on either side (3 px each) cover it. The selection outline is
+  drawn into the intermediate buffer like any other glyph, so materials treat it like ink (under dot it also scatters into
+  dots when a front passes).
+- The native clipboard (arboard) compiles, but isn't verified automatically under Xvfb (no second program reads the X
+  clipboard); IME events exist only as winit's interface and weren't tried with a real IME under Xvfb. Typing through
+  xdotool goes through `KeyboardInput.text` and is verified.
+- Read-only selection crosses elements in node order; with the pointer in the gap between two selectable texts it takes the
+  nearest one. Selection isn't kept across page changes.
+- Incremental layout (§1.13): taffy's `dirty()` is unreliable for the root (the root still reports dirty after computing),
+  so "recompute or not" only looks at whether anything changed in this comparison.
+- Virtual list rows were meant to be absolutely positioned (`top = i × row height`), but taffy computed the width of
+  absolute children of a column in a scroll area as the window's width; they are laid out normally instead, with the
+  column's top padding standing in for the rows before.
+- The gallery's main row (the row holding the sidebar and the page) had no `min-height: 0` and took the height of the
+  sidebar's content (about 2360 px), so once the sidebar was longer than the window the page itself was as tall as the
+  sidebar and never scrolled (it looked like the content below the window was clipped). With `min_height(0)` the page and
+  sidebar scroll separately; tests scroll a sidebar item into view before clicking it.
+- The annotation layer's labels show coordinates and sizes, which are new strings when scrolling and need shaping; "no
+  shaping while scrolling" refers to the page itself.
+- `bench` (1280 × 800, CPU, mean of 40, ms), before / after: one press on the buttons page 3.34 / 1.83; scrolling one step
+  in a plain list of ten thousand rows (all rows in the tree) 386.9 / 3.05, rebuilding the whole view 400.9 / 100.8; one
+  step in the gallery's ten-thousand-row virtual list (including relayout when crossing the built range) — / 0.78;
+  rewrapping a 5000-character article around a moving circle 3.21 / 1.94.
+- Touch (§1.8.2): a finger's press, when it can't yet be told from a scroll, is sent on release (a mouse still presses on
+  down); the visual press (front, hold) is there on the frame of the press. With nothing scrollable under the finger it
+  presses straight away, like a mouse.
+- Finger velocity on the web is computed from the events' own timestamps: under CPU rasterisation (SwiftShader) a frame
+  takes long and events are processed in batches, and velocity from processing time would be 0.
+- Flinging and overscroll are for fingers only; the native window's touch goes through winit's `Touch` and was never tried
+  without a touch screen.
+- The accessibility mirror (§1.14): on the web, mirror elements are `div`s with a `role`, not native elements such as
+  `<button>` (native elements have their own keyboard behaviour, which would duplicate the runtime's key handling). A piece
+  of text has no role (to a screen reader it is text). The mirror is web only; native has only the interface left for
+  AccessKit, not an implementation.
+- Each tab of a tab view and each list item isn't a focus position in the runtime (the whole tab view or list is one); when a
+  screen reader puts focus on them the focus can't be handed over, but activation (click) still selects them.
+- Web scene acceptance used DevTools' virtual clock (screenshots while paused). Once pages only draw when needed, a
+  screenshot under a paused virtual clock waits for a frame that never comes (nothing requests one), so it switched to real
+  time: after each step it waits until no new frame has been drawn for 3 s (or a time limit) and then takes the screenshot.
+  Under SwiftShader a frame of the printings scene at 1280 × 800 takes minutes and the screenshot times out, so the last five
+  scenes run at 960 × 600. The list and each of the seven scenes are operated once with no console errors.
 
-- 材质里随时间变的部分（glitch 的拍子、dot 底上的漂移）改读材质时钟，它只在有东西在动时走（§1.11）。原来 dot 的底静止时也在慢慢漂；现在静止的页面是不变的图，漂移只在波前、凝结、悬停这些动的时候往前走。“材质声明自己随时间变、且屏幕上有松开的东西”只算 glitch（它的时间项作用在松开的东西上）；dot 的漂移不算，静止时停住。
-- 出发牌页的走字原来靠每帧的 `on_tick`。现在 `on_tick` 只在有帧时调，所以加了 `Ui::on_wake`：状态说下一次什么时候要 tick；出发牌要下一个整秒，场景的机器、节拍每帧都要（它们在动的时候本来就在画）。
-- 分辨率预算（§1.12）里“静止的像素直接取 ink”改成“静止的像素由材质在全分辨率重新算”：静止时有自己样子的材质（dot 的底、print 的纸纹）直接取 ink 就不对了；对静止时等于 plain 的材质两者相同。静止判断按 `lo` 的格（周围任何一格静止就全分辨率），不是逐像素。
-- llvmpipe 上的数字（`pages … perf` 每种材质的页面完全松开、`scenes perf` 每个场景交互中，毫秒每帧，只能相对比较，同一台机器上同一个命令两次之间常差 10–20%）：第二遍不是瓶颈。1280 × 800 下 plain 每帧约 33 ms，其中 CPU 录制和提交不到 4 ms，其余是 llvmpipe 画第一遍（每个字形连同 12 像素的近度边画两遍）；各材质只比 plain 多 2–10 ms。所以 `q = 0.5` 在这里省得不多：场景（改动前 / 改动后 q = 1 / q = 0.5）开场 40.4 / 39.5–42.4 / 28.7–37.0，变形 48.5 / 50.3–50.4 / 38.9–50.5，读文章 26.1 / 25.5–26.5 / 27.1–30.3，印法 33.5 / 31.6–36.0 / 33.8–37.7，透视 18.1 / 18.1–20.0 / 15.9–18.9，声音 23.0 / 23.2–23.7 / 20.3–25.1，风格 24.4 / 24.1–26.0 / 25.3–27.2；材质页 2560 × 1600（缩放 2）下 q = 1 是 126–166 ms，q = 0.5 是 125–148 ms（glitch 166 → 137，dot 142 → 135，其余在噪声里）。有收益的是大面积松开的帧（开场的粒子、变形飞行、glitch 全屏错位）；松开的面积小时 `LO_MIN_AREA` 让它不画第二遍，所以不会更慢。自动档在 llvmpipe 上总会降到 0.5（每帧都超过 12 ms），这只是让松开的部分变粗，不让静止的部分变差。
-- 文字输入（§1.8.1）：`TextEdit::caret` 和 `anchor` 仍是字符序号（原来的代码和测试按字符数），事件里的位置是显示字串的字节。选中的空格没有字形，单独一个空格选中时看不到外圈；夹在字之间时左右的外圈（各 3 像素）把它盖上。选区的外圈和别的字形一样画进中间图，所以材质会像对待墨一样对待它（dot 下波前经过时它也散成点）。
-- 原生的剪贴板（arboard）编译过、在 Xvfb 里没有自动验证（没有第二个程序去读 X 的剪贴板）；输入法事件也只有 winit 的接口，没有在 Xvfb 里用真实的输入法试过。xdotool 键入走 `KeyboardInput.text`，验证过。
-- 只读选区按节点的顺序跨元素；指针在两段可选文字之间的空白里时，取最近的一段。选区不跟着换页保留。
-- 增量布局（§1.13）：taffy 的 `dirty()` 对根节点不可靠（算完以后根节点仍报脏），所以“要不要重算”只看这一次比较时有没有改过什么。
-- 虚拟列表的行原来想用绝对定位（`top = i × 行高`），taffy 把放在滚动区里的列的绝对定位子节点的宽算成了窗口宽；改成正常排列，前面的行用这一列的上内边距代替。
-- gallery 的主体行（左栏和页面所在的那一行）原来没有 `min-height: 0`，它的高度取了左栏内容的高度（约 2360 像素），所以左栏比窗口长以后，页面本身一直和左栏一样高、从来滚不动（看起来是窗口下面的内容被裁掉了）。加上 `min_height(0)` 以后页面和左栏各自滚动；测试里点左栏的项先把它滚进视野。
-- 标注层的标签写着坐标和尺寸，滚动时它们是新的字串，要排版；“滚动不排版”指的是页面本身。
-- `bench`（1280 × 800，CPU，40 次的平均，毫秒）：改动前 / 改动后——按钮页按一次 3.34 / 1.83；一万行普通列表（行都在树里）滚一格 386.9 / 3.05，整个重建视图 400.9 / 100.8；gallery 的一万行虚拟列表滚一格（含跨出造好的范围时的重新布局）— / 0.78；5000 字的文章绕着移动的圆重排 3.21 / 1.94。
-- 触摸（§1.8.2）：手指的按下在不能确定是不是滚动时等到抬起才发（鼠标仍然按下即发）；视觉上的按下（波前、按住）在按下的那一帧就有。手指下没有可以滚动的东西时直接按鼠标的方式按下。
-- 网页上手指的速度按事件自己的时间戳算：在 CPU 光栅化（swiftshader）下页面画一帧要很久，事件是攒着一起处理的，按处理的时间算速度是 0。
-- 甩和拉过量只对手指；原生窗口的触摸走 winit 的 `Touch`，没有触摸屏，没有实际试过。
-- 无障碍镜像（§1.14）：网页上镜像元素是 `div` 加 `role`，不是 `<button>` 这类原生元素（原生元素有自己的键盘行为，会和运行时的键盘处理重复）。一段文字没有角色（对读屏就是文字）。镜像只在网页上；原生只留了接口（AccessKit），没有实现。
-- 标签页的每个标签、列表项在运行时里不是焦点位置（整个标签页 / 列表是一个），读屏把焦点放到它们上面时焦点给不过去；激活（click）照常选中它。
-- 网页的场景验收原来用 DevTools 的虚拟时钟（暂停时截图）。页面只在需要时画以后，虚拟时钟暂停时截图要等一帧，而这一帧不会来（没有请求下一帧），所以改成真实时间：每一步之后等到 3 秒内没有新画的帧（或到时限）再截图。swiftshader 下 1280 × 800 的印法场景一帧要几分钟，截图超时，后五个场景在 960 × 600 下跑。列表和七个场景各操作一次，控制台没有错误。
+Ripple rules, recomposition, the surface for models:
 
-涟漪规则、内容重组、给模型用的一面：
+- The scope is named `Scope::Own`, not `Self_` as in the task (`Self_` reads awkwardly and an underscored variant name is
+  unusual in Rust); `Scope::Off` was added too.
+- Scopes are one box per front (judged by instance centre), not a scope number per instance: an instance can be inside
+  several nested scopes at once and one number can't hold that (§1.15).
+- The legibility cap also governs holding, re-condensing after a press and scroll overscroll, not only fronts and the lens;
+  and these don't look at whether the response is `Nudge` (otherwise nothing would show when a button is pressed or a list
+  overscrolls), only at the legibility cap. `Nudge` only means a front doesn't loosen it. The lens only ever loosened
+  pictures and the ground and is unchanged.
+- `Nudge` pushes as a whole: legible things measure the push from the centre of their outermost control (or their own run
+  of text), and all their instances move together. Pushed by each instance's own centre, the text on a button would be split
+  in two from the middle (seen in the samples).
+- dot's row offset only acts where things are truly loose (`near.b` past 0.2); text held at the legibility cap isn't offset.
+- Recomposed tiles switch from the old piece to the new piece at their own switch point, without a crossfade: with a
+  crossfade the whole number goes grey halfway through the flight. When it changes again midway, the new round lands when
+  the previous round would have landed (at least a third of a flight); otherwise after ten quick presses the number would
+  stay on the old value and only jump at the end.
+- A press on empty space on the page no longer releases a front, so the old acceptance "pressing the ground releases a
+  front" (`tests/frames.rs`) now presses a button; the whole style page is one ripple scope (pressing any control sends the
+  front across the page and text only reaches the legibility cap); the material page's sample is entirely `Loosen` and not
+  legible (it exists to show how text loosens), and the "Ripple" button sends a front into the sample; sidebar items (page
+  changes) are global.
+- In `tests/pointer.rs`, "a held row is fully loose" and "an overscrolled row is looser than 0.3" became equal to / not over
+  the legibility cap: the rows contain text and are legible by the rule.
+- So that tests press the same point, the number control's value got a key (`{key}/shown`); the old path `…/value/0` no
+  longer exists.
+- "Ten quick presses" uses the new `Cmd::Press { key }` (pressing an element like a person: message, front, condensing),
+  which the state issues once every 33 ms in `on_tick`.
+- `shot`, `pages` and `film` were not merged into `render`: they are fixed scripts of their own (the demo, each page ×
+  theme × material, the moments of a morph), and only the image output tool was duplicated; cropping, contact sheets and
+  PNG encoding moved into `offscreen` (`crop`, `sheet`, `png_bytes`), used by `film` and `scenes`.
+- Web events and `render`'s GPU tests: without an adapter, the two drawing tests in `tests/render.rs` and `tests/recipes.rs`
+  are skipped (printing a line); the container here has lavapipe and ran them all.
+- Interface text in strings was still written directly in Chinese: the gallery had no language files, and the task said to
+  keep it as it was. (Language files were added later, §1.20.)
 
-- 范围的名字是 `Scope::Own`，不是任务里写的 `Self_`（`Self_` 读着别扭，也是 Rust 里少见的带下划线的变体名）；另加了 `Scope::Off`。
-- 范围用每道波前一个方框（按实例中心判断），不是每个实例一个范围号：一个实例同时在好几层范围里，一个号放不下（§1.15）。
-- 可读上限也管按住、按下后的重新凝结和滚动拉过头，不只管波前和透镜；而且这几样不看响应是不是 `Nudge`（否则按钮按下、列表拉过头时什么也看不出来），只看可读上限。`Nudge` 只表示波前不松开它。透镜本来就只松开图片和底，没有改。
-- `Nudge` 的推动按整块算：可读的东西用它所在的最外层控件（或它自己这段文字）的中心量推力，所有实例一起移动。按实例各自的中心推，按钮上的字会被从中间推开成两半（样张里看到的）。
-- dot 的行错位只作用在真正松开的地方（`near.b` 过 0.2 以后），被按住在可读上限的字不错位。
-- 重组的格子在自己的换画点上从旧的一块换成新的一块，不交叉淡变：交叉淡变时飞到一半整个数字发灰。中途又变时新一轮在上一轮本来要落地的时候落地（至少三分之一个飞行），否则连点 10 次时数字一直停在旧值上，最后才跳过去。
-- 页面上空白处的按下不再放波前，所以原来“按底放一道波前”的验收（`tests/frames.rs`）改成了按按钮；风格页的整页是一个涟漪范围（按任何控件，波前到整页，字只到可读上限）；材质页的样张整个是 `Loosen` 且不可读（它就是用来看字怎么松开的），“涟漪”按钮把波前放进样张；左栏的项（换页）是全局的。
-- `tests/pointer.rs` 里“按住的行完全松开”“拉过头的行松开超过 0.3”改成了等于 / 不超过可读上限：行里有字，按规则是可读的。
-- 为了让测试在同一个点上按到，数字控件的值有了 key（`{key}/shown`），原来按路径的 `…/value/0` 不再存在。
-- “连点 10 次”用新的 `Cmd::Press { key }`（像人一样按一个元素：消息、波前、凝结），状态在 `on_tick` 里按 33 毫秒一次放进去。
-- `shot`、`pages`、`film` 没有并进 `render`：它们是各自固定的脚本（演示、每页 × 主题 × 材质、变形的时刻），重复的只是出图的工具；剪切、拼版和 PNG 编码挪进了 `offscreen`（`crop`、`sheet`、`png_bytes`），`film` 和 `scenes` 用它。
-- 网页版的事件、`render` 的 GPU 测试：没有适配器时 `tests/render.rs` 和 `tests/recipes.rs` 里画图的那两条跳过（打印一行），这里的容器有 lavapipe，都跑了。
-- 字符串里的界面文字仍然直接写中文：gallery 一直没有语言文件，按任务的说法照原来的样子做。（后来加了语言文件，§1.20。）
+3D, GPU particles, drawing only what changed, presets and transitions:
 
-三维、GPU 粒子、只画变了的部分、预设和过渡：
+- 3D is drawn by material by default, not as a picture: the task said "treat it as a picture (the ground colour doesn't
+  appear in it)" and also asked that every material draw it without extra code, and both can only hold this way: its ink is
+  opaque flat shading, and `ambient` keeps even the darkest face off the ground colour; only with `Scene3d.picture` on is it
+  drawn with picture marks. Meshes default to `Response::Loosen` (like pictures), even when draggable.
+- Picking casts rays on the CPU with the same transforms rather than reading back the id buffer: readback is asynchronous
+  on WebGL2 and would make hover and press a frame late and nondeterministic in headless tests. The id buffer is still drawn,
+  to find the edges of "the other copy".
+- Normals aren't interpolated: meshes are flat-shaded triangle lists, and under non-uniform scale normals are transformed by
+  the model matrix only (not the inverse transpose). Extruded text outlines weren't done. Edge detection only looks at the
+  right and bottom neighbours, so edge lines are one pixel wide and biased to one side; at 0.5 resolution the silhouette
+  steps by 2 px (nearness is bilinear, so the edge is a soft step, not jagged).
+- Mesh morphs take cells over the whole element rect (the CPU doesn't know the silhouette), and empty cells fly
+  transparent; (changed later: on the CPU path a mesh's particles leave from or land on the 3D surface, see "Fixes and the
+  film".) A force "flowing along the mesh surface" wasn't done.
+- GPU particle pairing is "two grids with the same rows and columns, cell i to cell i", not the CPU's coverage threshold
+  plus Morton rank: no sorting needed; handover and landing are still pixel-identical. There is no "dust": cells empty on
+  both sides fly transparent. (The GPU path first could only reverse once; later any number of times.) On WebGL2 the third
+  tier, RGBA8 fixed-point packing, wasn't done: when no float target works it stays on the CPU path (stated in the readout).
+  The particle count is the grid's cell count (element extent / cell area), so "200,000" is a ceiling, not exact.
+- Particle bench (lavapipe, only relative; one frame = one simulation step + the first pass twice (ink, near) + material,
+  1280 × 800, in flight): CPU path 22,802 cells 50 ms; GPU (compute) 48,400 cells 94 ms, 192,696 cells 294 ms, 990,912
+  cells 1056 ms. On lavapipe the bottleneck is fill (each cell drawn twice), not the CPU. Under SwiftShader (WebGL2, rgba32f
+  emulated in fragments) 198,468 cells fly, a frame takes several seconds, and screenshots caught frames in flight.
+- Drawing only what changed: the box is one rectangle (a union), not a set of rectangles; materials' read extents are
+  estimated generously from their parameters. With materials that read the material clock (dot, glitch), a running clock
+  redraws the whole screen: under dot, pressing the counter button (a front, the ground drifting) is still full screen.
+  Bench (lavapipe, 1280 × 800, mean GPU frame): plain hover 19.7 → 4.8 ms (box 5.5% of the window), caret blink 18.2 → 3.6 ms
+  (2.2%), pressing the counter 18.4 → 6.8 ms (26.6%); dot hover 37.2 → 7.1 ms, blink 43.2 → 5.2 ms, pressing the counter
+  39.7 → 36.2 ms (full screen, see above).
+- The material clock no longer runs for hover bursts, badge slides or annotation drawing in (§1.19); under glitch, a hover
+  burst's row offset no longer changes beat by beat, it only weakens with the burst.
+- A preset's "default response of text" has only two classes (text and controls, everything else); one per role (button,
+  tab…) wasn't done. A transition's "layering" uses brightness as depth (the material step only sees the picture, not the
+  tree's depth); "detection boxes" draw boxes without labels; "colour blocks" only translate, no rotation; the offset band's
+  channel split acts only on the old picture (the new picture is sampled once, see below). `shade_new` can have only one
+  call site in the shader: each call site is compiled in full, and several made the material pipeline take tens of seconds
+  to compile on a CPU rasteriser and run out of memory.
+- The `render` tool only draws the last frame: at a commit with no retained picture yet, it draws the old scene into
+  `before` with `Split::look` (the look at commit time), so a single frame can still show a transition midway.
+- The gallery's source page is one run per line, and the layout cache per generation went from 2048 to 4096 and later to
+  8192 (`text::LAYOUT_CACHE`): once the morph page's source (`morph.rs`) grew, scrolling reshaped on cache generation changes
+  (`tests/incremental.rs`).
+- Found and not fixed: recomposition with a keyed number that changes every frame (such as a gliding camera readout) kept
+  accumulating tiles until memory ran out; the 3D page turned off recomposition on its camera numbers to avoid it. (Fixed
+  later, see below.)
 
-- 三维默认按材质画，不按图片画：任务说“当作图片（底色不在它里面出现）”，又要求每种材质不加代码就能画它，这两条同时只能这样满足——它的墨是不透明的平面着色，`ambient` 让最暗的面也不是底色；`Scene3d.picture` 打开时才按图片的记号画。网格默认是 `Response::Loosen`（像图片），哪怕它能拖。
-- 拾取在 CPU 上按同样的变换投射线，不读回编号图：读回在 WebGL2 上是异步的，会让悬停和按下晚一帧、在无头测试里不确定。编号图仍然画，用来找“另一份”的边。
-- 法线不是插值的：网格是平面着色的三角形表，非均匀缩放下法线只用模型矩阵变换（不用逆转置）。挤出文字轮廓没有做。棱的检测只看右边和下边的邻居，所以棱线一像素宽、偏在一侧；0.5 分辨率下剪影按 2 像素的台阶（近度是双线性的，所以边是软的台阶，不是锯齿）。
-- 网格变形时按整个元素矩形取格子（CPU 不知道剪影），空格子飞起来是透明的；（后来改了：CPU 路径上网格的粒子从三维表面出发或落到三维表面，见“修正和影片”。）“沿网格表面流动”的力没有做。
-- GPU 粒子的配对是“两张同样行列数的网格，第 i 格对第 i 格”，不是 CPU 的覆盖率阈值加 Morton 名次：不需要排序；交接和落地仍然逐像素不变。没有“尘”：两边都空的格子透明地飞。（GPU 路径原来只能转回一次，后来改成任意次。）WebGL2 上没有做 RGBA8 定点打包的第三档：浮点目标都不行时直接留在 CPU 路径（读数里写出）。粒子数是网格的格数（元素范围 / 格子面积），所以“200,000”是上限，不是正好。
-- 粒子的 bench（lavapipe，只能相对比较；一帧 = 模拟一步 + 第一遍两次（ink、near）+ 材质，1280 × 800，飞行中）：CPU 路径 22,802 格 50 ms；GPU（计算）48,400 格 94 ms，192,696 格 294 ms，990,912 格 1056 ms——lavapipe 上瓶颈是填充（每格画两遍），不是 CPU。swiftshader（WebGL2，rgba32f 片元模拟）下 198,468 格能飞，一帧要几秒，截图取到了飞行中的画面。
-- 只画变了的部分：框是一个矩形（并集），不是一组矩形；材质的读取范围按参数估得偏大。用读材质时钟的材质（dot、glitch）时，时钟走就整屏重画——dot 下按计数按钮（有波前，底在漂）仍是整屏。bench（lavapipe，1280 × 800，GPU 一帧的平均）：plain 悬停 19.7 → 4.8 ms（框占窗口 5.5%），插入点闪烁 18.2 → 3.6 ms（2.2%），按计数 18.4 → 6.8 ms（26.6%）；dot 悬停 37.2 → 7.1 ms，闪烁 43.2 → 5.2 ms，按计数 39.7 → 36.2 ms（整屏，见上）。
-- 材质时钟不再因为悬停的 burst、角标滑动、标注画出而走（§1.19）；glitch 下悬停时 burst 的行错位不再一拍一拍地变，只随 burst 减弱。
-- 预设的“文字的默认响应”只分两类（文字和控件、其余），按角色（按钮、标签页…）各自一个没有做。过渡的“分层”按亮度当深度（材质那一步只看得到画面，看不到树的深度）；“检测框”不写标签，只画框；“色块”只平移不旋转；错位带的通道错开只作用在旧画面上（新画面只取一次，见下）。`shade_new` 在着色器里只能有一个调用点：每个调用点都被完整编译，几处调用让材质管线在 CPU 光栅器上编译要几十秒、内存不够。
-- `render` 工具只画最后一帧：提交时如果还没有保留的画面，就按 `Split::look`（提交时的外观）把旧场景画进 `before`，所以单帧也能看到过渡中途。
-- gallery 的源码页一行一段，排版缓存每代从 2048 加到 4096、后来再加到 8192（`text::LAYOUT_CACHE`）：变形页的源码（`morph.rs`）变长以后，滚动时会因为缓存换代而重新排版（`tests/incremental.rs`）。
-- 发现但没有修：内容重组在一个带 key 的数字每一帧都变时（比如滑行中的相机读数）格子越积越多，内存会耗尽；三维页的相机数字关掉了重组绕开它。（后来修了，见下。）
+Fixes and the film:
 
+- The recomposition leak: when it changed again midway, the new round's source was the fragments cut from the previous
+  round's tiles, cut again by tiles; fragments multiplied each round, and "tiles per glyph" counted fragments, so the cap
+  grew too. Now tiles in flight carry their fragments directly as the new round's source (fragments aren't cut again), the
+  glyph count only counts whole glyphs, a change within `Recompose::min_interval_ms` (80) replaces directly, and
+  `max_tiles` (24000) bounds the whole window. `tests/ripple.rs`: a keyed number changing for two thousand frames keeps
+  instance and tile counts bounded; changing every 100 ms (retargeting in flight each time) three hundred times keeps tiles
+  under the cap and ends at rest. The 3D page's camera numbers no longer turn off recomposition.
+- Meshes emitting particles: on the CPU path, when one side is a `scene3d`, that side's cells are points on the mesh
+  surface sampled by world area (`Scene3d::surface`), enough to cover the half facing the camera; each frame they are
+  reprojected with the object's current transform (`Ui::reproject`; the object turns and the particles follow), and points
+  occluded by the mesh (on the CPU, the nearest ray intersection, `Scene3d::project`, equivalent to a depth comparison with
+  the mesh) aren't drawn before they leave the surface (kind code + 8; those landing on the back + 16, fading out before
+  landing). What the particles show is still taken from the mesh picture of the frame the morph began (not redrawn each
+  frame). The GPU path (cell count above `gpu_above`) still samples cells from the screen.
+- Local events no longer redraw the whole screen: dot's ground drift reads the "ground clock" (`Ui::ground_clock`,
+  `rip.w`), which only runs while something acting on the whole window moves (commits, window-wide fronts, morphs, flows,
+  flings and overscroll); the part of glitch that reads the material clock is only in loose places, and when the clock runs
+  only instances with static looseness are added to the box. `check` item 15 is still byte-identical.
+- Pictures in controls: legible pictures sit 1/32 below their slot number in near.g (rounding on decode is unchanged), and
+  the second pass's lens raises them at most to the legibility cap (`burst_t.w` carries `legible_cap`).
+- Any number of GPU particle reversals: every reversal after the first sets all cells off at once with the same duration,
+  so each cell's starting point for the leg is an affine function of "its progress at the first reversal",
+  `alpha × u + beta` (`morph::Turn`), with one more `gt` in the uniform.
+- Added to the runtime for the film: `Cmd::Commit` (a commit without a press, keeping the picture before layout),
+  `Cmd::Focus`, `Cmd::Scrub` (holding a running morph at a point in flight, `MorphRun::scrub`; on release it continues from
+  there), `Ui::on_pointer` (the pointer's position in the window), `Node::flow()`; a morph ends when both its elements are
+  gone; `Cmd::Press` doesn't call `on_input`.
+- A full glyph atlas (the film used many sizes across several scales) left later text undrawable; now a full atlas is
+  cleared and the frame drawn again (recomposition tiles and the dissolving old page are dropped).
+- The stage has no ground fill: a shape filling the stage would be treated as a shape by materials (under lino a carved
+  block, and its override material code would cover everything in the stage), so the stage is marked out only by corner crop
+  marks and the clapperboard.
+- The clapperboard's ticks are `focusable(false)` (the keyboard uses ← / → and number keys), so Tab moves between the
+  controls in the stage.
+- Autoplay's "any input" includes pointer motion (not only presses, wheel and keys), since pointer parallax and hover are
+  interaction in the film.
+- Going from chapter 12 back to chapter 1, Normcore has no transition, so the commit's front spreads from the stage centre
+  (not a hard cut).
+- Objects interpolate by rect during a chapter change, so between two chapters with different aspect ratios they stretch
+  briefly.
+- Chapter 7's sideways flick takes the CPU path when a mesh object takes part (emitting from the surface); chapter 12's
+  finale is the GPU path, with the mesh sampled from the screen.
 
-修正和影片：
+Scrolling, the mark and the mechanism, languages, components and docs:
 
-- 重组的泄漏：原来中途又变时，新一轮的源是上一轮格子切出的碎片，再按格子切一遍；碎片的数量每一轮成倍增加，而且“每个字形的格子数”按碎片数算，上限也跟着涨。现在飞着的格子带着自己的碎片直接作为新一轮的源（碎片不再切），字形数只数完整的字形；`Recompose::min_interval_ms`（80）以内又变就直接替换；`max_tiles`（24000）限住整个窗口。`tests/ripple.rs`：一个带 key 的数字连变两千帧，实例数和格子数有界；每 100 毫秒变一次（每次都在飞行中改目标）三百次，格子数不超过上限，最后静止。三维页的相机数字不再关掉重组。
-- 网格发射粒子：CPU 路径上，一边是 `scene3d` 时，那一边的格子是网格表面按世界面积取的点（`Scene3d::surface`），格子数够盖住朝向相机的一半；每一帧按物体此刻的变换重新投影（`Ui::reproject`，物体在转，粒子跟着），被网格挡住的点（CPU 上沿射线求最近的交点，`Scene3d::project`，等于和网格的深度比较）在离开表面之前不画（种类码加 8；落在背面的加 16，落地前淡出）。粒子画出来的内容仍取自变形开始时那一帧的网格图（不是每帧重画）。GPU 路径（格子数超过 `gpu_above`）仍按屏幕上的样子取格子。
-- 局部事件不再整屏重画：dot 底的漂移改读“底的时钟”（`Ui::ground_clock`，`rip.w`），它只在作用于整个窗口的东西在动时走（提交、范围是整个窗口的波前、变形、流动、甩和拉过头）；glitch 读材质时钟的部分只在松开的地方，时钟走时只把带静态松开度的实例加进框。check 第 15 条仍然逐字节相同。
-- 控件里的图片：可读的图片在 near.g 里比它的槽号低 1/32（解码时取整不变），第二遍的透镜对它最多加到可读上限（`burst_t.w` 里带着 `legible_cap`）。
-- GPU 粒子任意次反向：第一次以后的每一次都是所有格子同时出发、时长相同，所以每一格这一段的起点是“第一次反向时它的进度”的仿射函数 `alpha × u + beta`（`morph::Turn`），uniform 里多一个 `gt`。
-- 运行时为影片加的：`Cmd::Commit`（没有按下的提交，在布局之前留下画面）、`Cmd::Focus`、`Cmd::Scrub`（把进行中的变形停在飞行的某一点，`MorphRun::scrub`；松开后从那里接着走）、`Ui::on_pointer`（指针在窗口里的位置）、`Node::flow()`；两个元素都不在了的变形结束；`Cmd::Press` 不告诉 `on_input`。
-- 字形图集满了（影片在几种缩放下用了很多字号）会让后来的字画不出来；现在图集满时清空重来，再画一遍这一帧（重组的格子和消散的旧页放掉）。
-- 舞台不填底色：一块铺满舞台的形状会被材质当成形状（lino 下是刻出的一块，而且它的覆盖材质码会盖住舞台里的东西），所以舞台只靠四角的裁切标记和场记板对齐出来。
-- 场记板里的刻度是 `focusable(false)`（键盘用 ← / → 和数字键），这样 Tab 在舞台里的控件之间走。
-- 自动播放的“任何输入”包括指针移动（不只按下、滚轮、按键），因为指针的视差、悬停在影片里都是交互。
-- 第 12 章回到第 1 章时，Normcore 没有过渡，所以是提交的波前从舞台中心传开（不是一刀切）。
-- 物体在换章途中按矩形插值，宽高比不同的两章之间会被拉伸一下。
-- 第 7 章的横向拨动在网格物体参与时走 CPU 路径（发射点在表面）；第 12 章的终章是 GPU 路径，网格那一块按屏幕取样。
+- It was said the native window's first frame takes 45 s. Measured: pipeline creation totals about 2.2–2.5 s (the material
+  pipeline `fs_material` 2.1–2.5 s, each of the others within tens of ms), and on an idle machine the first frame appears
+  about 3 s after start. The 45 s run had another lavapipe render (`reel`) running on the same machine: when llvmpipe's
+  threads are taken, the first frame can drag past a minute. So pipelines were not made to compile lazily per material;
+  `AMENUI_TIMING=1` prints each pipeline's compile time.
+- Scrolling "landing line by line on the dot grid" (dot and ascii's `latch`) is mostly invisible at 60 Hz; what shows is
+  each material's trail and stagger. Wheel ticks aren't smoothed.
+- The GPU particle path still samples cells from the screen, not the mesh surface: no mesh takes part in a GPU-path morph in
+  the film any more (when the mechanism throws out one part the cell count is within the CPU path's range, leaving from the
+  surface).
+- The logo started as "a ring crossed by a bar", which drawn out is a well-known traffic sign; it became "a circle with a
+  square over its bottom right quarter".
+- The mechanism doesn't loosen while held and dragged (`Response::Ignore`), otherwise under plain the whole machine fades
+  while dragged.
+- 3D views keep their own aspect ratio during morphs and flows (centre to centre, uniform scale); pictures still interpolate
+  by rect (on a page change a picture leaves from the card's rect, which the test wants).
+- Languages only covered the framework, the components' own text, the gallery shell and sidebar, the film and the
+  mechanism, and the docs site; the body text of the old style pages, scenes, material pages and mark pages was still only in
+  Chinese (in English the page names were English).
+- Text scrolled into view for the first time on a docs page may be shaped once (`tests/incremental.rs`'s wheel test allows
+  at most two).
+- Fixed a long-standing problem: when a node moved from a parent being removed to a parent that stays, taffy didn't take it
+  out of the old parent's list, and removing the old parent read the already removed child and crashed (seen going from the
+  list page to ten thousand rows). Now the staying children are taken out of the node to be removed first, and the parent
+  that receives them is set again.
+- The date field wasn't done.
 
+Wrapping, the finishing pass, depth marks, falling and flow fields, embedding in web pages:
 
-滚动、标志与机件、多语言、组件与文档：
+- Wrapping: the gap is measured at the widest point of the outline over each band's whole height, left and right
+  independently (it used to be measured by a circle swept along the outline, and a band that only grazed the top of the
+  circle was pushed away by the wider lines below); the left run sits against the obstacle, so it is ragged on the column's
+  outer side (the left margin), not on the outline's side. Chinese has no spaces between words and parley's justification
+  only uses spaces, so both sides can't be even. Seen diagonally, text and the outline in the next band may be closer than
+  `gap` (`tests/wrap.rs` now measures per band). Xiaozhi's logo is drawn on the same 2 px grid as the obstacle.
+- The finishing pass (§1.21) isn't in the first or second pass but replaces the step that copies the retained picture to the
+  target each frame, so with everything off it costs nothing, and partial redraws, commits and transitions are unaffected;
+  the blue noise is the R2 low-discrepancy sequence, not a true blue-noise mask; "Atkinson" is an ordered approximation, not
+  error diffusion (a fragment shader can't pass error from pixel to pixel).
+- Depth marks (§1.18) change the mesh's ink (lightness and tone); the mark cell size doesn't change with depth.
+- Falling and flow-field marks move on the CPU and are redrawn as instances each frame (at most 4000 on the flow field
+  page); they aren't part of the particle system (§1.10).
+- `El::shift` only moves the drawn position and hit testing, not layout: what's moved aside doesn't push its neighbours.
+- One document has only one `<amenui-view>`: every export of the wasm module reads the same state (one runtime, one
+  renderer). Supporting several would need a view number on each export and one state and device per view, which wasn't
+  done; a second element doesn't draw, says so in its box, and carries `data-amenui-limit`.
 
-- 原来说原生窗口第一帧要 45 秒。量下来：管线创建一共约 2.2–2.5 秒（其中材质管线 `fs_material` 2.1–2.5 秒，其余每条几十毫秒以内），空闲的机器上第一帧在启动后约 3 秒出现。45 秒那次是同一台机器上同时在跑别的 lavapipe 渲染（`reel`）：llvmpipe 的线程被抢走时第一帧会拖到一分钟以上。所以没有改成按材质延迟编译；`AMENUI_TIMING=1` 打印每条管线的编译时间。
-- 滚动的“一行一行落在点阵上”（dot、ascii 的 `latch`）在 60 Hz 下大多看不出来；看得出来的是各材质的拖尾和错开。滚轮刻度没有做平滑。
-- GPU 粒子路径的格子仍然按屏幕取样，没有从网格表面取样：影片里不再有网格参与 GPU 路径的变形（机件散开一个零件时格子数在 CPU 路径的范围内，从表面出发）。
-- 标志一开始是“一个环被一根横杠穿过”，画出来就是一个有名的交通标志，换成了“一个圆和压在它右下四分之一上的方”。
-- 机件按住拖动时不松开（`Response::Ignore`），否则 plain 下整台机器在拖动中变淡。
-- 变形和流动中的三维视图保持自己的宽高比（中心到中心移动、均匀缩放）；图片仍然按矩形插值（换页时图片从卡片的矩形出发，测试要的是这个）。
-- 多语言只覆盖了框架、组件自己的字、gallery 的外壳和左栏、影片和机件、文档站；原来的风格页、场景、材质页、记号页的正文仍然只有中文（英文下页名是英文的）。
-- 文档页上第一次滚进视野的字可能排版一次（`tests/incremental.rs` 的滚轮测试允许最多两次）。
-- 修了一个早就在的问题：一个节点从要删掉的父节点挪到留下的父节点时，taffy 不会把它从旧父节点的列表里拿掉，删旧父节点时会读到已经删掉的子节点而崩溃（列表页 → 一万行时出现）。现在删之前先把留下的子节点从要删的节点里拿出来，再把接住它们的父节点设一遍。
-- 日期字段没有做。
+Justified wrapping:
 
+- Wrapping: runs next to an obstacle are no longer moved whole against it (which left the column's left margin ragged);
+  they are justified instead: the remaining width is spread between clusters, so the left and right runs are even on both
+  sides. Each gap gains at most `Around::justify_max` (default 0.25 em); Chinese justifies almost every run beside Xiaozhi
+  (1 run of 83 across twenty positions can't), while English can only stretch spaces and has no hyphenation, a run beside the
+  circle has only a few words, and over a third of runs exceed the cap and are set from the start, ragged on the outline's
+  side. Lines to justify are shaped again with letter spacing (one more shaping, only when the obstacle changes grid
+  position); clusters with added spacing turn off optional ligatures, and the next cluster after one is in another layout run,
+  so kerning between the two no longer applies (no effect on Chinese).
 
-绕排、收尾的一遍、按深度的记号、掉落和流场、嵌入网页：
+Interaction craft:
 
-- 绕排：间隔按每条带子整个高度里轮廓最宽的地方量，左右各自独立（原来按沿轮廓扫过的圆量，只擦到圆顶的带子会被下面更宽的行推远）；左边的段贴住障碍物排，所以它在列的外边（左边距）那一侧是参差的，不是在轮廓那一侧——中文没有词间空格，parley 的两端对齐只用空格，做不到两边都齐。斜着看，字和下一条带子里的轮廓可能比 `gap` 近（`tests/wrap.rs` 改成按带子量）。小志的标志画在和障碍物同一张 2 像素的网格上。
-- 收尾的一遍（§1.21）不在第一遍和第二遍里，而是代替每帧把保留的画面拷到目标的那一步，所以全关时没有代价，局部重画、提交和过渡都不受影响；蓝噪声是 R2 低差异序列，不是真的蓝噪声掩模；“Atkinson”是有序的近似，不是误差扩散（片元着色器里做不了逐像素的误差传递）。
-- 按深度的记号（§1.18）改的是网格的墨（明暗和色调），记号的格子大小不跟着深度变。
-- 掉落和流场的记号在 CPU 上移动、每帧作为实例重画（流场一页最多 4000 个）；它们不是粒子系统（§1.10）的一部分。
-- `El::shift` 只移动画出来的位置和命中，不改布局：被挪开的东西不推开它旁边的东西。
-- 一个文档里只有一个 `<amenui-view>`：wasm 模块的每个导出都读同一份状态（一个运行时、一个渲染器）。要支持多个，得给每个导出加一个视图号、每个视图一份状态和自己的设备，没有做；第二个元素不画，框里写明，并带 `data-amenui-limit`。
+- The bottom sheet, when presented, both slides up and condenses from loose by the framework's rule (every new instance
+  does); no "already there" exception was added.
+- Handover goes one way only: pulling down a list at its top becomes dragging the sheet; once the sheet is dragged to its
+  highest detent it doesn't hand the gesture back to list scrolling.
+- Dragging the mouse on the sheet body drags the sheet (the mouse has no drag scrolling); the list scrolls with the wheel.
+- When `El::absolute` has both left and right (top and bottom) insets, taffy 0.15 sizes it from the root, so sheets and
+  floating windows use the new `el::layers` instead of absolute positioning.
+- When a skeleton is replaced by content, text condenses from loose (the rule for new instances) rather than "recomposing"
+  from bars into text: bars and glyphs don't correspond one to one, and forcing a correspondence only sends bars flying
+  around.
+- The card stack's "thick" look uses 3D cubes, not rotation of 2D instances: the framework's 2D instances don't rotate, and
+  3D elements already have outlines and crease edges.
+- The dot-matrix chart wasn't put into film chapter 5 or 8: there were no still samples of those two chapters to compare
+  against at the time, and without judging it, it wasn't swapped.
+- The film's formula notes were only added to chapter 6; the other chapters got none (no adding text to the stage without
+  seeing samples).
+- English wrapping got below 15% mainly from letter spacing between letters (at most 0.08 em); hyphenation itself helped
+  little: Xiaozhi's English is mostly short words, Liang's patterns don't break before two letters or after three, and words
+  like `along`, `places` and `reaches` can't be broken. With hyphenation alone and no spacing it is 33% (43 / 129).
 
-绕排的两端对齐：
+Fields, the Lab, decoding transitions, the narrowed scope, the frame budget:
 
-- 绕排：挨着障碍物的段不再整段挪到贴住障碍物（那样列的左边距是参差的），改成两端对齐：剩下的宽度分到字群之间，左右两段两边都齐。每个间隙最多加 `Around::justify_max`（默认 0.25 字号）；中文在小志旁边几乎每段都能对齐（二十个位置里 83 段有 1 段不行），英文只能拉空格、没有断词，圆旁边一段只有几个词，三分之一多的段超过上限，从起点排、在轮廓那一侧参差。要对齐的行用字间距再排一次（多一次塑形，只在障碍物换网格位置时）；加了字间距的字群关掉了可选连字，挨着它的下一个字群在另一个排版段里，两者之间的字偶距不再起作用（中文没有影响）。
+- Instances gained one more vec4 (`xf`, 128 bytes). Particles and recomposition cut cells by the instance's rect, ignoring
+  `xf`: rotated glyphs in a morph are sampled unrotated; `on_outline` also measures coverage by the unrotated rect (the
+  shapes in the experiments don't rotate). WebGL2 uses one more varying slot (12, the minimum is 15).
+- A canvas's marks come from the view every frame: an experiment rebuilds the view, compares and draws the scene each frame,
+  without layout or shaping (`tests/pointer_moves.rs` passes as before). A partial scene that "redraws only this element"
+  wasn't done: the scene is still redrawn whole, with the first and second passes clipped to the box.
+- Fields are all computed on the CPU, WebGL2 included; compute shaders are only used for the existing particles, not to
+  speed up fields.
+- Reaction-diffusion growing into a shape uses f 0.037, k 0.060 (Pearson's maze parameters 0.029 / 0.057 die out with this
+  discretisation and such small shapes); the mask's edge has no flux, so thin strokes can grow. Letters use Noto Sans
+  outlines (pixel type strokes are too thin on a 120 × 75 grid).
+- The budget is a number of marks, not time itself: the ratio is adjusted from the previous frame's time. The GPU morph cell
+  count scales by the same ratio, and the CPU path is also capped at `MAX_MARKS` (40000 before). The flow field's old cap of
+  4000 was removed; the budget governs it.
+- Decoding's colour blocks are decided by the coverage of the finest level's cells; anti-aliased ink edges below 0.02 cell
+  coverage don't count, so a block's outer edge is sometimes one cell wider than the box (full-screen cell alignment).
+- The Lab's look is a theme (`LAB`), put on by the look when entering a Lab page, not by a commit (no transition); the top
+  bar's theme and material menus have no effect on those pages.
+- Narrowed scope: the chrome, liquid and collage materials, the Neo-Y2K and Mixed media presets (with their themes, style
+  pages and the "melt" and "tear" transition steps), and film chapter 11 (Y2K) and chapter 12 (collage, with the finale's
+  million particles) were removed with no compatibility kept; the mechanism is now chapter 11. The first pass's ink.b height
+  code reserved for "height materials", liquid's soft buffer and its pass went too. The records above still mention them as
+  they were at the time.
+- Performance: the gallery's view used to parse `registry.json` several times each time (`docs::items` and `widget_names`
+  called once per page in the sidebar and the page table), 35 ms per view, and the Lab needs at least one view per frame;
+  now it is parsed once and kept, and a Lab frame (input, update, view, layout, scene, CPU) went from about 40 ms to 3–8 ms
+  (`bench <count> lab`).
 
-交互的手艺：
+Field maps and trails, threads, small type, Loose Thread:
 
-- 底部面板呈现时既滑上来也按框架的规矩从松开凝结（新出现的实例都这样）；没有另加“已经在那里”的例外。
-- 交接只做了一个方向：列表在顶上往下拉变成拖面板；面板拖到最高一档以后不会接着把手势交回列表滚动。
-- 鼠标在面板正文上拖动拖的是面板（鼠标没有拖动滚动），列表用滚轮滚。
-- `El::absolute` 带左右（上下）两个插入值时，taffy 0.15 按根节点算大小，所以面板和浮动窗口用新的 `el::layers`，不用绝对定位。
-- 骨架换成内容时，字是从松开凝结出来的（新实例的规矩），不是从条“重组”成字：条和字形没有一一对应，硬做对应只会让条飞来飞去。
-- 卡片叠的“厚”样子用三维的立方体，不是二维实例的旋转：框架的二维实例没有旋转，三维元素本来就有轮廓和折痕的边。
-- 点阵图表没有换进影片第 5 章或第 8 章：当时没有出这两章的静止样张来比较，没有判断就不换。
-- 影片里的公式注只加在第 6 章；其余各章没有加（不想在没有看样张的情况下往舞台上加字）。
-- 英文绕排降到 15% 以下主要靠字母间的字距（至多 0.08 em），断词本身帮得不多：小志的英文多是短词，Liang 的表在两个字母之前、三个字母之后不断，`along`、`places`、`reaches` 这样的词断不开。只开断词、不加字距时是 33%（43 / 129）。
+- Trails are named `stirr` as the lead session decided (`El::stirr`, `Cmd::Stir`); read the draft's `wake` as that;
+  `Ui::on_wake` is unchanged. The corresponding numbers in `MapFx` are `stirr`, `stirr_radius` and `flow` (the draft's
+  `wake`, `wake_radius`, `stir`).
+- The character 回 has four outline loops, not the two the draft said: each of its two squares has an inner and an outer
+  edge. So one thread has three bridges (`tests/strand.rs`).
+- A thread's rest path adds the displacement the first pass pushes instances by along the flow (`flow × drift`). Without
+  it, while the field map moves, the fill is pushed a few pixels and the thread stays put, and the body text doubles.
+- A thread end's direction is read at the rest point where it starts, and on leaving the scope box the last segment is cut at
+  the edge rather than dropping the whole point. In the old way, the number of points in a thread end varied with `k`, and
+  the farthest point jumped outward while retracting (measured by `check` item 20.4).
+- Thread segment counts and rest paths are recomputed on the CPU each frame (needed anyway while the field map moves);
+  outlines are cached by glyph, size and transform. `bench … strand` (200 glyphs fully loose, 6775 segments) takes about
+  0.98 ms on this machine, just within 1 ms; half of it computing threads and a smaller part building instances.
+- Edge notes use a serif (Source Serif 4), not integer multiples of Departure Mono as draft §4.5 said: the lead session
+  decided "the serif is for wide-tracked small type and edge notes". So `check` item 7's "rotated pixel type has only ink and
+  ground colours" became "every pixel is a blend between the ground and the annotation colour" (anti-aliased grey edges are
+  different coverage of one colour, with no other colour mixed in), plus more than 30% of each line's ink being solid; 1080p
+  legibility is verified by the same measure. Weight 400, not 300: at 1× only just over a tenth of 300's ink is solid, which
+  doesn't read.
+- `Whisper` is a fixed font (`Font::Whisper` → `text::SERIF`), not a fourth font role in the theme: there is only one serif
+  and no theme wants to replace it. There is no Chinese serif (as the lead session decided), so the demos only write Latin
+  in small type.
+- "No dithering, nearest colour only" already works (the shader's palette branch takes the nearest colour when dithering is
+  off), so no new dithering kind was added; `binary` just swaps the palette to `one_bit`, turns dithering off and rounds line
+  widths.
+- Edge notes, waveforms and level bars only draw while the pointer is in scope (hover and focus path modes); the "all" mode
+  always draws. The draft didn't say when readouts appear on hover.
+- The pointer itself doesn't stir the field map (only elements with `El::stirr` stir it as they move), so the Loose Thread
+  style page has a 1 px dot following the pointer to stir it; no "pointer stirs" runtime mechanism was added.
+- Fixed two old misalignments: `style::THEME_IDS` still had the removed `y2k` and `kraft`, so from the 11th on names and
+  themes didn't match (`--theme glitch` got the lamp); the style pages' `STYLE_DESC` still had the descriptions of three
+  removed styles, so from the 6th on descriptions and pages didn't match.
 
-场、实验室、解码过渡、范围缩小、帧预算：
+Where the changes made for looks (field maps, threads, small type, Loose Thread) differ from the change list:
 
-- 实例多了一个 vec4（`xf`，128 字节）。粒子和重组按实例的矩形切格子，不看 `xf`：转过的字形参与变形时按没转的样子取样；`on_outline` 也按没转的矩形量覆盖率（实验里的形状都不转）。WebGL2 的变量槽多用了一个（12 个，下限 15）。
-- 图（`canvas`）的记号每帧都从视图来：一格实验每帧重建视图、比较、画场景，不布局、不排版（`tests/pointer_moves.rs` 照常过）。没有做“只重画这一个元素”的局部场景：场景仍是整页重画，第一遍和第二遍按框裁剪。
-- 场全部在 CPU 上算，WebGL2 下也一样；计算着色器只用在原来的粒子上，场没有用它加速。
-- 长成形状的反应扩散用 f 0.037、k 0.060（Pearson 的迷宫参数 0.029 / 0.057 在这里的离散化和这么小的形状里会熄灭）；遮罩的边上没有通量，细的笔画才长得起来。字母用的是 Noto Sans 的轮廓（像素字的笔画在 120 × 75 的网格上太细）。
-- 预算是记号的个数，不是时间本身：比例按上一帧的时间调。GPU 上的变形格子数按同一个比例缩，CPU 路径另外不超过 `MAX_MARKS`（原来是 40000）。流场原来的上限 4000 删了，由预算管。
-- 解码的色块按最细一档的格子覆盖率决定；墨的抗锯齿边在格子覆盖率 0.02 以下的地方不算，所以色块的外边有时比方框宽一格（全屏格子对齐）。
-- 实验室的样子是一个主题（`LAB`），进实验室的页时由外观换上，不是提交（没有过渡）；顶栏的主题、材质菜单在这几页上不起作用。
-- 范围缩小：金属（chrome）、液体（liquid）和拼贴（collage）三种材质、Neo-Y2K 和 Mixed media 两个预设（连同它们的主题、风格页、过渡里的“融化”和“撕开”两种步骤）、影片的第 11 章（Y2K）和第 12 章（拼贴，连同终章的百万粒子）删掉了，不留兼容；机件现在是第 11 章。第一遍里给“高度材质”留的 ink.b 高度码、液体的 soft 图和它的那一遍也一起删了。上面的记录里还提到它们，那是当时的样子。
-- 性能：gallery 的视图原来每次都把 `registry.json` 解析好几遍（`docs::items`、`widget_names` 在左栏和页表里每页调一次），一次视图要 35 ms，实验室每帧至少一次视图；现在解析一次留着，实验室一帧（输入、更新、视图、布局、场景，CPU）从约 40 ms 降到 3–8 ms（`bench <次数> lab`）。
-
-场图和尾迹、线、小字、Loose Thread：
-
-- 尾迹按主持会话定的名字叫 `stirr`（`El::stirr`、`Cmd::Stir`），设计稿里的 `wake` 都按它读；`Ui::on_wake` 不动。`MapFx` 里对应的数叫 `stirr`、`stirr_radius`、`flow`（设计稿的 `wake`、`wake_radius`、`stir`）。
-- “回”字是四圈轮廓，不是设计稿说的两圈：两个方框各有里外两条边。所以一根线里有三座桥（`tests/strand.rs`）。
-- 线的静止路径加上第一遍按流向推实例的那一段位移（`flow × drift`）。不加的话，场图在动时填充被推开几个像素，线留在原处，正文成了两份。
-- 线头的方向在它起头的那个静止点上读，出范围方框时最后一段切在边上，不是整点丢掉。原来的做法里，线头的点数随 `k` 变，收回时最远点会往外跳（`check` 第 20.4 条量出来的）。
-- 线的段数、静止路径都在 CPU 上每帧重算（场图在动时本来就要）；轮廓按字形、字号、变换缓存。`bench … strand`（200 个字形完全松开，6775 段）在这台机器上约 0.98 ms，刚好在 1 ms 以内；其中一半是算线，一小半是造实例。
-- 边注用衬线体（Source Serif 4），不是设计稿 §4.5 说的 Departure Mono 的整数倍：主持会话定了“衬线体给宽字距小字和边注用”。所以 `check` 第 7 条的“转过的像素字只有墨色和底色两种颜色”改成“每个像素都是底色和标注色之间的混合”（抗锯齿的灰边是同一种颜色的不同覆盖，不混进别的颜色），另加每条字三成以上的墨是实的；1080p 的可读性按同一个量验。字重用 400 不用 300：300 在 1× 下只有一成多的墨是实的，读不清。
-- `Whisper` 是一个固定的字体（`Font::Whisper` → `text::SERIF`），不是主题里的第四个字体角色：只有一套衬线体，没有哪个主题要换掉它。没有中文衬线体（主持会话定的），演示里小字只写西文。
-- “不抖动、只取最近的颜色”现在就走得通（着色器的调色板分支在抖动关掉时取最近的颜色），所以没有加新的抖动种类；`binary` 只是把调色板换成 `one_bit`、关掉抖动、线宽取整。
-- 边注、波形、电平条只在指针在范围里时画（悬停和焦点路径模式），“全部”模式一直画。设计稿没有说悬停时读数什么时候在。
-- 指针本身不搅场图（只有 `El::stirr` 的元素移动时搅），所以 Loose Thread 的风格页放了一个跟着指针的 1 像素的点来搅；没有加“指针搅动”的运行时机制。
-- 修了两处旧的错位：`style::THEME_IDS` 还留着删掉的 `y2k` 和 `kraft`，从第 11 个起名字和主题对不上（`--theme glitch` 拿到的是灯）；风格页的说明 `STYLE_DESC` 还留着三个删掉的风格的说明，第 6 个起说明和页面对不上。
-
-按好不好看改的修改清单（场图、线、小字、Loose Thread）和清单不一样的地方：
-
-- 要读的字和控件在 `scribblr` 下不出线、不淡、不被流向推（清单第 1 条照做），原来“只画沿轮廓的线”的那一条删了。波前照常推它们（清单只说了流向）。
-- 顶点去掉的时间按清单的容差走，但不是“容差一过就滑”：容差 `0.5 + smoothstep(0.3, 0.5, k) × 0.3 × 行高`，顶点从容差经过它的那个松开度起、用半个松开度的跨度滑到弦上，滑的时候跟着弦的两端走、只把自己离弦的那一段收短。照清单的 `smoothstep(0.3, 1, k)` 直接滑，从 1 收到 0 时有顶点一帧跳 7–9 像素（大于 `reach / 6`）：嵌套的顶点在父顶点还在滑时就被拉到很远的弦上。
-- 独立的位移不按顶点序号哈希，按沿路径的弧长每半个行高一格哈希、格间缓动：留下的顶点隔一根弦，各走各的；夹在它们中间、正在滑的顶点跟着走，所以没有跳点。效果和“按序号”一样。
-- 线头至少长到范围的边（清单的 `max(tail, 0.6 × 长边)` 在斜着走时离边还差 50 像素）；起点那根取能走最远、和末尾那根不同向的方向，不是“相反的方向”：风格页的标题在左上角，相反的方向一出来就出了范围。转折不是噪声，是在四分之一、一半、四分之三处向两边交替偏出，所以 2–5 处明确的转折。方向按整根线头实际能走多远挑（中途碰到要读的字就停），不是只看一条直线。
-- 清单第 2 条的段数和段长按 `angular` 1 量：切角会在每个转角多出一小段，中位数就量成了切角的那一小段。默认 `angular` 是 0.9。
-- “只用黑白”按覆盖率取阈值只在 plain 和 `scribblr` 下（墨就是原样画的材质）；别的材质画的是自己的记号，仍按最近的颜色取。很淡的填充（离底色不到墨色的两成）算底，不然面板会变成整块的墨。
-- 角标往外让 6 像素（清单的两个办法里取了这一个），所以小声的字也有角标。
-- 线从图片后面过去（图片的方框里不画线）：第一遍里线的墨落在图片上会被读成图片的颜色，样张里成了红线。清单没有提到这一点。线团的结因此不压在图片右上角，挪到了图片右下角，一角在图片后面。
-- Loose Thread 页的页脚不再有 `amenui · loose thread · 2026`，图注只写 `fig. 1`：线团的长线从图片右边经过，这两行字会被它压住。窄窗口里没有线团。
-- 场图的 `energy_life` 2.0、`bleed` 0.06、`creep` 0.15，指针下的点半径 72：清单要扫过以后松开度不小于 0.8、指针离开一秒时还有 0.5、三秒时为 0。前一条做到了；后两条在 §1.29 的衰减（寿命的指数加每秒固定的 0.15）下不能同时成立：三秒内回到 0 要 `τ ln(1 + e0 / (0.15 τ)) ≤ 3`，也就是 `τ` 不超过 2，这时从 0.9 起一秒后只剩约 0.35。取了“三秒时为 0、不要帧”（规矩 3），一秒时验不小于 0.3。原来的 `bleed` 0.2 和 `creep` 0.4 让墨上的能量每步摊开四成，扫过的标题只到 0.7。
-- `craft <目录> thread-ref` 只出风格页的两帧，和参考图的并排在仓库外拼（仓库里不放第三方的图）。
+- Text and controls meant to be read don't get threads, don't fade and aren't pushed by the flow under `scribblr` (list
+  item 1, as written); the old item "draw only threads along the outline" was removed. Fronts push them as usual (the list
+  only mentioned the flow).
+- Vertices are removed on the list's tolerance, but not "slide as soon as the tolerance is passed": the tolerance is
+  `0.5 + smoothstep(0.3, 0.5, k) × 0.3 × line height`, and a vertex slides onto its chord over half a looseness span from
+  the looseness at which the tolerance passes it, following the chord's two ends while sliding and only shortening its own
+  offset from the chord. Sliding directly by the list's `smoothstep(0.3, 1, k)`, going from 1 to 0 made some vertices jump
+  7–9 px in one frame (more than `reach / 6`): nested vertices were pulled onto far chords while their parent vertex was
+  still sliding.
+- Independent displacement isn't hashed by vertex index but by arc length along the path, one cell every half line height,
+  eased between cells: the remaining vertices, a chord apart, each move their own way, and vertices between them that are
+  sliding follow, so nothing jumps. The effect is the same as "by index".
+- Thread ends grow at least to the scope's edge (the list's `max(tail, 0.6 × long side)` fell 50 px short of the edge on a
+  diagonal); the starting one takes the direction that can go farthest and differs from the last one, not "the opposite
+  direction": the style page's title is at the top left and the opposite direction leaves the scope at once. Turns aren't
+  noise but alternate offsets to either side at a quarter, half and three quarters, so 2–5 clear turns. The direction is
+  chosen by how far the whole thread end can actually go (stopping where it meets text meant to be read), not by one
+  straight line.
+- List item 2's segment counts and lengths are measured at `angular` 1: chamfers add a short segment at each corner, and the
+  median would measure the chamfer. The default `angular` is 0.9.
+- "Black and white only" thresholds by coverage only under plain and `scribblr` (where the ink is the material drawn as
+  is); other materials draw their own marks and still take the nearest colour. Very faint fills (less than a fifth of the way
+  from the ground to the ink) count as ground, or panels would become solid ink.
+- Badges move out 6 px (of the list's two options, this one), so quiet text also has badges.
+- Threads pass behind pictures (no threads in a picture's box): a thread's ink on a picture in the first pass would be read
+  as the picture's colour, which showed as red threads in the samples. The list didn't mention this. So the thread ball's
+  knot no longer sits on the picture's top right corner; it moved to the bottom right, one corner behind the picture.
+- The Loose Thread page's footer no longer has `amenui · loose thread · 2026`, and the caption only says `fig. 1`: the
+  thread ball's long thread passes to the right of the picture and would cover those two lines. There is no thread ball in a
+  narrow window.
+- The field map's `energy_life` is 2.0, `bleed` 0.06, `creep` 0.15, and the dot under the pointer has radius 72: the list
+  wanted looseness of at least 0.8 after a sweep, 0.5 one second after the pointer leaves and 0 at three seconds. The first
+  holds; the other two can't hold together under §1.29's decay (the lifetime's exponential plus a fixed 0.15 per second):
+  returning to 0 within three seconds needs `τ ln(1 + e0 / (0.15 τ)) ≤ 3`, that is `τ` at most 2, and then from 0.9 only
+  about 0.35 remains after one second. "0 at three seconds, no frames" (rule 3) was chosen, and one second is verified at
+  no less than 0.3. The old `bleed` 0.2 and `creep` 0.4 spread four tenths of the energy on ink each step, and a swept title
+  only reached 0.7.
+- `craft <dir> thread-ref` only gives the style page's two frames; the side by side with the reference picture is put
+  together outside the repository (no third-party pictures in the repository).

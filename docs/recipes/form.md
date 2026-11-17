@@ -1,3 +1,7 @@
+---
+kind: howto
+---
+
 # A form
 
 A text field, a number control, a switch and a submit button. The state holds every value; the widgets send a message for each edit and `update` is the only place values change. The number control sends `Edit::Draft` while you type, `Edit::Set` on Enter or a step, `Edit::Cancel` on Esc.

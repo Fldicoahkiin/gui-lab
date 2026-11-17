@@ -1,3 +1,7 @@
+---
+kind: howto
+---
+
 # A menu with submenus and a safe zone
 
 `widgets::nested_menu` keeps its open path in a `Menu` in the state. The pointer's moves over it arrive as `MenuMsg::Move` (`El::on_move`); moving toward the open submenu inside the triangle from the pointer's previous position to the submenu's two near corners does not switch rows — each such move waits `close_delay_ms` (200) again — while outside it the row under the pointer takes over after `submenu_delay_ms` (120). `show_safe_zone` draws the triangle through the annotation layer (`El::guide`). Up / Down / Right / Left / Enter / Esc work when the menu has focus.
