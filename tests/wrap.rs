@@ -104,3 +104,22 @@ fn text_on_both_sides_and_moves_with_it() {
     assert_ne!(glyphs.iter().map(|g| g.rect).collect::<Vec<_>>(), moved.iter().map(|g| g.rect).collect::<Vec<_>>());
     assert!(ui.node("body").unwrap().rect.h >= h0 - 28.0);
 }
+
+#[test]
+fn an_effect_loosens_the_title_and_keeps_the_text_to_read() {
+    use amenui::el::{Effect, Response, Scope, wrap_text};
+    const DOC: &str = "# Notes kept as they were\n\nA paragraph that was already written, in plain Markdown.\n\n- a list item\n- and another, with `code` in it\n\n```\nfn main() {}\n```\n";
+    fn view(_: &()) -> El<()> {
+        wrap_text::<()>(DOC).effect(Effect { material: Some(amenui::style::Material::Smudgr), response: Some(Response::Loosen), scope: Some(Scope::Container(None)) }).loosen(0.6)
+    }
+    let mut ui = Ui::new((), view, |_, _| {}, font(), 720, 480, 1.0);
+    ui.tick(1.0);
+    let cap = amenui::style::Look::default().legible_cap;
+    let t = ui.now();
+    assert!((ui.looseness("wrap/h0", t) - 0.6).abs() < 1e-4, "the title is {} loose", ui.looseness("wrap/h0", t));
+    for key in ["wrap/b1/text", "wrap/b2/0/t/text", "wrap/b2/1/t/text", "wrap/b3/l0"] {
+        let k = ui.looseness(key, t);
+        assert!(ui.node(key).is_some(), "no `{key}`");
+        assert!(k <= cap + 1e-4, "`{key}` is {k} loose, past the cap {cap}");
+    }
+}
