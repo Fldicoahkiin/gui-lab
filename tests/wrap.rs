@@ -123,3 +123,63 @@ fn an_effect_loosens_the_title_and_keeps_the_text_to_read() {
         assert!(k <= cap + 1e-4, "`{key}` is {k} loose, past the cap {cap}");
     }
 }
+
+#[test]
+fn an_effect_leaves_the_text_to_read_as_the_material_rests() {
+    // Seven materials that loosen, the page loosened to 0.6: in the ink of every element of text to
+    // read (legible and held at the cap; 2 px larger), at least 99 % of the pixels are the material's own frame at rest (loosen 0). Text held at
+    // the legibility cap keeps the resting look; only the title comes apart.
+    use amenui::el::{Effect, Response, Scope, wrap_text};
+    use amenui::offscreen::Offscreen;
+    use amenui::style::{Look, Material};
+    const DOC: &str = "# Notes kept as they were\n\nA paragraph that was already written, in plain Markdown, now drawn by the framework with a material and a field of its own. Nothing in it was changed to take the effect.\n\n- a list item\n- and another, with code in it\n";
+    struct P { m: Material, k: f32 }
+    fn view(s: &P) -> El<()> {
+        wrap_text::<()>(DOC).effect(Effect { material: Some(s.m), response: Some(Response::Loosen), scope: Some(Scope::Container(None)) }).loosen(s.k)
+    }
+    let (w, h) = (680u32, 330u32);
+    let Ok(mut o) = Offscreen::try_new(w, h) else { eprintln!("no GPU adapter here: skipped"); return };
+    let look = Look::default();
+    let shot = |o: &mut Offscreen, m: Material, k: f32| {
+        let mut ui = Ui::new(P { m, k }, view, |_, _| {}, font(), w, h, 1.0);
+        ui.tick(6.0);
+        let px = o.render(&mut ui, &look);
+        (ui, px)
+    };
+    let mut worst = (1.0f32, String::new());
+    for m in [Material::Dottr, Material::Halftonr, Material::Charr, Material::Smudgr, Material::Carvr, Material::Glitchr, Material::Scribblr] {
+        let (_, rest) = shot(&mut o, m, 0.0);
+        let (ui, px) = shot(&mut o, m, 0.6);
+        let tree = ui.export_tree();
+        let (cap, t) = (look.legible_cap, ui.now());
+        let mut ink: Vec<(String, [f32; 4])> = vec![];
+        for (i, inst) in ui.scene().instances.iter().enumerate() {
+            let Some(key) = ui.owner_key(i) else { continue };
+            // The text to read: legible and held at the cap (the title loosens as far as it is told).
+            if key.is_empty() || !tree.find(key).is_some_and(|n| n.legible) || ui.looseness(key, t) > cap + 1e-4 || inst.paint[2] <= 0.0 { continue; }
+            let p = if inst.paint[3] == GLYPH { SPREAD as f32 } else { 0.0 };
+            let b = [inst.rect[0] + p, inst.rect[1] + p, inst.rect[0] + inst.rect[2] - p, inst.rect[1] + inst.rect[3] - p];
+            match ink.iter_mut().find(|e| e.0 == key) {
+                Some(e) => e.1 = [e.1[0].min(b[0]), e.1[1].min(b[1]), e.1[2].max(b[2]), e.1[3].max(b[3])],
+                None => ink.push((key.to_owned(), b)),
+            }
+        }
+        assert!(ink.iter().any(|e| e.0 == "wrap/b1/text"), "{ink:?}");
+        for (key, b) in &ink {
+            let r = [(b[0] - 2.0).floor() as i32, (b[1] - 2.0).floor() as i32, (b[2] + 2.0).ceil() as i32, (b[3] + 2.0).ceil() as i32];
+            let (mut same, mut all) = (0usize, 0usize);
+            for y in r[1].max(0)..r[3].min(h as i32) {
+                for x in r[0].max(0)..r[2].min(w as i32) {
+                    let i = ((y as u32 * w + x as u32) * 4) as usize;
+                    all += 1;
+                    if px[i..i + 4] == rest[i..i + 4] { same += 1; }
+                }
+            }
+            let share = same as f32 / all.max(1) as f32;
+            let at = format!("{} `{key}`", m.name());
+            if share < worst.0 { worst = (share, at.clone()); }
+            assert!(share >= 0.99, "{at}: the same as at rest in {:.2} % of its pixels", share * 100.0);
+        }
+    }
+    eprintln!("the least alike to its rest: {:.2} % ({})", worst.0 * 100.0, worst.1);
+}

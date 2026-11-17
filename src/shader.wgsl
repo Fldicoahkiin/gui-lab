@@ -680,6 +680,10 @@ fn burst_k(p: vec2f) -> f32 {
 /// How loose text and shapes are here: fronts and their tails, the half-plane, and each instance's
 /// own looseness, scaled by the style.
 fn kt(p: vec2f) -> f32 { return clamp((half_plane(p) + loose_t(p) + u.rip.y) * loose_scale(), 0.0, u.rip.x); }
+/// `kt`, only where something is really loose: text held at the legibility cap (0.15) keeps the
+/// material's resting look, and the loosened look is all there by 0.26, so a quarter loose is already
+/// on its way.
+fn kt_loose(p: vec2f) -> f32 { return kt(p) * smoothstep(0.18, 0.26, half_plane(p) + loose_t(p) + u.rip.y); }
 /// Whatever is drawn at a point, pictures as their marks: for materials that move the picture around.
 fn scene_at(q: vec2f) -> vec3f {
   let n = near_t(q);
