@@ -226,7 +226,7 @@ looseness given to the subtree (`El::loosen`) reaches its paragraphs, list items
 `Markr` (the picture marks, §1.6.1), `Dithr` (the finishing pass's dither, `post.dithr`), `Cmd::Ripplr` and
 `El::ripplr` (a front) and `El::wipr` (the compare wipe). There are no aliases: an old material name is refused,
 and the error names the new one (`style::RENAMED`); for any other unknown name the error gives the closest. Look recipes start with
-`look:v2:`; a `look:v1:` recipe, from before the names changed, is refused with the renames listed.
+`look:v3:`; a `look:v1:` recipe, from before the names changed, is refused with the renames listed, and a `look:v2:` one, from before the beat, with its beat (§1.32).
 
 ### 1.6.1 How a picture turns into marks
 
@@ -412,6 +412,19 @@ sampled); value noise.
 | `near` | The G-buffer itself: iso-distance lines of the SDF (warm inside ink, cool outside), the outline, faint ink | A colour overlay where loose | spacing, fill |
 | `scribblr` | As it is (the shading stage is exact) | The fill fades and the ink becomes one thin line of constant width: along the outline → bridged into one stroke → wandering, knotting, throwing out tails; the thread is shape instances drawn in the G-buffer stage (§1.30) | line width, sampling, wander, knot, knot radius, tail, follow the map, angularity |
 
+**Text to read keeps the resting look.** `smudgr`, `carvr` and `charr` take their effect from `kt_loose`: the
+looseness under the field with the element's own looseness, gated by `smoothstep(0.18, 0.26, …)`, so text held at
+the legibility cap (0.15) reads as the material at rest while a front or a loosen effect passes (`tests/wrap.rs`: in
+seven materials loosened to 0.6, at least 99 % of the legible ink's pixels equal the material's own rest frame).
+**Past half loose** four materials go on changing with the element's own looseness `kl` (no new numbers): `dottr`'s
+lattice opens to 1.6 × the pitch and its units stray twice as far; `charr` switches its cells at 0.3 and 0.7 (half,
+then 1.5 × the pitch; one cell size per element at a time) and halves its levels toward 1; `halftonr` opens its
+screen to 1.5 × the pitch and doubles the split, accent ink keeps one screen in its own colour, and each separation
+is half the ink's own colour so no pixel shows a single channel; `glitchr` shifts and repeats blocks up to twice as
+far, only where something is drawn, and flashes rows only there. `sheet --sweep <n>` (`sample::sweep`) measures the
+share of the title's pixels that changed from rest and moved from the cell before at each looseness
+(`tests/sample.rs`).
+
 Acceptance (`check` items 5 and 6): except `near`, every material at looseness 0 matches `plain` pixel for
 pixel in body text (`smudgr` within its grain amplitude, ≤ 4/255 by default; `dottr` compares only the glyphs'
 own pixels, since its ground has dots anyway), with a control showing the comparison sees a difference once
@@ -483,7 +496,7 @@ scroll trace is plain's, and its redraw region is the whole window (what it read
 Acceptance: the shader put together from the files was the shader of before, byte for byte, when the files were
 split out; `tests/add.rs` copies `smudgr` out with `amenui add material`, adds it back with `material_source` and
 draws the same frame as the built-in one, byte for byte; `tests/registry.rs` reads every material back by its name,
-refuses each old name with the new one in the error, and refuses a `look:v1:` recipe with `v2` in the error.
+refuses each old name with the new one in the error, and refuses a `look:v1:` recipe with `v3` in the error.
 
 ### 1.7 The annotation layer
 
@@ -1439,7 +1452,14 @@ seed). So the same arguments give a byte-identical PNG (`tests/render.rs`: the s
 renderer once give three identical images; another moment gives a different one). `--events` is a JSON list of
 `{at_ms, kind, ...}`, `kind` being `press` / `release` / `move` (`x`, `y` in logical px, or `target`: an
 element's key, using its box's center), `key` (a DOM key name, with `shift`, `cmd`, `alt`), `wheel` (`dx`,
-`dy`) or `text` (`text`). `--material` is a material name or number; `--theme` is one of `drive::THEME_IDS`
+`dy`), `text` (`text`) or `cmd` (`cmd`: a command for the runtime, `drive::CmdSpec`: `{"ripplr": {x, y,
+strength}}`, `{"ripplr_at": {key, strength}}`, `{"stir": {x, y | key | path, from, to, v, energy, radius}}`,
+`{"press": {key}}`, `{"commit": {x, y}}`, `{"hold": n}`, `"retrigger"`, `{"rewind": beats}`, `{"set": {name,
+value}}`). In place of `at_ms` an event may give `at`, a place on the look's beat (`"3.2.1"`, §1.32); without a
+beat that is an error. `--frames <from>..<to>` writes a run of frames instead of one (`--out dir/%05d.png`) at
+`--fps` 60, 30, 20, 15 or 12 (each a whole number of the clock's ticks; another rate is an error listing these):
+frame `n` is the frame `--at n × 1000 / fps` gives, and with `--audit` each frame is audited
+(`drive::frames`, `drive::audit_frames`; `tests/frames.rs`). `--material` is a material name or number; `--theme` is one of `drive::THEME_IDS`
 (dark, light, paper…), a theme name or a number. Problems in the view are printed to standard error, and with
 `--strict` the exit code is 1.
 
@@ -1657,7 +1677,7 @@ starts from the right.
 
 ### 1.21 The finishing pass: post effects, dithering and palettes
 
-**Data** (`src/post.rs`, serde, in a preset's `post`, and therefore in `look:v2:` recipes; old presets without
+**Data** (`src/post.rs`, serde, in a preset's `post`, and therefore in `look:v3:` recipes; old presets without
 the field have everything off): `PostSpec { bloom, chroma, scanlines, grain, vignette, curvature, dither,
 palette }`, each a number with a default, all off by default: `Bloom { strength 0, threshold 0.7, radius 8 }`,
 `Chroma { offset 0 }` (logical px; red and blue each offset that much outward from the center),
@@ -2131,9 +2151,10 @@ glyphs fill in. Text to read and controls never become thread and always stay as
   within a quarter pixel of the curve and are 1.5–48 px long (shorter only at the tip of a tight loop). A B-spline
   does not pass through its points, so where the points fold back the curve makes a narrow loop. (5) Two tails: the one at the end follows the flow there (or, when the
   flow's way reaches less than six tenths as far as the farthest way, the farthest way); the one at the start takes
-  whichever of 8 directions reaches farthest without running the same way as the end tail, joined backwards to the
-  line's start. Their length is at least `max(tail, 0.6 × the scope's long side)` and enough to reach the scope's
-  edge; each is one long slow curve: `tail_turns` gentle bends (each 12–25°, smaller with more turns, at about even
+  whichever of 16 directions reaches farthest without running the same way as the end tail, joined backwards to the
+  line's start; a way that has a clear run to the scope's edge (past no text to read) wins over one that stops
+  short, so a tail never cuts across the page behind a picture or the controls. Their length is at least
+  `max(tail, 0.6 × the scope's long side)`, and when the way meets the edge, exactly enough to reach it; each is one long slow curve: `tail_turns` gentle bends (each 12–25°, smaller with more turns, at about even
   places, one way then the other, so a tail never strays more than 25° from its way) are the control points of a
   curve sampled at 24–32 even places, with a waver of the hand across it (0.6–1.5 % of its length, two or three
   times along it); a way that would pass within 24 px of text to read scores 0.3 of its reach; every point draws
@@ -2148,7 +2169,7 @@ glyphs fill in. Text to read and controls never become thread and always stay as
   grown by 5 px goes round it. The line's opacity is `smoothstep(0, 0.12, k)`, bridges, knots and tails
   `smoothstep(0.1, 0.3, k)`, and its width is `weight` throughout. The looseness the thread shows is `strand::shown(k)`:
   the same at the ends, but it hurries through 0.15–0.4 (crossed while `k` goes from 0.22 to 0.30), where a
-  half-drawn letter and a few loose lines look neither like text nor like a thread, and a held pose (`hold_ms`) is
+  half-drawn letter and a few loose lines look neither like text nor like a thread, and a held pose (a step of the beat) is
   never worked out inside that band (`strand::held`): drawing back from 1 to 0 spends at most 8 frames there. At `k = 0` there are no thread instances (rule 3
   holds by construction).
 - **Text to read and controls** (`legible`) don't become thread, their fill doesn't fade, and the map's flow
@@ -2162,7 +2183,7 @@ glyphs fill in. Text to read and controls never become thread and always stay as
 - **The pose follows the material clock**: the time for wandering, knots and tails is `mclock`, which advances only
   while the map or something else moves, so an element held loose at rest keeps its pose and wants no frames; seeds
   depend only on the element, not the beat, so poses change gradually rather than being redrawn every beat. With
-  `hold_ms` above 0 the pose is rounded to the beat (the thread's vertices are equal one by one within a beat), while
+  a beat (§1.32) the pose is rounded to its step (the thread's vertices are equal one by one within a step), while
   opacity and fill stay continuous every frame.
 - **Elements of shapes only** (a rule, a box, a ground) have no knots and no tails, and wander half as far: they
   come apart into one line that wavers gently. Knots and tails belong to text.
@@ -2179,8 +2200,8 @@ glyphs fill in. Text to read and controls never become thread and always stay as
   it draws; with `stir` above 0 its head stirs the map where it passes each frame. It draws under every material.
   The `#stirr` page's "Draw a line" button draws a looping dashed line through the area.
 - **Numbers** (row 9 of `MAT_PARAMS`): `weight` 0.5–3 (1), `grain` 1–6 (2), `reach` 0–64 (40), `knot` 0–1 (0.6),
-  `knot_r` 4–120 (48), `tail` 0–1200 (480), `pull` 0–2 (1), `angular` 0–1 (0.35); `Look::hold_ms` 0–500 (0, a
-  preset's `interaction.hold_ms`). The thread's shape (`strand::ThreadShape`, in `StrandFx`): `knot_fall` 0.3–1
+  `knot_r` 4–120 (48), `tail` 0–1200 (480), `pull` 0–2 (1), `angular` 0–1 (0.35); `Look::beat` (§1.32; a preset's
+  `interaction.beat`) sets how long a pose is held. The thread's shape (`strand::ThreadShape`, in `StrandFx`): `knot_fall` 0.3–1
   (0.55), `escape` 0–4 (2), `tail_turns` 1–6 (3), `tail_tone` 0.2–1 (0.5). `strand::figure` uses the same.
 - **A drawn tangle** `strand::figure(seed, r, above, below)`: the same knots and tails generated once from a fixed
   seed (one knot of radius `r`, 36 control points, and one line passing through it top to bottom, `above` long above the knot and
@@ -2214,7 +2235,7 @@ dashes are `dash` long each, earlier segments don't change as more is drawn, and
 with tails running with the flow; text to read has no thread, its instances' opacity and position unchanged and not
 pushed by the flow; drawing a title back from 1 to 0 at 60 Hz, at most 8 frames show a looseness in 0.15–0.4;
 once stopped the thread is gone and no frames are wanted; at budget scale 0.25 it is still one
-line; recomposing text has no thread; with `hold_ms` 83 the same beat is identical and different beats differ, with
+line; recomposing text has no thread; with a beat of 83 ms steps the same step is identical and different steps differ, with
 0 every frame differs; at the default `angular` fully loose, over nine in ten turns between the line's pieces are
 at most 25°, and at looseness 0.2 the line is within half a pixel of the one at `angular` 1; on the sample page
 (`amenui::sample`) at looseness 1, 0.7 and 0.4 no piece of any kind crosses the ink box of text to read (grown by
@@ -2281,6 +2302,35 @@ element that never stops moving `Restless` P1, and not when it is marked `ongoin
 rest `Eroded` P1; a calm page has no findings;
 the seventeen recipes in every material, dark and light, have no P0 or P1); `render --page recipe-form --audit
 --strict` exits 0.
+
+### 1.32 The beat
+
+`Look::beat: beat::Beat { bpm, steps, swing }` (a preset's `interaction.beat`): `bpm` 40–300, 0 is off (the
+default); `steps` a beat 1–8 (4); `swing` 0–0.5 (0), how much later every second step starts, in steps. A bar is
+four beats. With a beat, what moves on its own falls on its steps: a front's radius, glitchr's held rows, scribblr's
+held pose, a transition's steps and a morph's flight are drawn at the start of the step the beat clock is in
+(`Ui::beat_grid`); line widths, opacity and condensing are not rounded (the shader's condensing reads the clock off
+the grid). Off, every clock is the runtime's own, byte for byte as before the beat.
+
+The beat clock runs with the runtime's (`Ui::beat_time`; `Ui::beat()` is `BeatNow { bar, beat, step, phase }`,
+each from 1, for the application's own state) and only the beat's commands move it against it: `Cmd::Hold(n)` stops
+it for `n` steps (the frame stays byte for byte, and frames are still wanted), `Cmd::Retrigger` plays the current
+step again from its start, `Cmd::Rewind(beats)` takes it back (never before 0) and with it what it carries (fronts,
+transitions, held rows); the application's state, the field map and condensing are not taken back. `Cmd::Set {
+name, value }` sets a number of the look over the application's (`Look::set`: `loose_scale`, `legible_cap`,
+`loose_max`, `press_ms`, `fx.*`, `beat.*`, a material's number as `<material>.<name>` in `MAT_PARAMS`, clamped to its
+range); a switch (`post.invert`, `post.binary`) given 1 turns over and given 0 goes back to the look's own.
+`Ui::command(cmd)` sends any command from outside the application; a script schedules them (§1.17, `kind: "cmd"`,
+`at: "bar.beat.step"`). There is no audio, no beat detection and no video: the beat comes from the script, and the
+result is a run of PNGs.
+
+`Look::hold_ms` is gone: a held pose of `h` ms is a beat of one step `h` long, at the fewest steps a beat that keep
+`bpm` in range (`Beat::of_hold`; 83 ms is 240.96 bpm in 3 steps). Recipes are `look:v3:`; a `look:v2:` recipe is
+refused, with the beat its `interaction.hold_ms` becomes. Acceptance (`tests/beat.rs`): at 120 bpm and four steps a
+front's radius moves a whole step or not at all between frames; frames during `Hold(2)` are identical; the frame
+after `Rewind(1)` is the frame drawn a beat before; `Set` of `post.invert` once turns every pixel over (within
+1/255), twice gives the frame back; an event at `"3.2.1"` and one at 4500 ms give the same frame; `bpm` 0 with any
+steps and swing, and the beat's commands, change nothing.
 
 ## 2. Parameters must be exact
 
@@ -2366,8 +2416,13 @@ from left to right, revealing the new page), loosen (the whole page loosens by i
 `rip.y`), layers (separating nearer the brighter, swapping, closing), detection boxes (the largest few elements are
 boxed in reading order, the box drawn along its edges, and the inside swapped for the new), carve (the old fades to the
 ground, knife cuts grow on both sides of the new outline, then ink floods in), outline first (outlines and boxes are
-drawn first in reading order, the content filled in after) and torn reveal (torn along a noisy line, the old layer
-sliding away offset).
+drawn first in reading order, the content filled in after), torn reveal (torn along a noisy line, the old layer
+sliding away offset) and crack (`StepKind::Crack`, id 11; numbers `preset::CRACK`: cell size 120 px, angle 70°, bias
+0.6, rag 3 px, hard edge 1): the page breaks along the edges of a Voronoi tiling turned by the angle and squashed
+across it by the bias; the cracks open from hairlines to slabs as the step runs, with ragged edges, the new page
+showing through what has opened and the whole of it at the step's end. The `preset` recipe's Crack button commits the
+tech-manual look through an 800 ms crack (`tests/transition.rs`: the last frame is the new page drawn directly, a
+tenth of the way in under a tenth of it shows, what shows only grows, the same numbers give the same bytes).
 
 The ten presets' transitions (`presets()`, all ≤ 900 ms): Gaze detection boxes; Dotmatrix row-by-row lattice; Lo-Fi
 Print light bar; Glitch slipping bands with three hard cuts and then lock; Linocut carve; Tech-Manual outline first
@@ -2457,7 +2512,7 @@ The pieces above, combined into the tenth preset.
 | Annotation | Hover, `EDGE` and `FRAME` |
 | Interaction | Text loosens by default too (`roles` gives text `Loosen`); text to read doesn't become thread or move under `scribblr` (§1.30) |
 | Field map | `stirr` 1.0, `meander` 0.5, `creep` 0.15, `energy_life` 2.0, `bleed` 0.06, `breath` 0 (when the pointer sweeps a heading not meant for reading, its looseness passes 0.8, is still over 0.3 a second later, and returns to 0 within three seconds) |
-| Hold | `hold_ms` 83 |
+| Hold | `beat` 240.96 bpm, 3 steps (an 83 ms step) |
 | Transition | 700 ms: `Loosen` (0–0.55) then `Outline` (0.45–1) |
 | Finishing | Off by default; the style page can turn on black and white only (`binary`) and invert (`invert`) |
 
@@ -2736,6 +2791,7 @@ language marking names the current language); `labsheet <dir> body` gives `body.
 | Fixes (bounded recomposition, particles from mesh surfaces, xray meshes, local clocks, legible pictures in controls, repeated GPU particle reversal) and the film (§6) | Done: `cargo test` (with `tests/film.rs`, the two thousand frames and the pictures in controls of `tests/ripple.rs`, surface projection in `mesh.rs`, repeated reversal in `morph.rs`), no `clippy` warnings, `check` items 1–17; `reel <dir>` gives four samples; the web version under WebGL2 walks through twelve chapters by keyboard with no console errors; the native window opens the film under Xvfb |
 | The field map and trails (§1.29), the `scribblr` thread material and long paths (§1.30), small type and edge notes, field map readouts, Loose Thread, black and white only and invert (§4.2–§4.4, §1.21) | Field map and trails: unit tests in `fieldmap.rs`, `tests/fieldmap.rs`, the drag in `tests/render.rs`, `check` item 19, `bench … map`, `craft <dir> stirr`. Thread: unit tests in `strand.rs`, `tests/strand.rs`, `check` item 20 (1–5), `bench … strand`, `craft <dir> scribblr`. Small type, readouts, black and white only and invert (§4.2–§4.4, `binary` and `invert` in §1.21): the edge note and readout tests in `tests/gaze.rs`, `check` items 7.2, 7.3, 20.6 and 20.7, `craft <dir> loose-thread`. `cargo test`, no `clippy` warnings, all of `check` |
 | Text on a form with depth and facing, hits where things are drawn, words shown whole, the warm-up and the application's own preparation, the audit and the measured ink box (§1.23, §1.26, §1.31) | Done: `cargo test` (with `tests/form.rs`, `tests/pointer.rs`, `tests/warmup.rs`, `tests/audit.rs` and the unit tests of `form.rs`, `hit.rs`, `mesh.rs`), no `clippy` warnings (native and web), rustdoc without warnings; `render --page recipe-form --audit --strict` exits 0, and the audit of every recipe in every material, dark and light, has no P0 or P1 |
+| The legible text under effects, tails with a clear way out, runs of frames at a fixed rate, the materials past half loose, the Crack transition and the beat (§1.6.2, §1.17, §1.30, §1.32, §4.1) | Done: `cargo test` (with `tests/wrap.rs`, `tests/strand.rs`, `tests/frames.rs`, `tests/sample.rs`, `tests/transition.rs`, `tests/beat.rs` and the unit tests of `beat.rs`), no `clippy` warnings (native and web), rustdoc without warnings. Not done: plates, gaze echoes and dashed `INK` leaders |
 
 Since the split into two repositories, the tools `check`, `pages`, `scenes`, `film`, `samples`, `craft`, `bench`, `shot`,
 `labsheet`, `scroll` and `window`, and the tests that drive gallery pages, are in the website repository.
