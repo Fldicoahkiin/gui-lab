@@ -33,7 +33,7 @@ struct U {
   third: vec4f,
   burst: vec4f,    // a burst's rect, device px (x0, y0, x1, y1)
   burst_t: vec4f,  // its start time, strength, length (s); w: the legibility cap (Look::legible_cap)
-  mats: array<vec4f, 18>, // every material's numbers, two vec4s each (style.rs MAT_PARAMS)
+  mats: array<vec4f, 32>, // every material's numbers, two vec4s each (style.rs MAT_PARAMS, then those added)
   calm: array<vec4f, 4>,  // boxes fronts pass by (x0, y0, x1, y1, device px)
   qual: vec4f,     // the material resolution: 1 / q for the reduced pass (1 otherwise), q, its size w, h
   scopes: array<vec4f, 8>, // each front's scope box (x0, y0, x1, y1, device px): it reaches instances centred inside

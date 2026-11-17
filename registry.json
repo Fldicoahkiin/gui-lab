@@ -1306,5 +1306,80 @@
       ],
       "input": "click, Space or Enter toggles; drag turns; ← → nudge the turn; the markings in the picture (form, seed, gather / release, language, Lab, components)"
     }
-  ]
+  ],
+  "materials": [
+    {
+      "name": "plain",
+      "description": "什么都不散成单元：前沿照样推动，新出现的照样凝聚（淡入）；底子是平的。",
+      "description_en": "Nothing loosens into units: fronts still push and new things still condense (as a fade); the ground is flat.",
+      "files": [
+        "src/materials/plain.wgsl"
+      ]
+    },
+    {
+      "name": "dot",
+      "description": "全局的点阵：松开的字按下面的墨散成单元，底子是一片小单元。",
+      "description_en": "The global dot lattice: loosening text breaks into units sized by the ink under them, and the ground is a field of small units.",
+      "files": [
+        "src/materials/dot.wgsl"
+      ]
+    },
+    {
+      "name": "halftone",
+      "description": "墨是转过角度的网点，第二种颜色套印错开。",
+      "description_en": "Ink as round dots on a rotated screen, with the second colour out of register.",
+      "files": [
+        "src/materials/halftone.wgsl"
+      ]
+    },
+    {
+      "name": "ascii",
+      "description": "墨是按亮度挑出的字符，排在格子上。",
+      "description_en": "Ink as characters chosen by brightness, on a grid.",
+      "files": [
+        "src/materials/ascii.wgsl"
+      ]
+    },
+    {
+      "name": "print",
+      "description": "粗糙的印刷：纸纹、错位的专色、斑点和洇开。",
+      "description_en": "Lo-fi print: paper grain, misregistered spot ink, specks and bleed.",
+      "files": [
+        "src/materials/print.wgsl"
+      ]
+    },
+    {
+      "name": "lino",
+      "description": "木刻：沿轮廓一条条刻出的刀痕。",
+      "description_en": "Linocut: carved gouges along the outline, in bands.",
+      "files": [
+        "src/materials/lino.wgsl"
+      ]
+    },
+    {
+      "name": "glitch",
+      "description": "松开时，行横向错开、颜色分离、块重复。",
+      "description_en": "Rows that slip sideways, colour fringes and held blocks while something is loose.",
+      "files": [
+        "src/materials/glitch.wgsl"
+      ]
+    },
+    {
+      "name": "near",
+      "description": "把中间的图像画出来：带符号的距离画成等高的带，轮廓，和每个实例的松开度。",
+      "description_en": "The intermediate images made visible: the signed nearness as contour bands, the outline, and each instance's looseness as a tint.",
+      "files": [
+        "src/materials/near.wgsl"
+      ]
+    },
+    {
+      "name": "scribblr",
+      "description": "一根线把墨写出去再写回来：静止时是 plain，松开时一根等宽的线离开轮廓，在场有能量的地方打结。",
+      "description_en": "One thread writes the ink out and back: at rest the page is plain; loosened, a line of constant width leaves the outline and knots where the field map has energy.",
+      "files": [
+        "src/materials/scribblr.wgsl"
+      ]
+    }
+  ],
+  "materials_description_en": "Materials are distributed as source too: `amenui add material <name>` copies `src/materials/<name>.wgsl`; change it and add it with `Look::material_source` under a name of its own."
 }

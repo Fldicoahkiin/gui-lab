@@ -2,7 +2,8 @@
 //! (`registry.json`) names each component's files and the components it depends on; `add` resolves
 //! the dependencies, then writes every file, keeping its path under the destination (so
 //! `src/widgets/button.rs` lands at `<to>/src/widgets/button.rs`), and says what it wrote. A file that
-//! is already there is left alone unless `overwrite` is set.
+//! is already there is left alone unless `overwrite` is set. `amenui add material <name>` copies a
+//! material's file the same way ([`material_files`]).
 use crate::error::AddError;
 use std::path::{Path, PathBuf};
 
@@ -25,6 +26,20 @@ pub fn files(registry: &str, names: &[&str]) -> Result<Vec<String>, AddError> {
     for n in names { visit(n, items, &known, &mut seen, &mut out)?; }
     // The framework files every component needs.
     for r in reg["requires"].as_array().into_iter().flatten().filter_map(|r| r.as_str()) { if !out.iter().any(|o| o == r) { out.insert(0, r.to_owned()); } }
+    Ok(out)
+}
+/// The files of the materials `names` (`registry.json`'s `materials`: `src/materials/<name>.wgsl`).
+/// A material needs nothing else: it is put into the framework's shader when it is added
+/// (`Look::material_source`).
+pub fn material_files(registry: &str, names: &[&str]) -> Result<Vec<String>, AddError> {
+    let reg: serde_json::Value = serde_json::from_str(registry).map_err(|e| AddError::Registry(e.to_string()))?;
+    let items = reg["materials"].as_array().ok_or_else(|| AddError::Registry("no `materials` list".into()))?;
+    let known: Vec<&str> = items.iter().filter_map(|i| i["name"].as_str()).collect();
+    let mut out: Vec<String> = vec![];
+    for n in names {
+        let item = items.iter().find(|i| i["name"].as_str() == Some(n)).ok_or_else(|| AddError::Unknown { name: (*n).to_owned(), near: near(n, &known), known: known.join(", ") })?;
+        for f in item["files"].as_array().into_iter().flatten().filter_map(|f| f.as_str()) { if !out.iter().any(|o| o == f) { out.push(f.to_owned()); } }
+    }
     Ok(out)
 }
 /// The known name closest to `n` (for the error).

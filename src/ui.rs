@@ -700,7 +700,7 @@ impl Timing {
     pub fn of(l: &Look) -> Self {
         Self { wave_life: l.fx.wave_life, wave_speed: l.fx.wave_speed, enter: l.fx.enter, material: l.material.id(), overlay: l.overlay,
                fx: l.fx, legible_cap: l.legible_cap, loose_max: l.loose_max, recompose: l.recompose,
-               press: l.press_ms / 1000.0, roles: l.roles, transition: l.transition.duration_ms / 1000.0, scroll: l.scroll, map: l.map, strand: crate::strand::StrandFx::of(l.params[crate::style::Material::Scribblr as usize].0), hold_ms: l.hold_ms, binary: l.post.binary }
+               press: l.press_ms / 1000.0, roles: l.roles, transition: l.transition.duration_ms / 1000.0, scroll: l.scroll, map: l.map, strand: crate::strand::StrandFx::of(l.numbers(crate::style::Material::Scribblr).0), hold_ms: l.hold_ms, binary: l.post.binary }
     }
 }
 

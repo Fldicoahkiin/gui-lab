@@ -36,7 +36,7 @@ struct Uniforms {
     burst: [f32; 4],
     burst_t: [f32; 4],
     /// Every material's numbers, two vec4s each.
-    mats: [[f32; 4]; 2 * MATERIAL_COUNT],
+    mats: [[f32; 4]; 2 * crate::materials::MAX],
     calm: [[f32; 4]; 4],
     /// The material resolution: 1 / q for the reduced pass (1 otherwise), q, and its size.
     qual: [f32; 4],
@@ -1231,8 +1231,9 @@ impl Renderer {
         let flag = |b: bool| if b { 1.0 } else { 0.0 };
         let mut pics = [[0.0; 4]; 56];
         for (i, p) in look.pics.iter().enumerate() { pics[i * 7..i * 7 + 7].copy_from_slice(&p.pack()); }
-        let mut mats = [[0.0; 4]; 2 * MATERIAL_COUNT];
-        for (i, m) in look.params.iter().enumerate() {
+        let mut mats = [[0.0; 4]; 2 * crate::materials::MAX];
+        let added = (MATERIAL_COUNT as u8..crate::materials::MAX as u8).map_while(crate::materials::added).map(|a| a.params);
+        for (i, m) in look.params.iter().copied().chain(added).enumerate() {
             mats[i * 2] = [m.0[0], m.0[1], m.0[2], m.0[3]];
             mats[i * 2 + 1] = [m.0[4], m.0[5], m.0[6], m.0[7]];
         }

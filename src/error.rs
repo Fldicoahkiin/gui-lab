@@ -317,6 +317,30 @@ pub enum MaterialError {
         /// What follows `@param`.
         text: String,
     },
+    #[error("`{name}` cannot name a material: write lowercase letters, digits and `_`, starting with a letter (it becomes part of the shader's function names).")]
+    /// The name is not a lowercase identifier.
+    BadName {
+        /// The name given.
+        name: String,
+    },
+    #[error("`{name}` is a built-in material. Add your copy under a name of its own, such as `my_{name}`.")]
+    /// The name is a built-in material's.
+    BuiltIn {
+        /// The name given.
+        name: String,
+    },
+    #[error("the material file has no `fn m_{name}(p: vec2f) -> vec3f`: a material's function is named after the name in its first line.")]
+    /// The file lacks its function.
+    NoFunction {
+        /// The name in its header.
+        name: String,
+    },
+    #[error("{max} materials have been added already, the most there can be. Add fewer, or add one again under a name it already has to replace it.")]
+    /// No id is free.
+    Full {
+        /// How many can be added.
+        max: usize,
+    },
     #[error("the material file describes {count} numbers; a material has at most eight.")]
     /// More than eight numbers.
     TooMany {

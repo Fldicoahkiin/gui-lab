@@ -181,7 +181,7 @@ fn title_thread(k: f32) -> Vec<amenui::strand::Seg> {
     fn v(k: &f32) -> El<()> { col().pad(60.0, 60.0).child(text("Loose thread", 64.0, Paint::INK).font(amenui::el::Font::Display).key("title").legible(false).loose(*k)) }
     fn look(_: &f32) -> Look {
         let mut l = Look { material: Material::Scribblr, ..Look::default() };
-        let p = &mut l.params[Material::Scribblr as usize].0;
+        let p = &mut l.params[Material::Scribblr.id() as usize].0;
         (p[5], p[7]) = (0.0, 1.0);
         l
     }

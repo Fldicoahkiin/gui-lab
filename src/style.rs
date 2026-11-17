@@ -171,10 +171,12 @@ pub enum Material {
     /// where the field map has energy and trails off along its flow. The line is geometry
     /// (`strand.rs`), drawn as shapes in the first pass.
     Scribblr = 8,
+    /// A material added from source with `Look::material_source`: its id, 9–15.
+    Custom(u8) = 9,
 }
-/// How many materials there are.
+/// How many built-in materials there are.
 pub const MATERIAL_COUNT: usize = 9;
-/// Every material with its name, in id order.
+/// Every built-in material with its name, in id order.
 pub const MATERIALS: [(Material, &str); MATERIAL_COUNT] = [
     (Material::Plain, "plain"), (Material::Dot, "dot"), (Material::Halftone, "halftone"), (Material::Ascii, "ascii"), (Material::Print, "print"),
     (Material::Lino, "lino"), (Material::Glitch, "glitch"), (Material::Near, "near"),
@@ -185,11 +187,22 @@ impl Material {
     /// while something is loose under it, frames keep coming.
     pub fn time_varying(self) -> bool { matches!(self, Material::Glitch) }
     /// The id the shader dispatches on.
-    pub fn id(self) -> u8 { self as u8 }
-    /// The material with id `i` (the last one for ids past the end).
-    pub fn from_id(i: u8) -> Material { MATERIALS[(i as usize).min(MATERIAL_COUNT - 1)].0 }
+    pub fn id(self) -> u8 {
+        match self {
+            Material::Plain => 0, Material::Dot => 1, Material::Halftone => 2, Material::Ascii => 3, Material::Print => 4,
+            Material::Lino => 5, Material::Glitch => 6, Material::Near => 7, Material::Scribblr => 8, Material::Custom(i) => i,
+        }
+    }
+    /// The material with id `i`: a built-in one, one added with `Look::material_source`, or the last
+    /// built-in one for an id nothing has.
+    pub fn from_id(i: u8) -> Material {
+        if (i as usize) < MATERIAL_COUNT { return MATERIALS[i as usize].0; }
+        if crate::materials::added(i).is_some() { Material::Custom(i) } else { MATERIALS[MATERIAL_COUNT - 1].0 }
+    }
     /// Its name, as presets and `<amenui-view material="…">` write it.
-    pub fn name(self) -> &'static str { MATERIALS[self as usize].1 }
+    pub fn name(self) -> &'static str {
+        match self { Material::Custom(i) => crate::materials::added(i).map_or("plain", |a| a.name), m => MATERIALS[m.id() as usize].1 }
+    }
 }
 
 /// The instance code of a material override at nesting `level` (1 = outermost): stage 1 writes it into
@@ -238,8 +251,9 @@ pub struct MaterialParams(pub [f32; 8]);
 impl MaterialParams {
     /// The numbers `m` starts with.
     pub fn defaults(m: Material) -> Self {
+        if let Material::Custom(i) = m { return crate::materials::added(i).map_or(Self([0.0; 8]), |a| a.params); }
         let mut v = [0.0; 8];
-        for (i, p) in MAT_PARAMS[m as usize].iter().enumerate() { v[i] = p.default; }
+        for (i, p) in MAT_PARAMS[m.id() as usize].iter().enumerate() { v[i] = p.default; }
         Self(v)
     }
     /// Every material's starting numbers, in id order.
@@ -580,6 +594,22 @@ pub struct Marks {
     /// How much the farthest part is dimmed, 0–1.
     pub depth_dim: f32,
 }
+impl Look {
+    /// The numbers material `m` is drawn with: this look's for a built-in material, those it was added
+    /// with for one added from source.
+    pub fn numbers(&self, m: Material) -> MaterialParams {
+        self.params.get(m.id() as usize).copied().unwrap_or_else(|| MaterialParams::defaults(m))
+    }
+    /// Add a material from its source (a file like those `amenui add material` copies:
+    /// `// @material <name>`, its numbers, then `fn m_<name>(p: vec2f) -> vec3f`), under the name
+    /// `name`, drawn with the numbers `params`. It takes the next free id (9–15) and returns the
+    /// material to set on a look or an element. Add materials before the first window or `Offscreen`
+    /// is made: a renderer puts together its shader once, and draws a material added later as plain.
+    /// Adding a name again replaces its source and keeps its id.
+    pub fn material_source(name: &str, wgsl: &str, params: MaterialParams) -> Result<Material, crate::error::MaterialError> {
+        crate::materials::add(name, wgsl, params).map(Material::Custom)
+    }
+}
 impl Default for Look {
     fn default() -> Self { Self { fx: Fx::default(), theme: DARK, material: Material::Dot, pics: [PicFx::default(); 8], params: MaterialParams::all(), gaze: Gaze::default(), loose_scale: 1.0, quality: 1.0, overlay: 0, legible_cap: LEGIBLE_CAP, loose_max: 1.0, recompose: crate::morph::Recompose::default(), particles: crate::morph::Particles::default(), press_ms: 350.0, roles: [crate::el::Response::Nudge, crate::el::Response::Loosen], transition: crate::preset::Transition { duration_ms: 0.0, steps: [crate::preset::Step { kind: crate::preset::StepKind::None, from: 0.0, to: 0.0, a: 0.0, b: 0.0, c: 0.0, d: 0.0, e: 0.0 }; 4] }, scroll: Scroll::default(), post: crate::post::Post::default(), marks: Marks::default(), map: MapFx::default(), hold_ms: 0.0 } }
 }
@@ -658,6 +688,7 @@ pub fn styles() -> [Style; 10] {
 /// The material with this name or number.
 pub fn material_named(id: &str) -> Result<Material, crate::error::LookError> {
     let found = MATERIALS.iter().position(|(_, n)| *n == id).or_else(|| id.parse::<usize>().ok().filter(|&i| i < MATERIALS.len()));
+    if let Some(i) = crate::materials::added_named(id) { return Ok(Material::Custom(i)); }
     found.map(|i| MATERIALS[i].0).ok_or_else(|| crate::error::LookError::UnknownMaterial { given: id.to_owned(), known: MATERIALS.iter().map(|m| m.1).collect::<Vec<_>>().join(", "), last: MATERIALS.len() - 1 })
 }
 /// Short ASCII ids of the themes, in `style::THEMES` order.
