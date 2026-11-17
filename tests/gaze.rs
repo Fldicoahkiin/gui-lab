@@ -271,6 +271,16 @@ fn an_ink_leader_keeps_off_text_to_read_and_ends_on_the_outline() {
     // The corner by the caption is not clear: it starts at another one.
     let s0 = disc.1[0];
     assert!((s0[0] - 60.0).abs() > 1.0 || (s0[1] - 70.0).abs() > 1.0, "it does not start by the caption: {s0:?}");
+    // It starts on a corner of the disc's ink box (70, 80 to 170, 180) and stays inside the box.
+    let corner = [[70.0f32, 80.0], [170.0, 80.0], [170.0, 180.0], [70.0, 180.0]].into_iter().map(|c| (c[0] - s0[0]).hypot(c[1] - s0[1])).fold(f32::MAX, f32::min);
+    assert!(corner < 1.0, "the leader starts {corner:.2} px from the box's corners ({s0:?})");
+    for q in &disc.1 { assert!(q[0] >= 69.5 && q[0] <= 170.5 && q[1] >= 79.5 && q[1] <= 180.5, "the leader leaves the box at {q:?}"); }
+    // None is shorter than two dashes: the text's boxes hug their ink and have none.
+    for (key, path) in &leaders {
+        let len: f32 = path.windows(2).map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1])).sum();
+        assert!(len >= 16.0, "{key}'s leader is {len:.1} px");
+    }
+    assert!(leaders.iter().all(|l| l.0 == "disc"), "only the disc has a leader: {:?}", leaders.iter().map(|l| &l.0).collect::<Vec<_>>());
     // And it ends on the near side of the disc from where it starts, not across it.
     let reach = (s0[0] - 120.0).hypot(s0[1] - 130.0) - 50.0;
     let run = (e[0] - s0[0]).hypot(e[1] - s0[1]);
@@ -389,4 +399,40 @@ fn the_newest_echo_is_at_most_one_interval_old_and_the_three_step_down_in_contra
     for ((op, c), want) in seen.iter().zip([2.2f32, 1.6, 1.25]) { assert!(*c >= want, "the echo at {op} has {c:.2}:1, under {want}:1"); }
     let ops: Vec<f32> = seen.iter().map(|s| s.0 / 0.9).collect();
     for (o, want) in ops.iter().zip([0.6f32, 0.4, 0.2]) { assert!((o - want).abs() < 1e-3, "opacities {ops:?}"); }
+}
+
+#[test]
+fn the_annotation_colour_reads_on_both_themes() {
+    // The INK label at least 4.5:1 against the ground and the dashes at least 3:1, dark and light.
+    let Ok(mut o) = amenui::offscreen::Offscreen::try_new(480, 260) else { eprintln!("no GPU adapter here: skipped"); return };
+    struct T { gaze: Gaze, theme: usize }
+    fn page(_: &T) -> El<()> { leader_page(&L { gaze: Gaze::default() }) }
+    let lin = |v: f32| if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
+    let lum = |c: [f32; 3]| 0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2]);
+    let ratio = |a: [f32; 3], b: [f32; 3]| { let (x, y) = (lum(a), lum(b)); (x.max(y) + 0.05) / (x.min(y) + 0.05) };
+    for theme in [0usize, 1] {
+        let g = Gaze { mode: GazeMode::All, kinds: kinds::INK, density: 100.0, draw_ms: 0.0, ..Gaze::default() };
+        let mut u = Ui::new(T { gaze: g, theme }, page, |_, _| {}, fonts(), 480, 260, 1.0).on_gaze(|s| s.gaze)
+            .on_look(|s| amenui::style::Look { material: amenui::style::Material::Plain, theme: amenui::style::THEMES[s.theme], ..amenui::style::Look::default() });
+        u.tick(2.0);
+        let l = u.look();
+        let px = o.render(&mut u, &l);
+        let ground = l.theme.ground;
+        let at = |x: f32, y: f32| { let i = ((y.max(0.0) as usize).min(259) * 480 + (x.max(0.0) as usize).min(479)) * 4; [px[i] as f32 / 255.0, px[i + 1] as f32 / 255.0, px[i + 2] as f32 / 255.0] };
+        // The label: the strongest pixel of its glyphs.
+        let mut label = 0.0f32;
+        for i in u.scene().annot.iter().filter(|i| i.paint[3] == amenui::scene::GLYPH) {
+            let r = amenui::form::ink_box(i);
+            let (mut y, mut best) = (r[1].floor(), 0.0f32);
+            while y < r[3] { let mut x = r[0].floor(); while x < r[2] { best = best.max(ratio(at(x + 0.5, y + 0.5), ground)); x += 1.0; } y += 1.0; }
+            label = label.max(best);
+        }
+        assert!(label >= 4.5, "theme {theme}: the INK label is {label:.2}:1");
+        // A dash of the box: the middle of each short bar.
+        let mut dash = f32::MAX;
+        for i in u.scene().annot.iter().filter(|i| i.paint[3] == amenui::scene::SHAPE && i.paint[1] == 0.0 && i.xf == [0.0; 4] && i.paint[2] > 0.8) {
+            dash = dash.min(ratio(at(i.rect[0] + i.rect[2] * 0.5, i.rect[1] + i.rect[3] * 0.5), ground));
+        }
+        assert!(dash >= 3.0, "theme {theme}: a dash is {dash:.2}:1");
+    }
 }

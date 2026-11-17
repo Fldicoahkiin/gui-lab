@@ -81,6 +81,32 @@ impl Theme {
     }
 }
 
+/// WCAG contrast of two colours as they are written (sRGB values, 0..1).
+pub fn contrast(a: [f32; 3], b: [f32; 3]) -> f32 {
+    let lin = |v: f32| if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
+    let lum = |c: [f32; 3]| 0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2]);
+    let (x, y) = (lum(a), lum(b));
+    (x.max(y) + 0.05) / (x.min(y) + 0.05)
+}
+impl Gaze {
+    /// The annotation colour on `ground`: as given where it stands 4.5:1 from it, else the same hue
+    /// darkened (on a light ground) or lightened (on a dark one) until it does (DESIGN.md §1.7).
+    pub fn colour_on(&self, ground: [f32; 3]) -> [f32; 3] {
+        let c = self.colour;
+        if contrast(c, ground) >= 4.5 { return c; }
+        let light = contrast(ground, [0.0; 3]) > contrast(ground, [1.0; 3]);
+        let at = |k: f32| std::array::from_fn::<f32, 3, _>(|i| if light { c[i] * k } else { c[i] + (1.0 - c[i]) * k });
+        // The least change that reads, found by halves.
+        let (mut lo, mut hi) = if light { (0.0f32, 1.0f32) } else { (0.0f32, 1.0f32) };
+        for _ in 0..24 {
+            let m = 0.5 * (lo + hi);
+            let ok = contrast(at(m), ground) >= 4.6;
+            if light { if ok { lo = m; } else { hi = m; } } else if ok { hi = m; } else { lo = m; }
+        }
+        at(if light { lo } else { hi })
+    }
+}
+
 const SIZES: TypeScale = TypeScale { display: 34.0, title: 20.0, body: 16.0, small: 13.0 };
 const fn theme(name: &'static str, ground: [f32; 3], ink: [f32; 3], accent: [f32; 3]) -> Theme {
     Theme { name, ground, ground2: ground, ink, accent, second: accent, third: accent, display: SANS, body: SANS, mono: MONO, sizes: SIZES, hairline: 1.0, rule: 1.0 }

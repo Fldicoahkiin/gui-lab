@@ -554,7 +554,7 @@ frame with a blend-only pipeline that honours each instance's own `xf`, used onl
   50 / 100) marking the pointer; `CROSS` a crosshair and coordinates at the pointer; `GRID` a baseline
   every 8 px and 12 columns; `EDGE` edge notes (§4.2); `OSC` a waveform and `LEVEL` a level bar (§4.3), with a
   `READY 0.62` readout beside it while the page is still preparing (§1.23); `INK` the box round the element's true
-  ink, dashed, with a dashed leader to its drawn outline and an `INK w×h` label (§1.31). `Gaze::echo` (0 by
+  ink, dashed, with a dashed leader from a corner of it to its drawn outline and an `INK w×h` label (§1.31). `Gaze::echo` (0 by
   default) keeps up to that many earlier INK boxes of a moving element as thin outlines (no label, no fill), one
   taken every `echo_ms` (200 ms, snapped to the beat grid, §1.32), the newest at most one interval old; the k-th (from
   1) of n is drawn at `0.6 × (1 − (k − 1) ÷ n)` of the live box's opacity (0.6, 0.4, 0.2 for three), and an echo goes
@@ -2349,10 +2349,14 @@ the ink reaches past it (px) and what cuts it (the clipping element's key, or th
 rest (`near`, `charr`, and materials added from source); one whose rest is plain passes by construction.
 
 The annotation layer shows what the audit measures: `gaze::INK` draws the true ink's bounding box of an element
-(after transforms and poses) dashed, with a leader dashed 4 px on, 4 px off from the first corner of the box at least
-12 px clear of text to read, routed round text to read (`strand::clear_path`), to the nearest point of the drawn
-outline (of a shape's true outline too), and an `INK w×h` label (`hit::ink_of`, `Ui::leaders`), from the same measure
-the clipping and overlap checks use. Tags
+(after transforms and poses) dashed, with a leader dashed 4 px on, 4 px off from a corner of that box to the
+nearest point of the drawn outline (of a shape's true outline too), never outside the box: of the corners 12 px clear
+of text to read, the one farthest from the outline, the line kept round text to read (`strand::clear_path`). A
+leader shorter than 16 px (two dashes) is not drawn, so a box that hugs its ink, as text's does, has none. Then an
+`INK w×h` label (`hit::ink_of`, `Ui::leaders`), from the same measure the clipping and overlap checks use. The
+annotation colour (`Gaze::colour`) is used as given where it stands 4.5:1 from the page's ground; on a ground where
+it does not (the light theme) it is the same hue darkened until it does (`Gaze::colour_on`), for the boxes, leaders,
+labels and guides alike. Tags
 and `INK` readouts never cover text to read or each other: each tries outside the ink box above at the left, then
 below, then to the right (`gaze::place_tag`), takes the first place that meets no text-to-read ink box and no other
 label, and when none is free only the box is drawn.
