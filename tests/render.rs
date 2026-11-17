@@ -72,3 +72,33 @@ fn a_drag_through_the_field_map_gives_the_same_bytes_three_times() {
     still.events.clear();
     assert_ne!(render(&still, fonts(), Some(&mut o)).expect("render").png, a.png);
 }
+
+/// The ink pixels of the `Send` label on the form recipe's solid button, drawn in `material` and in
+/// plain, `theme` (0 dark, 1 light).
+fn send_ink(o: &mut amenui::offscreen::Offscreen, material: amenui::style::Material, theme: usize) -> usize {
+    let mut ui = amenui::recipes::form::ui(fonts(), 480, 360, 1.0);
+    ui.tick(1.5);
+    let look = amenui::style::Look { material, theme: amenui::style::THEMES[theme], ..ui.look() };
+    o.r.partial = false;
+    let px = o.render(&mut ui, &look);
+    o.r.hide_glyphs = true;
+    ui.invalidate();
+    let ground = o.render(&mut ui, &look);
+    o.r.hide_glyphs = false;
+    let node = ui.nodes().iter().position(|n| n.text() == Some("Send")).expect("the Send label");
+    let boxes: Vec<[f32; 4]> = ui.glyphs().log.iter().filter(|g| g.node == node).map(|g| amenui::form::ink_box(&ui.scene().instances[g.inst])).collect();
+    assert_eq!(boxes.len(), 4, "four glyphs");
+    amenui::audit::ink_pixels(&px, &ground, ui.device_size(), &boxes)
+}
+
+#[test]
+fn near_keeps_a_label_on_a_solid_button_whole() {
+    let Ok(mut o) = amenui::offscreen::Offscreen::try_new(480, 360) else { eprintln!("no GPU adapter here: skipped"); return };
+    use amenui::style::Material;
+    for theme in [0, 1] {
+        let plain = send_ink(&mut o, Material::Plain, theme);
+        let near = send_ink(&mut o, Material::Near, theme);
+        assert!(plain > 60, "theme {theme}: plain draws the label ({plain} px)");
+        assert!(near as f32 >= 0.9 * plain as f32, "theme {theme}: near draws {near} of plain's {plain} ink px");
+    }
+}
