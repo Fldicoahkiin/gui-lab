@@ -219,3 +219,22 @@ fn a_loosened_title_is_a_few_long_chords_off_its_outline() {
     let grow = [a[0] - b[0], a[1] - b[1], b[2] - a[2], b[3] - a[3]];
     assert!(grow.iter().all(|g| *g >= 0.6 * reach), "it reaches past the letters by {grow:?}");
 }
+
+#[test]
+fn a_retracting_title_hurries_past_its_half_drawn_looks() {
+    let mut ui = open(0.0);
+    stir(&mut ui);
+    let mut t = ui.now();
+    let (mut band, mut peak) = (0, 0.0f32);
+    for _ in 0..600 {
+        t += 1.0 / 60.0;
+        ui.tick(t);
+        ui.frame_drawn();
+        let k = thread_of(&ui, "title").map_or(0.0, |s| s.1);
+        peak = peak.max(k);
+        // Counted on the way back, once it was nearly all the way loose.
+        if peak > 0.9 && (0.15..=0.4).contains(&k) { band += 1; }
+    }
+    assert!(peak > 0.9, "the stir loosened the title to {peak}");
+    assert!(band <= 8, "{band} frames between 0.15 and 0.4 on the way back");
+}

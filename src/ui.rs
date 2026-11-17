@@ -3303,7 +3303,8 @@ impl<S, M: Clone> Ui<S, M> {
             let n = &self.nodes[ni];
             // Text to read and controls hold: no thread, no fade, not carried by the map (DESIGN.md §1.30).
             if n.legible || n.hidden || modal.is_some_and(|l| idx[0] < l) || matches!(n.content, Content::Canvas(_)) || self.recomps.contains_key(&n.key) || self.decodes.contains_key(&n.key) || (running && self.roles[ni] != 0) || idx.iter().any(|&i| self.flows.contains_key(&self.owners[i].1)) { continue; }
-            let k = idx.iter().map(|&i| self.inst_loose(i, now)).fold(tr_k, f32::max).clamp(0.0, 1.0);
+            // As the thread shows it: through 0.15–0.4 quickly (`strand::shown`).
+            let k = strand::shown(idx.iter().map(|&i| self.inst_loose(i, now)).fold(tr_k, f32::max));
             if k <= 0.0 { continue; }
             let f = strand::fill(k);
             for &i in idx { fades.push((i, self.scene.instances[i].paint[2], f)); }
@@ -3346,7 +3347,9 @@ impl<S, M: Clone> Ui<S, M> {
                     let scope = self.stir_scope(Some(ni), &Scope::Container(None)).map_or(screen, |b| [b[0] * s, b[1] * s, b[2] * s, b[3] * s]);
                     // The line height the line is simplified by: a text's line, a shape's short side.
                     let lh = match &n.content { Content::Text { line, .. } => *line, _ => n.rect.w.min(n.rect.h) } * s;
-                    let c = strand::Ctx { k, t, seed: (ni as u32).wrapping_mul(7919), scale: s, drift, scope, calm: &calm, lh };
+                    // A held pose is never one of the in-between looks (`strand::held`).
+                    let kp = if hold > 0.0 { strand::held(k) } else { k };
+                    let c = strand::Ctx { k: kp, t, seed: (ni as u32).wrapping_mul(7919), scale: s, drift, scope, calm: &calm, lh };
                     let map = &self.fmap;
                     let field = |x: f32, y: f32| (map.energy_at(x / s, y / s), map.flow_at(x / s, y / s));
                     let want = (rest.pts.len() + 3 * (1 + strand::knots(fx.knot, 1.0, k)) + 32) * 2;
@@ -3361,7 +3364,8 @@ impl<S, M: Clone> Ui<S, M> {
             let resp = [0.0, first.resp[1], first.resp[2], first.resp[3]];
             let w = line_px(fx.weight * s, self.timing.binary);
             for g in &segs {
-                let a = alpha * if g.kind == Kind::Line { line_a } else { bridge_a };
+                // The knots and the line bright, the tails quiet.
+                let a = alpha * match g.kind { Kind::Line => line_a, Kind::Tail => bridge_a * fx.tail_tone, _ => bridge_a };
                 if a <= 0.0 { continue; }
                 bar(g.a, g.b, w, [first.paint[0], first.paint[1], a, SHAPE], [first.look[0], first.look[1]], resp, first.clip, &mut out);
             }
