@@ -128,3 +128,101 @@ fn glitchr_moves_only_what_is_drawn() {
         }
     }
 }
+
+fn hue_of(c: [f32; 3]) -> Option<f32> {
+    let (mx, mn) = (c[0].max(c[1]).max(c[2]), c[0].min(c[1]).min(c[2]));
+    let d = mx - mn;
+    if d < 0.15 { return None; }
+    let h = if mx == c[0] { ((c[1] - c[2]) / d).rem_euclid(6.0) } else if mx == c[1] { (c[2] - c[0]) / d + 2.0 } else { (c[0] - c[1]) / d + 4.0 };
+    Some(h * 60.0)
+}
+fn rgb_at(px: &[u8], x: i32, y: i32) -> [f32; 3] { let i = ((y as u32 * CELL.0 + x as u32) * 4) as usize; [px[i] as f32 / 255.0, px[i + 1] as f32 / 255.0, px[i + 2] as f32 / 255.0] }
+fn hue_gap(a: f32, b: f32) -> f32 { let d = (a - b).abs(); d.min(360.0 - d) }
+
+#[test]
+fn halftonr_on_light_paper_has_no_yellow_and_keeps_the_rule_in_the_accent() {
+    let Ok(mut o) = Offscreen::try_new(CELL.0, CELL.1) else { eprintln!("no GPU adapter here: skipped"); return };
+    let (ui, px) = cell(&mut o, Material::Halftonr, 1, 1.0);
+    let t = ink_of(&ui, "title");
+    for y in t[1]..t[3] { for x in t[0]..t[2] {
+        if let Some(h) = hue_of(rgb_at(&px, x, y)) { assert!(!(40.0..=90.0).contains(&h), "a pixel of the title at ({x}, {y}) is yellow ({h:.0}°)"); }
+    } }
+    let accent = hue_of(amenui::style::THEMES[1].accent).expect("a coloured accent");
+    let r = ink_of(&ui, "rule");
+    let mut n = 0;
+    for y in r[1]..r[3] { for x in r[0]..r[2] {
+        if let Some(h) = hue_of(rgb_at(&px, x, y)) { assert!(hue_gap(h, accent) <= 10.0, "a pixel of the rule at ({x}, {y}) is {:.0}° from the accent", hue_gap(h, accent)); n += 1; }
+    } }
+    assert!(n > 20, "{n} coloured pixels in the rule");
+}
+
+#[test]
+fn charr_keeps_the_rule_whole_and_the_picture_s_edge() {
+    let Ok(mut o) = Offscreen::try_new(CELL.0, CELL.1) else { eprintln!("no GPU adapter here: skipped"); return };
+    let pitch = amenui::style::Look::default().numbers(Material::Charr).0[0];
+    for theme in [0, 1] {
+        let (rest_ui, rest) = cell(&mut o, Material::Charr, theme, 0.0);
+        let rule = ink_of(&rest_ui, "rule");
+        let pic = ink_of(&rest_ui, "picture");
+        let accent = hue_of(amenui::style::THEMES[theme].accent).expect("a coloured accent");
+        for k in [0.25f32, 0.5, 0.75, 1.0] {
+            let (_, px) = cell(&mut o, Material::Charr, theme, k);
+            // The largest cell there is at this looseness.
+            let p = if k >= 0.7 { (pitch * 1.5).round() } else { pitch } as i32;
+            let mut x0 = rule[0];
+            while x0 + p <= rule[2] {
+                let found = (rule[1] - p..rule[3] + p).any(|y| (x0..x0 + p).any(|x| hue_of(rgb_at(&px, x, y)).is_some_and(|h| hue_gap(h, accent) <= 20.0)));
+                assert!(found, "theme {theme}, loose {k}: the rule has no accent between x {x0} and {}", x0 + p);
+                x0 += p;
+            }
+            // Around the picture, within a cell of its box, nothing is drawn that was not there at rest.
+            for y in (pic[1] - p).max(0)..(pic[3] + p).min(CELL.1 as i32) { for x in (pic[0] - p).max(0)..(pic[2] + p).min(CELL.0 as i32) {
+                if x >= pic[0] && x < pic[2] && y >= pic[1] && y < pic[3] { continue; }
+                let i = ((y as u32 * CELL.0 + x as u32) * 4) as usize;
+                assert!(px[i..i + 3] == rest[i..i + 3], "theme {theme}, loose {k}: ({x}, {y}) beside the picture changed");
+            } }
+        }
+    }
+}
+
+#[test]
+fn pictures_look_their_own_way_in_each_material() {
+    let Ok(mut o) = Offscreen::try_new(CELL.0, CELL.1) else { eprintln!("no GPU adapter here: skipped"); return };
+    for theme in [0, 1] {
+        let ms = [Material::Dottr, Material::Charr, Material::Halftonr];
+        let shots: Vec<_> = ms.iter().map(|m| cell(&mut o, *m, theme, 1.0)).collect();
+        let b = ink_of(&shots[0].0, "picture");
+        let area = ((b[2] - b[0]) * (b[3] - b[1])) as f32;
+        for i in 0..3 { for j in i + 1..3 {
+            let mut d = 0;
+            for y in b[1]..b[3] { for x in b[0]..b[2] { let k = ((y as u32 * CELL.0 + x as u32) * 4) as usize; if shots[i].1[k..k + 3] != shots[j].1[k..k + 3] { d += 1; } } }
+            assert!(d as f32 > 0.25 * area, "theme {theme}: {:?} and {:?} differ in only {:.0} % of the picture", ms[i], ms[j], d as f32 / area * 100.0);
+        } }
+        // halftonr's dots: the largest at least twice as wide as the smallest (blobs of the dot colour
+        // that do not touch the box's edge).
+        let (_, px) = &shots[2];
+        let g = rgb_at(px, b[0] - 6, b[1] + 2);
+        let dot = |x: i32, y: i32| { let c = rgb_at(px, x, y); (0..3).map(|k| (c[k] - g[k]).abs()).fold(0.0, f32::max) > 0.08 };
+        let (w, h) = (b[2] - b[0], b[3] - b[1]);
+        let mut seen = vec![false; (w * h) as usize];
+        let mut sizes = vec![];
+        for y in 0..h { for x in 0..w {
+            if seen[(y * w + x) as usize] || !dot(b[0] + x, b[1] + y) { continue; }
+            let (mut st, mut n, mut edge) = (vec![(x, y)], 0, false);
+            seen[(y * w + x) as usize] = true;
+            while let Some((cx, cy)) = st.pop() {
+                n += 1;
+                if cx == 0 || cy == 0 || cx == w - 1 || cy == h - 1 { edge = true; }
+                for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+                    let (nx, ny) = (cx + dx, cy + dy);
+                    if nx < 0 || ny < 0 || nx >= w || ny >= h || seen[(ny * w + nx) as usize] || !dot(b[0] + nx, b[1] + ny) { continue; }
+                    seen[(ny * w + nx) as usize] = true;
+                    st.push((nx, ny));
+                }
+            }
+            if !edge && n >= 2 { sizes.push(n as f32); }
+        } }
+        let (mx, mn) = sizes.iter().fold((0.0f32, f32::INFINITY), |a, s| (a.0.max(*s), a.1.min(*s)));
+        assert!(sizes.len() >= 4 && (mx / mn).sqrt() >= 2.0, "theme {theme}: {} dots, widths {:.1}–{:.1}", sizes.len(), mn.sqrt(), mx.sqrt());
+    }
+}

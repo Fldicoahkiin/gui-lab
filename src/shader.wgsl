@@ -617,6 +617,53 @@ fn picture(frag: vec2f, slot: i32) -> vec3f {
   return mix(cu, r, smoothstep(0.5, 1.0, k) * w);
 }
 
+/// Whether the page's ink is lighter than its ground (a dark theme).
+fn ink_light() -> bool { return lum(u.fg.rgb) > lum(gnd(vec2f(0.0))); }
+/// A picture under `halftonr` past half loose: a rotated screen whose dots follow the cell's
+/// brightness (bright cells big on a dark ground, dark cells big on a light one), from a quarter of the
+/// pitch to nearly all of it, in the cell's own colour.
+fn pic_halftonr(p: vec2f, slot: i32) -> vec3f {
+  let base = picture(p, slot);
+  let k = pic_k(p);
+  if (k <= 0.5) { return base; }
+  let a0 = mp(HALFTONR, 0);
+  let pitch = max(3.0, a0.x * u.res.z * 1.5); let ang = radians(a0.y);
+  let q = rot(lat(p), ang);
+  let cell = floor(q / pitch);
+  let c = rot((cell + 0.5) * pitch, -ang) - anc;
+  let e = pitch * 0.25;
+  let avg = ink_t(c + vec2f(-e, -e)) + ink_t(c + vec2f(e, -e)) + ink_t(c + vec2f(-e, e)) + ink_t(c + vec2f(e, e));
+  let col = straight(avg);
+  let l = clamp(lum(col), 0.0, 1.0);
+  // Stretched over the tones pictures mostly have, so a picture shows its whole range of sizes.
+  let size = smoothstep(0.08, 0.75, select(1.0 - l, l, ink_light()));
+  let r = pitch * mix(0.25, 0.95, size) * 0.5;
+  let m = smoothstep(r + 0.6, r - 0.6, length(q - (cell + 0.5) * pitch));
+  return mix(base, mix(gnd(p), col, m), smoothstep(0.5, 1.0, k));
+}
+/// A picture under `charr` past half loose: square cells of the title's size, each a character from
+/// the character set by the cell's brightness (denser where brighter on a dark ground, where darker on
+/// a light one), in the cell's average colour over a faint tile of it.
+fn pic_charr(p: vec2f, slot: i32) -> vec3f {
+  let base = picture(p, slot);
+  let k = pic_k(p);
+  if (k <= 0.5) { return base; }
+  let a0 = mp(CHARR, 0);
+  let P0 = clamp(round(a0.x * u.res.z), CHAR_MIN, CHAR_MAX);
+  let P = select(P0, min(CHAR_MAX, round(P0 * 1.5)), k >= 0.7);
+  let levels = clamp(round(a0.y), 2.0, 16.0);
+  let cell = floor(lat(p) / P);
+  let cc = straight(cell_avg(cell, P));
+  let l = clamp(lum(cc), 0.0, 1.0);
+  let dense = select(1.0 - l, l, ink_light());
+  let n = clamp(floor(dense * levels), 0.0, levels - 1.0);
+  let m = char_mark(round(n * 15.0 / (levels - 1.0)), fract(lat(p) / P), P);
+  // On a dark ground the character carries the tone, so its colour is lifted to full value.
+  let ink = select(cc, cc / max(max(cc.r, max(cc.g, cc.b)), 0.04), ink_light());
+  let tile = mix(gnd(p), cc, 0.22);
+  return mix(base, mix(tile, ink, m), smoothstep(0.5, 1.0, k));
+}
+
 // ── Materials (DESIGN.md §1.6) ───────────────────────────────────────────────────────────────────
 fn vnoise(p: vec2f) -> f32 {
   let i = floor(p); let f = fract(p); let w = f * f * (3.0 - 2.0 * f);
@@ -835,7 +882,9 @@ fn shade_new(pf: vec2f) -> vec3f {
       q.x += (h1(vec2f(band, floor(t * 17.0))) - 0.5) * 70.0 * s * u.fa.w * pick * smoothstep(0.2, 0.9, w0);
       q = select(p, q, near_t(q).g > 0.05);
     }
-    col = picture(q, slot);
+    // Each material its own picture past half loose (DESIGN.md §1.6.2): halftonr's screen, charr's
+    // characters; the rest keep the marks.
+    if (m == HALFTONR) { col = pic_halftonr(q, slot); } else if (m == CHARR) { col = pic_charr(q, slot); } else { col = picture(q, slot); }
     // The compare wipe's line.
     let wx = floor(u.wipe.x);
     let r = u.wipe_rect;
@@ -1041,31 +1090,57 @@ fn tr_step(p: vec2f, x: f32, k: i32, s: ptr<function, TS>) {
     if (abs(sd) < max(a * sc, 0.8) && near_t(p).r > 0.02 && o < (e - 0.05) / 0.45) { (*s).m = max((*s).m, 1.0); }
     (*s).m = max((*s).m, smoothstep(b, 1.0, e));
   } else if (kind == 11) {
-    // Cracks: the distance to the nearest edge of a hashed cell pattern (pieces of `a` px, squashed
-    // along the angle `b` by `c` into bands), made ragged by `d` px of fixed noise. The new page shows
-    // where that distance is under a width that starts as a hairline and grows with the square of the
-    // step's progress, so the cracks are thin at first and then open out.
+    // Cracks (DESIGN.md §4.1): a hashed cell pattern (pieces of `a` px, squashed along the angle `b` by
+    // `c` into long pieces), its edges straight but for `d` px of slow waver. The cracks run out from
+    // where the commit was pressed (the page's centre without one), reaching the far corner at 0.4 of
+    // the step; they stay thin (0.6 px to 0.06 a). Then each piece leaves whole at its own time, sooner
+    // nearer the press and a little by its hash: between `t` and `t + 0.15` its own crack widens until
+    // it covers the piece, so at any moment most pieces are whole or gone.
     let cs = clamp(a, 16.0, 400.0) * sc;
-    let q = rot(p, -radians(b)) / cs * vec2f(mix(1.0, 0.25, clamp(c, 0.0, 1.0)), 1.0);
+    let ang = radians(b);
+    let sq = vec2f(mix(1.0, 0.25, clamp(c, 0.0, 1.0)), 1.0);
+    let q = rot(p, -ang) / cs * sq;
     let ip = floor(q); let fp = q - ip;
     var mr = vec2f(0.0); var md = 8.0; var mg = vec2f(0.0);
     for (var j = -1; j <= 1; j++) { for (var i = -1; i <= 1; i++) {
       let g = vec2f(f32(i), f32(j));
-      let r = g + h2(ip + g + 0.71) * 0.85 + 0.075 - fp;
+      let r = g + h2(ip + g + 0.71) * 0.6 + 0.2 - fp;
       let dd = dot(r, r);
       if (dd < md) { md = dd; mr = r; mg = g; }
     } }
-    var edge = 8.0;
+    // The distance to the nearest edge in page px: an edge's distance in the squashed space over how
+    // much the squash shortens its normal, so a crack is as wide whichever way it runs.
+    var edge = 1e4;
     for (var j = -2; j <= 2; j++) { for (var i = -2; i <= 2; i++) {
       let g = mg + vec2f(f32(i), f32(j));
-      let r = g + h2(ip + g + 0.71) * 0.85 + 0.075 - fp;
-      if (dot(mr - r, mr - r) > 1e-5) { edge = min(edge, dot(0.5 * (mr + r), normalize(r - mr))); }
+      let r = g + h2(ip + g + 0.71) * 0.6 + 0.2 - fp;
+      if (dot(mr - r, mr - r) > 1e-5) {
+        let nq = normalize(r - mr);
+        edge = min(edge, dot(0.5 * (mr + r), nq) * cs / max(length(nq * sq), 1e-3));
+      }
     } }
-    let rag = (vnoise(p / (5.0 * sc)) - 0.5) * 2.0 * d * sc + (vnoise(p / (1.7 * sc) + 9.0) - 0.5) * 0.6 * d * sc;
-    let dist = max(edge * cs + rag, 0.0);
-    let width = e * e * 0.75 * cs + select(0.0, 0.6 * sc, e > 0.0);
-    var m = select(smoothstep(width + 1.0 * sc, width - 1.0 * sc, dist), step(dist, width), ee >= 0.5);
-    if (e >= 1.0) { m = 1.0; }
+    var o = u.tr[0].yz;
+    if (o.x <= 0.0 && o.y <= 0.0) { o = u.res.xy * 0.5; }
+    let dg = diag();
+    let rag = (vnoise(p / (max(a / 5.0, 2.0) * sc)) - 0.5) * 2.0 * d * sc;
+    let dist = max(edge + rag, 0.0);
+    // The cracks' run and width: both done at 0.4.
+    let run = clamp(e / 0.4, 0.0, 1.0);
+    let hair = select(0.0, mix(0.6 * sc, max(0.06 * a * sc, 0.6 * sc), run), distance(p, o) < run * dg && e > 0.0);
+    // The piece this pixel is in: its centre on the page, and when it leaves.
+    let cell = ip + mg;
+    let centre = rot((cell + h2(cell + 0.71) * 0.6 + 0.2) / sq * cs, ang);
+    // Measured against the farthest corner from the press, so the last pieces leave at the step's end.
+    let far = max(max(length(o), length(o - vec2f(u.res.x, 0.0))), max(length(o - vec2f(0.0, u.res.y)), length(o - u.res.xy)));
+    let leave = 0.35 + 0.5 * (0.6 * clamp(distance(centre, o) / max(far, 1.0), 0.0, 1.0) + 0.4 * h1(cell + 3.17));
+    let own = clamp((e - leave) / 0.15, 0.0, 1.0);
+    // Slow at first and fast at the end, so a piece is seldom half gone.
+    let width = max(hair, select(0.0, mix(hair, 1.6 * cs, own * own * own * own), own > 0.0));
+    // `width` is the crack's full width: a pixel shows the new page within half of it of an edge.
+    let half = width * 0.5;
+    var m = select(smoothstep(half + 1.0 * sc, half - 1.0 * sc, dist), step(dist, half), ee >= 0.5);
+    if (width <= 0.0) { m = 0.0; }
+    if (own >= 1.0 || e >= 1.0) { m = 1.0; }
     if (e <= 0.0) { m = 0.0; }
     (*s).m = max((*s).m, m);
   }

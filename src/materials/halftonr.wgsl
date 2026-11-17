@@ -47,6 +47,9 @@ fn m_halftonr(p: vec2f) -> vec3f {
   // Three screens, one per separation, at their own angles and slightly out of register. Each prints
   // its separation's colour drawn halfway to the ink's own, so the page keeps to its ink and its
   // accent instead of pure red, green and blue.
+  // On a light ground (ink darker than it) the separations are cyan and magenta drawn a third of the
+  // way to the ink, and the third is the ink itself: no yellow, which only goes olive toward black.
+  let light = dot(u.fg.rgb, vec3f(0.3, 0.59, 0.11)) < dot(g, vec3f(0.3, 0.59, 0.11));
   var out = ex;
   let angs = vec3f(radians(15.0), radians(75.0), 0.0) + vec3f(ang - radians(45.0));
   for (var j = 0; j < 3; j++) {
@@ -55,15 +58,21 @@ fn m_halftonr(p: vec2f) -> vec3f {
     let cell = floor(q / pitch);
     let c = rot((cell + 0.5) * pitch, -angs[j]) - anc;
     if (kt_loose(c) <= 0.12 + 0.5 * h1(cell + vec2f(angs[j] * 7.0, 3.0))) { continue; }
+    // A cell on accent ink is left to the accent's own screen.
+    if (dec(c).acc > 0.5 || dec(c + off).acc > 0.5) { continue; }
     let e = pitch * 0.25;
     let avg = (ink_t(c + off + vec2f(-e, -e)) + ink_t(c + off + vec2f(e, -e)) + ink_t(c + off + vec2f(-e, e)) + ink_t(c + off + vec2f(e, e))) * 0.25;
     let d = dec_at(avg, c);
+    // Ink that is partly the accent's (a rule's edge) is the accent screen's too.
+    if (d.acc > 0.3) { continue; }
     // How much of this channel the ink changes from the ground decides the dot.
     let amt = clamp(abs(d.rgb[j] - g[j]) / max(abs(u.fg.rgb[j] - g[j]), 0.25), 0.0, 1.0) * avg.a;
     let r = pitch * 0.56 * sqrt(clamp(amt * gain, 0.0, 1.0));
     let m = smoothstep(r + 0.6, r - 0.6, length(q - (cell + 0.5) * pitch)) * step(0.02, amt);
     var sep = g; sep[j] = d.rgb[j];
-    out = mix(out, mix(sep, d.rgb, 0.5), m);
+    var col = mix(sep, d.rgb, 0.5);
+    if (light) { col = select(mix(sep, d.rgb, 0.35), d.rgb, j == 2); }
+    out = mix(out, col, m);
   }
   return out;
 }

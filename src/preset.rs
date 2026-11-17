@@ -51,7 +51,7 @@ impl StepKind {
     pub const ALL: [StepKind; 12] = [StepKind::None, StepKind::Reveal, StepKind::Bands, StepKind::Fade, StepKind::Bar, StepKind::Planes, StepKind::Loosen, StepKind::Layers, StepKind::Boxes, StepKind::Carve, StepKind::Outline, StepKind::Crack];
     /// Crack's numbers as `StepKind::params` names them, at their defaults: pieces 120 px, leaning 70°,
     /// 0.6 toward bands, 3 px ragged, hard edges.
-    pub const CRACK: [f32; 5] = [120.0, 70.0, 0.6, 3.0, 1.0];
+    pub const CRACK: [f32; 5] = [120.0, 70.0, 0.6, 2.0, 1.0];
     pub fn id(self) -> f32 { Self::ALL.iter().position(|k| *k == self).unwrap_or(0) as f32 }
     /// The names of `a`–`e` for this kind (empty: unused), for number controls.
     pub fn params(self) -> [&'static str; 5] {
