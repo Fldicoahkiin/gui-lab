@@ -16,9 +16,10 @@
 #[path = "../examples/loading.rs"] pub mod loading;
 #[path = "../examples/stack.rs"] pub mod stack;
 #[path = "../examples/chart.rs"] pub mod chart;
+#[path = "../examples/form3d.rs"] pub mod form3d;
 
 /// Every recipe: its name, its source (the file in `examples/`), and what it shows.
-pub const RECIPES: [(&str, &str, &str); 16] = [
+pub const RECIPES: [(&str, &str, &str); 17] = [
     ("form", include_str!("../examples/form.rs"), "A form: text field, number, switch, submit."),
     ("list", include_str!("../examples/list.rs"), "A list with selection."),
     ("dialog", include_str!("../examples/dialog.rs"), "A modal dialog."),
@@ -35,8 +36,9 @@ pub const RECIPES: [(&str, &str, &str); 16] = [
     ("chart", include_str!("../examples/chart.rs"), "A dot chart with a scrubbing marker and draggable points."),
     ("stack", include_str!("../examples/stack.rs"), "A stack of cards that fans under the pointer."),
     ("loading", include_str!("../examples/loading.rs"), "A list that loads: nothing, its own skeleton, then the rows in turn."),
+    ("form3d", include_str!("../examples/form3d.rs"), "A passage wrapped on a sphere: depth, facing, thinning, and the pointer on the surface."),
 ];
-pub const NAMES: [&str; 16] = ["form", "list", "dialog", "flow", "morph", "material", "annotate", "counter", "mesh", "preset", "chapter", "gesture", "submenu", "loading", "stack", "chart"];
+pub const NAMES: [&str; 17] = ["form", "list", "dialog", "flow", "morph", "material", "annotate", "counter", "mesh", "preset", "chapter", "gesture", "submenu", "loading", "stack", "chart", "form3d"];
 
 /// Open recipe `name` as a page to drive and draw.
 #[cfg(not(target_arch = "wasm32"))]
@@ -58,6 +60,7 @@ pub fn open(name: &str, faces: Vec<crate::text::Face>, w: u32, h: u32, scale: f3
         "loading" => Box::new(loading::ui(faces, w, h, scale)),
         "stack" => Box::new(stack::ui(faces, w, h, scale)),
         "chart" => Box::new(chart::ui(faces, w, h, scale)),
+        "form3d" => Box::new(form3d::ui(faces, w, h, scale)),
         _ => return None,
     })
 }

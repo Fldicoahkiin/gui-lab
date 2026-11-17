@@ -144,3 +144,59 @@ fn a_pointer_scene_still_drags_from_its_own_area_and_from_what_takes_no_press() 
         assert_eq!(ui.state.last(), Some(&Heard::Point(false)), "the drag ends");
     }
 }
+/// A square turned 30°: it presses where it is drawn, not where its box was.
+struct Turned { hits: u32 }
+fn turned(_: &Turned) -> El<()> {
+    col().key("root").pad(120.0, 120.0).child(space(80.0, 80.0).key("sq").fill(Paint::INK).radius(0.0).turn(30f32.to_radians()).on_press(()))
+}
+
+#[test]
+fn a_turned_element_is_pressed_where_it_is_drawn() {
+    let mut ui = Ui::new(Turned { hits: 0 }, turned, |s: &mut Turned, _| s.hits += 1, fonts(), 400, 400, 1.0);
+    ui.tick(1.0);
+    let r = ui.node("sq").unwrap().rect;
+    let (cx, cy) = r.center();
+    // The drawn square, from the instance's own transform (box offset → screen offset).
+    let inst = ui.scene().instances.iter().find(|i| i.xf != [0.0; 4]).copied().expect("a turned instance");
+    let m = [[1.0 + inst.xf[0], inst.xf[1]], [inst.xf[2], 1.0 + inst.xf[3]]];
+    assert!((m[0][0] - 30f32.to_radians().cos()).abs() < 1e-4, "drawn turned 30°: {m:?}");
+    // 4 px inside the drawn top-left corner, and 4 px inside the box's own (now empty) corner.
+    let (ox, oy) = (r.x + 4.0 - cx, r.y + 4.0 - cy);
+    let drawn = (cx + m[0][0] * ox + m[0][1] * oy, cy + m[1][0] * ox + m[1][1] * oy);
+    let empty = (r.x + 4.0, r.y + 4.0);
+    ui.press(empty.0, empty.1); ui.release(empty.0, empty.1);
+    assert_eq!(ui.state.hits, 0, "the box's empty corner does not press it");
+    ui.tick(2.0);
+    ui.press(drawn.0, drawn.1); ui.release(drawn.0, drawn.1);
+    assert_eq!(ui.state.hits, 1, "its drawn corner does");
+}
+
+#[test]
+fn after_a_quarter_turn_the_glyph_under_the_pointer_is_the_one_drawn_there() {
+    use amenui::recipes::form3d;
+    let at = |yaw: f32, at: Option<(f32, f32)>| {
+        let mut ui = form3d::ui(fonts(), 720, 640, 1.0);
+        ui.state.spin = [yaw, 8.0];
+        ui.relayout();
+        ui.tick(2.0);
+        let r = ui.node("passage").unwrap().rect;
+        // The first point near the middle of the sphere that is on a glyph (not between two lines).
+        // At yaw 0, the first point near the middle that is on a glyph (not between two lines); after
+        // the turn, that same point.
+        let (x, y, h) = match at {
+            Some((x, y)) => (x, y, ui.glyph_at(x, y).expect("a glyph at the same point after the turn")),
+            None => (0..40).find_map(|k| { let (x, y) = (r.x + r.w * 0.5, r.y + r.h * 0.5 + k as f32 - 20.0); ui.glyph_at(x, y).map(|h| (x, y, h)) })
+                .expect("a glyph near the middle of the sphere"),
+        };
+        assert_eq!(h.key, "passage");
+        // The glyph it names is drawn there: its instance's ink box holds the point (within a px).
+        let node = ui.nodes().iter().position(|n| n.key == "passage").unwrap();
+        let g = ui.glyphs().log.iter().find(|g| g.node == node && g.i == h.i).copied().expect("drawn");
+        let b = amenui::form::ink_box(&ui.scene().instances[g.inst]);
+        assert!(b[0] - 1.0 <= x && x <= b[2] + 1.0 && b[1] - 1.0 <= y && y <= b[3] + 1.0, "yaw {yaw}: glyph {} at {b:?}, pointer {x} {y}", h.i);
+        (h.i, (x, y))
+    };
+    let (a, p) = at(0.0, None);
+    let (b, _) = at(90.0, Some(p));
+    assert_ne!(a, b, "a quarter turn brings another glyph under the pointer");
+}

@@ -79,7 +79,7 @@ pub struct Node<M> {
     pub annotate: Option<String>,
     pub scope: bool,
     anchor: Option<String>,
-    clips: bool,
+    pub(crate) clips: bool,
     calm: bool,
     on_text: Option<OnText<M>>,
     /// A multi-line text field; text that can be selected (read-only); the pointer's shape here.
@@ -116,6 +116,14 @@ pub struct Node<M> {
     decode: Option<crate::decode::Decode>,
     /// Drawn as a skeleton (`El::skeleton`, inherited).
     pub skeleton: bool,
+    /// Posed glyphs on a form (`El::form`); its own turn (`El::turn`) and the turn of its subtree as
+    /// drawn (about each turned ancestor's centre, logical px; `hit::Affine`); how clips take its text
+    /// away; whether it moves on purpose (`El::ongoing`, inherited).
+    pub form: Option<crate::form::FormFx>,
+    pub turn: f32,
+    pub xf: Option<crate::hit::Affine>,
+    pub reveal_by: crate::el::Reveal,
+    pub ongoing: bool,
     /// The box layout gave it, relative to its parent (scrolling does not change it).
     local: taffy::Layout,
     tid: NodeId,
@@ -142,12 +150,12 @@ impl<M> Node<M> {
     /// A text field.
     pub fn editable(&self) -> bool { self.on_text.is_some() }
     /// How its text is laid out, when it is text: the same paragraph that is drawn.
-    fn para(&self) -> Option<Para<'_>> {
+    pub(crate) fn para(&self) -> Option<Para<'_>> {
         let Content::Text { s, size, line, font, print, around, nowrap, track, .. } = &self.content else { return None };
         let width = if *nowrap { f32::INFINITY } else { self.inner.w + if around.is_some() { 0.0 } else { 1.0 } };
         Some(Para { s, face: font.resolve([0; 3]), size: *size, line: *line, width, print: *print, around: around.as_deref(), track: *track })
     }
-    fn origin(&self) -> (f32, f32) { (self.inner.x, self.inner.y) }
+    pub(crate) fn origin(&self) -> (f32, f32) { (self.inner.x, self.inner.y) }
 }
 
 /// A drag in progress: the handler and where the press was, captured at the press.
@@ -422,6 +430,10 @@ pub struct Ui<S, M> {
     /// Every mesh `scene3d` elements can name; which copy the pointer was last over (element key, hit).
     meshes: crate::mesh::Library,
     mesh_hover: Option<(String, Option<crate::mesh::MeshHit>)>,
+    /// The glyphs of the last paint, for hits and the audit (`hit::Glyphs`).
+    glyphs: crate::hit::Glyphs,
+    /// Preparation that runs in the frames' spare time (`Ui::prepare`), and how ready the renderer is.
+    prep: crate::warmup::Prepare<S>,
     /// The element whose `on_move` heard the pointer last.
     move_over: Option<String>,
     /// Shed marks in flight, where each shedding element was, the fraction of a mark it still owes, the
@@ -652,7 +664,7 @@ impl<S, M: Clone> Ui<S, M> {
             tree: TaffyTree::new(), tids: HashMap::new(), mkeys: HashMap::new(), virt_views: HashMap::new(), virt_made: HashMap::new(),
             scrolling: Scrolling::default(), touch: None, touches: HashSet::new(), touching: false, fling: None, over: HashMap::new(), motion: HashMap::new(), scroll_paint: false, event_t: None,
             recs: HashMap::new(), recomps: HashMap::new(), slides: HashMap::new(), no_recompose: false,
-            meshes: crate::mesh::Library::default(), mesh_hover: None, move_over: None, particle_gpu: false, motes: vec![], shed_at: HashMap::new(), shed_owed: HashMap::new(), field_marks: HashMap::new(), seen: HashMap::new(), outlines: HashMap::new(), decodes: HashMap::new(), decode_last: HashMap::new(), queued: vec![], flushing: false, motes_made: 0,
+            meshes: crate::mesh::Library::default(), mesh_hover: None, glyphs: Default::default(), prep: Default::default(), move_over: None, particle_gpu: false, motes: vec![], shed_at: HashMap::new(), shed_owed: HashMap::new(), field_marks: HashMap::new(), seen: HashMap::new(), outlines: HashMap::new(), decodes: HashMap::new(), decode_last: HashMap::new(), queued: vec![], flushing: false, motes_made: 0,
             fmap: crate::fieldmap::FieldMap::default(), stirr_at: HashMap::new(), fmap_size: (0.0, 0.0), fmap_ink: u64::MAX, strand_faded: HashMap::new(), strand_cache: HashMap::new(), strand_hold: HashMap::new(), strand_drawn: vec![], trace_head: HashMap::new(),
         };
         ui.resize(w, h, scale);
@@ -865,12 +877,47 @@ impl<S, M: Clone> Ui<S, M> {
     /// still on screen, a time-varying material with something loose), or a timed wake is due (the
     /// caret's blink, a clock the state keeps). When it is false the host draws nothing and waits for
     /// input or `next_wake`.
-    pub fn needs_frame(&self, now: f32) -> bool { self.dirty || self.moving_at(now) || self.wake_at(now).is_some_and(|w| w <= now) }
+    pub fn needs_frame(&self, now: f32) -> bool { self.dirty || self.prep.pending() || self.moving_at(now) || self.wake_at(now).is_some_and(|w| w <= now) }
     /// When the next frame is needed: `now` if one is needed now, a later time for a timed wake, `None`
     /// when only input can change anything.
     pub fn next_wake(&self, now: f32) -> Option<f32> {
-        if self.dirty || self.moving_at(now) { return Some(now); }
+        if self.dirty || self.prep.pending() || self.moving_at(now) { return Some(now); }
         self.wake_at(now).map(|w| w.max(now))
+    }
+    /// Prepare something over the next frames (DESIGN.md §1.23): `job` is called with the state in the
+    /// time the frames leave (at least once a frame) until it says 1; each call does a small piece and
+    /// says how far it is. Show the element it is for with `El::skeleton()` until then, measured to the
+    /// size it will have, and read the progress from the state or with `Ui::ready`.
+    pub fn prepare(&mut self, key: impl Into<String>, job: impl FnMut(&mut S) -> f32 + 'static) { self.prep.add(key.into(), Box::new(job)); self.dirty = true; }
+    /// How far the preparation under `key` is, 0..1 (1: done, or never asked for).
+    pub fn ready(&self, key: &str) -> f32 { self.prep.ready(key) }
+    /// How ready the page is: the least ready preparation and the renderer's warm-up, 0..1.
+    pub fn readiness(&self) -> f32 { self.prep.readiness() }
+    /// The glyphs of the last paint (`hit::Glyphs`), for hits and the audit.
+    pub fn glyphs(&self) -> &crate::hit::Glyphs { &self.glyphs }
+    /// Which node and identity each instance of the scene belongs to (the page's instances only).
+    pub fn owners(&self) -> &[(usize, u64)] { &self.owners[..self.page_len.min(self.owners.len())] }
+    /// The pieces (words or lines, logical px boxes) text node `i` is shown by under `reveal` (`El::reveal_by`).
+    pub fn reveal_groups(&mut self, i: usize, reveal: crate::el::Reveal) -> Vec<Vec<Rect>> {
+        let n = &self.nodes[i];
+        match n.para() { Some(p) => self.text.reveal_groups(p, n.origin(), reveal), None => vec![] }
+    }
+    /// Something visible on the page moves on purpose (`El::ongoing`).
+    pub fn ongoing(&self) -> bool { self.nodes.iter().any(|n| n.ongoing && !n.hidden && { let r = n.rect.intersect(&n.clip); r.w > 0.0 && r.h > 0.0 }) }
+    /// Where the modal layer starts in the nodes, when one is open.
+    pub fn modal_at(&self) -> Option<usize> { self.modal_at }
+    /// How long preparation may take of each frame (ms; 0: each job once a frame, the same steps on
+    /// every run, for tests and tools).
+    pub fn set_prepare_budget(&mut self, ms: f32) { self.prep.budget_ms = ms.max(0.0); }
+    /// The renderer says how far its warm-up is (`render::Warmup`).
+    pub fn set_render_ready(&mut self, f: f32) { if (self.prep.render - f).abs() > 1e-6 { self.prep.render = f; self.dirty = true; } }
+    /// Everything on the page condenses again from now, as when it first appeared (the frame the look's
+    /// material is ready after the warm-up, DESIGN.md §1.23).
+    pub fn condense_all(&mut self) {
+        let now = self.now;
+        for v in self.births.values_mut() { *v = now; }
+        for v in self.text_births.values_mut() { *v = now; }
+        self.paint();
     }
     /// Ask for a frame even though nothing changed (the host lost what it showed).
     pub fn invalidate(&mut self) { self.dirty = true; }
@@ -1045,6 +1092,8 @@ impl<S, M: Clone> Ui<S, M> {
         self.now = t;
         if let Some(f) = self.look_of { self.timing = Timing::of(&f(&self.state)); }
         if let Some(f) = self.ticked && f(&mut self.state, t) { self.relayout(); }
+        // Preparation in the spare time (`Ui::prepare`): what it changed is shown.
+        if self.prep.run(&mut self.state) { self.relayout(); }
         let before = (self.marks.at, self.marks.alpha);
         self.aim_marks();
         self.marks_moving = before != (self.marks.at, self.marks.alpha) || self.marks_settling();
@@ -1308,7 +1357,11 @@ impl<S, M: Clone> Ui<S, M> {
         let dragged = self.capture.as_ref().is_some_and(|c| key.as_deref() == Some(c.key.as_str()));
         self.move_over = key;
         if dragged { return; }
-        if let (Some(i), Some((x, y))) = (now, at) && let Some(f) = self.nodes[i].on_move.clone() && let Some(m) = f(Some(self.local_in(i, x, y))) { self.send(m); }
+        if let (Some(i), Some((x, y))) = (now, at) && let Some(f) = self.nodes[i].on_move.clone() {
+            let (lx, ly) = self.local_in(i, x, y);
+            let (glyph, z) = self.glyph_in(i, x, y);
+            if let Some(m) = f(Some(crate::el::Point { x: lx, y: ly, down: false, glyph, z })) { self.send(m); }
+        }
     }
     /// A window point (logical px) in element `i`'s own coordinates: from its top left, or in a
     /// canvas's drawing space.
@@ -1796,7 +1849,26 @@ impl<S, M: Clone> Ui<S, M> {
 
     /// Topmost node under a point, honouring clips. While a modal layer is open only it can be hit.
     fn hit(&self, x: f32, y: f32) -> Option<usize> {
-        (self.modal_at.unwrap_or(0)..self.nodes.len()).rev().find(|&i| !self.nodes[i].hidden && self.nodes[i].rect.contains(x, y) && self.nodes[i].clip.contains(x, y))
+        (self.modal_at.unwrap_or(0)..self.nodes.len()).rev().find(|&i| { let n = &self.nodes[i]; !n.hidden && crate::hit::contains(&n.rect, n.xf.as_ref(), x, y) && n.clip.contains(x, y) })
+    }
+    /// The glyph drawn under (x, y) (logical px) in what was painted last: the nearest one, wherever
+    /// its pose put it (on a path, on a form), with its element's key, its number in the text, its
+    /// depth and the point in the text's unposed layout. A modal layer hides what is under it.
+    pub fn glyph_at(&self, x: f32, y: f32) -> Option<crate::hit::GlyphHit> {
+        let s = self.scale;
+        let g = crate::hit::glyph_under(&self.scene.instances, &self.glyphs.log, x * s, y * s)?;
+        if self.modal_at.is_some_and(|m| g.node < m) { return None; }
+        let n = &self.nodes[g.node];
+        let local = crate::hit::local_of(&self.scene.instances[g.inst], g.at, x * s, y * s, s);
+        Some(crate::hit::GlyphHit { key: n.key.clone(), i: g.i, z: g.z, local })
+    }
+    /// The glyph under (x, y) if it belongs to node `i` or below it, and its depth.
+    fn glyph_in(&self, i: usize, x: f32, y: f32) -> (Option<usize>, f32) {
+        let s = self.scale;
+        match crate::hit::glyph_under(&self.scene.instances, &self.glyphs.log, x * s, y * s) {
+            Some(g) if self.within(g.node, i) => (Some(g.i), g.z),
+            _ => (None, 0.0),
+        }
     }
 
     /// Keep the frame as it is now for the renderer, with the commit's origin (logical px).
@@ -2193,6 +2265,7 @@ impl<S, M: Clone> Ui<S, M> {
             // An anchored element goes just below its anchor (laid out earlier in this pass), kept
             // inside the window.
             let at = nodes[i].anchor.as_ref().and_then(|k| nodes[..i].iter().find(|n| &n.key == k)).map(|a| a.rect);
+            let up_xf = nodes[i].parent.and_then(|p| nodes[p].xf);
             let n = &mut nodes[i];
             n.rect = Rect::new(origin.0 + l.location.x + n.shift.0, origin.1 + l.location.y + n.shift.1, l.size.width, l.size.height);
             if let Some(a) = at {
@@ -2200,6 +2273,8 @@ impl<S, M: Clone> Ui<S, M> {
                 n.rect.y = a.bottom() + 4.0;
             }
             n.clip = clip;
+            // Turned after layout: its subtree is drawn and hit through the turns above it and its own.
+            n.xf = crate::hit::turned(up_xf, n.turn, &n.rect);
             let (b, p) = (l.border, l.padding);
             let inner_border = n.rect.inset(b.left, b.top, b.right, b.bottom);
             n.inner = inner_border.inset(p.left, p.top, p.right, p.bottom);
@@ -2344,6 +2419,7 @@ impl<S, M: Clone> Ui<S, M> {
     }
     fn paint_inner(&mut self) {
         self.scene.clear();
+        self.glyphs.clear();
         self.owners.clear();
         self.tags.clear();
         self.unseen.clear();
@@ -2448,8 +2524,11 @@ impl<S, M: Clone> Ui<S, M> {
             // Under scribblr, text to read and controls hold where they are: the map's flow never carries
             // them (DESIGN.md §1.30).
             let in_place = n.legible && self.timing.material == crate::style::Material::Scribblr.id();
-            let mut put = |sink: &mut Sink, mut inst: Instance, id: u64, glyph: Option<u32>| {
+            let turned = n.xf;
+            let mut put = |sink: &mut Sink, mut inst: Instance, id: u64, glyph: Option<u32>| -> bool {
                 inst.clip = clip;
+                // Turned after layout (`El::turn`): drawn about the turned ancestors' centres.
+                if let Some(a) = &turned { a.instance(&mut inst, s); }
                 // A negative push marks what fronts pass by whatever its element says (the caret, a
                 // selection's halo).
                 inst.resp = if inst.resp[1] < 0.0 { [0.0; 4] } else { resp };
@@ -2461,7 +2540,7 @@ impl<S, M: Clone> Ui<S, M> {
                 inst.extra[2] = loose;
                 // Hidden instances are kept for sampling only: they get no birth time, so a view that
                 // shows them later lets them condense as usual.
-                if hidden { inst.extra[3] = -1e4; sink.unseen.push((i, inst)); return; }
+                if hidden { inst.extra[3] = -1e4; sink.unseen.push((i, inst)); return false; }
                 // What a morph shows has been there all along: it must not condense on top of its ramp.
                 // A drawing's marks change every frame: they are there at once, never condensing.
                 let born = if role != 0 || drawn { *births.entry(id).or_insert(-1e4) }
@@ -2481,6 +2560,7 @@ impl<S, M: Clone> Ui<S, M> {
                 sink.scene.push(inst);
                 sink.owners.push((i, id));
                 sink.tags.push(tag);
+                true
             };
             let shape = |p: Paint, bw: f32| Instance { rect: dev(n.rect), uv: [n.radius * s, 0.0, 0.0, 0.0], paint: [p.tone, p.accent, p.alpha, SHAPE], clip, extra: [bw * s, 0.0, 0.0, 0.0], look: [mat, p.hue as f32, (n.rect.y * s).round(), (n.rect.h * s).round().max(1.0)], resp, xf: [0.0; 4] };
             // A skeleton (DESIGN.md §1.23): faint fills and borders, a bar for every line of text, a block
@@ -2498,7 +2578,7 @@ impl<S, M: Clone> Ui<S, M> {
                             put(&mut sink, block(bar, h * 0.5), ident(&n.key, u32::MAX - 32 - k as u32, 0), None);
                         }
                     },
-                    Content::Picture { .. } | Content::Scene3d(_) | Content::Canvas(_) => put(&mut sink, block(n.inner, n.radius.max(4.0)), ident(&n.key, u32::MAX - 22, 0), None),
+                    Content::Picture { .. } | Content::Scene3d(_) | Content::Canvas(_) => { put(&mut sink, block(n.inner, n.radius.max(4.0)), ident(&n.key, u32::MAX - 22, 0), None); }
                     Content::None => {}
                 }
                 continue;
@@ -2515,29 +2595,42 @@ impl<S, M: Clone> Ui<S, M> {
                     let rows = Some((clip[1], clip[3]));
                     let mut glyphs: Vec<(Instance, u32)> = vec![];
                     self.text.emit_in(para, n.origin(), proto, s, rows, |mut inst, glyph| { inst.extra[0] = wpx; glyphs.push((inst, glyph)); });
-                    // Glyphs drawn by their poses (on a path, a sphere, under a light): each keeps its
-                    // outline and is moved, turned and scaled as a whole (DESIGN.md §1.26).
+                    // Each glyph's number in the text, depth, and where layout put it (its centre in the
+                    // content box), kept through poses, sorting and thinning for identities and hits.
+                    let (ox, oy) = (n.inner.x, n.inner.y);
+                    let centre = |g: &Instance| ((g.rect[0] + g.rect[2] * 0.5) / s - ox, (g.rect[1] + g.rect[3] * 0.5) / s - oy);
+                    let laid: Vec<(f32, f32)> = glyphs.iter().map(|(g, _)| centre(g)).collect();
+                    let mut posed: Vec<crate::form::Posed> = glyphs.iter().enumerate().map(|(k, (g, gid))| crate::form::Posed { inst: *g, glyph: *gid, seq: k, z: 0.0, facing: 1.0, at: laid[k], group: None }).collect();
+                    // Glyphs drawn by their poses (on a path, a sphere, under a light, on a form): each keeps
+                    // its outline and is moved, turned and scaled as a whole (DESIGN.md §1.26).
                     if let Some(f) = pose {
-                        let (ox, oy, bw, bh) = (n.inner.x, n.inner.y, n.inner.w, n.inner.h);
-                        let centre = |g: &Instance| ((g.rect[0] + g.rect[2] * 0.5) / s - ox, (g.rect[1] + g.rect[3] * 0.5) / s - oy);
-                        let span = glyphs.iter().fold([f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY], |b, (g, _)| { let (x, y) = centre(g); [b[0].min(x), b[1].min(y), b[2].max(x), b[3].max(y)] });
-                        let (mut k, count) = (0, glyphs.len());
-                        glyphs.retain_mut(|(g, _)| {
-                            let (x, y) = centre(g);
-                            let at = crate::el::GlyphAt { i: k, n: count, x, y, w: bw, h: bh, span };
-                            k += 1;
-                            let p = f(at);
-                            if p.alpha <= 0.004 { return false; }
-                            g.rect[0] += p.dx * s;
-                            g.rect[1] += p.dy * s;
-                            g.xf = Instance::turned(p.angle, p.sx, p.sy);
-                            g.paint[0] *= p.tone;
-                            g.paint[1] = g.paint[1].max(p.accent);
-                            g.paint[2] *= p.alpha;
-                            if p.hue >= 0.0 { g.look[1] = p.hue.round().min(2.0); }
-                            true
-                        });
+                        let (bw, bh) = (n.inner.w, n.inner.h);
+                        let span = laid.iter().fold([f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY], |b, &(x, y)| [b[0].min(x), b[1].min(y), b[2].max(x), b[3].max(y)]);
+                        let count = posed.len();
+                        for g in posed.iter_mut() {
+                            let (x, y) = g.at;
+                            let p = f(crate::el::GlyphAt { i: g.seq, n: count, x, y, w: bw, h: bh, span });
+                            let gi = &mut g.inst;
+                            gi.rect[0] += p.dx * s;
+                            gi.rect[1] += p.dy * s;
+                            gi.xf = Instance::turned(p.angle, p.sx, p.sy);
+                            gi.paint[0] *= p.tone;
+                            gi.paint[1] = gi.paint[1].max(p.accent);
+                            gi.paint[2] *= p.alpha;
+                            if p.hue >= 0.0 { gi.look[1] = p.hue.round().min(2.0); }
+                            (g.z, g.facing) = (p.z, p.facing);
+                        }
                     }
+                    if let (Some(fx), true) = (&n.form, pose.is_some()) { crate::form::face(&mut posed, fx); }
+                    // Whole words or lines (`El::reveal_by`): a pose fades a word as one, and a word the
+                    // clip or the window cuts is not drawn at all.
+                    if n.reveal_by != crate::el::Reveal::Glyph {
+                        let groups = self.text.reveal_groups(para, n.origin(), n.reveal_by);
+                        let window = [0.0, 0.0, self.size.0 * s, self.size.1 * s];
+                        crate::form::reveal_whole(&mut posed, &groups, (ox, oy), [clip[0].max(window[0]), clip[1].max(window[1]), clip[2].min(window[2]), clip[3].min(window[3])]);
+                    }
+                    if pose.is_some() || n.reveal_by != crate::el::Reveal::Glyph { crate::form::arrange(&mut posed, n.form.as_ref().filter(|_| pose.is_some()), &self.text.pixels); }
+                    let glyphs: Vec<(Instance, u32)> = posed.iter().map(|g| (g.inst, g.glyph)).collect();
                     // A selection (the field's, while it has focus, or the read-only one) is drawn by
                     // nearness: each selected glyph again, under itself, with its outline moved out, so
                     // neighbouring glyphs' halos run together and follow the letters, not a box.
@@ -2557,11 +2650,19 @@ impl<S, M: Clone> Ui<S, M> {
                     }
                     // Text that recomposes remembers its glyphs, to see what changes in the next view.
                     if n.recompose && role == 0 && !hidden && !under && (!self.no_recompose || n.recompose_always) {
-                        let ids = glyphs.iter().enumerate().map(|(seq, (inst, glyph))| (ident(&n.key, seq as u32, *glyph), *inst)).collect();
+                        let ids = posed.iter().map(|g| (ident(&n.key, g.seq as u32, g.glyph), g.inst)).collect();
                         seen_recs.insert(n.key.clone());
                         jobs.push(RecJob { node: i, rec: TextRec { s: para.s.to_owned(), face: para.face, size: para.size, line: para.line, width: para.width, print: para.print, track: para.track, origin: n.origin(), glyphs: ids, changed: f32::NEG_INFINITY } });
                     }
-                    for (seq, (inst, glyph)) in glyphs.into_iter().enumerate() { put(&mut sink, inst, ident(&n.key, seq as u32, glyph), Some(glyph)); }
+                    let mut drawn = vec![false; laid.len()];
+                    for g in &posed {
+                        let at = sink.scene.instances.len();
+                        if put(&mut sink, g.inst, ident(&n.key, g.seq as u32, g.glyph), Some(g.glyph)) {
+                            drawn[g.seq] = true;
+                            self.glyphs.log.push(crate::hit::DrawnGlyph { inst: at, node: i, i: g.seq, z: g.z, at: g.at });
+                        }
+                    }
+                    self.glyphs.laid.push((i, laid, drawn));
                     // Text being composed is underlined.
                     if let Some((a, b)) = mark {
                         for (k, r) in self.text.boxes(para, n.origin(), *a, *b).into_iter().enumerate() {
@@ -3730,6 +3831,11 @@ impl<S, M: Clone> Ui<S, M> {
         };
         const SIZE: f32 = 11.0;
         const LINE: f32 = 14.0;
+        // The true ink of each annotated element (device px) and the point of its outline nearest its
+        // layout box's corner, measured as the audit measures it.
+        let inks: Vec<crate::hit::Ink> = if g.has(kinds::INK) {
+            annots.iter().map(|a| crate::hit::ink_of(&self.scene.instances, &self.owners[..self.page_len.min(self.owners.len())], |n| within(&self.nodes, n, a.node), (a.rect.x * s, a.rect.y * s), &self.text.pixels)).collect()
+        } else { vec![] };
         let text = &mut self.text;
         // A label at logical (x, y), on a plate; returns its width.
         let label = |text: &mut Text, out: &mut Vec<Instance>, str: &str, x: f32, y: f32| -> f32 {
@@ -3763,6 +3869,44 @@ impl<S, M: Clone> Ui<S, M> {
                     let vx = if sx > 0.0 { cx } else { cx - t };
                     let vy = if sy > 0.0 { cy } else { cy - len };
                     bar(&mut out, vx, vy, t, len, 1.0, false);
+                }
+            }
+            if let Some(Some((b, end))) = inks.get(annots.iter().position(|x| x.node == a.node).unwrap_or(usize::MAX)) {
+                // Dashed: 4 device px on, 3 off, along each side, drawn on with the frame.
+                let (x0, y0, x1, y1) = (b[0].floor(), b[1].floor(), b[2].ceil(), b[3].ceil());
+                let (dash, gap) = (4.0 * t, 3.0 * t);
+                let run = |out: &mut Vec<Instance>, ax: f32, ay: f32, bx: f32, by: f32| {
+                    let len = (bx - ax).hypot(by - ay) * p;
+                    let (ux, uy) = if len > 0.0 { ((bx - ax) / (bx - ax).hypot(by - ay), (by - ay) / (bx - ax).hypot(by - ay)) } else { (0.0, 0.0) };
+                    let mut d = 0.0;
+                    while d < len {
+                        let e = (d + dash).min(len);
+                        let (sx, sy, ex, ey) = (ax + ux * d, ay + uy * d, ax + ux * e, ay + uy * e);
+                        bar(out, sx.min(ex).round(), sy.min(ey).round(), ((ex - sx).abs()).max(t).round(), ((ey - sy).abs()).max(t).round(), 0.9, false);
+                        d = e + gap;
+                    }
+                };
+                run(&mut out, x0, y0, x1, y0);
+                run(&mut out, x1 - t, y0, x1 - t, y1);
+                run(&mut out, x0, y1 - t, x1, y1 - t);
+                run(&mut out, x0, y0, x0, y1);
+                // The leader: from the layout box's corner to the outline, as dots (it may run at any angle).
+                if let Some((ex, ey)) = end {
+                    let (ax, ay) = (dev(a.rect.x), dev(a.rect.y));
+                    let len = (ex - ax).hypot(ey - ay);
+                    if len > 6.0 * t {
+                        let steps = (len / (3.0 * t)).floor() as usize;
+                        for k in 0..=(steps as f32 * p) as usize {
+                            if k % 2 == 1 { continue; }
+                            let f = k as f32 / steps.max(1) as f32;
+                            bar(&mut out, (ax + (ex - ax) * f - t * 0.5).round(), (ay + (ey - ay) * f - t * 0.5).round(), t, t, 1.0, false);
+                        }
+                        bar(&mut out, (ex - t).round(), (ey - t).round(), t * 2.0, t * 2.0, 1.0, false);
+                    }
+                }
+                if p >= 1.0 {
+                    let str = format!("INK {}×{}", ((x1 - x0) / s).round(), ((y1 - y0) / s).round());
+                    label(text, &mut out, &str, x0 / s + 2.0, y1 / s + 3.0);
                 }
             }
             if g.has(kinds::LEADER) { continue; }
@@ -3869,6 +4013,9 @@ impl<S, M: Clone> Ui<S, M> {
                 (self.readout.level, self.readout.level_h) = (level, h);
                 let hd = dev(h);
                 bar(&mut out, x0, y1 - hd, dev(6.0), hd, 1.0, false);
+                // How ready the page is, while it is not (DESIGN.md §1.23): a reading beside the bar.
+                let ready = self.prep.readiness();
+                if ready < 1.0 { label(text, &mut out, &format!("READY {ready:.2}"), scope.x + 12.0, scope.bottom() - LINE - 4.0); }
             }
             if g.has(kinds::OSC) {
                 // One point per column of nodes, along the pointer's row (or the strongest), joined by a
@@ -4228,7 +4375,7 @@ fn measure_key(c: &Content) -> u64 {
 /// A virtual list's rows are built here, for what its viewport shows.
 #[allow(clippy::too_many_arguments)]
 fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], off: (bool, bool), flow: Option<(Rc<str>, usize)>, inh: Inherit, vx: &mut VirtCtx, built: &mut Built, nodes: &mut Vec<Node<M>>) -> usize {
-    let El { key, style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, mut on_text, multiline, selectable, cursor, virt, access, ripple, mut on_pick, mut on_wheel, mut on_move, guide, skeleton, rtl, on_visible, on_outline, decode, mut children } = el;
+    let El { key, style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, mut on_text, multiline, selectable, cursor, virt, access, ripple, mut on_pick, mut on_wheel, mut on_move, guide, skeleton, rtl, on_visible, on_outline, decode, form, turn, reveal_by, ongoing, mut children } = el;
     let mut style = style;
     let mut inh = inh;
     if let Some(r) = rtl { inh.rtl = r; }
@@ -4288,7 +4435,7 @@ fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], of
         content, fill, border, radius, on_press, on_key, on_drag, on_blur, loose, wipe, bar, reveal, commit, modal, hidden, shift, shed, flow_field, stirr, trace, flow: flow.clone(),
         mat: inh.code(), loosen: inh.loosen, annotate, scope: gaze_scope, anchor, clips, calm, on_text, multiline, selectable: inh.select, cursor,
         virt: virt_info, access, respond, legible, ripple: inh.scope.clone(), ripple_scope: ripple.container, recompose, recompose_always: is_text && ripple.recompose == Some(true), unframed: ripple.unframed, keyed,
-        on_pick, on_wheel, on_move, guide, on_visible, on_outline, decode, skeleton: inh.skeleton, local: taffy::Layout::new(), tid: placeholder,
+        on_pick, on_wheel, on_move, guide, on_visible, on_outline, decode, skeleton: inh.skeleton, form, turn, xf: None, reveal_by, ongoing: ongoing || parent.is_some_and(|p| nodes[p].ongoing), local: taffy::Layout::new(), tid: placeholder,
     });
     built.styles.push(style);
     built.kids.push(vec![]);

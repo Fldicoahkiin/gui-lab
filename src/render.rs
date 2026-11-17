@@ -112,7 +112,10 @@ pub const SIM_DT: f32 = 1.0 / 60.0;
 /// source near, target near), drawn once per morph, and the tile buffer, uploaded once per run.
 struct Tiles {
     layout: wgpu::BindGroupLayout,
-    pipes: [wgpu::RenderPipeline; 2],
+    /// Their pipelines (`Tiles::pipes` and the grid's `gpipes`), made the first time a morph flies or
+    /// by the warm-up, and the layout they are made with.
+    pipes: Option<[wgpu::RenderPipeline; 2]>,
+    pl: wgpu::PipelineLayout,
     ubuf: wgpu::Buffer,
     snaps: [wgpu::TextureView; 4],
     group: wgpu::BindGroup,
@@ -124,7 +127,7 @@ struct Tiles {
     uploaded: u32,
     /// Grid tiles (the GPU path): their pipelines, the state texture a stage-1 pass reads (when a grid
     /// is drawn this frame: its bind group and count), an empty state for the CPU path.
-    gpipes: [wgpu::RenderPipeline; 2],
+    gpipes: Option<[wgpu::RenderPipeline; 2]>,
     grid_now: Option<(wgpu::BindGroup, u32)>,
     no_state: wgpu::TextureView,
     sim: Option<Sim>,
@@ -208,10 +211,16 @@ pub struct Renderer {
     zero: [wgpu::RenderPipeline; 2],
     blit: wgpu::RenderPipeline,
     /// The finishing pass in place of the blit when the look has one (DESIGN.md §1.21).
-    post: wgpu::RenderPipeline,
+    /// Made by the warm-up (or the first frame that needs it).
+    post: Option<wgpu::RenderPipeline>,
     blit_group: wgpu::BindGroup,
     /// The last frame's two boxes (for the readout and the bench); `None`: all of it.
     pub last_region: Option<([u32; 4], [u32; 4])>,
+    /// What is still to prepare (`Renderer::begin`, `Warmup`): while there is any, frames are drawn as
+    /// plain (DESIGN.md §1.23). `None`: ready.
+    warm: Option<warm::Pending>,
+    /// The warm-up has just finished: the next frame condenses into the look.
+    condense: bool,
     /// The transition of the commit in progress and the boxes it finds (uniforms), and its looseness.
     tr: [[f32; 4]; 9],
     boxes: [[f32; 4]; 16],
@@ -250,7 +259,9 @@ struct MeshTarget {
 /// The mesh pass: its pipelines, every mesh of the library in one vertex buffer, and a target per element.
 struct MeshGpu {
     layout: wgpu::BindGroupLayout,
-    pipes: [wgpu::RenderPipeline; 4], // mesh, mask, h, v
+    /// mesh, mask, h, v: made the first time a 3D element is drawn or by the warm-up, with `pl`.
+    pipes: Option<[wgpu::RenderPipeline; 4]>,
+    pl: wgpu::PipelineLayout,
     verts: wgpu::Buffer,
     ranges: Vec<(u32, u32)>,
     generation: u32,
@@ -261,8 +272,24 @@ struct MeshGpu {
 /// curl (device px), ease, the picture flag of the morph's picture (0 if none) and the flight's length.
 struct Frame<'a> { scene: &'a Scene, field: &'a Field, look: &'a Look, lib: &'a crate::mesh::Library, scale: f32, t: f32, mt: [f32; 2], split: [f32; 4], tiles: Option<[f32; 5]>, grid: Option<(crate::morph::Grid, f32, f32)> }
 
+#[path = "render_warm.rs"]
+mod warm;
+pub use warm::{Progress, Stage, Warmup, plain};
+
 impl Renderer {
+    /// A renderer with everything made at once (offline rendering, tests): the same frames, byte for
+    /// byte, as one warmed up by `Renderer::begin` and `Warmup::step` to the end. The mark atlas is
+    /// made on the first draw (it needs the text system).
     pub fn new(device: wgpu::Device, queue: wgpu::Queue, out_format: wgpu::TextureFormat, w: u32, h: u32) -> Self {
+        let mut r = Self::core(device, queue, out_format, w, h);
+        r.ensure_post();
+        r.ensure_tiles();
+        r.ensure_mesh();
+        r
+    }
+    /// The pipelines that plain needs (ink, nearness, the material pass, annotations, the copy out),
+    /// the textures and buffers: enough to draw a frame.
+    fn core(device: wgpu::Device, queue: wgpu::Queue, out_format: wgpu::TextureFormat, w: u32, h: u32) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: None, source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()) });
         let tex_entry = |binding| wgpu::BindGroupLayoutEntry {
             binding, visibility: wgpu::ShaderStages::FRAGMENT, count: None,
@@ -313,7 +340,6 @@ impl Renderer {
         let mesh = Self::mesh_gpu(&device);
         let zero = [pipe("vs_full", "fs_zero", INK, None, false), pipe("vs_full", "fs_zero", out_format, None, false)];
         let blit = pipe("vs_full", "fs_blit", out_format, None, false);
-        let post = pipe("vs_full", "fs_post", out_format, None, false);
         let ubuf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: std::mem::size_of::<Uniforms>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         // Only the mark atlas has mip levels; for every other texture the mipmap filter does nothing.
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor { mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, mipmap_filter: wgpu::MipmapFilterMode::Linear, ..Default::default() });
@@ -354,7 +380,7 @@ impl Renderer {
             pictures: HashMap::new(), instances, capacity, pipes, annots, annot_capacity: 256, up_pipe: None, shader, pl,
             ink: blank.clone(), lo: blank.clone(), lo_key: (0, 0, 0), material_up: material.clone(), auto: Default::default(), always_lo: false, no_map: false,
             near: blank, material_first: material.clone(), material, size: (0, 0), tiles, mesh, sim_rows: 0,
-            region: crate::dirty::Region::All, partial: true, frame_view: blank_view.clone(), prev: None, zero, blit, post, blit_group: blank_group, last_region: None, tr: [[0.0; 4]; 9], boxes: [[0.0; 4]; 16], tr_loose: 0.0,
+            region: crate::dirty::Region::All, partial: true, frame_view: blank_view.clone(), prev: None, zero, blit, post: None, blit_group: blank_group, warm: None, condense: false, last_region: None, tr: [[0.0; 4]; 9], boxes: [[0.0; 4]; 16], tr_loose: 0.0,
         };
         r.set_picture(u32::MAX, 1, 1, &[0, 0, 0, 255]);
         r.resize(w, h);
@@ -362,7 +388,6 @@ impl Renderer {
     }
 
     fn tiles(device: &wgpu::Device) -> Tiles {
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: None, source: wgpu::ShaderSource::Wgsl(include_str!("particles.wgsl").into()) });
         let tex = |binding| wgpu::BindGroupLayoutEntry {
             binding, visibility: wgpu::ShaderStages::FRAGMENT, count: None,
             ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
@@ -374,29 +399,6 @@ impl Renderer {
                 ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false } },
         ] });
         let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
-        let bufs = [Some(wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<Particle>() as u64, step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4],
-        })];
-        let maxb = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Max };
-        let pipe = |fs: &str, format, blend| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some(fs), layout: Some(&pl),
-            vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_part"), compilation_options: Default::default(), buffers: &bufs },
-            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleStrip, ..Default::default() },
-            depth_stencil: None, multisample: Default::default(),
-            fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some(fs), compilation_options: Default::default(), targets: &[Some(wgpu::ColorTargetState { format, blend: Some(blend), write_mask: wgpu::ColorWrites::ALL })] }),
-            multiview_mask: None, cache: None,
-        });
-        let pipes = [pipe("fs_part_ink", INK, wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING), pipe("fs_part_near", NEAR, wgpu::BlendState { color: maxb, alpha: maxb })];
-        let gpipe = |fs: &str, format, blend| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some(fs), layout: Some(&pl),
-            vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_grid"), compilation_options: Default::default(), buffers: &[] },
-            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleStrip, ..Default::default() },
-            depth_stencil: None, multisample: Default::default(),
-            fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some(fs), compilation_options: Default::default(), targets: &[Some(wgpu::ColorTargetState { format, blend: Some(blend), write_mask: wgpu::ColorWrites::ALL })] }),
-            multiview_mask: None, cache: None,
-        });
-        let gpipes = [gpipe("fs_part_ink", INK, wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING), gpipe("fs_part_near", NEAR, wgpu::BlendState { color: maxb, alpha: maxb })];
         let ubuf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: std::mem::size_of::<PartUniforms>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let snaps = std::array::from_fn(|i| Self::target(device, 1, 1, if i < 2 { INK } else { NEAR }));
         let no_state = device.create_texture(&wgpu::TextureDescriptor {
@@ -406,10 +408,37 @@ impl Renderer {
         let group = Self::tile_group(device, &layout, &ubuf, &snaps, &no_state);
         let capacity = 1024;
         let buf = Self::particle_buffer(device, capacity);
-        Tiles { layout, pipes, ubuf, snaps, group, buf, capacity, count: 0, seen: 0, uploaded: 0, gpipes, grid_now: None, no_state, sim: None, tier: ParticleTier::Cpu }
+        Tiles { layout, pipes: None, pl, ubuf, snaps, group, buf, capacity, count: 0, seen: 0, uploaded: 0, gpipes: None, grid_now: None, no_state, sim: None, tier: ParticleTier::Cpu }
+    }
+    /// The morph tiles' pipelines (CPU tiles and the GPU grid's), from their own shader.
+    fn tile_pipes(device: &wgpu::Device, pl: &wgpu::PipelineLayout) -> ([wgpu::RenderPipeline; 2], [wgpu::RenderPipeline; 2]) {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: None, source: wgpu::ShaderSource::Wgsl(include_str!("particles.wgsl").into()) });
+        let bufs = [Some(wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<Particle>() as u64, step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4],
+        })];
+        let maxb = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Max };
+        let pipe = |fs: &str, format, blend| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some(fs), layout: Some(pl),
+            vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_part"), compilation_options: Default::default(), buffers: &bufs },
+            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleStrip, ..Default::default() },
+            depth_stencil: None, multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some(fs), compilation_options: Default::default(), targets: &[Some(wgpu::ColorTargetState { format, blend: Some(blend), write_mask: wgpu::ColorWrites::ALL })] }),
+            multiview_mask: None, cache: None,
+        });
+        let pipes = [pipe("fs_part_ink", INK, wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING), pipe("fs_part_near", NEAR, wgpu::BlendState { color: maxb, alpha: maxb })];
+        let gpipe = |fs: &str, format, blend| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some(fs), layout: Some(pl),
+            vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_grid"), compilation_options: Default::default(), buffers: &[] },
+            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleStrip, ..Default::default() },
+            depth_stencil: None, multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some(fs), compilation_options: Default::default(), targets: &[Some(wgpu::ColorTargetState { format, blend: Some(blend), write_mask: wgpu::ColorWrites::ALL })] }),
+            multiview_mask: None, cache: None,
+        });
+        let gpipes = [gpipe("fs_part_ink", INK, wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING), gpipe("fs_part_near", NEAR, wgpu::BlendState { color: maxb, alpha: maxb })];
+        (pipes, gpipes)
     }
     fn mesh_gpu(device: &wgpu::Device) -> MeshGpu {
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: None, source: wgpu::ShaderSource::Wgsl(include_str!("mesh.wgsl").into()) });
         let tex = |binding| wgpu::BindGroupLayoutEntry {
             binding, visibility: wgpu::ShaderStages::FRAGMENT, count: None,
             ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
@@ -419,13 +448,20 @@ impl Renderer {
             tex(1), tex(2), tex(3), tex(4),
         ] });
         let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
+        let verts = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: 24, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        MeshGpu { layout, pipes: None, pl, verts, ranges: vec![], generation: 0, targets: vec![] }
+    }
+
+    /// The mesh pass's pipelines, from its own shader.
+    fn mesh_pipes(device: &wgpu::Device, pl: &wgpu::PipelineLayout) -> [wgpu::RenderPipeline; 4] {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: None, source: wgpu::ShaderSource::Wgsl(include_str!("mesh.wgsl").into()) });
         let bufs = [
             Some(wgpu::VertexBufferLayout { array_stride: 24, step_mode: wgpu::VertexStepMode::Vertex, attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3] }),
             Some(wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<MeshCopy>() as u64, step_mode: wgpu::VertexStepMode::Instance, attributes: &wgpu::vertex_attr_array![2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4] }),
         ];
         let target = |format| Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL });
         let mesh = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("fs_mesh"), layout: Some(&pl),
+            label: Some("fs_mesh"), layout: Some(pl),
             vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_mesh"), compilation_options: Default::default(), buffers: &bufs },
             primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, ..Default::default() },
             depth_stencil: Some(wgpu::DepthStencilState { format: DEPTH, depth_write_enabled: Some(true), depth_compare: Some(wgpu::CompareFunction::Less), stencil: Default::default(), bias: Default::default() }),
@@ -434,21 +470,19 @@ impl Renderer {
             multiview_mask: None, cache: None,
         });
         let full = |fs: &str| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some(fs), layout: Some(&pl),
+            label: Some(fs), layout: Some(pl),
             vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_full"), compilation_options: Default::default(), buffers: &[] },
             primitive: Default::default(), depth_stencil: None, multisample: Default::default(),
             fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some(fs), compilation_options: Default::default(), targets: &[target(GBUF)] }),
             multiview_mask: None, cache: None,
         });
-        let pipes = [mesh, full("fs_mask"), full("fs_h"), full("fs_v")];
-        let verts = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: 24, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-        MeshGpu { layout, pipes, verts, ranges: vec![], generation: 0, targets: vec![] }
+        [mesh, full("fs_mask"), full("fs_h"), full("fs_v")]
     }
-
     /// Draw every `scene3d` element of `scene` off-screen and resolve it (DESIGN.md §1.18), unless it
     /// is exactly what its target already holds.
     fn prepare_meshes(&mut self, enc: &mut wgpu::CommandEncoder, scene: &Scene, lib: &crate::mesh::Library, marks: crate::style::Marks) {
         if scene.meshes.is_empty() { return; }
+        self.ensure_mesh();
         if self.mesh.generation != lib.generation {
             let mut all: Vec<[f32; 6]> = vec![];
             self.mesh.ranges = lib.all().iter().map(|m| { let first = all.len() as u32; all.extend(m.vertices()); (first, all.len() as u32 - first) }).collect();
@@ -497,6 +531,7 @@ impl Renderer {
             }
             if !copies.is_empty() { self.queue.write_buffer(&t.copies, 0, bytemuck::cast_slice(&copies)); }
             let t = &self.mesh.targets[k];
+            let mesh_pipes = self.mesh.pipes.as_ref().expect("made at the start of this pass");
             {
                 let att = |v| Some(wgpu::RenderPassColorAttachment { view: v, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store } });
                 let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -504,7 +539,7 @@ impl Renderer {
                     color_attachments: &[att(&t.views[0]), att(&t.views[1]), att(&t.views[2])],
                     depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment { view: &t.views[3], depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Discard }), stencil_ops: None }),
                 });
-                pass.set_pipeline(&self.mesh.pipes[0]);
+                pass.set_pipeline(&mesh_pipes[0]);
                 pass.set_bind_group(0, &t.groups[3], &[]);
                 pass.set_vertex_buffer(0, self.mesh.verts.slice(..));
                 pass.set_vertex_buffer(1, t.copies.slice(..));
@@ -513,7 +548,7 @@ impl Renderer {
             }
             for (pipe, (view, group)) in [(1, (4, 0)), (2, (5, 1)), (3, (6, 2))] {
                 let mut pass = clear(enc, &t.views[view], wgpu::Color::TRANSPARENT);
-                pass.set_pipeline(&self.mesh.pipes[pipe]);
+                pass.set_pipeline(&mesh_pipes[pipe]);
                 pass.set_bind_group(0, &t.groups[group], &[]);
                 pass.draw(0..3, 0..1);
             }
@@ -807,21 +842,48 @@ impl Renderer {
         self.marks_ready = true;
     }
 
+    /// The upsample after a reduced material pass (made when first needed: it holds the whole material
+    /// again, and compiling it is slow on a CPU rasteriser).
+    fn ensure_up(&mut self) {
+        if self.up_pipe.is_some() { return; }
+        // After a reduced material pass: rest pixels at full resolution, loose ones from the reduced pass.
+        self.up_pipe = Some(self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("fs_material_up"), layout: Some(&self.pl),
+            vertex: wgpu::VertexState { module: &self.shader, entry_point: Some("vs_full"), compilation_options: Default::default(), buffers: &[] },
+            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, ..Default::default() },
+            depth_stencil: None, multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState { module: &self.shader, entry_point: Some("fs_material_up"), compilation_options: Default::default(), targets: &[Some(wgpu::ColorTargetState { format: self.out_format, blend: None, write_mask: wgpu::ColorWrites::ALL })] }),
+            multiview_mask: None, cache: None,
+        }));
+    }
+    /// The finishing pass.
+    fn ensure_post(&mut self) {
+        if self.post.is_some() { return; }
+        self.post = Some(self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("fs_post"), layout: Some(&self.pl),
+            vertex: wgpu::VertexState { module: &self.shader, entry_point: Some("vs_full"), compilation_options: Default::default(), buffers: &[] },
+            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, ..Default::default() },
+            depth_stencil: None, multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState { module: &self.shader, entry_point: Some("fs_post"), compilation_options: Default::default(), targets: &[Some(wgpu::ColorTargetState { format: self.out_format, blend: None, write_mask: wgpu::ColorWrites::ALL })] }),
+            multiview_mask: None, cache: None,
+        }));
+    }
+    /// The morph tiles' pipelines.
+    fn ensure_tiles(&mut self) {
+        if self.tiles.pipes.is_some() { return; }
+        let (p, g) = Self::tile_pipes(&self.device, &self.tiles.pl);
+        (self.tiles.pipes, self.tiles.gpipes) = (Some(p), Some(g));
+    }
+    /// The mesh pass's pipelines.
+    fn ensure_mesh(&mut self) {
+        if self.mesh.pipes.is_none() { self.mesh.pipes = Some(Self::mesh_pipes(&self.device, &self.mesh.pl)); }
+    }
+
     /// The reduced target for quality `q` (its size), made when the size or quality changes.
     fn lo_for(&mut self, q: f32) -> (u32, u32) {
         let (w, h) = ((self.size.0 as f32 * q).ceil() as u32, (self.size.1 as f32 * q).ceil() as u32);
         let key = (w, h, (q * 1000.0) as u32);
-        if self.up_pipe.is_none() {
-            // After a reduced material pass: rest pixels at full resolution, loose ones from the reduced pass.
-            self.up_pipe = Some(self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("fs_material_up"), layout: Some(&self.pl),
-                vertex: wgpu::VertexState { module: &self.shader, entry_point: Some("vs_full"), compilation_options: Default::default(), buffers: &[] },
-                primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, ..Default::default() },
-                depth_stencil: None, multisample: Default::default(),
-                fragment: Some(wgpu::FragmentState { module: &self.shader, entry_point: Some("fs_material_up"), compilation_options: Default::default(), targets: &[Some(wgpu::ColorTargetState { format: self.out_format, blend: None, write_mask: wgpu::ColorWrites::ALL })] }),
-                multiview_mask: None, cache: None,
-            }));
-        }
+        self.ensure_up();
         if key != self.lo_key {
             self.lo_key = key;
             self.lo = Self::target(&self.device, w, h, self.out_format);
@@ -833,12 +895,21 @@ impl Renderer {
     pub fn draw<S, M: Clone>(&mut self, target: &wgpu::TextureView, ui: &mut Ui<S, M>, look: &Look) {
         let started = crate::perf::now_ms();
         self.resize(ui.device_size().0, ui.device_size().1);
-        if !self.marks_ready {
+        // Still warming up (`Renderer::begin`): drawn as plain, which is the same page at rest (§1.23);
+        // the frame after the last step condenses into the look.
+        let cold = self.warming();
+        ui.set_render_ready(self.warm.as_ref().map_or(1.0, |w| w.fraction()));
+        let plain;
+        let look = if cold { plain = warm::plain(look); &plain } else { look };
+        if std::mem::take(&mut self.condense) && warm::plain(look) != *look { ui.condense_all(); }
+        if !self.marks_ready && !cold {
             let face = if ui.text_mut().faces() > MONO as usize { MONO } else { 0 };
             let atlas = Atlas::build(ui.text_mut(), face);
             let chars = marks::char_tiles(ui.text_mut(), face);
             self.upload_marks(&atlas, &chars);
         }
+        if ui.morph_run().is_some() { self.ensure_tiles(); }
+        if look.post.active() { self.ensure_post(); }
         let text = ui.text_mut();
         if text.dirty {
             self.queue.write_texture(
@@ -1004,7 +1075,11 @@ impl Renderer {
             self.capacity = scene.instances.len().next_power_of_two();
             self.instances = Self::instance_buffer(&self.device, self.capacity);
         }
-        if self.hide_glyphs {
+        if self.warming() {
+            // Warming up: every element in the global material, which is plain.
+            let v: Vec<_> = scene.instances.iter().map(|i| { let mut i = *i; i.look[0] = 0.0; if self.hide_glyphs && i.paint[3] < 0.5 { i.paint[2] = 0.0; } i }).collect();
+            self.queue.write_buffer(&self.instances, 0, bytemuck::cast_slice(&v));
+        } else if self.hide_glyphs {
             // For acceptance checks: the same scene with every glyph transparent (nothing else moves).
             let v: Vec<_> = scene.instances.iter().map(|i| { let mut i = *i; if i.paint[3] < 0.5 { i.paint[2] = 0.0; } i }).collect();
             self.queue.write_buffer(&self.instances, 0, bytemuck::cast_slice(&v));
@@ -1039,12 +1114,12 @@ impl Renderer {
             let draw_tiles = |pass: &mut wgpu::RenderPass<'_>| {
                 if let Some((group, n)) = &self.tiles.grid_now {
                     // The GPU path: tile `i` is instance `i`, its place read from the state texture.
-                    pass.set_pipeline(&self.tiles.gpipes[k]);
+                    pass.set_pipeline(&self.tiles.gpipes.as_ref().expect("made before a morph is drawn")[k]);
                     pass.set_bind_group(0, group, &[]);
                     pass.draw(0..4, 0..*n);
                     return;
                 }
-                pass.set_pipeline(&self.tiles.pipes[k]);
+                pass.set_pipeline(&self.tiles.pipes.as_ref().expect("made before a morph is drawn")[k]);
                 pass.set_bind_group(0, &self.tiles.group, &[]);
                 pass.set_vertex_buffer(0, self.tiles.buf.slice(..));
                 pass.draw(0..4, 0..tiles);
@@ -1141,7 +1216,7 @@ impl Renderer {
         }
         if with_before {
             let mut pass = clear(&mut enc, target, wgpu::Color::BLACK);
-            pass.set_pipeline(if f.look.post.active() { &self.post } else { &self.blit });
+            pass.set_pipeline(match (&self.post, f.look.post.active()) { (Some(p), true) => p, _ => &self.blit });
             pass.set_bind_group(0, &self.blit_group, &[]);
             pass.draw(0..3, 0..1);
         }

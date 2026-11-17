@@ -12,7 +12,11 @@ impl Offscreen {
     /// `try_new` returns it instead.
     pub fn new(w: u32, h: u32) -> Self { Self::try_new(w, h).unwrap_or_else(|e| panic!("{e}")) }
     /// Device px. Registers every sample picture (`pictures`).
-    pub fn try_new(w: u32, h: u32) -> Result<Self, SurfaceError> {
+    pub fn try_new(w: u32, h: u32) -> Result<Self, SurfaceError> { Self::make(w, h, false) }
+    /// Like `try_new`, with a renderer that warms up (`Renderer::begin`): it draws as plain until
+    /// `r.warm_step` has made the rest.
+    pub fn try_warming(w: u32, h: u32) -> Result<Self, SurfaceError> { Self::make(w, h, true) }
+    fn make(w: u32, h: u32, warming: bool) -> Result<Self, SurfaceError> {
         if w == 0 || h == 0 { return Err(SurfaceError::ZeroSize { w, h }); }
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions { force_fallback_adapter: true, ..Default::default() })).map_err(|_| SurfaceError::NoAdapter)?;
@@ -25,7 +29,7 @@ impl Offscreen {
         });
         let row = (w * 4).div_ceil(256) * 256;
         let buf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (row * h) as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
-        let mut r = Renderer::new(device, queue, format, w, h);
+        let mut r = if warming { Renderer::begin(device, queue, format, w, h).into_renderer() } else { Renderer::new(device, queue, format, w, h) };
         r.set_particle_tier(crate::render::particle_tier(&adapter));
         for (id, pw, ph, px) in crate::pictures::pictures() { r.set_picture(id, pw, ph, &px); }
         Ok(Self { r, target, buf, w, h, row })

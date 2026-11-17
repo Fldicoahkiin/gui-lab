@@ -34,6 +34,26 @@ pub struct Atlas {
     pub ink: [f32; LEVELS],
 }
 
+/// An atlas being made (`Atlas::begin`).
+pub struct AtlasBuild { atlas: Atlas, next: u8 }
+impl AtlasBuild {
+    /// Make the next set; true when every set is made.
+    pub fn step(&mut self) -> bool {
+        if self.next < set::COUNT as u8 {
+            let s = self.next;
+            for level in 0..LEVELS {
+                let t = level as f32 / (LEVELS - 1) as f32;
+                put(&mut self.atlas.pixels, s as usize, level, |x, y| geometric(s, t, x, y));
+            }
+            self.next += 1;
+        }
+        self.next >= set::COUNT as u8
+    }
+    /// How many sets are still to make.
+    pub fn left(&self) -> usize { (set::COUNT as u8).saturating_sub(self.next) as usize }
+    pub fn finish(mut self) -> Atlas { while !self.step() {} self.atlas }
+}
+
 impl Atlas {
     /// Mark coverage and height at texel (x, y) of tile (set, level), 0..1.
     pub fn at(&self, s: usize, level: usize, x: usize, y: usize) -> (f32, f32) {
@@ -43,18 +63,19 @@ impl Atlas {
 
     /// `face` is the face the character set is cut from (a monospaced pixel face reads best).
     pub fn build(text: &mut Text, face: u8) -> Self {
+        let mut b = Self::begin(text, face);
+        while !b.step() {}
+        b.finish()
+    }
+    /// The atlas made a row at a time (DESIGN.md §1.23, the warm-up): the character set now (it needs the
+    /// text system), then one geometric set per `AtlasBuild::step`. The finished atlas is the same as `build`'s.
+    pub fn begin(text: &mut Text, face: u8) -> AtlasBuild {
         let mut pixels = vec![0u8; WIDTH * HEIGHT * 2];
         let (chars, ink, tiles) = characters(text, face);
         for (level, tile) in tiles.iter().enumerate() {
             put(&mut pixels, set::CHARS as usize, level, |x, y| { let c = tile[y * TILE + x]; (c, c) });
         }
-        for s in 1..set::COUNT as u8 {
-            for level in 0..LEVELS {
-                let t = level as f32 / (LEVELS - 1) as f32;
-                put(&mut pixels, s as usize, level, |x, y| geometric(s, t, x, y));
-            }
-        }
-        Self { pixels, chars, ink }
+        AtlasBuild { atlas: Self { pixels, chars, ink }, next: 1 }
     }
 
     /// Every mip level, largest first, each RG8 and half the size of the one before.
