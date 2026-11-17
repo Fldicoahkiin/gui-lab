@@ -555,9 +555,10 @@ frame with a blend-only pipeline that honours each instance's own `xf`, used onl
   every 8 px and 12 columns; `EDGE` edge notes (§4.2); `OSC` a waveform and `LEVEL` a level bar (§4.3), with a
   `READY 0.62` readout beside it while the page is still preparing (§1.23); `INK` the box round the element's true
   ink, dashed, with a dashed leader to its drawn outline and an `INK w×h` label (§1.31). `Gaze::echo` (0 by
-  default) keeps up to that many earlier INK boxes of a moving element as faint outlines, one taken every `echo_ms`
-  (200 ms, snapped to the beat grid, §1.32) and each fading to nothing by the next; a held gaze takes none and fades
-  none (`Ui::echo_times`).
+  default) keeps up to that many earlier INK boxes of a moving element as thin outlines (no label, no fill), one
+  taken every `echo_ms` (200 ms, snapped to the beat grid, §1.32), the newest at most one interval old; the k-th (from
+  1) of n is drawn at `0.6 × (1 − (k − 1) ÷ n)` of the live box's opacity (0.6, 0.4, 0.2 for three), and an echo goes
+  once it is n intervals old. A hold takes none and fades none (`Ui::echo_times`).
   Two labels on the same corner step aside to the right. The last three are readouts of the whole scope,
   not tied to elements: always present in "all" mode, and in hover and focus-path modes while the pointer
   is in the scope; what they drew is recorded in `Ui::readout()` (`gaze::Readout`).
@@ -2383,7 +2384,8 @@ the grid). Off, every clock is the runtime's own, byte for byte as before the be
 
 The beat clock runs with the runtime's (`Ui::beat_time`; `Ui::beat()` is `BeatNow { bar, beat, step, phase }`,
 each from 1, for the application's own state) and only the beat's commands move it against it: `Cmd::Hold(n)` stops
-it for `n` steps (the frame stays byte for byte, and frames are still wanted), `Cmd::Retrigger` plays the current
+it for `n` steps (the frame stays byte for byte, and frames are still wanted: the scene presented is the one the hold
+began with, whatever the application changes meanwhile, and after it the page is drawn from the state as it is then), `Cmd::Retrigger` plays the current
 step again from its start, `Cmd::Rewind(beats)` takes it back (never before 0) and with it what it carries (fronts,
 transitions, held rows); the application's state, the field map, condensing and the materials' own clocks (the
 ground's drift, scribblr's pose) are not taken back. With a beat, text to read is not pushed by fronts (a push a step

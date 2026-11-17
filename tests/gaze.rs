@@ -349,7 +349,44 @@ fn a_hold_takes_no_echo_and_fades_none() {
     assert!(echo_bars(&u) > 0, "echoes are showing");
     u.command(amenui::morph::Cmd::Hold(2));
     let mut frames = vec![];
-    // Two steps at 120 bpm, 4 a beat: 0.25 s; the frames inside it.
-    for _ in 0..12 { t += 1.0 / 60.0; u.tick(t); let l = u.look(); frames.push(o.render(&mut u, &l)); }
+    // Two steps at 120 bpm, 4 a beat: 0.25 s; the frames inside it, the block still moving in the
+    // state all the while: what is presented does not move.
+    for _ in 0..12 { t += 1.0 / 60.0; u.state.x += 2.0; u.relayout(); u.tick(t); let l = u.look(); frames.push(o.render(&mut u, &l)); }
     assert!(frames.windows(2).all(|w| w[0] == w[1]), "the frames of a hold are the same bytes");
+    // After it the page is the state's again.
+    for _ in 0..6 { t += 1.0 / 60.0; u.tick(t); }
+    let l = u.look();
+    assert!(o.render(&mut u, &l) != frames[0], "after the hold the block is drawn where the state has it");
+}
+
+#[test]
+fn the_newest_echo_is_at_most_one_interval_old_and_the_three_step_down_in_contrast() {
+    let Ok(mut o) = amenui::offscreen::Offscreen::try_new(480, 200) else { eprintln!("no GPU adapter here: skipped"); return };
+    let g = Gaze { mode: GazeMode::All, kinds: kinds::INK, density: 10.0, draw_ms: 0.0, echo: 3, echo_ms: 200.0, ..Gaze::default() };
+    let mut u = Ui::new(E { gaze: g, x: 20.0 }, echo_page, |_, _| {}, fonts(), 480, 200, 1.0).on_gaze(|s| s.gaze).on_look(echo_look);
+    let mut t = 0.0;
+    let mut px = vec![];
+    for _ in 0..80 { t += 1.0 / 60.0; u.state.x += 3.0; u.relayout(); u.tick(t); let l = u.look(); px = o.render(&mut u, &l); }
+    // 200 ms is two steps of 0.125 s at 120 bpm, 4 a beat: 0.25 s.
+    let times = u.echo_times("block");
+    let newest = times.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    assert!(u.beat_grid() - newest <= 0.25 + 1e-3, "the newest echo was taken at {newest}, now {}", u.beat_grid());
+    // The echo outlines (thin, faint bars), by opacity: each against the ground.
+    let ground = { let i = (10 * 480 + 470) * 4; [px[i] as f32 / 255.0, px[i + 1] as f32 / 255.0, px[i + 2] as f32 / 255.0] };
+    let lin = |v: f32| if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
+    let lum = |c: [f32; 3]| 0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2]);
+    let ratio = |a: [f32; 3]| { let (x, y) = (lum(a), lum(ground)); (x.max(y) + 0.05) / (x.min(y) + 0.05) };
+    let mut seen: Vec<(f32, f32)> = vec![];
+    for i in u.scene().annot.iter().filter(|i| i.paint[3] == 1.0 && i.paint[1] == 0.0 && i.paint[2] < 0.6 && i.xf == [0.0; 4] && i.rect[2] <= 2.0) {
+        let (x, y) = ((i.rect[0] + 0.5) as usize, (i.rect[1] + i.rect[3] * 0.5) as usize);
+        let k = (y * 480 + x) * 4;
+        let c = [px[k] as f32 / 255.0, px[k + 1] as f32 / 255.0, px[k + 2] as f32 / 255.0];
+        if !seen.iter().any(|s| (s.0 - i.paint[2]).abs() < 1e-4) { seen.push((i.paint[2], ratio(c))); }
+    }
+    seen.sort_by(|a, b| b.0.total_cmp(&a.0));
+    eprintln!("echoes (opacity, contrast): {seen:?}");
+    assert_eq!(seen.len(), 3, "three echoes: {seen:?}");
+    for ((op, c), want) in seen.iter().zip([2.2f32, 1.6, 1.25]) { assert!(*c >= want, "the echo at {op} has {c:.2}:1, under {want}:1"); }
+    let ops: Vec<f32> = seen.iter().map(|s| s.0 / 0.9).collect();
+    for (o, want) in ops.iter().zip([0.6f32, 0.4, 0.2]) { assert!((o - want).abs() < 1e-3, "opacities {ops:?}"); }
 }
