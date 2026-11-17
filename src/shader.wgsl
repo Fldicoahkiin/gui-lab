@@ -319,7 +319,9 @@ fn near_of(i: VOut) -> vec4f {
 // the plates under labels) ─────────────────────────────────────────────────────────────────────────
 @vertex fn vs_annot(i: VIn) -> VOut {
   let c = vec2f(f32(i.vi & 1u), f32((i.vi >> 1u) & 1u));
-  let p = i.rect.xy + c * i.rect.zw;
+  // Its own turn about its centre (`xf`, zero for none): edge notes are turned a quarter.
+  let q = (c - 0.5) * i.rect.zw;
+  let p = i.rect.xy + c * i.rect.zw + vec2f(i.xf.x * q.x + i.xf.y * q.y, i.xf.z * q.x + i.xf.w * q.y);
   var o: VOut;
   o.pos = vec4f(p.x / u.res.x * 2.0 - 1.0, 1.0 - p.y / u.res.y * 2.0, 0.0, 1.0);
   o.local = c * i.rect.zw;

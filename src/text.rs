@@ -38,6 +38,10 @@ pub const MONO_FILE: &str = "DepartureMono-Regular.otf";
 pub const GEIST_PIXEL: [u8; 5] = [3, 4, 5, 6, 7];
 pub const GEIST_NAMES: [&str; 5] = ["Square", "Grid", "Circle", "Triangle", "Line"];
 pub const GEIST_FILES: [&str; 5] = ["GeistPixel-Square.otf", "GeistPixel-Grid.otf", "GeistPixel-Circle.otf", "GeistPixel-Triangle.otf", "GeistPixel-Line.otf"];
+/// Source Serif 4 at its 8 pt optical size and weight 400, Latin only (OFL; `assets/licenses/source-serif`),
+/// after Geist Pixel: `Font::Whisper`, tracked small lowercase type and edge notes (DESIGN.md §4.2).
+pub const SERIF: u8 = 8;
+pub const SERIF_FILE: &str = "SourceSerif4-8pt-subset.ttf";
 
 /// A font file to register. `pixel` is the native size (px) of a pixel face.
 pub struct Face { pub data: Vec<u8>, pub pixel: Option<f32> }
@@ -54,14 +58,21 @@ pub fn with_geist(mut faces: Vec<Face>, geist: impl IntoIterator<Item = Vec<u8>>
     faces.extend(geist.into_iter().map(Face::outline));
     faces
 }
-/// Read the bundled faces from a directory, Geist Pixel included (native only; the web page passes
-/// the three main faces' bytes in and carries Geist Pixel in the module).
+/// The faces with the serif after them (`SERIF`; call after `with_geist`).
+pub fn with_serif(mut faces: Vec<Face>, serif: Vec<u8>) -> Vec<Face> {
+    faces.push(Face::outline(serif));
+    faces
+}
+/// Read the bundled faces from a directory, Geist Pixel and the serif included (native only; the web
+/// page passes the three main faces' bytes in and carries Geist Pixel and the serif in the module).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn load_bundled(dir: &str) -> Result<Vec<Face>, crate::error::FontError> {
     let r = |f: &str| { let path = format!("{dir}/{f}"); std::fs::read(&path).map_err(|source| crate::error::FontError::Missing { path, source }) };
     let geist = GEIST_FILES.iter().map(|f| r(f)).collect::<Result<Vec<_>, _>>()?;
-    Ok(with_geist(bundled(r(SANS_FILE)?, r(PIXEL_FILE)?, r(MONO_FILE)?), geist))
+    Ok(with_serif(with_geist(bundled(r(SANS_FILE)?, r(PIXEL_FILE)?, r(MONO_FILE)?), geist), r(SERIF_FILE)?))
 }
+/// The serif, compiled in (the web build).
+pub fn serif_bytes() -> Vec<u8> { include_bytes!("../assets/SourceSerif4-8pt-subset.ttf").to_vec() }
 /// Geist Pixel's five faces, compiled in (the web build).
 pub fn geist_bytes() -> [Vec<u8>; 5] {
     [include_bytes!("../assets/GeistPixel-Square.otf").to_vec(), include_bytes!("../assets/GeistPixel-Grid.otf").to_vec(), include_bytes!("../assets/GeistPixel-Circle.otf").to_vec(),

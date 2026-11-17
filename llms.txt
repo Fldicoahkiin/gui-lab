@@ -43,6 +43,7 @@ The Lab (`#lab`) is a grid of small live experiments, one file each in `examples
 - [Decode](src/decode.rs): `El::decode`, blocks over the true outline resolving coarse to fine (`#decode`)
 - [Field map](src/fieldmap.rs): `El::stirr` trails and `Cmd::Stir`, energy and flow that settle to zero; decoration loosens and drifts behind what moves (`#stirr`)
 - [scribblr](src/strand.rs): the thread material, plain at rest, loose ink as one line that knots and trails off and writes itself back; `El::trace` long paths, solid or dashed (`#material-scribblr`, `#stirr`)
+- [Edge notes and readouts](src/gaze.rs): `El::tracking`, `El::whisper()` in a small serif; `gaze::EDGE`, `OSC`, `LEVEL` read the runtime and the field map (`Ui::readout()`); the Loose Thread preset with `post.binary` and `post.invert` (`#style-loose-thread`)
 
 ## Pages
 

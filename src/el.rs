@@ -47,10 +47,12 @@ impl Key {
 /// Which face a text element is set in: a role that the nearest `fonts` ancestor (normally the
 /// theme, at the root) resolves, or a face index directly.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Font { Display, Body, Mono, Face(u8) }
+/// `Whisper` is small tracked type in the bundled serif (`text::SERIF`, the same in every theme;
+/// `El::whisper` sets it up).
+pub enum Font { Display, Body, Mono, Whisper, Face(u8) }
 impl Font {
     pub fn resolve(self, roles: [u8; 3]) -> u8 {
-        match self { Font::Display => roles[0], Font::Body => roles[1], Font::Mono => roles[2], Font::Face(f) => f }
+        match self { Font::Display => roles[0], Font::Body => roles[1], Font::Mono => roles[2], Font::Whisper => crate::text::SERIF, Font::Face(f) => f }
     }
 }
 
@@ -499,9 +501,15 @@ impl<M> El<M> {
         self.style.inset = Rect { left: v(left), top: v(top), right: v(right), bottom: v(bottom) };
         self
     }
-    /// Extra letter spacing, in em (−0.05–1.5, DESIGN.md §4.6): laid out by parley, so the measured width,
+    /// Extra letter spacing, in em (−0.05–1.5, DESIGN.md §4.2): laid out by parley, so the measured width,
     /// selections, recomposition and scribblr's outlines all follow it.
     pub fn tracking(mut self, em: f32) -> Self { if let Content::Text { track, .. } = &mut self.content { *track = em.clamp(-0.05, 1.5); } self }
+    /// Whisper (DESIGN.md §4.2): this text in lowercase, in the serif, tracked 0.6 em: the small, airy
+    /// type beside a picture or along an edge. Keep it small (11–13 px).
+    pub fn whisper(mut self) -> Self {
+        if let Content::Text { s, font, track, .. } = &mut self.content { *s = s.to_lowercase(); *font = Font::Whisper; *track = 0.6; }
+        self
+    }
     /// Set a text element in another face or role.
     pub fn font(mut self, f: Font) -> Self { if let Content::Text { font, .. } = &mut self.content { *font = f; } self }
     /// Print a text element through a lattice of this pitch (logical px).

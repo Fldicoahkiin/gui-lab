@@ -310,6 +310,8 @@ pub struct Ui<S, M> {
     gaze_of: Option<fn(&S) -> Gaze>,
     gaze_seen: HashMap<String, f32>,
     annots: Vec<gaze::Annot>,
+    /// What the scope-wide readouts (edge notes, waveform, level bar) drew this frame.
+    readout: gaze::Readout,
     /// Tells the state which element the pointer is over (when it changes), and the time on every
     /// tick; either returns whether the view changed.
     hovered: Option<fn(&mut S, Option<&str>) -> bool>,
@@ -624,6 +626,8 @@ impl<S, M: Clone> Ui<S, M> {
     }
     /// This frame's annotation records.
     pub fn annots(&self) -> &[gaze::Annot] { &self.annots }
+    /// What the edge notes, the waveform and the level bar drew this frame (DESIGN.md §4.2, §4.3).
+    pub fn readout(&self) -> &gaze::Readout { &self.readout }
     /// Take the commands `update` leaves in the state (morphs, flows) after every update.
     pub fn on_commands(mut self, f: fn(&mut S) -> Vec<Cmd>) -> Self { self.commands = Some(f); self }
     /// `w`, `h` are device px; `scale` is device px per logical px.
@@ -634,7 +638,7 @@ impl<S, M: Clone> Ui<S, M> {
             hover: None, focus: None, pressed: None, capture: None, modal_at: None, modal_key: None, return_focus: None, split: None, splits: 0,
             keyboard: false, marks: Marks::default(), sized: None, commands: None, unseen: vec![], base: vec![], tags: vec![], roles: vec![],
             run: None, painted_phase: 0, flows: HashMap::new(), ghosts: vec![], body_len: 0, animating: false, lifted: HashMap::new(),
-            gaze_of: None, gaze_seen: HashMap::new(), annots: vec![], hovered: None, pointer_of: None, scripted: false, ticked: None, unused_key: None, shortcut: None, scrolled_of: None, released: None, input: None,
+            gaze_of: None, gaze_seen: HashMap::new(), annots: vec![], readout: gaze::Readout::default(), hovered: None, pointer_of: None, scripted: false, ticked: None, unused_key: None, shortcut: None, scrolled_of: None, released: None, input: None,
             dirty: true, look_of: None, locale_of: None, timing: Timing::default(), wake_of: None, latest_birth: f32::NEG_INFINITY, gaze_until: f32::NEG_INFINITY,
             marks_moving: false, caret: None, caret_on: true, static_loose: false, mclock: 0.0, moving: false, gclock: 0.0, ground_moving: false,
             perf: crate::perf::Perf { quality: 1.0, ..Default::default() }, span: 0, painting: false, overlay: 0, overlay_at: 0.0, shape_seen: 0.0, hud_idle: false, rebuilt: 0,
@@ -658,6 +662,8 @@ impl<S, M: Clone> Ui<S, M> {
     /// The element whose `El::on_move` hears the pointer now (a menu, a chart that scrubs), if any.
     pub fn move_over(&self) -> Option<&str> { self.move_over.as_deref() }
     pub fn scene(&self) -> &Scene { &self.scene }
+    /// The key of the element that drew page instance `i` of the scene, for checks.
+    pub fn owner_key(&self, i: usize) -> Option<&str> { (i < self.page_len).then(|| self.owners.get(i)).flatten().map(|o| self.nodes[o.0].key.as_str()) }
     pub fn field(&self) -> &Field { &self.field }
     /// The field map (DESIGN.md §1.29): energy and flow on a coarse grid, logical px.
     pub fn fieldmap(&self) -> &crate::fieldmap::FieldMap { &self.fmap }
@@ -774,7 +780,7 @@ impl<S, M: Clone> Ui<S, M> {
                 focusable: n.focusable, focused: self.focus.as_deref() == Some(&n.key), hovered: self.hover.as_deref() == Some(&n.key),
                 pressed: self.pressed.as_deref() == Some(&n.key), disabled: n.disabled,
                 scroll: n.scroll.then(|| [self.scroll.get(&n.key).copied().unwrap_or(0.0), n.extent]),
-                loose: 0.0, children: vec![],
+                loose: 0.0, field: None, children: vec![],
             }
         }).collect();
         // Looseness per node from its own instances only (a parent's would repeat its children's).
@@ -797,7 +803,9 @@ impl<S, M: Clone> Ui<S, M> {
             let child = std::mem::replace(&mut made[i], crate::tree::TreeNode::empty());
             made[p].children.insert(0, child);
         }
-        made.into_iter().next().unwrap_or_else(crate::tree::TreeNode::empty)
+        let mut root = made.into_iter().next().unwrap_or_else(crate::tree::TreeNode::empty);
+        root.field = Some(crate::tree::FieldReadout { level: self.fmap.level(), nonzero: self.fmap.nonzero() });
+        root
     }
 
     /// What the runtime had to guess at in the current view (duplicate keys, a flow id used twice, an
@@ -2972,13 +2980,19 @@ impl<S, M: Clone> Ui<S, M> {
         let running = self.run.is_some();
         let (grain_k, atlas) = (if crate::budget::usage().scale < 0.5 { 2.0 } else { 1.0 }, &self.text.pixels);
         let calm: Vec<[f32; 4]> = self.field.calm.iter().filter(|r| r[2] > r[0]).copied().collect();
+        // A transition's Loosen steps loosen everything, on the CPU as the material pass does (render.rs).
+        let tr_k = match &self.split {
+            Some(sp) if self.timing.transition > 0.0 && self.split_alive(sp, now) =>
+                self.look().transition.loosen(((now - sp.t) / self.timing.transition).clamp(0.0, 1.0)).min(self.timing.loose_max),
+            _ => 0.0,
+        };
         let mut keep_hold: Vec<String> = vec![];
         let mut fades: Vec<(usize, f32, f32)> = vec![];
         for (ni, idx) in own.iter().enumerate() {
             if idx.is_empty() { continue; }
             let n = &self.nodes[ni];
             if n.hidden || matches!(n.content, Content::Canvas(_)) || self.recomps.contains_key(&n.key) || self.decodes.contains_key(&n.key) || (running && self.roles[ni] != 0) || idx.iter().any(|&i| self.flows.contains_key(&self.owners[i].1)) { continue; }
-            let k = idx.iter().map(|&i| self.inst_loose(i, now)).fold(0.0, f32::max).clamp(0.0, 1.0);
+            let k = idx.iter().map(|&i| self.inst_loose(i, now)).fold(if n.legible { tr_k.min(self.timing.legible_cap) } else { tr_k }, f32::max).clamp(0.0, 1.0);
             if k <= 0.0 { continue; }
             let f = strand::fill(k);
             for &i in idx { fades.push((i, self.scene.instances[i].paint[2], f)); }
@@ -3641,6 +3655,7 @@ impl<S, M: Clone> Ui<S, M> {
     }
     fn paint_gaze_marks(&mut self) {
         self.scene.annot.clear();
+        self.readout = gaze::Readout::default();
         let g = match self.gaze_of { Some(f) => f(&self.state), None => { self.annots.clear(); return; } };
         if g.mode == GazeMode::Off { self.annots.clear(); self.gaze_seen.clear(); self.gaze_until = f32::NEG_INFINITY; return; }
         let s = self.scale;
@@ -3656,6 +3671,21 @@ impl<S, M: Clone> Ui<S, M> {
         let clip = [view.x * s, view.y * s, view.right() * s, view.bottom() * s];
         let col = [g.colour[0], g.colour[1], g.colour[2], 0.0];
         let t = s.round().max(1.0);
+        // The scope-wide readouts show with the pointer in the scope (Hover, Focus) or always (All).
+        let in_scope = pointer.filter(|&(x, y)| scope.contains(x, y));
+        let readouts = (g.mode == GazeMode::All || in_scope.is_some()) && g.kinds & (kinds::EDGE | kinds::OSC | kinds::LEVEL) != 0;
+        let notes: Vec<String> = if readouts && g.has(kinds::EDGE) {
+            let look = self.look();
+            let theme = crate::style::THEME_IDS.get(crate::style::theme_index(look.theme.name)).copied().unwrap_or("custom");
+            let loosest = (0..self.page_len.min(self.scene.instances.len())).map(|i| self.inst_loose(i, now)).fold(0.0, f32::max);
+            vec![
+                format!("{:.0} × {:.0}", scope.w, scope.h),
+                in_scope.map_or_else(|| "x — y —".to_owned(), |(x, y)| format!("x {:.0} y {:.0}", x - scope.x, y - scope.y)),
+                format!("{} · {theme}", look.material.name()),
+                format!("loose {loosest:.2}"),
+                format!("{} nodes", self.fmap.nonzero()),
+            ]
+        } else { vec![] };
         let mut out: Vec<Instance> = Vec::new();
         let dev = |v: f32| (v * s).round();
         // A line or a block in device px: the gaze colour, or the page ground (`plate`) under labels.
@@ -3791,6 +3821,87 @@ impl<S, M: Clone> Ui<S, M> {
             bar(&mut out, dev(scope.x), dev(py), dev(scope.w), t, 0.45, false);
             bar(&mut out, dev(px), dev(scope.y), t, dev(scope.h), 0.45, false);
             label(text, &mut out, &format!("x {:.0}  y {:.0}", px - scope.x, py - scope.y), px + 10.0, py + 8.0);
+        }
+        if readouts {
+            self.readout.scope = scope;
+            let (x0, y0, x1, y1) = (dev(scope.x), dev(scope.y), dev(scope.right()), dev(scope.bottom()));
+            if g.has(kinds::LEVEL) {
+                // Up the left edge, 6 px wide, from the bottom.
+                let level = self.fmap.level();
+                let h = gaze::level_height(scope.h, level, g.level_full);
+                (self.readout.level, self.readout.level_h) = (level, h);
+                let hd = dev(h);
+                bar(&mut out, x0, y1 - hd, dev(6.0), hd, 1.0, false);
+            }
+            if g.has(kinds::OSC) {
+                // One point per column of nodes, along the pointer's row (or the strongest), joined by a
+                // line one device pixel thick: runs of whole pixels, no antialiasing, nothing mixed in.
+                let m = &self.fmap;
+                let row = in_scope.map_or_else(|| m.strongest_row().0, |(_, y)| (y / m.cell).round().max(0.0) as usize);
+                let base = scope.y + scope.h * g.osc_y;
+                // Short of the edge notes' column when they are on.
+                let end = if g.has(kinds::EDGE) { scope.right() - 40.0 } else { scope.right() };
+                let pts = gaze::osc_points(|i| m.byte_e(i, row), m.cols, m.cell, scope.x, end, base, g.osc_amp);
+                let dp: Vec<[f32; 2]> = pts.iter().map(|p| [dev(p[0]), dev(p[1]).clamp(y0, y1 - t)]).collect();
+                for ab in dp.windows(2) {
+                    let ([ax, ay], [bx, by]) = (ab[0], ab[1]);
+                    let mut x = ax;
+                    while x < bx {
+                        // The pixels this column covers between where the line enters and leaves it.
+                        let (fa, fb) = ((x - ax) / (bx - ax), ((x + t) - ax) / (bx - ax));
+                        let (ya, yb) = (ay + (by - ay) * fa, ay + (by - ay) * fb.min(1.0));
+                        let (top, bot) = (ya.min(yb).round(), ya.max(yb).round());
+                        bar(&mut out, x, top, t, (bot - top).max(t), 1.0, false);
+                        x += t;
+                    }
+                }
+                self.readout.osc_row = row;
+                self.readout.osc = pts;
+            }
+            if g.has(kinds::EDGE) {
+                // A hairline on the right edge, with ticks every 10 / 50 / 100 px and the pointer marked.
+                let lx = x1 - t;
+                bar(&mut out, lx, y0, t, y1 - y0, 1.0, false);
+                let mut v = 0.0;
+                while scope.y + v < scope.bottom() {
+                    let len = if v % 100.0 == 0.0 { 9.0 } else if v % 50.0 == 0.0 { 6.0 } else { 3.0 };
+                    bar(&mut out, lx - dev(len), dev(scope.y + v), dev(len), t, 1.0, false);
+                    v += 10.0;
+                }
+                if let Some((_, py)) = in_scope {
+                    bar(&mut out, lx - dev(14.0), dev(py) - t, dev(14.0), t * 2.0, 1.0, false);
+                    self.readout.mark_y = Some(py);
+                }
+                self.readout.edge_x = Some(lx);
+                // The notes in the serif, turned a quarter to read upwards, from the bottom; a note that
+                // does not fit starts a new column to the left.
+                const NOTE: f32 = 12.0;
+                const NOTE_LINE: f32 = 15.0;
+                const GAP: f32 = 18.0;
+                let set = crate::text::Setting { around: None, track: 0.12 };
+                let mut col_x = scope.right() - 12.0 - 4.0 - NOTE_LINE;
+                let mut y = scope.bottom() - 8.0;
+                for note in &notes {
+                    let (w, _) = text.measure_around(note, crate::text::SERIF, NOTE, NOTE_LINE, None, set);
+                    if y - w < scope.y + 8.0 && y < scope.bottom() - 8.0 { col_x -= NOTE_LINE + 4.0; y = scope.bottom() - 8.0; }
+                    if y - w < scope.y + 8.0 || col_x < scope.x + 8.0 { break; }
+                    // Laid out flat at the origin, then each glyph turned about its own centre and moved to
+                    // where the turned line puts it: (dx, dy) → (dy, −dx) from the pivot.
+                    let pivot = (dev(col_x), dev(y));
+                    let proto = Instance { paint: [0.0, 0.0, 1.0, 0.0], look: col, ..Default::default() };
+                    text.emit(Para { s: note, face: crate::text::SERIF, size: NOTE, line: NOTE_LINE, width: 1e5, print: 0.0, around: None, track: set.track }, (0.0, 0.0), proto, s, |mut i, _| {
+                        let (cx, cy) = (i.rect[0] + i.rect[2] * 0.5, i.rect[1] + i.rect[3] * 0.5);
+                        let (nx, ny) = (pivot.0 + cy, pivot.1 - cx);
+                        i.rect[0] = nx - i.rect[2] * 0.5;
+                        i.rect[1] = ny - i.rect[3] * 0.5;
+                        i.xf = [-1.0, 1.0, -1.0, -1.0];
+                        i.clip = clip;
+                        out.push(i);
+                    });
+                    self.readout.notes.push((note.clone(), Rect::new(col_x, y - w, NOTE_LINE, w)));
+                    y -= w + GAP;
+                }
+            }
         }
         self.scene.annot = out;
         self.annots = annots;

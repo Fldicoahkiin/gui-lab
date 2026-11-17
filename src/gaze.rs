@@ -9,6 +9,32 @@ use crate::ui::{Node, Rect};
 #[derive(Clone, Debug, PartialEq)]
 pub struct Annot { pub node: usize, pub key: String, pub rect: Rect, pub index: u32, pub kind: &'static str, pub label: Option<String> }
 
+/// What the scope-wide readouts drew this frame (DESIGN.md §4.2, §4.3), for tests and the tree.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Readout {
+    /// The scope they read (logical px).
+    pub scope: Rect,
+    /// Edge notes (`EDGE`): each note's text, and where its rotated box landed (logical px).
+    pub notes: Vec<(String, Rect)>,
+    /// The hairline's column (device px, its left edge) and the pointer's mark on it (logical y).
+    pub edge_x: Option<f32>,
+    pub mark_y: Option<f32>,
+    /// The waveform (`OSC`): the row of nodes it reads and one point per column (logical px).
+    pub osc_row: usize,
+    pub osc: Vec<[f32; 2]>,
+    /// The mean energy (`LEVEL`) and the bar's height (logical px).
+    pub level: f32,
+    pub level_h: f32,
+}
+
+/// Where the waveform's points go: x of each column of nodes inside `[x0, x1]`, the base line `base`,
+/// each point `e × amp` above it (logical px).
+pub fn osc_points(energy: impl Fn(usize) -> f32, cols: usize, cell: f32, x0: f32, x1: f32, base: f32, amp: f32) -> Vec<[f32; 2]> {
+    (0..cols).map(|i| i as f32 * cell).enumerate().filter(|(_, x)| *x >= x0 && *x <= x1).map(|(i, x)| [x, base - energy(i) * amp]).collect()
+}
+/// The level bar's height: the scope's height × min(1, mean / full).
+pub fn level_height(h: f32, level: f32, full: f32) -> f32 { h * (level / full.max(1e-4)).min(1.0) }
+
 /// The node and its ancestors, the node first.
 pub fn chain<M>(nodes: &[Node<M>], mut i: usize) -> Vec<usize> {
     let mut v = vec![i];

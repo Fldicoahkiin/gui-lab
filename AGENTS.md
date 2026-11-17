@@ -175,6 +175,12 @@ material (DESIGN.md §1.30, `lab::strand`) is plain at rest; loosened, an elemen
 where the map has energy and trails off along its flow, then writes itself back (`Ui::strands()` lists the threads drawn; `Look::hold_ms`
 holds its pose for a beat). `El::trace(Trace { points, progress, weight, dash, gap, pull, stir, paint })` draws a long path by progress
 under any material, solid or dashed by arc length, pushed by the map and stirring it at its head.
+Small type: `.tracking(em)` spaces letters (laid out by parley); `.whisper()` is lowercase, 0.6 em, in the bundled Latin serif
+(`Font::Whisper`, `text::SERIF`). The annotation layer's scope-wide readouts (DESIGN.md §4.2–§4.3): `gaze::EDGE` edge notes (true values
+only: scope size, pointer, material and theme, loosest element, non-zero map nodes), `gaze::OSC` a waveform of the map's energy along one
+row, `gaze::LEVEL` a bar of its mean; `Ui::readout()` returns what they drew and `export_tree()`'s root has `field: { level, nonzero }`.
+The tenth preset, Loose Thread (`loose-thread`), puts these together; `post.binary` (black and white only) and `post.invert` are
+finishing-pass switches.
 Text flows around true outlines with `.around(Around::new(vec![Silhouette::circle(..)], gap))`; a piece of a line
 beside an obstacle is justified so both its edges are flush, adding at most `Around::justify_max` ems per gap
 (default 0.25; inter-character next to CJK, inter-word at spaces, between Latin letters only with
