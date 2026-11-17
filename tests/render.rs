@@ -57,10 +57,10 @@ fn events_parse_and_errors_say_what_to_write() {
 #[test]
 fn a_drag_through_the_field_map_gives_the_same_bytes_three_times() {
     let Ok(mut o) = Offscreen::try_new(900, 640) else { eprintln!("no GPU adapter here: skipped"); return };
-    let mut s = RenderSpec { page: "stirr".into(), w: 900, h: 640, scale: 1.0, material: Some("dot".into()), theme: Some("light".into()), at_ms: 600.0, events: vec![], locale: None };
-    let mut ev = vec![r#"{"at_ms": 100, "kind": "press", "target": "stirr/float"}"#.to_owned()];
-    for i in 1..=12 { ev.push(format!(r#"{{"at_ms": {}, "kind": "move", "x": {}, "y": {}}}"#, 100 + i * 16, 200 + i * 22, 150 + i * 8)); }
-    ev.push(r#"{"at_ms": 320, "kind": "release", "x": 464, "y": 246}"#.to_owned());
+    let mut s = RenderSpec { page: "recipe-gesture".into(), w: 900, h: 640, scale: 1.0, material: Some("dot".into()), theme: Some("light".into()), at_ms: 600.0, events: vec![], locale: None };
+    let mut ev = vec![r#"{"at_ms": 100, "kind": "press", "target": "pip/label"}"#.to_owned()];
+    for i in 1..=12 { ev.push(format!(r#"{{"at_ms": {}, "kind": "move", "x": {}, "y": {}}}"#, 100 + i * 16, 60 + i * 12, 150 + i * 8)); }
+    ev.push(r#"{"at_ms": 320, "kind": "release", "x": 204, "y": 246}"#.to_owned());
     s.events = parse_events(&format!("[{}]", ev.join(",")), "inline").unwrap();
     let a = render(&s, fonts(), Some(&mut o)).expect("render");
     let b = render(&s, fonts(), Some(&mut o)).expect("render");
