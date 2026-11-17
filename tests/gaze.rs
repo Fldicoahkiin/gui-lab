@@ -235,3 +235,69 @@ fn labels_cover_no_text_to_read_and_no_other_label() {
         }
     }
 }
+
+// The INK leader: dashed, its free end and every dash 12 px clear of other elements' text to read, its
+// other end on the element's true outline.
+struct L { gaze: Gaze }
+fn leader_page(_: &L) -> El<()> {
+    let mut d = amenui::draw::Drawing::new(120.0, 120.0);
+    d.dot(60.0, 60.0, 50.0, Paint::ACCENT);
+    col().key("page").pad(20.0, 20.0)
+        .child(amenui::el::canvas(d).key("disc").width(120.0).height(120.0).absolute(Some(60.0), Some(70.0), None, None))
+        .child(text("A caption over the corner", 13.0, Paint::TEXT).key("caption").absolute(Some(20.0), Some(48.0), None, None))
+        .child(text("Notes on the right", 15.0, Paint::TEXT).key("notes").absolute(Some(240.0), Some(110.0), None, None))
+}
+#[test]
+fn an_ink_leader_keeps_off_text_to_read_and_ends_on_the_outline() {
+    let g = Gaze { mode: GazeMode::All, kinds: kinds::INK, density: 100.0, draw_ms: 300.0, ..Gaze::default() };
+    let mut u = Ui::new(L { gaze: g }, leader_page, |_, _| {}, fonts(), 480, 260, 1.0).on_gaze(|s| s.gaze);
+    u.tick(2.0);
+    let mut inks: Vec<(String, [f32; 4])> = vec![];
+    for gl in &u.glyphs().log {
+        let n = &u.nodes()[gl.node];
+        if !n.legible { continue; }
+        let b = amenui::form::ink_box(&u.scene().instances[gl.inst]);
+        match inks.iter_mut().find(|e| e.0 == n.key) {
+            Some(e) => e.1 = [e.1[0].min(b[0]), e.1[1].min(b[1]), e.1[2].max(b[2]), e.1[3].max(b[3])],
+            None => inks.push((n.key.clone(), b)),
+        }
+    }
+    let leaders = u.leaders().to_vec();
+    let disc = leaders.iter().find(|l| l.0 == "disc").expect("the disc has a leader");
+    // Its far end is on the circle the disc draws (centre 120, 130; radius 50).
+    let e = *disc.1.last().expect("a path");
+    let off = ((e[0] - 120.0).hypot(e[1] - 130.0) - 50.0).abs();
+    assert!(off < 1.0, "the leader ends {off:.2} px off the outline ({e:?})");
+    // The corner by the caption is not clear: it starts at another one.
+    let s0 = disc.1[0];
+    assert!((s0[0] - 60.0).abs() > 1.0 || (s0[1] - 70.0).abs() > 1.0, "it does not start by the caption: {s0:?}");
+    // And it ends on the near side of the disc from where it starts, not across it.
+    let reach = (s0[0] - 120.0).hypot(s0[1] - 130.0) - 50.0;
+    let run = (e[0] - s0[0]).hypot(e[1] - s0[1]);
+    assert!(run < reach + 1.5, "the leader runs {run:.1} px where the outline is {reach:.1} px from its start");
+    for (key, path) in &leaders {
+        for (other, b) in inks.iter().filter(|(k, _)| k != key) {
+            let g = [b[0] - 12.0, b[1] - 12.0, b[2] + 12.0, b[3] + 12.0];
+            for w in path.windows(2) {
+                let n = ((w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]) * 2.0).ceil().max(1.0) as usize;
+                for k in 0..=n {
+                    let u = k as f32 / n as f32;
+                    let p = [w[0][0] + (w[1][0] - w[0][0]) * u, w[0][1] + (w[1][1] - w[0][1]) * u];
+                    assert!(!(p[0] > g[0] && p[0] < g[2] && p[1] > g[1] && p[1] < g[3]), "{key}'s leader passes within 12 px of {other} at {p:?}");
+                }
+            }
+        }
+    }
+    // Drawn on: the dashes already drawn stay where they are, frame to frame.
+    let mut u = Ui::new(L { gaze: g }, leader_page, |_, _| {}, fonts(), 480, 260, 1.0).on_gaze(|s| s.gaze);
+    let mut t = 1.0;
+    u.tick(t);
+    let mut last: Vec<[f32; 4]> = vec![];
+    for _ in 0..20 {
+        t += 1.0 / 60.0;
+        u.tick(t);
+        let now: Vec<[f32; 4]> = u.scene().annot.iter().filter(|i| i.xf != [0.0; 4]).map(|i| i.rect).collect();
+        assert!(last.iter().all(|r| now.contains(r)), "a drawn dash moved");
+        last = now;
+    }
+}
