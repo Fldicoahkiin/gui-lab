@@ -1,7 +1,15 @@
 //! Contact sheets of the picture marks: one PNG per mark set, plus palettes, relief, regions, follow,
 //! glow, parallax and the compare wipe, each over the three detailed sample pictures, fully loosened.
 //! Also writes the mark atlas itself and the raw pictures.
+//!
+//! With `--material`, a material's sample sheet instead (`amenui::sample`): the sample page at each
+//! looseness given, and with `--arrival` how the material arrives after the warm-up; the sheet checks
+//! itself and the tool fails when it shows nothing it should.
+//!
+//! ```text
 //! usage: sheet <out_dir>
+//!        sheet --material <name> [--loose 1,0.7,0.4,0.2,0] [--theme <id>] [--arrival] [--out sheet.png]
+//! ```
 use amenui::pictures::{self, BUST, PICTURE_SIZES, SKY, TERRAIN};
 use amenui::el::{El, col, picture, row};
 use amenui::marks::{self, Atlas};
@@ -34,7 +42,35 @@ fn view(s: &Sheet) -> El<()> {
     col().pad(12.0, 12.0).gap(12.0).child(line(0, 0)).child(line(1, 1))
 }
 
+/// `sheet --material …`: one material's sample sheet, checked.
+fn material_sheet(args: &[String]) {
+    let fail = |m: String| -> ! { eprintln!("sheet: {m}"); std::process::exit(2) };
+    let (mut material, mut loose, mut theme, mut arrival, mut out) = (None, vec![1.0, 0.7, 0.4, 0.2, 0.0], 0, false, "sheet.png".to_owned());
+    let mut i = 0;
+    while i < args.len() {
+        let flag = args[i].as_str();
+        if flag == "--arrival" { arrival = true; i += 1; continue; }
+        let v = args.get(i + 1).cloned().unwrap_or_else(|| fail(format!("`{flag}` needs a value")));
+        match flag {
+            "--material" => material = Some(amenui::style::material_named(&v).unwrap_or_else(|e| fail(e.to_string()))),
+            "--loose" => loose = v.split(',').map(|x| x.trim().parse::<f32>().unwrap_or_else(|_| fail(format!("`--loose {v}`: write loosenesses 0..1 with commas, e.g. 1,0.5,0")))).collect(),
+            "--theme" => theme = amenui::style::theme_named(&v).unwrap_or_else(|e| fail(e.to_string())),
+            "--out" => out = v,
+            _ => fail(format!("unknown flag `{flag}`")),
+        }
+        i += 2;
+    }
+    let material = material.unwrap_or_else(|| fail("`--material` is required".into()));
+    let faces = || amenui::text::load_bundled(concat!(env!("CARGO_MANIFEST_DIR"), "/assets")).unwrap_or_else(|e| fail(e.to_string()));
+    let mut o = Offscreen::try_new(amenui::sample::CELL.0, amenui::sample::CELL.1).unwrap_or_else(|e| fail(e.to_string()));
+    let s = amenui::sample::sheet(&mut o, &faces, material, &loose, theme, arrival).unwrap_or_else(|e| { eprintln!("sheet: {e}"); std::process::exit(1) });
+    save_png(&out, s.w, s.h, &s.px);
+    eprintln!("sheet: {} cells -> {out}", s.cells.len());
+}
+
 fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|a| a.starts_with("--")) { material_sheet(&args); return; }
     let out = std::env::args().nth(1).unwrap_or_else(|| "sheets".into());
     std::fs::create_dir_all(&out).expect("out dir");
     let mut o = Offscreen::new(W, H);
