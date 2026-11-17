@@ -7,7 +7,10 @@
 fn m_halftonr(p: vec2f) -> vec3f {
   let s = u.res.z;
   let a0 = mp(SELF, 0);
-  let pitch = max(2.0, a0.x * s); let ang = radians(a0.y); let split = a0.z * s; let gain = a0.w;
+  // Past half loose the screen goes on opening (to 1.5 times the pitch) and the separations part twice
+  // as far (the element's own looseness, so one element keeps one screen).
+  let on = smoothstep(0.5, 1.0, clamp((loose_t(p) + u.rip.y) * loose_scale(), 0.0, u.rip.x));
+  let pitch = max(2.0, a0.x * s) * mix(1.0, 1.5, on); let ang = radians(a0.y); let split = a0.z * s * (1.0 + on); let gain = a0.w;
   // Dots only where the ink is really loose: text held at the cap stays as it is.
   if (kt_loose(p) <= 0.0 && kt_loose(p + vec2f(pitch)) <= 0.0 && kt_loose(p - vec2f(pitch)) <= 0.0) { return exact(p); }
   let g = gnd(p);
@@ -23,7 +26,27 @@ fn m_halftonr(p: vec2f) -> vec3f {
     let m = smoothstep(r + 0.6, r - 0.6, length(q - (cell + 0.5) * pitch)) * step(0.02, avg.a);
     return mix(g, dec_at(avg, c).rgb, m);
   }
-  // Three screens, one per channel, at their own angles and slightly out of register.
+  // Accent ink (a rule in the accent) is one screen in its own colour, not separated.
+  let here = dec(p);
+  if (here.acc > 0.5 || dec(p + vec2f(pitch * 0.5)).acc > 0.5) {
+    let q = rot(lat(p), ang);
+    let cell = floor(q / pitch);
+    let c = rot((cell + 0.5) * pitch, -ang) - anc;
+    if (kt_loose(c) <= 0.12 + 0.5 * h1(cell + vec2f(ang * 7.0, 3.0))) { return ex; }
+    // A thin rule falls between the taps of a coarse screen: the dot takes the most ink near it.
+    let e = pitch * 0.3;
+    var best = ink_t(c);
+    for (var i = 0; i < 4; i++) {
+      let t = ink_t(c + vec2f(select(-e, e, i % 2 == 1), select(-e, e, i >= 2)));
+      if (t.a > best.a) { best = t; }
+    }
+    let r = pitch * 0.5 * sqrt(clamp(best.a * gain, 0.0, 1.0));
+    let m = smoothstep(r + 0.6, r - 0.6, length(q - (cell + 0.5) * pitch)) * step(0.02, best.a);
+    return mix(g, dec_at(best, c).rgb, m);
+  }
+  // Three screens, one per separation, at their own angles and slightly out of register. Each prints
+  // its separation's colour drawn halfway to the ink's own, so the page keeps to its ink and its
+  // accent instead of pure red, green and blue.
   var out = ex;
   let angs = vec3f(radians(15.0), radians(75.0), 0.0) + vec3f(ang - radians(45.0));
   for (var j = 0; j < 3; j++) {
@@ -39,7 +62,8 @@ fn m_halftonr(p: vec2f) -> vec3f {
     let amt = clamp(abs(d.rgb[j] - g[j]) / max(abs(u.fg.rgb[j] - g[j]), 0.25), 0.0, 1.0) * avg.a;
     let r = pitch * 0.56 * sqrt(clamp(amt * gain, 0.0, 1.0));
     let m = smoothstep(r + 0.6, r - 0.6, length(q - (cell + 0.5) * pitch)) * step(0.02, amt);
-    out[j] = mix(g[j], d.rgb[j], m);
+    var sep = g; sep[j] = d.rgb[j];
+    out = mix(out, mix(sep, d.rgb, 0.5), m);
   }
   return out;
 }

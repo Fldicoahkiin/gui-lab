@@ -20,9 +20,14 @@ fn m_glitchr(p: vec2f, pic: bool) -> vec3f {
   if (kr <= 0.0) { return here; }
   let tq = floor(u.fa.y * 1000.0 / hold);
   var q = p;
-  if (h1(vec2f(row, tq)) < kr * 0.7) { q.x += (h1(vec2f(row * 1.7, tq + 3.0)) - 0.5) * 2.0 * shift * kr; }
+  // Up to half loose, rows slip and blocks repeat at half their size; past it, they grow to their full size.
+  let grow = 0.5 + 0.5 * clamp((kr - 0.5) * 2.0, 0.0, 1.0);
+  if (h1(vec2f(row, tq)) < kr * 0.7) { q.x += (h1(vec2f(row * 1.7, tq + 3.0)) - 0.5) * 2.0 * shift * kr * grow; }
   let bc = floor(lat(p) / block);
-  if (h1(bc + vec2f(tq * 0.37, 1.0)) < kr * 0.16) { q.x -= block * (1.0 + floor(h1(bc + 9.0) * 2.0)); }
+  // A block repeats only what is there: ink or a picture where it is read from, never bare ground.
+  let bq = vec2f(q.x - block * grow * (1.0 + floor(h1(bc + 9.0) * 2.0)), q.y);
+  let has = ink_t(bq).a > 0.02 || near_t(bq).g > 0.05;
+  if (has && h1(bc + vec2f(tq * 0.37, 1.0)) < kr * 0.16) { q = bq; }
   let sp = vec2f(split * kr, 0.0);
   // A picture keeps to itself: a sample that would leave it stays where it is.
   var qr = q + sp; var qg = q; var qb = q - sp;
@@ -32,6 +37,8 @@ fn m_glitchr(p: vec2f, pic: bool) -> vec3f {
     if (near_t(qb).g <= 0.05) { qb = p; }
   }
   var c = vec3f(scene_at(qr).r, scene_at(qg).g, scene_at(qb).b);
-  if (h1(vec2f(row, tq + 11.0)) < kr * 0.12) { c = c * 0.75 + 0.25 * (1.0 - c) * step(0.5, h1(vec2f(row, tq + 2.0))); }
+  // A row's flash only where something is drawn: no grey bars over bare ground.
+  let drawn = ink_t(q).a > 0.02 || near_t(q).g > 0.05 || ink_t(p).a > 0.02 || near_t(p).g > 0.05;
+  if (drawn && h1(vec2f(row, tq + 11.0)) < kr * 0.12) { c = c * 0.75 + 0.25 * (1.0 - c) * step(0.5, h1(vec2f(row, tq + 2.0))); }
   return c;
 }

@@ -11,10 +11,13 @@ fn m_dottr(frag: vec2f) -> vec3f {
   // Only what is really loose slips: nudged text, and text held at the legibility cap, stays in place.
   p.x += (h1(vec2f(band, floor(t * 17.0))) - 0.5) * 70.0 * s * u.fa.w * pick * smoothstep(0.2, 0.9, w0) * smoothstep(0.2, 0.45, loose_t(frag));
   let here = near_t(frag);
-  let pitch = max(1.5, u.fa.x * s);
+  // Past half loose the units themselves go on changing: their lattice opens to 1.6 times the pitch
+  // and they stray twice as far from it (the element's own looseness, so one element keeps one lattice).
+  let on = smoothstep(0.5, 1.0, clamp((loose_t(frag) + u.rip.y) * loose_scale(), 0.0, u.rip.x));
+  let pitch = max(1.5, u.fa.x * s) * mix(1.0, 1.6, on);
   let cell = floor(lat(p) / pitch);
   let block = (cell + 0.5) * pitch - anc;
-  let centre = block + (h2(cell) - 0.5) * u.fa.z * pitch;
+  let centre = block + (h2(cell) - 0.5) * u.fa.z * pitch * (1.0 + on);
   let loose = min((half_plane(centre) + loose_t(centre) + (h1(cell + 7.0) - 0.5) * 0.22) * loose_scale(), u.rip.x);
   let printed = select(0.0, here.a * 255.0 * 0.5, here.a < 0.5);
   let printed_b = select(0.0, near_t(block).a * 255.0 * 0.5, near_t(block).a < 0.5);

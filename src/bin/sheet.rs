@@ -71,7 +71,9 @@ fn material_sheet(args: &[String]) {
         None => amenui::sample::sheet(&mut o, &faces, material, &loose, theme, arrival),
     }.unwrap_or_else(|e| { eprintln!("sheet: {e}"); std::process::exit(1) });
     if sweep.is_some() {
-        for (k, c) in s.cells.iter().zip(&s.changed) { if let (Some(k), Some(c)) = (k, c) { println!("loose {k:.2}: {:.1} % of the title changed", c * 100.0); } }
+        for ((k, c), m) in s.cells.iter().zip(&s.changed).zip(&s.moved) {
+            if let (Some(k), Some(c)) = (k, c) { println!("loose {k:.2}: {:.1} % of the title changed from rest, {:.1} % from the step before", c * 100.0, m.unwrap_or(0.0) * 100.0); }
+        }
     }
     save_png(&out, s.w, s.h, &s.px);
     eprintln!("sheet: {} cells -> {out}", s.cells.len());
