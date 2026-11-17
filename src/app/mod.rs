@@ -33,6 +33,7 @@
 //! # #[cfg(not(feature = "window"))]
 //! # fn main() {}
 //! ```
+#![warn(missing_docs)]
 
 #[cfg(all(feature = "window", not(target_arch = "wasm32")))]
 pub mod native;
@@ -105,6 +106,7 @@ impl Dropped {
 /// `[route] [--shot <path.png>@<ms> …] [--exit-after <ms>]`.
 #[derive(Clone, Debug)]
 pub struct Window {
+    /// The window's title (and the screen reader's name for it).
     pub title: String,
     /// Logical px.
     pub size: (f32, f32),
@@ -119,10 +121,13 @@ pub struct Window {
 }
 
 impl Window {
+    /// A 1280 × 860 window called `title`.
     pub fn new(title: impl Into<String>) -> Self {
         Self { title: title.into(), size: (1280.0, 860.0), route: None, shots: vec![], exit_after: None, report: false }
     }
+    /// Its size, logical px.
     pub fn size(mut self, w: f32, h: f32) -> Self { self.size = (w, h); self }
+    /// The route it opens with.
     pub fn route(mut self, route: impl Into<String>) -> Self { self.route = Some(route.into()); self }
     /// The options from the process's command line (after the program name), over these.
     pub fn from_args(self) -> Self { self.with_args(std::env::args().skip(1)) }

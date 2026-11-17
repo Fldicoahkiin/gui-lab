@@ -1,32 +1,53 @@
 //! Style as data: a theme (colours, type, lines), a material (how stage 2 draws), and up to eight sets
 //! of picture-mark parameters that picture instances choose between. See DESIGN.md §1.6.1 and §4.
+#![warn(missing_docs)]
 use crate::scene::Fx;
 use crate::text::{MONO, PIXEL, SANS};
 
 /// Font sizes of a theme, logical px. Pixel faces are snapped to whole multiples of their face size
 /// when drawn, so these are requests, not promises.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct TypeScale { pub display: f32, pub title: f32, pub body: f32, pub small: f32 }
+pub struct TypeScale {
+    /// Headings at the top of a page.
+    pub display: f32,
+    /// Section titles.
+    pub title: f32,
+    /// Running text.
+    pub body: f32,
+    /// Captions, labels and notes.
+    pub small: f32,
+}
 
+/// A theme: the page's colours, the faces and sizes of its type, and its line widths (DESIGN.md §4).
+/// Colours are linear RGB, 0–1.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Theme {
+    /// The theme's name, as presets and `theme_index` find it.
     pub name: &'static str,
     /// The page ground, from the top of the window (`ground`) to the bottom (`ground2`; the same
     /// colour for a flat ground).
     pub ground: [f32; 3],
+    /// The ground at the bottom of the window.
     pub ground2: [f32; 3],
+    /// Text and lines.
     pub ink: [f32; 3],
     /// Accent colours: `accent` is hue 0 of `Paint`, `second` hue 1, `third` hue 2.
     pub accent: [f32; 3],
+    /// Hue 1 of `Paint`.
     pub second: [f32; 3],
+    /// Hue 2 of `Paint`.
     pub third: [f32; 3],
     /// Face indices (see `text::SANS` …) for headings, running text and figures.
     pub display: u8,
+    /// The face of running text.
     pub body: u8,
+    /// The face of figures and code.
     pub mono: u8,
+    /// Font sizes.
     pub sizes: TypeScale,
     /// Hairline and rule widths, logical px.
     pub hairline: f32,
+    /// Rules between sections and borders that should be seen.
     pub rule: f32,
 }
 impl Theme {
@@ -39,7 +60,9 @@ const fn theme(name: &'static str, ground: [f32; 3], ink: [f32; 3], accent: [f32
     Theme { name, ground, ground2: ground, ink, accent, second: accent, third: accent, display: SANS, body: SANS, mono: MONO, sizes: SIZES, hairline: 1.0, rule: 1.0 }
 }
 
+/// Near-black ground, warm white ink, an orange accent: the default.
 pub const DARK: Theme = Theme { second: [0.30, 0.62, 1.0], third: [0.98, 0.80, 0.25], ..theme("暗", [0.047, 0.051, 0.055], [0.886, 0.89, 0.878], [1.0, 0.42, 0.17]) };
+/// Warm white ground, near-black ink, a deeper orange accent.
 pub const LIGHT: Theme = Theme { second: [0.10, 0.36, 0.78], third: [0.80, 0.60, 0.02], ..theme("明", [0.914, 0.910, 0.890], [0.09, 0.094, 0.10], [0.86, 0.30, 0.08]) };
 /// The Lab (DESIGN.md §5.3): near-black ground, grey-white ink, one blue accent (all three hues the
 /// same blue), everything in the monospaced pixel face.
@@ -105,11 +128,14 @@ pub const THREAD: Theme = Theme {
     ..theme("线", [0.0, 0.0, 0.0], [1.0, 1.0, 1.0], [1.0, 0.33, 0.20])
 };
 /// The same on paper white, near-black ink.
+/// The thread theme on white paper.
 pub const THREAD_PAPER: Theme = Theme {
     second: [0.06, 0.06, 0.06], third: [0.06, 0.06, 0.06], sizes: TypeScale { display: 40.0, title: 18.0, body: 14.0, small: 11.0 },
     ..theme("线·纸", [0.965, 0.961, 0.949], [0.06, 0.06, 0.06], [0.90, 0.26, 0.14])
 };
+/// Every theme, in the order presets number them.
 pub const THEMES: [Theme; 15] = [DARK, LIGHT, PIXEL_THEME, PAPER, CREAM, COOL, MANUAL, NORMCORE, CYBER, BAUHAUS, LED, GAZE, GLITCH, THREAD, THREAD_PAPER];
+/// The place of the theme called `name` in `THEMES` (0, the dark theme, when there is none).
 pub fn theme_index(name: &str) -> usize { THEMES.iter().position(|t| t.name == name).unwrap_or(0) }
 
 /// How stage 2 draws text, shapes and the ground (DESIGN.md §1.6). Pictures always follow their own
@@ -126,10 +152,15 @@ pub enum Material {
     /// ground is a field of small units.
     #[default]
     Dot = 1,
+    /// Ink as round dots on a rotated screen, with the second colour out of register.
     Halftone = 2,
+    /// Ink as characters chosen by brightness, on a grid.
     Ascii = 3,
+    /// Lo-fi print: paper grain, misregistered spot ink, specks and bleed.
     Print = 4,
+    /// Linocut: carved gouges along the outline, in bands.
     Lino = 5,
+    /// Rows that slip sideways, colour fringes and held blocks while something is loose.
     Glitch = 6,
     /// The intermediate images made visible: the signed nearness as contour bands (warm inside the
     /// ink, cool outside), the outline itself, and the looseness as a tint. A view of the machinery,
@@ -141,7 +172,9 @@ pub enum Material {
     /// (`strand.rs`), drawn as shapes in the first pass.
     Scribblr = 8,
 }
+/// How many materials there are.
 pub const MATERIAL_COUNT: usize = 9;
+/// Every material with its name, in id order.
 pub const MATERIALS: [(Material, &str); MATERIAL_COUNT] = [
     (Material::Plain, "plain"), (Material::Dot, "dot"), (Material::Halftone, "halftone"), (Material::Ascii, "ascii"), (Material::Print, "print"),
     (Material::Lino, "lino"), (Material::Glitch, "glitch"), (Material::Near, "near"),
@@ -151,8 +184,11 @@ impl Material {
     /// Whether the material has a time term that moves loose things by itself (glitch's held rows,
     /// while something is loose under it, frames keep coming.
     pub fn time_varying(self) -> bool { matches!(self, Material::Glitch) }
+    /// The id the shader dispatches on.
     pub fn id(self) -> u8 { self as u8 }
+    /// The material with id `i` (the last one for ids past the end).
     pub fn from_id(i: u8) -> Material { MATERIALS[(i as usize).min(MATERIAL_COUNT - 1)].0 }
+    /// Its name, as presets and `<amenui-view material="…">` write it.
     pub fn name(self) -> &'static str { MATERIALS[self as usize].1 }
 }
 
@@ -163,7 +199,22 @@ pub fn override_code(level: u8, id: u8) -> f32 { (128 + level.clamp(1, 7) as u32
 
 /// One number of a material, for its gallery page.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct MatParam { pub name: &'static str, pub min: f32, pub max: f32, pub step: f32, pub decimals: usize, pub unit: &'static str, pub default: f32 }
+pub struct MatParam {
+    /// Its label on the gallery page.
+    pub name: &'static str,
+    /// The smallest value.
+    pub min: f32,
+    /// The largest value.
+    pub max: f32,
+    /// How far one step of its control moves it.
+    pub step: f32,
+    /// Digits after the point when it is shown.
+    pub decimals: usize,
+    /// Its unit (`px`, `ms`, `°`), or empty.
+    pub unit: &'static str,
+    /// The value it starts at.
+    pub default: f32,
+}
 const fn mp(name: &'static str, min: f32, max: f32, step: f32, decimals: usize, unit: &'static str, default: f32) -> MatParam {
     MatParam { name, min, max, step, decimals, unit, default }
 }
@@ -185,11 +236,13 @@ pub const MAT_PARAMS: [&[MatParam]; MATERIAL_COUNT] = [
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MaterialParams(pub [f32; 8]);
 impl MaterialParams {
+    /// The numbers `m` starts with.
     pub fn defaults(m: Material) -> Self {
         let mut v = [0.0; 8];
         for (i, p) in MAT_PARAMS[m as usize].iter().enumerate() { v[i] = p.default; }
         Self(v)
     }
+    /// Every material's starting numbers, in id order.
     pub fn all() -> [MaterialParams; MATERIAL_COUNT] { std::array::from_fn(|i| Self::defaults(Material::from_id(i as u8))) }
 }
 
@@ -197,25 +250,37 @@ impl MaterialParams {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum GazeMode {
+    /// No annotation.
     #[default]
     Off,
     /// The element under the pointer and its ancestors.
     Hover,
+    /// Every element, largest first, up to `Gaze::density`.
     All,
     /// The focused element and its ancestors.
     Focus,
 }
+/// Every annotation mode with its label.
 pub const GAZE_MODES: [(GazeMode, &str); 4] = [(GazeMode::Off, "关"), (GazeMode::Hover, "悬停"), (GazeMode::All, "全部"), (GazeMode::Focus, "焦点路径")];
 /// What the annotation layer draws, as bits of `Gaze::kinds`.
 pub mod gaze {
+    /// Corner marks around each element.
     pub const FRAME: u16 = 1;
+    /// Its whole outline.
     pub const BOX: u16 = 2;
+    /// A number for each element.
     pub const INDEX: u16 = 4;
+    /// Its width and height.
     pub const SIZE: u16 = 8;
+    /// What kind of element it is (its role).
     pub const KIND: u16 = 16;
+    /// A leader line from the element to its label.
     pub const LEADER: u16 = 32;
+    /// Rulers along the scope's edges.
     pub const RULER: u16 = 64;
+    /// A crosshair through the pointer.
     pub const CROSS: u16 = 128;
+    /// The layout grid.
     pub const GRID: u16 = 256;
     /// Edge notes (DESIGN.md §4.2): a line of small serif type up the scope's right edge with what is
     /// true now (size, pointer, material and theme, the loosest element, the field map), a hairline on
@@ -224,26 +289,37 @@ pub mod gaze {
     /// The field map's readouts (DESIGN.md §4.3): a waveform across the scope (`OSC`, the energy along
     /// one row of nodes) and a level bar up its left edge (`LEVEL`, the mean energy).
     pub const OSC: u16 = 1024;
+    /// The level bar of the mean energy (see `OSC`).
     pub const LEVEL: u16 = 2048;
+    /// How many kinds there are.
     pub const COUNT: usize = 12;
+    /// Each kind's label, in bit order.
     pub const NAMES: [&str; COUNT] = ["角标", "边框", "编号", "尺寸", "类型", "引线", "标尺", "十字线", "网格", "边注", "波形", "电平"];
 }
+/// The annotation layer: which elements it marks and what it draws (DESIGN.md §1.7).
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Gaze {
+    /// Which elements are annotated.
     pub mode: GazeMode,
+    /// What is drawn, as `gaze` bits.
     pub kinds: u16,
     /// At most this many elements are framed and labelled, largest first.
     pub density: f32,
     /// How long a frame takes to draw on, ms.
     pub draw_ms: f32,
+    /// The colour of its lines and labels.
     pub colour: [f32; 3],
     /// Only elements with an explicit callout (`El::annotate`) are candidates.
     pub only_marked: bool,
     /// `OSC`: how tall the waveform is where the energy is 1 (px), and where its baseline sits in the
     /// scope (0 top, 1 bottom). `LEVEL`: the mean energy that fills the bar (DESIGN.md §4.3).
     #[serde(default = "osc_amp")] pub osc_amp: f32,
-    #[serde(default = "osc_y")] pub osc_y: f32,
-    #[serde(default = "level_full")] pub level_full: f32,
+    #[serde(default = "osc_y")]
+    /// Where the waveform's baseline sits: 0 at the top of the scope, 1 at the bottom.
+    pub osc_y: f32,
+    /// The mean energy that fills the level bar.
+    #[serde(default = "level_full")]
+    pub level_full: f32,
 }
 fn osc_amp() -> f32 { 40.0 }
 fn osc_y() -> f32 { 0.5 }
@@ -252,32 +328,55 @@ impl Default for Gaze {
     fn default() -> Self { Self { mode: GazeMode::Off, kinds: gaze::FRAME | gaze::INDEX | gaze::SIZE, density: 24.0, draw_ms: 260.0, colour: [0.30, 1.0, 0.50], only_marked: false, osc_amp: osc_amp(), osc_y: osc_y(), level_full: level_full() } }
 }
 impl Gaze {
+    /// Whether it draws the `gaze` kind `k`.
     pub fn has(&self, k: u16) -> bool { self.kinds & k != 0 }
 }
 
 /// Rows of the mark atlas.
 pub mod set {
+    /// Characters ordered by how much ink they carry.
     pub const CHARS: u8 = 0;
+    /// Ordered dither patterns.
     pub const DITHER: u8 = 1;
+    /// Solid pixels.
     pub const PIXEL: u8 = 2;
+    /// Mosaic tiles with grout between them.
     pub const MOSAIC: u8 = 3;
+    /// Bricks with studs.
     pub const BRICK: u8 = 4;
+    /// Round dots growing with the ink.
     pub const DOTS: u8 = 5;
+    /// Crosses.
     pub const CROSS: u8 = 6;
+    /// Diagonal strokes.
     pub const DIAGONAL: u8 = 7;
+    /// Diamonds.
     pub const DIAMOND: u8 = 8;
+    /// Horizontal lines growing thicker.
     pub const LINES: u8 = 9;
+    /// Soft points of light.
     pub const GLOW: u8 = 10;
+    /// Brush strokes.
     pub const STROKE: u8 = 11;
+    /// LED matrix cells.
     pub const LED: u8 = 12;
+    /// Braille cells, by how many dots are raised.
     pub const BRAILLE: u8 = 13;
+    /// Shaded cubes.
     pub const CUBES: u8 = 14;
+    /// Hexagons.
     pub const HEX: u8 = 15;
+    /// Stippling: scattered dots.
     pub const STIPPLE: u8 = 16;
+    /// Cross-hatching.
     pub const HATCH: u8 = 17;
+    /// Truchet tiles: quarter arcs that join across cells.
     pub const TRUCHET: u8 = 18;
+    /// Contour lines.
     pub const TOPO: u8 = 19;
+    /// How many sets there are.
     pub const COUNT: usize = 20;
+    /// Each set's label, in row order.
     pub const NAMES: [&str; COUNT] = ["字符", "抖动", "像素画", "马赛克", "积木", "圆点", "十字", "斜线", "菱形", "横线", "光点", "笔触", "LED 点阵", "盲文", "体素", "六角", "点刻", "交叉线", "特鲁谢", "等高线"];
     /// The families the gallery groups the sets in (DESIGN.md §1.6.1): characters; pixels and blocks;
     /// print and paper; geometry; signal and light.
@@ -292,10 +391,15 @@ pub mod set {
 
 /// Ink colour of a picture's marks.
 pub mod colour {
+    /// The picture's own colour in each cell.
     pub const ORIGINAL: u8 = 0;
+    /// The theme's ink.
     pub const THEME_INK: u8 = 1;
+    /// Two colours (`PicFx::tint_a`, `tint_b`), by brightness.
     pub const TWO: u8 = 2;
+    /// One given colour (`PicFx::tint_a`).
     pub const GIVEN: u8 = 3;
+    /// Each mode's label.
     pub const NAMES: [&str; 4] = ["原色", "墨色", "双色", "指定色"];
 }
 
@@ -324,17 +428,22 @@ pub struct PicFx {
     pub glow: f32,
     /// Palette row, and how many of its colours to use (0 = no palette).
     pub palette: f32,
+    /// How many of the palette's colours to use.
     pub colours: f32,
     /// Shading from the atlas' height channel, 0 = off.
     pub relief: f32,
     /// Region size in cells (0 = off); regions choose by hash (0) or by brightness band (1); how many
     /// of `region_sets` are used.
     pub regions: f32,
+    /// How a region chooses its set: 0 by hash, 1 by brightness band.
     pub region_by: f32,
+    /// How many of `region_sets` are used.
     pub region_count: f32,
+    /// The sets regions choose between.
     pub region_sets: [f32; 4],
     /// Colours for modes 2 and 3, 0–1.
     pub tint_a: [f32; 3],
+    /// The second colour of mode 2.
     pub tint_b: [f32; 3],
 }
 impl Default for PicFx {
@@ -348,6 +457,7 @@ impl Default for PicFx {
     }
 }
 impl PicFx {
+    /// The defaults with mark set `s`.
     pub fn with_set(s: u8) -> Self { Self { set: s as f32, ..Self::default() } }
     /// The uniform form: seven vec4s, in the order the shader reads them.
     pub fn pack(&self) -> [[f32; 4]; 7] {
@@ -385,7 +495,9 @@ pub struct Scroll {
     pub misreg: f32,
     /// Glitch: how far a band slips, how tall a band is, and at least how long between two slips.
     pub slip: f32,
+    /// Glitch: how tall a slipping band is.
     pub band: f32,
+    /// Glitch: the least time between two slips, ms.
     pub slip_ms: f32,
 }
 impl Default for Scroll {
@@ -405,12 +517,24 @@ impl Scroll {
 /// shapes (Normcore keeps it small).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Look {
-    pub fx: Fx, pub theme: Theme, pub material: Material, pub pics: [PicFx; 8], pub params: [MaterialParams; MATERIAL_COUNT], pub gaze: Gaze, pub loose_scale: f32,
+    /// The scene-wide effect numbers (lattice pitch, lens, fronts).
+    pub fx: Fx,
+    /// Colours, type and lines.
+    pub theme: Theme,
+    /// The material of everything without its own.
+    pub material: Material,
+    /// The picture-mark slots picture instances choose between.
+    pub pics: [PicFx; 8],
+    /// Every material's numbers, in id order.
+    pub params: [MaterialParams; MATERIAL_COUNT],
+    /// The annotation layer.
+    pub gaze: Gaze,
+    /// Scales all looseness of text and shapes.
+    pub loose_scale: f32,
     /// The material pass's resolution as a fraction of the device's (`perf::LEVELS`: 1, 0.75, 0.5), or
     /// 0 for automatic (DESIGN.md §1.12). Pixels at rest are always drawn at full resolution.
     pub quality: f32,
-    /// Show the frame-time readout (drawn by the annotation layer).
-    /// The performance readout: 0 off, 1 one line, 2 every number (F2 steps through them).
+    /// The performance readout (drawn by the annotation layer): 0 off, 1 one line, 2 every number (F2 steps through them).
     pub overlay: u8,
     /// The most looseness field effects (fronts, the lens, a pull past a scroll end, a press held) may
     /// give text to read and controls (DESIGN.md §1.15). Morphs, flows and recomposition are exempt.
@@ -425,7 +549,9 @@ pub struct Look {
     /// text and controls and what everything else do when nothing says, and how a commit arrives
     /// (0 ms: the classic front from the press).
     pub press_ms: f32,
+    /// What text and controls do, and what everything else does, when nothing says.
     pub roles: [crate::el::Response; 2],
+    /// How a commit arrives.
     pub transition: crate::preset::Transition,
     /// How scrolling looks (DESIGN.md §1.8.3).
     pub scroll: Scroll,
@@ -444,7 +570,12 @@ pub use crate::fieldmap::MapFx;
 /// farthest part's cells are `1 − depth_scale` of the nearest's) and are brighter (`depth_dim`: the
 /// farthest is dimmed by this much, 0–1). Both 0: depth does nothing.
 #[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct Marks { pub depth_scale: f32, pub depth_dim: f32 }
+pub struct Marks {
+    /// The farthest part's cells are `1 − depth_scale` of the nearest's.
+    pub depth_scale: f32,
+    /// How much the farthest part is dimmed, 0–1.
+    pub depth_dim: f32,
+}
 impl Default for Look {
     fn default() -> Self { Self { fx: Fx::default(), theme: DARK, material: Material::Dot, pics: [PicFx::default(); 8], params: MaterialParams::all(), gaze: Gaze::default(), loose_scale: 1.0, quality: 1.0, overlay: 0, legible_cap: LEGIBLE_CAP, loose_max: 1.0, recompose: crate::morph::Recompose::default(), particles: crate::morph::Particles::default(), press_ms: 350.0, roles: [crate::el::Response::Nudge, crate::el::Response::Loosen], transition: crate::preset::Transition { duration_ms: 0.0, steps: [crate::preset::Step { kind: crate::preset::StepKind::None, from: 0.0, to: 0.0, a: 0.0, b: 0.0, c: 0.0, d: 0.0, e: 0.0 }; 4] }, scroll: Scroll::default(), post: crate::post::Post::default(), marks: Marks::default(), map: MapFx::default(), hold_ms: 0.0 } }
 }
@@ -455,12 +586,19 @@ pub const LEGIBLE_CAP: f32 = 0.15;
 /// chooses, and how pictures turn into marks. Plain data.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Style {
+    /// Its name.
     pub name: &'static str,
+    /// Its id in look recipes and URLs (`normcore`).
     pub hash: &'static str,
+    /// Its theme, as a place in `THEMES`.
     pub theme: usize,
+    /// Its material.
     pub material: Material,
+    /// The material's numbers.
     pub params: MaterialParams,
+    /// The annotation layer.
     pub gaze: Gaze,
+    /// `Look::loose_scale`.
     pub loose_scale: f32,
     /// The lattice pitch of text and shapes (`Fx::pitch`).
     pub pitch: f32,
