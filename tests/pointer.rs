@@ -235,3 +235,62 @@ fn a_drawing_the_pointer_passes_through_lets_the_button_under_it_take_the_press(
     assert_eq!(drawn[0].len(), drawn[1].len());
     assert!(drawn[0].iter().zip(&drawn[1]).all(|(a, b)| a.rect == b.rect && a.paint == b.paint && a.uv == b.uv), "the drawing is drawn the same");
 }
+
+#[test]
+fn the_focus_corners_move_with_the_control_a_press_pushes() {
+    use amenui::offscreen::Offscreen;
+    let (w, h) = (300u32, 160u32);
+    let Ok(mut o) = Offscreen::try_new(w, h) else { eprintln!("no GPU adapter here: skipped"); return };
+    struct P;
+    fn view(_: &P) -> amenui::el::El<()> { amenui::el::col().pad(40.0, 50.0).child(amenui::widgets::button("go", "Send it", ())) }
+    let mut ui = amenui::ui::Ui::new(P, view, |_, _| {}, amenui::text::load_bundled(concat!(env!("CARGO_MANIFEST_DIR"), "/assets")).expect("fonts"), w, h, 1.0)
+        .on_look(|_| amenui::style::Look { material: amenui::style::Material::Plain, ..amenui::style::Look::default() });
+    ui.command(amenui::morph::Cmd::Focus { key: "go".into() });
+    let mut t = 0.0;
+    for _ in 0..60 { t += 1.0 / 60.0; ui.tick(t); }
+    let look = ui.look();
+    let rest = o.render(&mut ui, &look);
+    let b = ui.node("go").expect("go").rect;
+    let (x, y) = (b.x + 6.0, b.y + 4.0);
+    ui.press(x, y);
+    // The press's front is strongest a few frames on.
+    let mut best: Option<(i32, i32, i32, i32)> = None;
+    let accent = look.theme.accent;
+    let ground = look.theme.ground;
+    // Two masks of a frame: the corners (near the accent) and the label (off the ground, not accent).
+    // The flash changes how bright the label is, not its shape.
+    let masks = |px: &[u8]| {
+        let (mut a, mut l) = (vec![false; (w * h) as usize], vec![false; (w * h) as usize]);
+        for (i, c) in px.chunks_exact(4).enumerate() {
+            let f = [c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0];
+            let d = |q: [f32; 3]| (0..3).map(|k| (f[k] - q[k]).abs()).fold(0.0f32, f32::max);
+            if d(accent) < 0.15 { a[i] = true; } else if d(ground) > 0.2 { l[i] = true; }
+        }
+        (a, l)
+    };
+    // The shift (within 6 px) that best lays a mask of the rest frame on the same mask now.
+    let shift = |m0: &[bool], m1: &[bool]| {
+        let mut best = (usize::MAX, (0i32, 0i32));
+        for dy in -6..=6 { for dx in -6..=6 {
+            let mut bad = 0;
+            for y in (b.y as i32 - 16).max(0)..(b.bottom() as i32 + 16).min(h as i32) { for x in (b.x as i32 - 16).max(0)..(b.right() as i32 + 16).min(w as i32) {
+                let (sx, sy) = (x - dx, y - dy);
+                let was = sx >= 0 && sy >= 0 && sx < w as i32 && sy < h as i32 && m0[(sy as u32 * w + sx as u32) as usize];
+                if was != m1[(y as u32 * w + x as u32) as usize] { bad += 1; }
+            } }
+            if bad < best.0 { best = (bad, (dx, dy)); }
+        } }
+        best.1
+    };
+    let (a0, l0) = masks(&rest);
+    for _ in 0..8 {
+        t += 1.0 / 60.0;
+        ui.tick(t);
+        let px = o.render(&mut ui, &look);
+        let (a, l) = masks(&px);
+        let (da, dl) = (shift(&a0, &a), shift(&l0, &l));
+        assert_eq!(da, dl, "the corners moved {da:?}, the label {dl:?}");
+        if dl != (0, 0) { best = Some((da.0, da.1, dl.0, dl.1)); }
+    }
+    assert!(best.is_some(), "the press pushes the control in some frame");
+}
