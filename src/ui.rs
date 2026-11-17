@@ -4013,6 +4013,20 @@ impl<S, M: Clone> Ui<S, M> {
             text.emit(Para { s: str, face: MONO, size: SIZE, line: LINE, width: 1e5, print: 0.0, around: None, track: 0.0 }, (x, y), proto, s, |mut i, _| { i.clip = clip; out.push(i); });
             w
         };
+        // Labels keep off the ink of text to read (each element's, logical px) and off each other.
+        let avoid: Vec<Rect> = {
+            let mut by: std::collections::HashMap<usize, [f32; 4]> = Default::default();
+            for gl in &self.glyphs.log {
+                let n = &self.nodes[gl.node];
+                let Some(inst) = self.scene.instances.get(gl.inst) else { continue };
+                if !n.legible || n.hidden || inst.paint[2] < 0.05 { continue; }
+                let b = crate::form::ink_box(inst);
+                if b[2] <= b[0] || b[3] <= b[1] { continue; }
+                let e = by.entry(gl.node).or_insert([f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY]);
+                *e = [e[0].min(b[0]), e[1].min(b[1]), e[2].max(b[2]), e[3].max(b[3])];
+            }
+            by.values().map(|b| Rect::new(b[0] / s, b[1] / s, (b[2] - b[0]) / s, (b[3] - b[1]) / s)).collect()
+        };
         let mut tags: Vec<Rect> = vec![];
         for a in &annots {
             let p = gaze::drawn(now - self.gaze_seen[&a.key], g.draw_ms);
@@ -4073,8 +4087,14 @@ impl<S, M: Clone> Ui<S, M> {
                     }
                 }
                 if p >= 1.0 {
+                    // Beside the ink box where it covers no text to read and no other label; else left out.
                     let str = format!("INK {}×{}", ((x1 - x0) / s).round(), ((y1 - y0) / s).round());
-                    label(text, &mut out, &str, x0 / s + 2.0, y1 / s + 3.0);
+                    let (tw, _) = text.measure(&str, MONO, SIZE, LINE, None);
+                    let ink = Rect::new(x0 / s, y0 / s, (x1 - x0) / s, (y1 - y0) / s);
+                    if let Some(r) = gaze::place_tag(ink, (tw + 4.0, LINE), &avoid, &tags, view) {
+                        tags.push(r);
+                        label(text, &mut out, &str, r.x + 2.0, r.y);
+                    }
                 }
             }
             if g.has(kinds::LEADER) { continue; }
@@ -4088,13 +4108,13 @@ impl<S, M: Clone> Ui<S, M> {
                 tag.push_str(&a.label.as_deref().unwrap_or(a.kind).replace("{xy}", &xy));
             }
             if !tag.is_empty() {
-                let y = if a.rect.y - LINE - 2.0 >= view.y { a.rect.y - LINE - 2.0 } else { a.rect.y + 2.0 };
-                // Two elements starting at the same corner: the later tag moves along.
+                // Above the element's top left, else below it, else to its right: the first place that
+                // covers no text to read and no other label; at none of them, no tag.
                 let (tw, _) = text.measure(&tag, MONO, SIZE, LINE, None);
-                let mut x = a.rect.x + 2.0;
-                while tags.iter().any(|r: &Rect| r.intersect(&Rect::new(x - 2.0, y, tw + 4.0, LINE)).w > 0.0 && r.intersect(&Rect::new(x - 2.0, y, tw + 4.0, LINE)).h > 0.0) { x += 8.0; }
-                tags.push(Rect::new(x - 2.0, y, tw + 4.0, LINE));
-                label(text, &mut out, &tag, x, y);
+                if let Some(r) = gaze::place_tag(a.rect, (tw + 4.0, LINE), &avoid, &tags, view) {
+                    tags.push(r);
+                    label(text, &mut out, &tag, r.x + 2.0, r.y);
+                }
             }
             if g.has(kinds::SIZE) && a.rect.h >= LINE + 6.0 {
                 // Inside the bottom right corner, where nothing else is labelled.

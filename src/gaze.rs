@@ -157,3 +157,41 @@ pub fn place_labels(annots: &[Annot], scope: Rect, size: impl Fn(&Annot) -> (f32
 pub fn drawn(age: f32, draw_ms: f32) -> f32 { if draw_ms <= 0.0 { 1.0 } else { (age * 1000.0 / draw_ms).clamp(0.0, 1.0) } }
 /// A number counting up to `v` as the frame draws on.
 pub fn count(v: f32, progress: f32) -> f32 { (v * (1.0 - (1.0 - progress).powi(3))).round() }
+
+/// Where a label `size` (w, h logical px) goes beside what it labels, `ink` (the element's true ink, or
+/// its box): above its top left, then below it, then to its right; the first place inside `view` that
+/// meets no box in `avoid` (the ink of text to read) and no label already placed (`taken`). `None` when
+/// every place would cover something: the label is left out (the frame is drawn without it).
+pub fn place_tag(ink: Rect, size: (f32, f32), avoid: &[Rect], taken: &[Rect], view: Rect) -> Option<Rect> {
+    let (w, h) = size;
+    let tries = [Rect::new(ink.x, ink.y - h - 2.0, w, h), Rect::new(ink.x, ink.bottom() + 3.0, w, h), Rect::new(ink.right() + 4.0, ink.y, w, h)];
+    let meets = |a: &Rect, b: &Rect| a.x < b.right() && b.x < a.right() && a.y < b.bottom() && b.y < a.bottom();
+    tries.into_iter().find(|r| r.x >= view.x && r.y >= view.y && r.right() <= view.right() && r.bottom() <= view.bottom()
+        && !avoid.iter().any(|a| meets(r, a)) && !taken.iter().any(|t| meets(r, t)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn a_tag_takes_the_first_free_place_and_none_when_there_is_none() {
+        let view = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let ink = Rect::new(100.0, 100.0, 120.0, 20.0);
+        // Free above: above.
+        let r = place_tag(ink, (30.0, 14.0), &[ink], &[], view).expect("a place");
+        assert_eq!((r.x, r.y), (100.0, 84.0));
+        // Text above it: below.
+        let above = Rect::new(90.0, 70.0, 200.0, 20.0);
+        let r = place_tag(ink, (30.0, 14.0), &[ink, above], &[], view).expect("a place");
+        assert_eq!((r.x, r.y), (100.0, 123.0));
+        // Text above and below: to the right.
+        let below = Rect::new(90.0, 122.0, 200.0, 20.0);
+        let r = place_tag(ink, (30.0, 14.0), &[ink, above, below], &[], view).expect("a place");
+        assert_eq!((r.x, r.y), (224.0, 100.0));
+        // And a tag already there: nowhere.
+        assert!(place_tag(ink, (30.0, 14.0), &[ink, above, below], &[r], view).is_none());
+        // At the top of the view, not above it.
+        let top = Rect::new(10.0, 2.0, 50.0, 16.0);
+        assert_eq!(place_tag(top, (30.0, 14.0), &[top], &[], view).map(|r| r.y), Some(21.0));
+    }
+}
