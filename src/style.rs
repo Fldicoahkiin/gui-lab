@@ -97,7 +97,7 @@ impl Gaze {
         let light = contrast(ground, [0.0; 3]) > contrast(ground, [1.0; 3]);
         let at = |k: f32| std::array::from_fn::<f32, 3, _>(|i| if light { c[i] * k } else { c[i] + (1.0 - c[i]) * k });
         // The least change that reads, found by halves.
-        let (mut lo, mut hi) = if light { (0.0f32, 1.0f32) } else { (0.0f32, 1.0f32) };
+        let (mut lo, mut hi) = (0.0f32, 1.0f32);
         for _ in 0..24 {
             let m = 0.5 * (lo + hi);
             let ok = contrast(at(m), ground) >= 4.6;
