@@ -471,17 +471,21 @@ fn tightest(pts: &[[f32; 2]], at: &[f32], lo: f32, hi: f32) -> (f32, [f32; 2]) {
     }).fold((f32::INFINITY, [0.0; 2]), |m, x| if x.0 < m.0 { x } else { m })
 }
 /// Where a line's own pieces turn into a tail (the last point of its own line, the first of the
-/// tail's): the tightest radius from 4 px before it over the tail's first 36 px, at each end that has
-/// one.
+/// tail's): the tightest radius within 36 px either side of it (on the line's side, not within 6 px of
+/// its last knot), at each end that has one.
 fn join_radii(segs: &[Piece]) -> Vec<(&'static str, f32, [f32; 2])> {
     let (pts, at) = arcs(segs);
     let mut out = vec![];
     if let Some(j) = segs.iter().rposition(|s| s.0 != Kind::Tail).filter(|&j| j + 1 < segs.len()) {
-        let (r, p) = tightest(&pts, &at, at[j + 1] - 4.0, at[j + 1] + 36.0);
+        // From 6 px past the line's last knot (its way out is the knot's), or 36 px back, whichever is
+        // nearer.
+        let knot = segs[..=j].iter().rposition(|s| s.0 == Kind::Knot).map_or(0.0, |k| at[k + 1] + 6.0);
+        let (r, p) = tightest(&pts, &at, (at[j + 1] - 36.0).max(knot), at[j + 1] + 36.0);
         out.push(("end", r, p));
     }
     if let Some(j) = segs.iter().position(|s| s.0 != Kind::Tail).filter(|&j| j > 0) {
-        let (r, p) = tightest(&pts, &at, at[j] - 36.0, at[j] + 4.0);
+        let knot = segs[j..].iter().position(|s| s.0 == Kind::Knot).map_or(f32::INFINITY, |k| at[j + k] - 6.0);
+        let (r, p) = tightest(&pts, &at, at[j] - 36.0, (at[j] + 36.0).min(knot));
         out.push(("start", r, p));
     }
     out
@@ -554,4 +558,5 @@ fn on_the_loose_thread_page_the_lines_bend_and_never_run_straight() {
     assert_eq!(checked.len(), 3, "looseness reached: {checked:?}");
     assert!(joins >= 10, "{joins} frames at loose 0.9 or more");
 }
+
 
