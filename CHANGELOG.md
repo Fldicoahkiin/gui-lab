@@ -8,6 +8,32 @@ crate and the `amenui` npm package (`web/`) always carry the same version, becau
 match the module that `web_app!` generates. The minimum Rust is the one CI builds with (`rust-version`
 in Cargo.toml); raising it is a breaking change before 1.0 only in the second number.
 
+## Controls that hold under effects, the warm-up in the hosts, opacity and scoped commits
+
+- Breaking: `Cmd::Commit` has a `scope: Option<String>` (`None` is the old behaviour); `MorphSpec` is
+  `Clone`, not `Copy`, and has `from_last`; `Look` has `overlay_at` and `overlay_inset`, and `Gaze` has
+  `echo` and `echo_ms`, so struct literals of them need the new fields or `..Default::default()`.
+  A drive file's `commit` without `scope` reads as before.
+- Both hosts warm the renderer up a piece a frame within 6 ms (`Renderer::warm_frame`, `WARM_MS`):
+  the first frame is the plain page. `Ui::warm` and `Ui::on_warm` say how far it is; the web export
+  `warm()` gives `[done, total]`, and `web/amenui.js` sets `aria-busy` and calls `opts.onWarm`.
+- A frame drawn while something moves owes one more, so a motion that ends between frames ends on the
+  settled page; a host no longer needs to redraw by hand after one.
+- An element that leaves with its page takes its field map and decode with it; one taken away alone
+  decodes out with its own spec inside its clip. `audit::off_palette` counts colours no theme makes.
+- Controls inside a subtree marked `legible(false)` keep their fill and label as at rest; a tab list's
+  heads and rule are the control.
+- `El::pass` lets the pointer through to what is under it; `El::opacity` fades a subtree as one (at
+  0 it takes no pointer); `El::commit_scope` keeps a commit inside one element's box.
+- `Ui::morph_from_last` and `MorphSpec::from_last` fly an element from where it was drawn last frame,
+  across a route change.
+- The readout goes in `Look::overlay_at`'s corner and moves on clockwise rather than cover text to read.
+- The INK leader is dashed and routed round text to read; `Gaze::echo` keeps fading earlier INK boxes.
+- With reduced motion, what comes and goes fades over 150 ms.
+- Looks: the thread's clearances move its control points, so the curve stays smooth; a thin accent rule
+  under `charr` is one unbroken row; the Crack's pieces start to leave at 0.28; a press's flash in
+  `plain` keeps a filled control's label at 4.5:1.
+
 ## Materials named for what they do, and as source
 
 - Breaking: the six printing materials are named for what they do: `dot` → `dottr`, `halftone` →

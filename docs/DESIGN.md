@@ -61,6 +61,16 @@ embedded in another's view. A view is `fn(&S) -> El<M>` and an update is `fn(&mu
 messages are plain values). A node without a key uses its path as its key. Also: `on_text`, `multiline`,
 `selectable` (§1.8.1), `cursor` (§1.8.2), `virtual_rows` (§1.13), `role`, `label` and the rest (§1.14).
 
+Three more change how a subtree is drawn and hit. `El::pass(true)` lets the pointer through the element to what is
+under it (its children still take the pointer); it is still drawn and the field still reaches it, for a drawing laid
+over controls. `El::opacity(k)` draws the subtree as one and then makes it see-through as one, so where two of its
+children overlap only the top one shows: the renderer draws the group's instances into a texture of its own (made the
+first time a group is drawn) and lays it over the ink at `k`; a group inside a group fades its instances by its own
+`k` instead. At 0 the subtree is not drawn and takes no pointer; the accessibility mirror still has it. A frame with
+a group is drawn whole (§1.19). `El::commit_scope()` keeps a commit inside the element's box: the commit's front
+(§1.5) travels inside its clip, every pixel outside the box stays as it was, and the fronts of presses within it stay
+inside it too (it is their container). `Cmd::Commit { x, y, scope }` names such an element by key.
+
 ### 1.2 Layout
 
 The taffy tree is kept between layouts, and only what differs from the last view is changed (§1.13).
@@ -218,7 +228,10 @@ element the container, so the effect's fronts stay inside it. `el::wrap_text(src
 (the subset `markdown.rs` reads; a link shows as its text) into a page to read, 600 px wide and keyed `wrap/…`, so
 existing text takes an effect without being rewritten. Text to read under an effect stays legible (§1.15): a
 looseness given to the subtree (`El::loosen`) reaches its paragraphs, list items and code at most at
-`Look::legible_cap`, while headings take the full value; a showcase marks text `legible(false)`.
+`Look::legible_cap`, while headings take the full value; a showcase marks text `legible(false)`. A control inside
+such a subtree (an element with its own handler, other than a picture, canvas or 3D scene) is legible again unless it
+says `legible` itself, so its fill and label stay at the cap as at rest: a showcase loosens its decoration, never its
+buttons. A tab list's heads and rule are the control (`tabs` marks them).
 
 **Names.** A material that prints the page is named for what it does, the verb with an `r`: `dottr`, `halftonr`,
 `charr`, `smudgr` (ink that spreads, specks and falls out of register), `carvr`, `glitchr`, `scribblr`. `plain`
@@ -424,8 +437,18 @@ is half the ink's own colour so no pixel shows a single channel (on a light grou
 way to the ink and the ink itself, no yellow; ink that is partly the accent's is left to the accent's screen); `glitchr` shifts and repeats blocks up to twice as
 far, only where something is drawn, and flashes rows only there. `sheet --sweep <n>` (`sample::sweep`) measures the
 share of the title's pixels that changed from rest and moved from the cell before at each looseness
-(`tests/sample.rs`). Under `charr` a thin accent element (a rule) is at least a row of accent characters under any cell
-size, and a cell over a picture's edge is not made into characters.
+(`tests/sample.rs`). Under `charr` a thin accent element (a rule, thinner than a cell) is one unbroken row of accent
+characters under any cell size: one cell's height centred on the rule's centreline is its row, every cell along it
+shows at least a middle character, and nothing of the rule shows above or below it. The rule's cells take one size
+for each stretch of three pitches, by the looseness on the rule there, so where a stir makes the size change along
+it the characters change size between whole characters and stay at the same height. A cell over a picture's edge is not made into characters.
+
+**The press flash** in `plain`: a pressed control is held at the legibility cap, which in `plain` fades its ink
+toward the ground (`1 − 0.7 √cap`). The fade stops where a filled control's label (the ground on the accent, or dim
+text, text or ink on the ground) would fall under 4.5 : 1 (it keeps 4.8 : 1, for antialiased strokes;
+`Theme::press_keep(cap)`); where that leaves less than 6 % of a flash to see, the flash goes the other way, the ink
+standing further from the ground, which only adds contrast. A pair already under 4.5 : 1 at rest is the theme's own.
+`tests/audit.rs` checks every recipe during the flash, dark and light, for P1 contrast findings.
 
 **Pictures past half loose** differ by material: `dottr` keeps the marks (§1.6.1); `halftonr` draws a screen at 1.5 ×
 its pitch whose dots follow the cell's brightness (bright cells big on a dark ground, dark ones on a light ground,
@@ -531,7 +554,10 @@ frame with a blend-only pipeline that honours each instance's own `xf`, used onl
   50 / 100) marking the pointer; `CROSS` a crosshair and coordinates at the pointer; `GRID` a baseline
   every 8 px and 12 columns; `EDGE` edge notes (§4.2); `OSC` a waveform and `LEVEL` a level bar (§4.3), with a
   `READY 0.62` readout beside it while the page is still preparing (§1.23); `INK` the box round the element's true
-  ink, dashed, with a dotted leader to its drawn outline and an `INK w×h` label (§1.31).
+  ink, dashed, with a dashed leader to its drawn outline and an `INK w×h` label (§1.31). `Gaze::echo` (0 by
+  default) keeps up to that many earlier INK boxes of a moving element as faint outlines, one taken every `echo_ms`
+  (200 ms, snapped to the beat grid, §1.32) and each fading to nothing by the next; a held gaze takes none and fades
+  none (`Ui::echo_times`).
   Two labels on the same corner step aside to the right. The last three are readouts of the whole scope,
   not tied to elements: always present in "all" mode, and in hover and focus-path modes while the pointer
   is in the scope; what they drew is recorded in `Ui::readout()` (`gaze::Readout`).
@@ -903,6 +929,14 @@ leaving; fingers have no hover).
   `hashchange` (links, back) it switches to that page, and after every input it writes the current page's
   name back to the hash. Page names are lowercase letters, digits and hyphens (`#button`, `#marks-chars`).
   Input methods and the clipboard are in §1.8.1.
+- Both hosts start with `Renderer::begin` and warm the renderer up after each frame they draw
+  (`Renderer::warm_frame(ui, WARM_MS)`, 6 ms, §1.23), so the first frame is the plain page and the material arrives a
+  few frames later. The runtime is told how far it is (`Ui::warm`, `Ui::on_warm` for the state); while it is not done
+  frames go on. On the web the exported `warm()` returns `[done, total]` (empty once warm), and `web/amenui.js` sets
+  `aria-busy` on the canvas while it warms and calls `opts.onWarm(done, total)` each time it moves on.
+- A frame drawn while something is moving owes one more frame: when a motion ends between two frames, the next
+  frame draws the settled page rather than leaving the last one mid-motion (`Ui::needs_frame` and `next_wake` count
+  it; §1.11).
 
 ### 1.10 Transforms
 
@@ -915,7 +949,11 @@ functions), `src/ui.rs` (running it) and `src/particles.wgsl` (the particle pass
 **Commands.** `update` never touches the runtime; it puts commands in its own state, and the runtime takes
 them with `Ui::on_commands(fn(&mut S) -> Vec<Cmd>)` before each layout (a flow needs the picture from before
 the layout). `Cmd::Morph { from, to, spec }` (two keys) and `Cmd::Flow(FlowSpec)`. `Ui::morph(from, to, spec)`
-can also be called directly. A subtree with `El::hidden_until_morphed(true)` is laid out as usual but not
+can also be called directly. `Ui::morph_from_last(to, spec)` (or a `MorphSpec` with `from_last: Some(key)`) takes the
+source from the frame drawn last rather than from an element on the page, so a title flies from where it was across a
+route change even though its old element is gone: the instances drawn for `key` last frame are kept, and the morph
+starts after the new layout, from them to `to`, with the target not loosened. `MorphSpec` is `Clone`, not `Copy`, for
+this field. A subtree with `El::hidden_until_morphed(true)` is laid out as usual but not
 drawn, takes no input and can't be hit until a morph reveals it; after the morph, the view decides again.
 
 #### Particles
@@ -1114,8 +1152,10 @@ frames in two seconds, then none again.
 ### 1.12 The frame-time readout and the resolution budget
 
 **The readout** (the first item of the top bar's Performance menu, or F2; `Look::overlay`): the annotation
-layer draws a block above the material at the window's bottom right in Departure Mono 11 px (on the page
-background at 0.92 opacity):
+layer draws a block above the material in Departure Mono 11 px (on the page background at 0.92 opacity), in the
+corner `Look::overlay_at` names (`Corner::BottomRight` by default), `Look::overlay_inset` ([12, 12] px) in from its
+edges. When the block there would cover text to read, it moves on clockwise to the first corner where it covers none
+(`Ui::legible_ink`, `Ui::overlay_box`); when every corner covers some, it stays in the asked one:
 
 ```
 F2 frames       58/s  drawn 1234 skipped 56
@@ -1814,7 +1854,11 @@ over 99 % of the pixels in each legible element's ink box, grown by 2 px, are th
 after arrival as in the plain frame, or as at rest where the material has a look of its own at rest), and no element's looseness changes
 by more than 0.2 from one frame to the next at 60 Hz. `Renderer::new` is the same thing
 done in one go, for offline rendering and tests, with the same bytes; `Offscreen::try_warming` is an offscreen
-target that warms up. On the web the shell calls `step` once a frame.
+target that warms up. The hosts call `Renderer::warm_frame(ui, WARM_MS)` once a frame (§1.9): it makes pieces until
+6 ms are spent, and stops early rather than start a piece whose kind has before taken more than 1.5 × the budget left
+(a kind not yet timed counts as too long, so after the first piece of a frame it waits for the next). It tells the
+runtime how far it is (`Ui::warm`; `Ui::on_warm(fn(&mut S, Option<Progress>) -> bool)` hands it to the state, `None`
+once ready); the last step reports `done = total` with `Stage::Ready`.
 
 An application prepares its own one-off work the same way (`src/warmup.rs`): `Ui::prepare(key, job)` takes a job
 that does one small piece on the state per call and returns how much is done (0..1). The runtime calls each job at
@@ -2013,7 +2057,9 @@ backwards with its last frame's instances.
   progress 0 and 1 there are no blocks at all (nothing half covered at rest). Colours are the current look's first
   two accents, chosen by hash.
 - `hold: Some(u)` stops it at progress u (the documentation page's timeline). Played backwards, the content drawn
-  before `C` is the instances from before it disappeared.
+  before `C` is the instances from before it disappeared, with the element's own `Decode` spec and inside the clip it
+  was last drawn in (a decoding element taken away alone, its page staying, decodes out within its scroll area or
+  dialog, not over the page).
 - The documentation page (`#decode`): a card held at the timeline's progress; the same plan pulled apart in depth
   by tier (one plane per tier seen at an angle, squashed to 0.42 height and sheared 0.55, each tier 74 px further
   down and right, the content as the bottom layer; each plane shows that tier's blocks lit at this moment, with a
@@ -2081,7 +2127,14 @@ release, the page is identical pixel for pixel to how it was before and wants no
   G-buffer box adds pushable instances that read the map and intersect it (grown by `drift`), and the final box
   grows again by the material's read range.
 - **With reduced motion**: energy is added, flow isn't, lifetimes are halved and there is no breath
-  (`Ui::set_reduced_motion`).
+  (`Ui::set_reduced_motion`). What the framework brings in and takes away (new instances condensing, the ghosts of
+  what left) fades in or out over 150 ms instead of loosening and moving (`Ui::reduced_motion`).
+- **What leaves takes its field with it**: an element that leaves with its page (a page change, a closed dialog)
+  (its nearest keyed ancestor goes too) leaves nothing: where it stirred the map, drew a flow or a decode, or was a
+  ripple's scope, the map is cleared over its box, and when none of the old keyed elements is left the whole map is
+  (`Ui::forget_gone`, `FieldMap::clear_in`), so no field or colour of its stays on the next page. `audit::off_palette` counts
+  pixels in no colour the theme makes (the ground mixed toward the ink or an accent), and `tests/fieldmap.rs` checks it
+  is 0 on the page after.
 - **Numbers** (`MapFx`, in `Look::map` and a preset's `interaction.map`; each a number control): `cell` 8–32 (16),
   `stirr` 0–1 (0.6), `stirr_radius` 8–160 (48), `flow` 0–2 (1), `drift` 0–24 (6), `energy_life` 0.05–3 (0.45 s),
   `flow_life` 0.05–3 (0.5 s), `bleed` 0–1 (0.2), `meander` 0–1 (0.35), `creep` 0–1 (0.3), `breath` 0–0.3 (0),
@@ -2169,7 +2222,9 @@ glyphs fill in. Text to read and controls never become thread and always stay as
   times along it); a way that would pass within 24 px of text to read scores 0.3 of its reach, and a tail whose tip would
   land within 24 px of text to read is drawn back until it does not; the line goes round pictures 12 px clear (a
   picture is drawn over what lies under it); a `Trace`'s points keep 12 px off pictures and 24 px off text to read
-  (`strand::clear_path`); every point draws
+  (`strand::clear_path`). The clearances move the control points and the knot centres, before the curve is made
+  through them, rather than the sampled curve, so the curve stays one smooth line; tails are cut where they meet
+  the line and go round picture corners; every point draws
   back in proportion to `k`. Tails, and the long line once drawn, are at `tail_tone` (0.5) of the line's opacity, and knots are whole:
   bright knots on quiet lines, so the density reads. Leaving the scope box, the last segment is cut at the edge, and a tail stops before the
   box of text to read or a control (and before calm boxes). (6) Past `k = 0.3` the line bends toward the curve
@@ -2293,8 +2348,10 @@ the ink reaches past it (px) and what cuts it (the clipping element's key, or th
 rest (`near`, `charr`, and materials added from source); one whose rest is plain passes by construction.
 
 The annotation layer shows what the audit measures: `gaze::INK` draws the true ink's bounding box of an element
-(after transforms and poses) dashed, with a dotted leader from its layout corner to the nearest point of the drawn
-outline and an `INK w×h` label (`hit::ink_of`), from the same measure the clipping and overlap checks use. Tags
+(after transforms and poses) dashed, with a leader dashed 4 px on, 4 px off from the first corner of the box at least
+12 px clear of text to read, routed round text to read (`strand::clear_path`), to the nearest point of the drawn
+outline (of a shape's true outline too), and an `INK w×h` label (`hit::ink_of`, `Ui::leaders`), from the same measure
+the clipping and overlap checks use. Tags
 and `INK` readouts never cover text to read or each other: each tries outside the ink box above at the left, then
 below, then to the right (`gaze::place_tag`), takes the first place that meets no text-to-read ink box and no other
 label, and when none is free only the box is drawn.
@@ -2436,7 +2493,7 @@ sliding away offset) and crack (`StepKind::Crack`, id 11; numbers `preset::CRACK
 across it by the bias. The cracks run out from where the commit was pressed (the page's centre without one): a pixel's
 crack is drawn once the run (0 to the page's diagonal over the first 0.4 of the step) has passed it, and the cracks
 stay thin, from 0.6 px to `0.06 a` (7 px) at 0.4, measured in page px whichever way they run. Their edges are straight
-but for a slow waver (`d` px every `a / 5` px). Then each piece leaves whole at its own time `t = 0.35 + 0.5 × (0.6 ×
+but for a slow waver (`d` px every `a / 5` px). Then each piece leaves whole at its own time `t = 0.28 + 0.5 × (0.6 ×
 distance from the press ÷ the farthest corner's + 0.4 × the piece's hash)`: between `t` and `t + 0.15` its own crack
 widens (slowly, then fast: the fourth power) until it covers the piece, so at any moment most pieces are whole or
 gone. (Against the farthest corner rather than the diagonal, so the last pieces leave at the step's end wherever the
@@ -3395,3 +3452,14 @@ Text on a form, the warm-up and the audit (§1.23, §1.26, §1.31):
   building. `MeshHit` lost `Eq` and `Hash` with its float fields.
 - The contrast measure is the strongest ink pixel of a line, the colour the text is drawn in; percentiles of the ink
   read antialiased edges at small sizes as low contrast.
+
+Controls in loosened subtrees, the warm-up in the hosts, opacity, scoped commits, morphs from the last frame, leaders
+and echoes (§1.1, §1.6, §1.7, §1.9, §1.10, §1.12, §1.23, §1.28, §1.29):
+
+- The plate (a ground-coloured panel behind loosened text to read) is not done yet.
+- `Progress` keeps its `stage` beside `done` and `total`; the web export `warm()` returns only the two numbers.
+- `MorphSpec` lost `Copy` with `from_last`; code that reused a spec clones it.
+- With the Crack's pieces leaving from 0.28, the test that every piece is whole or gone samples at 0.53 of the step
+  rather than 0.6, the same moment after the pieces start.
+- In the press-flash check, a switch's P1 "eroded" finding in dark `dottr` at release is not counted: it is the
+  material's own look at rest on the thumb, not the flash; only P1 contrast findings are.

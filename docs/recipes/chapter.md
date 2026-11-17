@@ -46,7 +46,7 @@ pub fn update(s: &mut Film, m: Msg) {
     match m {
         Msg::Cut => {
             // The frame as it is, then the new scene: the target preset's transition, and the actors fly.
-            s.cmds.push(Cmd::Commit { x: 400.0, y: 300.0 });
+            s.cmds.push(Cmd::Commit { x: 400.0, y: 300.0, scope: None });
             s.cmds.push(Cmd::Flow(FlowSpec { flow_ms: 640.0, ..FlowSpec::default() }));
             s.scene = 1 - s.scene;
         }
