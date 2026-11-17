@@ -1151,16 +1151,19 @@ grows by one; on the input page there are no glyph instances far below the sourc
 
 The picture is drawn into a canvas, invisible to screen readers. So the runtime builds a mirror from the
 interface tree (`Ui::a11y() -> Vec<A11yNode>`, no GPU, no platform): every element's key, its nearest ancestor
-in the mirror, role, name, state (value and range, text, checked, selected, heading level, modal, disabled,
-focusable) and where it is drawn.
+in the mirror, role, name, state (value and range, text, checked, selected, heading level, expanded,
+description, live, invalid, required, modal, disabled, focusable) and where it is drawn.
 
 **Roles** (`el::Role`, the WAI-ARIA roles of the same names) are written by components (`El::role`,
-`El::label`, `El::checked`, `El::selected`, `El::value_range`, `El::text_value`, `El::heading`): a button →
+`El::label`, `El::checked`, `El::selected`, `El::value_range`, `El::text_value`, `El::heading`,
+`El::expanded`, `El::description`, `El::live`, `El::invalid`, `El::required`): a button →
 button; a switch → switch (`aria-checked`); a slider → slider (`aria-valuenow / min / max`); tabs → tablist /
 tab (`aria-selected`); text fields and multi-line fields → textbox (the name is the placeholder, the value
 the text); a dialog's card → dialog (`aria-modal`, named by its title); lists and the ten thousand rows →
 list / listitem (`aria-selected`); a picture → img (named by its caption, "Picture" without one); the page
-title → heading 1, section headings → heading 2. Without a role: something pressable and focusable is a
+title → heading 1, section headings → heading 2; an accordion header, a select and a popover's button →
+`aria-expanded`; a status line or toast → status, announced politely (`aria-live`) unless it says otherwise.
+Without a role: something pressable and focusable is a
 button; text not inside a control is text; a picture is img. Without a name, the text inside the element is
 used (the names of buttons, tabs, list items and switches are their own text), and that text does not
 appear again on its own. While a dialog is open, only what is inside it is in the mirror (the page beneath is
@@ -1170,7 +1173,7 @@ inert to screen readers).
 changed or new nodes give `Set`, missing ones `Remove`, and a focus change `Focus`. So one press of a button
 sends only the count line and the focus.
 
-**Web** (the website's `web/page.html`): a tree of `<div>`s in `#a11y` (nested as in the mirror), each with
+**Web** (`web/amenui.js`, and the website's `web/page.html`): a tree of `<div>`s in `#a11y` (nested as in the mirror), each with
 `role` and `aria-*` attributes, fixed at the position where it is drawn; the whole tree has `opacity: 0` and
 ignores the pointer (present for screen readers, absent for eyes and the pointer). It is updated after every
 event and every frame by `a11y_update()` (a JSON diff). **Focus in both directions**: when a mirror element
@@ -1181,10 +1184,13 @@ reader's "press") calls `a11y_activate(key)` → `Ui::activate`: the same messag
 condensing as Enter. Keyboard events come from the window as usual, so with focus on the mirror's slider the
 arrow keys change it.
 
-**Native**: not done. The interface is ready: `Ui::a11y()` / `a11y_diff()` are platform-independent; an
-AccessKit adapter turns `A11yNode` into `accesskit::Node` (role, name, value, range, checked, selected,
-bounds), maps `TreeUpdate` increments to `A11yOp`s and `ActionRequest`'s Focus / Click to `focus_key` /
-`activate`, attached to the winit window (`accesskit_winit`).
+**Native** (`app::access`, AccessKit through `accesskit_winit`, so UI Automation on Windows,
+NSAccessibility on macOS and AT-SPI on Linux): the window is one `Window` node and every `A11yNode` an
+`accesskit::Node` under its mirrored parent (role, name, bounds in window px, value and range, text,
+toggled, selected, expanded, description, live, invalid, required, level, modal, disabled), with ids hashed
+from keys so they stay put across rebuilds. The tree is built only while assistive technology listens, after
+each drawn frame. Actions: Focus → `focus_key`, Click → `activate`, Increment / Decrement → focus and → / ←.
+The window is created hidden and shown once the adapter is attached, as AccessKit requires.
 
 **Acceptance**: `tests/a11y.rs`: #button has a focusable button, a disabled button, the page title as a
 level 1 heading and the count as text, and the button's text doesn't appear on its own; the second
@@ -1193,7 +1199,8 @@ holds only what changed; with #dialog open there is a modal dialog with everythi
 button and a text field, and the page beneath is absent; the slider's value is within its range, the switch
 has a checked state, each tab list has exactly one selected tab, the list has a selected item, the text
 field's value is its text, and the picture has a name; after a screen reader gives the switch focus, Space
-toggles it and `activate` toggles it back. Web (Playwright's `ariaSnapshot()`): #button's buttons, heading,
+toggles it and `activate` toggles it back. `app::access`'s unit test: the AccessKit tree has the window
+and every mirrored node, a status is polite, bounds are in window px, and Click reaches the runtime. Web (Playwright's `ariaSnapshot()`): #button's buttons, heading,
 count and disabled state; pressing the button through the accessibility tree makes the count 1; with #dialog
 open there is a dialog with `aria-modal="true"`, the page title is absent, and the text field and buttons are
 present; #slider has a named slider with `aria-valuenow / min / max`; with focus on the mirror's slider, → takes
@@ -2701,8 +2708,7 @@ Interaction and performance (§1.11 on):
   without a touch screen.
 - The accessibility mirror (§1.14): on the web, mirror elements are `div`s with a `role`, not native elements such as
   `<button>` (native elements have their own keyboard behaviour, which would duplicate the runtime's key handling). A piece
-  of text has no role (to a screen reader it is text). The mirror is web only; native has only the interface left for
-  AccessKit, not an implementation.
+  of text has no role (to a screen reader it is text). Native screen readers came later, through AccessKit (§1.14).
 - Each tab of a tab view and each list item isn't a focus position in the runtime (the whole tab view or list is one); when a
   screen reader puts focus on them the focus can't be handed over, but activation (click) still selects them.
 - Web scene acceptance used DevTools' virtual clock (screenshots while paused). Once pages only draw when needed, a

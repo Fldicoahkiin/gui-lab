@@ -1,7 +1,8 @@
 //! A native window (winit + wgpu): Metal on macOS, Vulkan elsewhere (DX12 is not built in). It forwards
 //! the pointer, touch, wheel, keys, typed text, the input method and the system clipboard (arboard) to
 //! the runtime, and draws a frame only when the runtime needs one; between frames the event loop sleeps
-//! until input or the runtime's next timed wake.
+//! until input or the runtime's next timed wake. Screen readers get the accessibility mirror through
+//! AccessKit (`app::access`).
 use super::{App, Window};
 use crate::el::{Cursor, Key, Mods};
 use crate::error::{SurfaceError, WindowError};
@@ -13,7 +14,7 @@ use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, LogicalSize};
 use winit::event::{ElementState, Ime, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, OwnedDisplayHandle};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy, OwnedDisplayHandle};
 use winit::keyboard::{Key as WKey, ModifiersState, NamedKey};
 use winit::window::WindowId;
 
@@ -27,9 +28,9 @@ pub fn run<S: App + 'static, M: Clone + 'static>(
     setup: impl FnOnce(&mut Renderer) + 'static,
     make: impl FnOnce(Vec<Face>, u32, u32, f32) -> Ui<S, M> + 'static,
 ) -> Result<(), WindowError> {
-    let el = EventLoop::new().map_err(|e| WindowError::NoEventLoop(e.to_string()))?;
+    let el = EventLoop::<accesskit_winit::Event>::with_user_event().build().map_err(|e| WindowError::NoEventLoop(e.to_string()))?;
     let mut shell = Shell {
-        display: el.owned_display_handle(), opts: window, start: Instant::now(), run: None, made: Some((Box::new(setup), Box::new(make))),
+        proxy: el.create_proxy(), display: el.owned_display_handle(), opts: window, start: Instant::now(), run: None, made: Some((Box::new(setup), Box::new(make))),
         failed: None, mods: ModifiersState::empty(), composing: false, cursor: (0.0, 0.0), reported: 0.0,
     };
     el.run_app(&mut shell).map_err(|e| WindowError::EventLoop(e.to_string()))?;
@@ -41,6 +42,7 @@ type Make<S, M> = Box<dyn FnOnce(Vec<Face>, u32, u32, f32) -> Ui<S, M>>;
 
 struct Running<S, M> {
     window: Arc<winit::window::Window>,
+    access: accesskit_winit::Adapter,
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     r: Renderer,
@@ -51,6 +53,7 @@ struct Running<S, M> {
 }
 
 struct Shell<S, M> {
+    proxy: EventLoopProxy<accesskit_winit::Event>,
     display: OwnedDisplayHandle,
     opts: Window,
     start: Instant,
@@ -77,8 +80,12 @@ impl<S: App, M: Clone> Shell<S, M> {
 
     fn open(&mut self, el: &ActiveEventLoop) -> Result<Running<S, M>, WindowError> {
         let (setup, make) = self.made.take().ok_or_else(|| WindowError::Create("the window was already opened".into()))?;
-        let attrs = winit::window::Window::default_attributes().with_title(self.opts.title.clone()).with_inner_size(LogicalSize::new(self.opts.size.0, self.opts.size.1));
+        let attrs = winit::window::Window::default_attributes().with_title(self.opts.title.clone()).with_inner_size(LogicalSize::new(self.opts.size.0, self.opts.size.1))
+            // Shown once the accessibility adapter is attached (AccessKit needs it before the first show).
+            .with_visible(false);
         let window = Arc::new(el.create_window(attrs).map_err(|e| WindowError::Create(e.to_string()))?);
+        let access = accesskit_winit::Adapter::with_event_loop_proxy(el, &window, self.proxy.clone());
+        window.set_visible(true);
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle(Box::new(self.display.clone())));
         let surface = instance.create_surface(window.clone()).map_err(|e| WindowError::Surface(e.to_string()))?;
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions { compatible_surface: Some(&surface), ..Default::default() }))
@@ -103,7 +110,7 @@ impl<S: App, M: Clone> Shell<S, M> {
         ui.perf_mut().adapter = info.name.clone();
         if let Some(p) = &self.opts.route && ui.state.route(p) { ui.relayout(); }
         ui.restart(self.now());
-        Ok(Running { window, surface, config, r, ui, frames: 0, skipped: 0 })
+        Ok(Running { window, access, surface, config, r, ui, frames: 0, skipped: 0 })
     }
 }
 
@@ -138,7 +145,7 @@ fn clipboard<R>(f: impl FnOnce(&mut arboard::Clipboard) -> R) -> Option<R> {
     }
 }
 
-impl<S: App, M: Clone> ApplicationHandler for Shell<S, M> {
+impl<S: App, M: Clone> ApplicationHandler<accesskit_winit::Event> for Shell<S, M> {
     fn resumed(&mut self, el: &ActiveEventLoop) {
         if self.run.is_some() || self.failed.is_some() { return; }
         match self.open(el) {
@@ -150,6 +157,7 @@ impl<S: App, M: Clone> ApplicationHandler for Shell<S, M> {
     fn window_event(&mut self, el: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
         let now = self.now();
         let Some(s) = self.run.as_mut() else { return };
+        s.access.process_event(&s.window, &event);
         let scale = s.window.scale_factor() as f32;
         match event {
             WindowEvent::CloseRequested => el.exit(),
@@ -273,10 +281,32 @@ impl<S: App, M: Clone> ApplicationHandler for Shell<S, M> {
                 drop(view);
                 s.r.queue().present(frame);
                 s.frames += 1;
+                // Screen readers follow what was drawn (only built while one is listening).
+                let (scale, title) = (s.window.scale_factor() as f32, &self.opts.title);
+                let ui = &s.ui;
+                s.access.update_if_active(|| super::access::tree(&ui.a11y(), ui.focus(), scale, title));
                 // A copy button asked for the clipboard.
                 if let Some(t) = s.ui.state.take_clipboard() { let _ = clipboard(|c| c.set_text(t)); }
             }
             _ => {}
+        }
+    }
+
+    fn user_event(&mut self, _: &ActiveEventLoop, event: accesskit_winit::Event) {
+        let now = self.now();
+        let Some(s) = self.run.as_mut() else { return };
+        match event.window_event {
+            accesskit_winit::WindowEvent::InitialTreeRequested => {
+                let scale = s.window.scale_factor() as f32;
+                let ui = &s.ui;
+                s.access.update_if_active(|| super::access::tree(&ui.a11y(), ui.focus(), scale, &self.opts.title));
+            }
+            accesskit_winit::WindowEvent::ActionRequested(req) => {
+                s.ui.tick(now);
+                if super::access::act(&mut s.ui, &req) { s.ui.invalidate(); }
+                s.window.request_redraw();
+            }
+            accesskit_winit::WindowEvent::AccessibilityDeactivated => {}
         }
     }
 

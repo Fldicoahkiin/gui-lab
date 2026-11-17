@@ -15,7 +15,7 @@ pub fn accordion<M: Clone>(key: &str, items: Vec<(&str, El<M>)>, open: &[bool], 
     let mut c = col().key(key).fill_width();
     for (i, (title, body)) in items.into_iter().enumerate() {
         let on = open.get(i).copied().unwrap_or(false);
-        c = c.child(row().key(format!("{key}:{i}")).fill_width().height(40.0).align(AlignItems::CENTER).gap(10.0).on_press(msg(i)).focusable(true).role(Role::Button).checked(on).label(title)
+        c = c.child(row().key(format!("{key}:{i}")).fill_width().height(40.0).align(AlignItems::CENTER).gap(10.0).on_press(msg(i)).focusable(true).role(Role::Button).expanded(on).label(title)
                 .child(text(title, LABEL + 1.0, Paint::INK).grow(1.0)).child(text(if on { "−" } else { "+" }, LABEL + 2.0, Paint::DIM)));
         if on { c = c.child(col().key(format!("{key}:{i}/panel")).pad(0.0, 10.0).role(Role::Region).label(title).child(body)); }
         c = c.child(space(0.0, LINE).fill_width().fill(Paint::FAINT));

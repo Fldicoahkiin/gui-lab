@@ -102,7 +102,7 @@ export async function mount(stage, opts) {
         }
         const parent = (n.parent && els.get(n.parent)) || ax;
         if (e.parentNode !== parent) parent.appendChild(e);
-        for (const a of ['role', 'aria-label', 'aria-checked', 'aria-selected', 'aria-valuenow', 'aria-valuemin', 'aria-valuemax', 'aria-modal', 'aria-level', 'aria-disabled', 'tabindex']) e.removeAttribute(a);
+        for (const a of ['role', 'aria-label', 'aria-checked', 'aria-selected', 'aria-valuenow', 'aria-valuemin', 'aria-valuemax', 'aria-modal', 'aria-level', 'aria-disabled', 'aria-expanded', 'aria-description', 'aria-live', 'aria-invalid', 'aria-required', 'tabindex']) e.removeAttribute(a);
         if (n.role === 'text') { if (e.textContent !== n.name) e.textContent = n.name; }
         else {
           e.setAttribute('role', n.role);
@@ -115,6 +115,11 @@ export async function mount(stage, opts) {
         if (n.modal) e.setAttribute('aria-modal', 'true');
         if (n.level) e.setAttribute('aria-level', n.level);
         if (n.disabled) e.setAttribute('aria-disabled', 'true');
+        if (n.expanded !== undefined) e.setAttribute('aria-expanded', n.expanded);
+        if (n.description) e.setAttribute('aria-description', n.description);
+        if (n.live) e.setAttribute('aria-live', n.live);
+        if (n.invalid) e.setAttribute('aria-invalid', 'true');
+        if (n.required) e.setAttribute('aria-required', 'true');
         if (n.focusable) e.setAttribute('tabindex', '-1');
         const r = n.rect;
         e.style.left = (c.left + r[0]) + 'px'; e.style.top = (c.top + r[1]) + 'px'; e.style.width = Math.max(r[2], 1) + 'px'; e.style.height = Math.max(r[3], 1) + 'px';

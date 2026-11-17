@@ -32,7 +32,7 @@ pub fn select<M: Clone + 'static>(key: &str, options: &[&str], current: Option<u
     let mut r = col().key(format!("{key}/select"))
         .child(row().key(key).height(CONTROL_H).min_width(160.0).pad(10.0, 0.0).gap(8.0).radius(RADIUS).align(AlignItems::CENTER).focusable(true)
             .fill(Paint::GROUND).border(LINE, if open { Paint::ACCENT } else { Paint::DIM }).on_press(toggle).on_key({ let k = keys.clone(); move |a, b| k(a, b) })
-            .role(Role::Combobox).checked(open).text_value(shown)
+            .role(Role::Combobox).expanded(open).text_value(shown)
             .child(text(shown, LABEL, Paint::TEXT).grow(1.0))
             .child(col().gap(1.0).align(AlignItems::CENTER).child(space(7.0, 1.5).fill(Paint::DIM)).child(space(4.0, 1.5).fill(Paint::DIM)).child(space(1.5, 1.5).fill(Paint::DIM))));
     if open {

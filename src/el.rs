@@ -359,6 +359,23 @@ pub struct Access {
     pub selected: Option<bool>,
     /// A heading's level.
     pub level: u8,
+    /// Whether what this control opens (a disclosure's panel, a combobox's list, a menu) is open.
+    pub expanded: Option<bool>,
+    /// A longer description than the name (help text under a field, a hint).
+    pub description: Option<String>,
+    /// Announce changes to this element's text without moving focus (a status line, a toast).
+    pub live: Option<Live>,
+    /// A field whose value is not accepted, and a field that must be filled.
+    pub invalid: bool,
+    pub required: bool,
+}
+
+/// How urgently a live region's changes are announced.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Live { Polite, Assertive }
+impl Live {
+    /// The `aria-live` value.
+    pub fn aria(self) -> &'static str { match self { Live::Polite => "polite", Live::Assertive => "assertive" } }
 }
 
 /// Pointer shapes.
@@ -412,7 +429,6 @@ impl<M> El<M> {
     /// The pointer's shape over this element.
     pub fn cursor(mut self, c: Cursor) -> Self { self.cursor = Some(c); self }
     fn access_mut(&mut self) -> &mut Access { self.access.get_or_insert_with(Access::default) }
-    /// Its accessible name (what a screen reader says), when the text inside does not say it.
     /// The same subtree with every key written under `prefix` (`prefix/key`), anchors too: one example
     /// shown several times on a page keeps its keys unique.
     pub fn rekey(mut self, prefix: &str) -> Self {
@@ -424,6 +440,7 @@ impl<M> El<M> {
     /// This subtree runs right to left (DESIGN.md §1.20): a row's first child is at its right, its
     /// start alignment is the right edge, padding and margins mirror. Inherited.
     pub fn rtl(mut self, on: bool) -> Self { self.rtl = Some(on); self }
+    /// Its accessible name (what a screen reader says), when the text inside does not say it.
     pub fn label(mut self, name: impl Into<String>) -> Self { self.access_mut().label = Some(name.into()); self }
     /// Its role in the accessibility mirror.
     pub fn role(mut self, r: Role) -> Self { self.access_mut().role = Some(r); self }
@@ -434,6 +451,16 @@ impl<M> El<M> {
     pub fn value_range(mut self, v: f32, min: f32, max: f32) -> Self { self.access_mut().value = Some((v, min, max)); self }
     pub fn text_value(mut self, t: impl Into<String>) -> Self { self.access_mut().text = Some(t.into()); self }
     pub fn heading(mut self, level: u8) -> Self { let a = self.access_mut(); a.role = Some(Role::Heading); a.level = level; self }
+    /// Whether what this control opens is open (a disclosure, a combobox, a menu button).
+    pub fn expanded(mut self, open: bool) -> Self { self.access_mut().expanded = Some(open); self }
+    /// A description read after the name (help text, a hint).
+    pub fn description(mut self, d: impl Into<String>) -> Self { self.access_mut().description = Some(d.into()); self }
+    /// Announce changes to its text without moving focus. `Role::Status` is polite by default.
+    pub fn live(mut self, l: Live) -> Self { self.access_mut().live = Some(l); self }
+    /// The field's value is not accepted (say why with `description`).
+    pub fn invalid(mut self, on: bool) -> Self { self.access_mut().invalid = on; self }
+    /// The field must be filled.
+    pub fn required(mut self, on: bool) -> Self { self.access_mut().required = on; self }
     /// Make this (a scroll node) a virtual list of `count` rows `row_h` tall: only the visible rows and
     /// `overscan` more on each side exist in the tree; row `i` is `build(i)` (keyed `key/row{i}` unless it
     /// has a key). Its children are replaced by the rows.

@@ -36,6 +36,8 @@
 
 #[cfg(all(feature = "window", not(target_arch = "wasm32")))]
 pub mod native;
+#[cfg(all(feature = "window", not(target_arch = "wasm32")))]
+pub mod access;
 #[cfg(target_arch = "wasm32")]
 pub mod web;
 
@@ -124,6 +126,11 @@ pub fn a11y_json(ops: &[crate::ui::A11yOp]) -> String {
             if let Some(c) = n.checked { f.insert("checked".into(), json!(c)); }
             if let Some(c) = n.selected { f.insert("selected".into(), json!(c)); }
             if n.level > 0 { f.insert("level".into(), json!(n.level)); }
+            if let Some(e) = n.expanded { f.insert("expanded".into(), json!(e)); }
+            if let Some(d) = &n.description { f.insert("description".into(), json!(d)); }
+            if let Some(l) = n.live { f.insert("live".into(), json!(l.aria())); }
+            if n.invalid { f.insert("invalid".into(), json!(true)); }
+            if n.required { f.insert("required".into(), json!(true)); }
             if n.modal { f.insert("modal".into(), json!(true)); }
             if n.disabled { f.insert("disabled".into(), json!(true)); }
             if n.focusable { f.insert("focusable".into(), json!(true)); }
