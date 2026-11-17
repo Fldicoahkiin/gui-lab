@@ -43,11 +43,21 @@ pub const GEIST_FILES: [&str; 5] = ["GeistPixel-Square.otf", "GeistPixel-Grid.ot
 pub const SERIF: u8 = 8;
 pub const SERIF_FILE: &str = "SourceSerif4-8pt-subset.ttf";
 
-/// A font file to register. `pixel` is the native size (px) of a pixel face.
-pub struct Face { pub data: Vec<u8>, pub pixel: Option<f32> }
+/// A font file to register. `pixel` is the native size (px) of a pixel face. A `fallback` face is
+/// tried, after the face asked for and the first face, for characters they lack (Arabic, Hebrew,
+/// Thai, Devanagari, emoji…), in the order given.
+pub struct Face { pub data: Vec<u8>, pub pixel: Option<f32>, pub fallback: bool }
 impl Face {
-    pub fn outline(data: Vec<u8>) -> Self { Self { data, pixel: None } }
-    pub fn pixel(data: Vec<u8>, size: f32) -> Self { Self { data, pixel: Some(size) } }
+    pub fn outline(data: Vec<u8>) -> Self { Self { data, pixel: None, fallback: false } }
+    pub fn pixel(data: Vec<u8>, size: f32) -> Self { Self { data, pixel: Some(size), fallback: false } }
+    /// A face used only for characters the others lack.
+    pub fn fallback(data: Vec<u8>) -> Self { Self { data, pixel: None, fallback: true } }
+    /// The system's installed fonts, after every given face, for characters none of them has (native
+    /// builds with the `system-fonts` feature; elsewhere it is ignored). The bundled faces still decide
+    /// everything they cover, so pages look the same on every machine for the text they were made with.
+    pub fn system() -> Self { Self { data: vec![], pixel: None, fallback: true } }
+    /// Put it last: faces are numbered in the order given, and this one takes no number.
+    fn is_system(&self) -> bool { self.fallback && self.data.is_empty() }
 }
 /// Noto Sans SC, Fusion Pixel 12 px, Departure Mono (11 px), as `SANS`, `PIXEL`, `MONO`.
 pub fn bundled(sans: Vec<u8>, pixel: Vec<u8>, mono: Vec<u8>) -> Vec<Face> {
@@ -102,7 +112,7 @@ struct Slot { x: u32, y: u32, w: u32, h: u32, left: i32, top: i32 }
 /// Text, face, size bits, line bits, width bits, what it flows around, tracking bits.
 type MeasureKey = (String, u8, u32, u32, u32, u64, u32);
 
-struct Family { name: String, pixel: Option<f32>, data: Arc<Vec<u8>>, blob: u64 }
+struct Family { name: String, pixel: Option<f32>, data: Arc<Vec<u8>>, blob: u64, fallback: bool }
 
 /// One glyph rasterised on its own (for the mark atlas): coverage rows, placement, and the face's
 /// advance and line box at that size, px.
@@ -138,14 +148,15 @@ pub struct Text {
 
 impl Text {
     pub fn new(faces: Vec<Face>) -> Self {
-        let mut collection = Collection::new(CollectionOptions { shared: false, system_fonts: false });
-        let families = faces.into_iter().map(|f| {
+        let system = cfg!(all(feature = "system-fonts", not(target_arch = "wasm32"))) && faces.iter().any(Face::is_system);
+        let mut collection = Collection::new(CollectionOptions { shared: false, system_fonts: system });
+        let families: Vec<Family> = faces.into_iter().filter(|f| !f.is_system()).map(|f| {
             let data = Arc::new(f.data);
             let blob = Blob::new(data.clone());
             let id = blob.id();
             let reg = collection.register_fonts(blob, None);
             let name = reg.first().and_then(|(id, _)| collection.family_name(*id).map(str::to_owned)).unwrap_or_default();
-            Family { name, pixel: f.pixel, data, blob: id }
+            Family { name, pixel: f.pixel, data, blob: id, fallback: f.fallback }
         }).collect();
         Self {
             fonts: FontContext { collection, source_cache: Default::default() },
@@ -264,8 +275,11 @@ impl Text {
         let mut b = self.layouts.ranged_builder(&mut self.fonts, s, 1.0, true);
         // The first registered face (the proportional one, with CJK) backs up any face that lacks a
         // character, so a monospaced face can still show Chinese.
-        let stack = [FontFamilyName::named(&self.families[fi].name), FontFamilyName::named(&self.families[0].name)];
-        b.push_default(StyleProperty::FontFamily(FontFamily::List(std::borrow::Cow::Borrowed(&stack))));
+        // Then the fallback faces, in order; with `Face::system`, parley falls back to the system's fonts
+        // for the script after all of them.
+        let mut stack = vec![FontFamilyName::named(&self.families[fi].name), FontFamilyName::named(&self.families[0].name)];
+        stack.extend(self.families.iter().filter(|f| f.fallback).map(|f| FontFamilyName::named(&f.name)));
+        b.push_default(StyleProperty::FontFamily(FontFamily::List(std::borrow::Cow::Owned(stack))));
         b.push_default(StyleProperty::FontSize(size));
         b.push_default(LineHeight::Absolute(line));
         if track != 0.0 { b.push_default(StyleProperty::LetterSpacing(track)); }
@@ -291,6 +305,14 @@ impl Text {
         v
     }
 
+    /// How many glyphs of a paragraph no face has (drawn as the empty box): 0 when its scripts are covered.
+    pub fn missing_glyphs(&mut self, p: Para<'_>) -> usize {
+        let l = self.layout(p.s, p.face, p.size, p.line, Some(p.width), p.setting());
+        l.lines().flat_map(|ln| ln.items().collect::<Vec<_>>()).map(|item| match item {
+            PositionedLayoutItem::GlyphRun(gr) => gr.positioned_glyphs().filter(|g| g.id == 0).count(),
+            _ => 0,
+        }).sum()
+    }
     /// Where a caret at byte `index` of a paragraph goes: x, top and height, logical px. `origin` is
     /// where the paragraph is drawn.
     pub fn caret(&mut self, p: Para<'_>, origin: (f32, f32), index: usize) -> Option<crate::ui::Rect> {

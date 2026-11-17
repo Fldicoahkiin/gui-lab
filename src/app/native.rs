@@ -104,7 +104,9 @@ impl<S: App, M: Clone> Shell<S, M> {
         let mut r = Renderer::new(device, queue, format, config.width, config.height);
         r.set_particle_tier(crate::render::particle_tier(&adapter));
         setup(&mut r);
-        let faces = crate::text::load_bundled(crate::text::ASSETS)?;
+        let mut faces = crate::text::load_bundled(crate::text::ASSETS)?;
+        // Scripts the bundled faces lack come from the system's fonts.
+        faces.push(Face::system());
         let mut ui = make(faces, config.width, config.height, window.scale_factor() as f32);
         ui.perf_mut().backend = format!("{:?}", info.backend);
         ui.perf_mut().adapter = info.name.clone();

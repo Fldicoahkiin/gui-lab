@@ -9,11 +9,16 @@ homepage = "https://github.com/amenui-dev/amenui"
 autoexamples = false
 
 [features]
-default = ["gltf", "window"]
+default = ["gltf", "window", "system-fonts"]
 # A small glTF 2.0 reader (`mesh::load_gltf`): positions, normals, indices and node transforms.
 gltf = []
 # The native window (`app::native::run`): winit, and the system clipboard through arboard.
 window = ["dep:winit", "dep:arboard", "dep:accesskit", "dep:accesskit_winit"]
+# The system's installed fonts as the last fallback (`text::Face::system`), for scripts the bundled
+# faces lack. fontconfig is loaded at run time on Linux, so building needs no C library.
+system-fonts = ["parley/system", "dep:fontique"]
+# Dictionaries for line breaking in Thai, Lao, Khmer and Burmese (a few MB in the binary).
+complex-scripts = ["parley/complex-scripts"]
 
 [dependencies]
 wgpu = { version = "30", default-features = false, features = ["wgsl", "webgl", "webgpu", "vulkan", "std"] }
@@ -34,6 +39,7 @@ unic-langid = "0.9"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 png = "0.17"
+fontique = { version = "0.13", default-features = false, features = ["system", "fontconfig-dlopen"], optional = true }
 winit = { version = "0.30", optional = true }
 # X11 through x11rb, no C libraries.
 arboard = { version = "3", default-features = false, optional = true }

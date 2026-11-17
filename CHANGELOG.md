@@ -16,6 +16,14 @@ Newest first. The acceptance checks for each part are in [DESIGN.md §7](docs/DE
 - The mirror says more: `El::expanded`, `El::description`, `El::live` (`Role::Status` is polite by
   default), `El::invalid`, `El::required`. The accordion, select and popover report `expanded` instead of
   `checked`.
+- Fonts beyond the bundled ones: `Face::fallback` for faces tried after the bundled ones, and
+  `Face::system()` for the system's installed fonts (feature `system-fonts`, on by default; the native
+  window adds it). `Text::missing_glyphs`. The `complex-scripts` feature for Thai, Lao, Khmer and Burmese
+  line breaking.
+- Any language: `Locale::Other(Tag)` for any BCP 47 tag, falling back to English, with CLDR plural rules,
+  right-to-left direction by language or script, and its own `locale.name` and `locale.date`. Arabic ships
+  (`Locale::AR`, `assets/i18n/ar.txt`). `Locale::ALL` lists the three shipped locales;
+  `i18n::installed()` lists the application's. `Locale::name` returns a `String`.
 - `web/amenui.js`, the `amenui` npm package: the page side of the web entry (`mount`, `stage`, `css`).
 - `offscreen::read_back`: one frame drawn into a texture of a given format and read back.
 - `error::WindowError`.

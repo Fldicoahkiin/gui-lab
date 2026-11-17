@@ -34,6 +34,15 @@ the material (`.print(pitch)`).
 
 ## Coverage
 
-Scripts outside these faces are not drawn: Arabic, Hebrew, Thai, Devanagari and emoji, and Hangul in
-the outline face (Fusion Pixel has Hangul). The text system does not load system fonts
-(`text.rs`, `system_fonts: false`).
+The bundled faces cover Latin, Han and kana (and Hangul in Fusion Pixel). For other scripts (Arabic,
+Hebrew, Thai, Devanagari, emoji…) a `Ui` takes more faces:
+
+- `Face::fallback(bytes)`: tried after the face asked for and the first face, in the order given. This is
+  the way on the web, where there are no system fonts.
+- `Face::system()`, last in the list: the system's installed fonts, after every given face (feature
+  `system-fonts`, on by default; fontconfig is loaded at run time on Linux). `app::native::run` adds it.
+
+The bundled faces still decide every character they have, so text in Latin and Chinese looks the same on
+every machine; tests and `offscreen` do not add the system's fonts, so their pixels do not depend on the
+machine. Thai, Lao, Khmer and Burmese line breaking needs the `complex-scripts` feature (dictionaries of a
+few MB). `Text::missing_glyphs` counts characters no face has.
