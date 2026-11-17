@@ -539,7 +539,7 @@ pub struct Ui<S, M> {
     /// Decode transitions running (by key), and each decoding element's instances as last painted
     /// (what its disappearance plays over).
     decodes: HashMap<String, DecodeRun>,
-    decode_last: HashMap<String, Vec<Instance>>,
+    decode_last: HashMap<String, Shown>,
     /// Keyed elements the last layout dropped together with the element they were in (a page that went,
     /// not a part of it that changed): they leave nothing behind, no decode played backwards.
     left: std::collections::HashSet<String>,
@@ -3073,7 +3073,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// Start what appears and what went (DESIGN.md §1.28), and keep each decoding element's instances.
     fn decode_pass(&mut self) {
         let (now, s) = (self.clock, self.scale);
-        let mut present: HashMap<String, Vec<Instance>> = HashMap::new();
+        let mut present: HashMap<String, Shown> = HashMap::new();
         for i in 0..self.nodes.len() {
             let Some(spec) = &self.nodes[i].decode else { continue };
             if self.nodes[i].hidden { continue; }
@@ -3082,7 +3082,7 @@ impl<S, M: Clone> Ui<S, M> {
             let key = nodes[i].key.clone();
             match self.decodes.get_mut(&key) {
                 Some(r) if !r.reverse => { r.spec.hold = spec.hold; }
-                _ if !self.decode_last.contains_key(&key) => { self.decodes.insert(key.clone(), DecodeRun { start: now, reverse: false, spec: spec.clone(), plan: None, ghost: vec![] }); }
+                _ if !self.decode_last.contains_key(&key) => { self.decodes.insert(key.clone(), DecodeRun { start: now, reverse: false, spec: spec.clone(), plan: None, ghost: vec![], clip: None }); }
                 _ => {}
             }
             if let Some(r) = self.decodes.get_mut(&key) && r.plan.is_none() && !insts.is_empty() {
@@ -3090,19 +3090,21 @@ impl<S, M: Clone> Ui<S, M> {
                 let cells: Vec<(f32, f32)> = morph::outline_cells(&insts, fine.round().max(1.0), &self.text.pixels).into_iter().filter(|c| c.cover > 0.02).map(|c| (c.x, c.y)).collect();
                 r.plan = Some(spec.plan(&cells, s));
             }
-            present.insert(key, insts);
+            let c = nodes[i].clip;
+            let clip = [c.x * s, c.y * s, c.right() * s, c.bottom() * s];
+            present.insert(key, Shown { insts, spec: spec.clone(), clip });
         }
         // What went: its last instances play the transition backwards.
         let gone: Vec<String> = self.decode_last.keys().filter(|k| !present.contains_key(*k)).cloned().collect();
         for k in gone {
             // Gone with its page: nothing is played.
             if self.left.contains(&k) { self.decode_last.remove(&k); self.decodes.remove(&k); continue; }
-            let ghost = self.decode_last.remove(&k).unwrap_or_default();
-            let spec = self.decodes.get(&k).map(|r| r.spec.clone()).unwrap_or_default();
+            // Played backwards with its own spec (not the default one), inside its own clip.
+            let Some(Shown { insts: ghost, spec, clip }) = self.decode_last.remove(&k) else { continue };
             let (fine, atlas) = (spec.tiers.last().copied().unwrap_or(4.0) * s, &self.text.pixels);
             let cells: Vec<(f32, f32)> = morph::outline_cells(&ghost, fine.round().max(1.0), atlas).into_iter().filter(|c| c.cover > 0.02).map(|c| (c.x, c.y)).collect();
             let plan = spec.plan(&cells, s);
-            self.decodes.insert(k, DecodeRun { start: now, reverse: true, spec: Decode { hold: None, ..spec }, plan: Some(plan), ghost });
+            self.decodes.insert(k, DecodeRun { start: now, reverse: true, spec: Decode { hold: None, ..spec }, plan: Some(plan), ghost, clip: Some(clip) });
         }
         self.decode_last = present;
     }
@@ -3118,7 +3120,7 @@ impl<S, M: Clone> Ui<S, M> {
             let p = ((now - r.start) / (r.spec.duration_ms / 1000.0).max(1e-3)).clamp(0.0, 1.0);
             let u = r.spec.hold.unwrap_or(if r.reverse { 1.0 - p } else { p });
             let at = self.nodes.iter().position(|n| &n.key == key);
-            let clip = at.map_or(screen, |i| { let c = self.nodes[i].clip; let s = self.scale; [c.x * s, c.y * s, c.right() * s, c.bottom() * s] });
+            let clip = r.clip.unwrap_or_else(|| at.map_or(screen, |i| { let c = self.nodes[i].clip; let s = self.scale; [c.x * s, c.y * s, c.right() * s, c.bottom() * s] }));
             if let Some(i) = at && !r.reverse && !plan.shows_content(u) {
                 for k in 0..self.page_len.min(self.owners.len()) { if within(&self.nodes, self.owners[k].0, i) { self.scene.instances[k].paint[2] = 0.0; } }
             }
@@ -4494,7 +4496,10 @@ impl Inherit {
 const IGNORE: [f32; 4] = [0.0, -1.0, 0.0, 0.0];
 /// A decode transition running over one element (DESIGN.md §1.28): forward when it appeared, backwards
 /// over its last instances when it went.
-struct DecodeRun { start: f32, reverse: bool, spec: crate::decode::Decode, plan: Option<crate::decode::Plan>, ghost: Vec<Instance> }
+struct DecodeRun { start: f32, reverse: bool, spec: crate::decode::Decode, plan: Option<crate::decode::Plan>, ghost: Vec<Instance>, clip: Option<[f32; 4]> }
+/// What a decoded element showed in the last frame: its instances, its own spec and its clip (device
+/// px), so it goes as it came, inside the box it was seen in.
+struct Shown { insts: Vec<Instance>, spec: crate::decode::Decode, clip: [f32; 4] }
 use crate::decode::Decode;
 
 /// What the field may do to a node (DESIGN.md §1.15): how much looseness fronts may add (0 when it is

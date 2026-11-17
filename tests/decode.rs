@@ -62,3 +62,41 @@ fn the_panel_interior_is_covered() {
     eprintln!("{} blocks within {bb:?}, card {card:?}", blocks.len());
     assert!(blocks.iter().any(|b| px >= b.rect[0] && px < b.rect[0] + b.rect[2] && py >= b.rect[1] && py < b.rect[1] + b.rect[3]), "the interior at ({px}, {py}) is open");
 }
+
+/// A decoded drawing in a clipped cell, taken away alone (its page stays).
+mod alone {
+    use amenui::decode::Decode;
+    use amenui::el::{El, Paint, canvas, col, text};
+    pub struct S { pub show: bool }
+    pub fn view(s: &S) -> El<()> {
+        let mut d = amenui::draw::Drawing::new(200.0, 120.0);
+        for i in 0..10 { d.dot(10.0 + i as f32 * 20.0, 60.0, 8.0, Paint::ACCENT); }
+        let mut cell = col().key("cell").width(160.0).height(80.0).clip();
+        if s.show { cell = cell.child(canvas(d).key("grown").width(200.0).height(120.0).decode(Decode { duration_ms: 300.0, tiers: vec![8.0, 4.0], ..Decode::default() })); }
+        col().key("page").pad(40.0, 40.0).gap(12.0).child(text("index", 14.0, Paint::INK).key("title")).child(cell)
+    }
+}
+
+#[test]
+fn an_element_taken_away_alone_decodes_out_with_its_own_spec_inside_its_clip() {
+    let mut ui = amenui::ui::Ui::new(alone::S { show: true }, alone::view, |_, _| {}, fonts(), 400, 300, 1.0);
+    let mut t = 0.0;
+    let mut go = |ui: &mut amenui::ui::Ui<alone::S, ()>, secs: f32| { let end = t + secs; while t < end { t += 1.0 / 60.0; ui.tick(t); } };
+    go(&mut ui, 1.0);
+    let cell = ui.node("cell").expect("cell").rect;
+    let blocks = |ui: &amenui::ui::Ui<alone::S, ()>| ui.scene().instances.iter().filter(|i| i.paint[3] == amenui::scene::SHAPE && i.resp[1] < 0.0 && i.extra[3] < -1e3 && i.rect[2] == i.rect[3]).copied().collect::<Vec<_>>();
+    assert!(blocks(&ui).is_empty(), "at rest, no blocks");
+    ui.state.show = false;
+    ui.relayout();
+    go(&mut ui, 0.12);
+    let mid = blocks(&ui);
+    assert!(!mid.is_empty(), "it goes under blocks");
+    // Every block is clipped to the cell it was seen in, not to the window.
+    for b in &mid {
+        assert!(b.clip[0] >= cell.x - 0.5 && b.clip[1] >= cell.y - 0.5 && b.clip[2] <= cell.right() + 0.5 && b.clip[3] <= cell.bottom() + 0.5, "a block clipped to {:?}, the cell is {cell:?}", b.clip);
+    }
+    // Its own spec: at most 8 px blocks, and done after its 300 ms, not the default 720.
+    assert!(mid.iter().all(|b| b.rect[2] <= 8.0 + 1e-3), "{:?}", mid.iter().map(|b| b.rect[2]).fold(0.0, f32::max));
+    go(&mut ui, 0.25);
+    assert!(blocks(&ui).is_empty(), "gone after 300 ms");
+}
