@@ -13,10 +13,10 @@ The code is `examples/form3d.rs`, compiled into the library as `amenui::recipes:
 ```rust
 //! Recipe: a passage wrapped on a sphere (docs/recipes/form3d.md). `form::Form` gives each glyph its
 //! place, turn, scale, depth and facing; `El::form` draws them far to near and keeps the sphere legible
-//! (the far side left out, the rim faded from `edge` 0.5 so no word is drawn squeezed, glyphs mostly
-//! hidden by nearer ones not drawn, the back dimmer); words come and go whole (`Reveal::Word`). The
-//! pointer is found on the surface (`Form::hit`): the words under it light up and follow the sphere as
-//! it turns, and a drag turns it.
+//! (the far side left out, the rim faded so no word is drawn squeezed, glyphs mostly hidden by nearer
+//! ones not drawn, the back dimmer); words come and go whole (`Reveal::Word`). The pointer is found on
+//! the surface (`Form::hit`): the glyphs round it take the accent, fading smoothly from the glyph under
+//! it to none at `REACH`, following the sphere as it turns; a drag turns it.
 use amenui::el::{El, Paint, Point, Reveal, col, text};
 use amenui::form::{Form, FormFx};
 use amenui::mesh::Camera;
@@ -38,6 +38,14 @@ by dark the flats are gone and the sea is where it was, keeping only the sound, 
 pub const SIZE: f32 = 460.0;
 /// How far round the pointer lights words, text px on the surface.
 pub const REACH: f32 = 64.0;
+
+/// How much of the accent a glyph `d` text px from the pointer's place takes: all of it within 0.15 ×
+/// `REACH`, none from `REACH`, smoothly between, gently enough that two neighbours in a word never
+/// differ by more than about a third (no hard edge falls in the middle of a word).
+pub fn light(d: f32) -> f32 {
+    let t = ((d - 0.15 * REACH) / (0.85 * REACH)).clamp(0.0, 1.0);
+    1.0 - t * t * (3.0 - 2.0 * t)
+}
 
 pub struct Form3d { pub spin: [f32; 2], pub hover: Option<[f32; 2]>, pub last: Option<(f32, f32)> }
 
@@ -62,7 +70,7 @@ pub fn view(s: &Form3d) -> El<Msg> {
             let w = x1 - x0;
             let dx = ((g.x - gx).abs()).min(w - (g.x - gx).abs());
             let d = dx.hypot(g.y - gy);
-            if d < REACH { p.accent = 1.0; p.tone = 1.0; }
+            p.accent = p.accent.max(light(d));
         }
         p
     };
@@ -70,7 +78,7 @@ pub fn view(s: &Form3d) -> El<Msg> {
         .child(text("text on a form", 26.0, Paint::INK).key("title"))
         .child(text("Move over the sphere to find a place on it; drag to turn it.", 14.0, Paint::DIM).key("hint"))
         .child(text(PASSAGE, 19.0, Paint::TEXT).key("passage").nowrap().width(SIZE).height(SIZE)
-            .pose(pose).form(FormFx { edge: 0.5, ..FormFx::default() }).reveal_by(Reveal::Word).on_point(|p| Some(Msg::Point(p))))
+            .pose(pose).form(FormFx::default()).reveal_by(Reveal::Word).on_point(|p| Some(Msg::Point(p))))
 }
 
 pub fn update(s: &mut Form3d, m: Msg) {
