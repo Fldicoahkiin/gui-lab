@@ -148,3 +148,73 @@ fn a_stir_command_reaches_its_scope() {
     assert!(m.energy_at(150.0, 300.0) > 0.5 && m.energy_at(580.0, 300.0) == 0.0, "{} {}", m.energy_at(150.0, 300.0), m.energy_at(580.0, 300.0));
     assert!(m.flow_at(150.0, 300.0)[0] > 0.3, "the flow follows the path: {:?}", m.flow_at(150.0, 300.0));
 }
+
+/// A Lab-like index cell (a decoded drawing that grew, and an element that stirs the map), and the
+/// page the route goes to instead.
+mod route {
+    use amenui::el::{El, Paint, Scope, Stirr, canvas, col, space, text};
+    #[derive(Clone)] pub struct R { pub index: bool }
+    pub fn view(s: &R) -> El<()> {
+        if !s.index { return col().key("reader").pad(24.0, 24.0).child(text("Lumen: light on text", 18.0, Paint::INK).key("reader/title")); }
+        let mut d = amenui::draw::Drawing::new(120.0, 90.0);
+        for i in 0..12 { d.dot(10.0 + i as f32 * 8.0, 45.0, 3.0, Paint::ACCENT); }
+        col().key("index").pad(24.0, 24.0).gap(12.0)
+            .child(col().key("cell/grown").width(160.0).child(canvas(d).key("grown/canvas").decode(amenui::decode::Decode::default())))
+            .child(space(40.0, 40.0).key("stylus").stirr(Stirr { energy: 1.0, radius: Some(60.0), scope: Scope::Global }))
+            .child(text("Reader", 14.0, Paint::INK).key("go").on_press(()))
+    }
+    pub fn look(_: &R) -> amenui::style::Look { amenui::style::Look { material: amenui::style::Material::Plain, ..amenui::style::Look::default() } }
+}
+
+#[test]
+fn an_element_that_leaves_with_its_page_leaves_no_field() {
+    let Ok(mut o) = amenui::offscreen::Offscreen::try_new(400, 300) else { eprintln!("no GPU adapter here: skipped"); return };
+    let mut ui = Ui::new(route::R { index: true }, route::view, |s, _| s.index = !s.index, fonts(), 400, 300, 1.0).on_look(route::look);
+    let mut t = 0.0;
+    let step = |ui: &mut Ui<route::R, ()>, t: &mut f32| { *t += 1.0 / 60.0; ui.tick(*t); };
+    // The decode has run and the map holds the stir.
+    // No frame draws a colour the theme cannot make (a field in its own colour, a debug layer).
+    let off = |px: &[u8], look: &amenui::style::Look| amenui::audit::off_palette(px, 400, &look.theme, &[], 6.0);
+    for _ in 0..60 { step(&mut ui, &mut t); let look = ui.look(); let px = o.render(&mut ui, &look); ui.frame_drawn(); assert_eq!(off(&px, &look), 0); }
+    ui.command(amenui::morph::Cmd::Stir { at: amenui::morph::StirAt::Key("stylus".into()), v: [1.0, 0.0], energy: 1.0, radius: 60.0, scope: amenui::el::Scope::Global });
+    step(&mut ui, &mut t);
+    assert!(ui.fieldmap().nonzero() > 0, "the stylus stirred the map");
+    // The route changes: this very frame is the new page drawn directly.
+    assert!(ui.activate("go"));
+    step(&mut ui, &mut t);
+    let look = ui.look();
+    let after = o.render(&mut ui, &look);
+    ui.frame_drawn();
+    assert_eq!(off(&after, &look), 0, "the frame the page changes draws only the theme's colours");
+    let mut fresh = Ui::new(route::R { index: false }, route::view, |s, _| s.index = !s.index, fonts(), 400, 300, 1.0).on_look(route::look);
+    fresh.tick(t);
+    // Its own renderer: a renderer keeps the text atlas of the page it draws.
+    let mut o2 = amenui::offscreen::Offscreen::new(400, 300);
+    let look = fresh.look();
+    let direct = o2.render(&mut fresh, &look);
+    // Nothing of the old page anywhere: outside the new title (which is being born, as any new
+    // element is) every pixel is the new page's.
+    let b = ui.node("reader/title").expect("the new title").rect;
+    let outside = |i: usize| { let (x, y) = ((i % 400) as f32, (i / 400) as f32); x < b.x - 4.0 || y < b.y - 4.0 || x > b.right() + 4.0 || y > b.bottom() + 4.0 };
+    let differ = after.chunks_exact(4).zip(direct.chunks_exact(4)).enumerate().filter(|(i, (a, b))| outside(*i) && a != b).count();
+    assert_eq!(differ, 0, "{differ} pixels beside the new page differ from it drawn directly");
+    // Once the new page has come in (born, its text set), the whole frame is the new page's.
+    for i in 0..180 {
+        step(&mut ui, &mut t); fresh.tick(t);
+        let look = ui.look(); let px = o.render(&mut ui, &look); ui.frame_drawn();
+        let n = off(&px, &look);
+        assert_eq!(n, 0, "frame {i} after the change: {n} pixels in no colour of the theme");
+    }
+    let look = ui.look();
+    let after = o.render(&mut ui, &look);
+    ui.frame_drawn();
+    let look = fresh.look();
+    let direct = o2.render(&mut fresh, &look);
+    let differ = after.chunks_exact(4).zip(direct.chunks_exact(4)).filter(|(a, b)| a != b).count();
+    assert_eq!(differ, 0, "{differ} pixels differ from the new page drawn directly, once it has come in");
+    assert_eq!(ui.dissolving(), 0, "nothing of the old page is played out");
+    // And then it asks for no frames for two seconds.
+    let mut asked = 0;
+    for _ in 0..120 { step(&mut ui, &mut t); if ui.needs_frame(t) { asked += 1; } let look = ui.look(); let _ = o.render(&mut ui, &look); ui.frame_drawn(); }
+    assert_eq!(asked, 0, "{asked} frames asked for after the page went");
+}

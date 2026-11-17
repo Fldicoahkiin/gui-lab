@@ -535,6 +535,9 @@ pub struct Ui<S, M> {
     /// (what its disappearance plays over).
     decodes: HashMap<String, DecodeRun>,
     decode_last: HashMap<String, Vec<Instance>>,
+    /// Keyed elements the last layout dropped together with the element they were in (a page that went,
+    /// not a part of it that changed): they leave nothing behind, no decode played backwards.
+    left: std::collections::HashSet<String>,
     /// The renderer can simulate particles on the GPU (it says so on every draw).
     particle_gpu: bool,
     // ── The field map (DESIGN.md §1.29) ──
@@ -806,7 +809,7 @@ impl<S, M: Clone> Ui<S, M> {
             tree: TaffyTree::new(), tids: HashMap::new(), mkeys: HashMap::new(), virt_views: HashMap::new(), virt_made: HashMap::new(),
             scrolling: Scrolling::default(), touch: None, touches: HashSet::new(), touching: false, fling: None, over: HashMap::new(), motion: HashMap::new(), scroll_paint: false, event_t: None,
             recs: HashMap::new(), recomps: HashMap::new(), slides: HashMap::new(), no_recompose: false,
-            meshes: crate::mesh::Library::default(), mesh_hover: None, glyphs: Default::default(), prep: Default::default(), move_over: None, particle_gpu: false, motes: vec![], shed_at: HashMap::new(), shed_owed: HashMap::new(), field_marks: HashMap::new(), seen: HashMap::new(), outlines: HashMap::new(), decodes: HashMap::new(), decode_last: HashMap::new(), queued: vec![], flushing: false, motes_made: 0,
+            meshes: crate::mesh::Library::default(), mesh_hover: None, glyphs: Default::default(), prep: Default::default(), move_over: None, particle_gpu: false, motes: vec![], shed_at: HashMap::new(), shed_owed: HashMap::new(), field_marks: HashMap::new(), seen: HashMap::new(), outlines: HashMap::new(), decodes: HashMap::new(), decode_last: HashMap::new(), left: Default::default(), queued: vec![], flushing: false, motes_made: 0,
             fmap: crate::fieldmap::FieldMap::default(), stirr_at: HashMap::new(), fmap_size: (0.0, 0.0), fmap_ink: u64::MAX, strand_faded: HashMap::new(), strand_cache: HashMap::new(), strand_hold: HashMap::new(), strand_drawn: vec![], trace_drawn: vec![], trace_head: HashMap::new(),
         };
         ui.resize(w, h, scale);
@@ -2465,6 +2468,7 @@ impl<S, M: Clone> Ui<S, M> {
             self.perf.counters.layouts_skipped += 1;
         }
         for n in nodes.iter_mut() { if let Ok(l) = self.tree.layout(n.tid) { n.local = *l; } }
+        self.forget_gone(&nodes);
         self.nodes = nodes;
         self.rebuilt = touched;
         self.place();
@@ -2473,6 +2477,33 @@ impl<S, M: Clone> Ui<S, M> {
         self.paint();
     }
 
+    /// What the elements that are about to go leave behind (DESIGN.md §1.29): a keyed element that goes
+    /// with the element it was in (its nearest keyed ancestor is gone too) went with its page, and leaves
+    /// nothing; where such a part of the page put something in the field map (it stirred it, drew a flow
+    /// or a decode, or was a ripple's scope), the map is cleared over its box. When none of the old keyed
+    /// elements is left, the whole map is.
+    fn forget_gone(&mut self, next: &[Node<M>]) {
+        self.left.clear();
+        let kept: std::collections::HashSet<&str> = next.iter().filter(|n| n.keyed).map(|n| n.key.as_str()).collect();
+        let old = &self.nodes;
+        let keyed_up = |mut i: usize| -> Option<&str> { while let Some(p) = old[i].parent { if old[p].keyed { return Some(old[p].key.as_str()); } i = p; } None };
+        let mut clear: Vec<[f32; 4]> = vec![];
+        let mut any_kept = false;
+        for (i, n) in old.iter().enumerate() {
+            if !n.keyed { continue; }
+            if kept.contains(n.key.as_str()) { any_kept = true; continue; }
+            let up = keyed_up(i);
+            if up.is_some_and(|k| !kept.contains(k)) { self.left.insert(n.key.clone()); }
+            // The root of what went: did it (or anything in it) put something in the map?
+            if up.is_some_and(|k| !kept.contains(k)) { continue; }
+            let marks = old.iter().enumerate().any(|(j, m)| within(old, j, i) && (m.stirr.is_some() || m.flow_field.is_some() || m.decode.is_some() || m.ripple_scope));
+            if marks { let r = n.rect.intersect(&n.clip); clear.push([r.x, r.y, r.right(), r.bottom()]); }
+            // Its own decode goes with it when its container went too.
+        }
+        for k in &self.left { self.decodes.remove(k); }
+        if !any_kept && old.iter().any(|n| n.keyed) { clear = vec![crate::fieldmap::EVERYWHERE]; }
+        for b in clear { self.fmap.clear_in(b); }
+    }
     /// Absolute rects, clips and scroll extents from the laid-out (relative) boxes and the scroll
     /// offsets: all that scrolling changes. No view, no layout, no shaping.
     fn place(&mut self) {
@@ -3041,6 +3072,8 @@ impl<S, M: Clone> Ui<S, M> {
         // What went: its last instances play the transition backwards.
         let gone: Vec<String> = self.decode_last.keys().filter(|k| !present.contains_key(*k)).cloned().collect();
         for k in gone {
+            // Gone with its page: nothing is played.
+            if self.left.contains(&k) { self.decode_last.remove(&k); self.decodes.remove(&k); continue; }
             let ghost = self.decode_last.remove(&k).unwrap_or_default();
             let spec = self.decodes.get(&k).map(|r| r.spec.clone()).unwrap_or_default();
             let (fine, atlas) = (spec.tiers.last().copied().unwrap_or(4.0) * s, &self.text.pixels);

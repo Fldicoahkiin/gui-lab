@@ -183,6 +183,18 @@ impl FieldMap {
         true
     }
     fn idx(&self, i: usize, j: usize) -> usize { j * self.cols + i }
+    /// Nothing in the box `b` (logical px, x0, y0, x1, y1) any more: the energy and flow of every node
+    /// within a cell of it set to zero (what was there went with the element that put it there).
+    pub fn clear_in(&mut self, b: [f32; 4]) {
+        let mut any = false;
+        for j in 0..self.rows { for i in 0..self.cols {
+            let (x, y) = (i as f32 * self.cell, j as f32 * self.cell);
+            if x < b[0] - self.cell || y < b[1] - self.cell || x > b[2] + self.cell || y > b[3] + self.cell { continue; }
+            let k = self.idx(i, j);
+            if self.e[k] != 0.0 || self.u[k] != 0.0 || self.v[k] != 0.0 { (self.e[k], self.u[k], self.v[k]) = (0.0, 0.0, 0.0); any = true; }
+        } }
+        if any { self.encode(); }
+    }
     /// Whether anything is in the map now (or it breathes): the runtime keeps asking for frames.
     pub fn moving(&self, fx: &MapFx) -> bool { self.snap.nonzero || self.breathes(fx) }
     fn breathes(&self, fx: &MapFx) -> bool { fx.breath > 0.0 && !self.reduced }
