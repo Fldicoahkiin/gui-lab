@@ -687,17 +687,18 @@ fn scene_at(q: vec2f) -> vec3f {
   return exact(q);
 }
 
+// ── Materials (DESIGN.md §1.6): src/materials/<name>.wgsl, in id order. Each begins with its name and its
+// numbers (`style::MAT_PARAMS`) and names its own id `SELF`. ────────────────────────────────────────
+
+// @material plain
 // plain: what is held or just born is faint rather than loose; the ground is flat. The square root
 // lets a partial looseness (beneath a dialog) read clearly; fully loose is 0.3.
-// scribblr: a flat ground and the ink exactly as stage 1 left it. The fill's fade and the thread that
-// leaves the outline are worked out on the CPU per element (strand.rs, DESIGN.md §1.30) and drawn into
-// stage 1, so a line over a loose glyph is never faded with it; at looseness 0 this is plain's frame.
-fn m_scribblr(p: vec2f) -> vec3f { return exact(p); }
 fn m_plain(p: vec2f) -> vec3f {
   let d = dec(p);
   return mix(gnd(p), d.rgb, d.a * mix(1.0, 0.3, sqrt(clamp(loose_t(p) * loose_scale(), 0.0, 1.0))));
 }
 
+// @material dot
 // dot: the global lattice; text loosens into units sized by the ink under them, the ground is a field
 // of small units.
 fn m_dot(frag: vec2f) -> vec3f {
@@ -755,6 +756,12 @@ fn m_dot(frag: vec2f) -> vec3f {
   return mix(g, col, alpha);
 }
 
+// @material halftone
+// @param 点距 2.0 32.0 0.5 1 px 7.0
+// @param 角度 0.0 90.0 1.0 0 ° 45.0
+// @param 分色错开 0.0 8.0 0.25 2 px 1.25
+// @param 增益 0.2 3.0 0.05 2 - 1.1
+// halftone: ink as round dots on a rotated screen, with the second colour out of register.
 fn m_halftone(p: vec2f) -> vec3f {
   let s = u.res.z;
   let a0 = mp(HALFTONE, 0);
@@ -794,6 +801,11 @@ fn m_halftone(p: vec2f) -> vec3f {
   return out;
 }
 
+// @material ascii
+// @param 点距 4.0 40.0 1.0 0 px 10.0
+// @param 级数 2.0 16.0 1.0 0 - 12.0
+// @param 上色方式 0.0 1.0 1.0 0 - 0.0
+// @param 法线 0.0 1.0 0.05 2 - 1.0
 // ascii: cells of the print pitch show characters from the character mark set, chosen by the ink
 // they cover; the more loose, the coarser the cells.
 fn m_ascii(p: vec2f) -> vec3f {
@@ -843,6 +855,11 @@ fn m_ascii(p: vec2f) -> vec3f {
   return mix(gnd(p), colour, m);
 }
 
+// @material print
+// @param 纸纹 0.0 1.0 0.05 2 - 0.6
+// @param 套印错位 0.0 6.0 0.25 2 px 1.5
+// @param 斑点 0.0 1.0 0.05 2 - 0.6
+// @param 洇开 0.0 10.0 0.5 1 px 3.0
 // print: paper grain on the ground and accent ink out of register at rest; loosened, photocopy speckle
 // and ink spreading past its outline.
 fn m_print(p: vec2f) -> vec3f {
@@ -893,6 +910,12 @@ fn m_print(p: vec2f) -> vec3f {
   return clamp(col, vec3f(0.0), vec3f(1.0));
 }
 
+// @material lino
+// @param 刻痕 0.0 1.0 0.05 2 - 0.6
+// @param 刻带 2.0 40.0 1.0 0 px 12.0
+// @param 刀长 2.0 40.0 1.0 0 px 12.0
+// @param 刀距 2.0 16.0 0.5 1 px 7.0
+// @param 抖动 0.0 1.0 0.05 2 - 0.4
 // lino: ink or ground, nothing between. Loosened, the outline is cut by hand (displaced by noise) and
 // a band around it fills with gouge strokes that follow the outline: ridges of ink left standing
 // outside, white cuts inside; the band widens with the looseness until shapes break into strokes.
@@ -935,6 +958,12 @@ fn m_lino(p: vec2f) -> vec3f {
   return mix(exact(p), lino, smoothstep(0.0, 0.12, k));
 }
 
+// @material glitch
+// @param 行高 1.0 40.0 1.0 0 px 6.0
+// @param 位移 0.0 200.0 2.0 0 px 48.0
+// @param 色差 0.0 30.0 0.5 1 px 6.0
+// @param 保持 16.0 500.0 2.0 0 ms 90.0
+// @param 块 4.0 120.0 2.0 0 px 28.0
 // glitch: nothing at rest. Loosened, rows slip sideways (held for `hold` ms), the channels split and
 // blocks repeat; bursts (hover, press) do the same for a moment.
 fn m_glitch(p: vec2f, pic: bool) -> vec3f {
@@ -966,6 +995,9 @@ fn m_glitch(p: vec2f, pic: bool) -> vec3f {
   return c;
 }
 
+// @material near
+// @param 间距 1.5 12.0 0.5 1 px 3.0
+// @param 填充 0.0 1.0 0.05 2 - 0.25
 // near: the intermediate images made visible. The signed nearness in bands every `pitch` px, warm
 // inside the ink and cool outside, fading toward the edge of its reach; the outline in the ink colour;
 // the ink itself as a faint fill; the looseness of each instance as a tint over it.
@@ -992,6 +1024,20 @@ fn m_near(p: vec2f) -> vec3f {
   if (d.txt) { col = mix(col, d.rgb, d.a); }
   return col;
 }
+
+// @material scribblr
+// @param 线宽 0.5 3.0 0.25 2 px 1.0
+// @param 取样 1.0 6.0 0.5 1 px 2.0
+// @param 游走 0.0 64.0 1.0 0 px 40.0
+// @param 打结 0.0 1.0 0.05 2 - 0.6
+// @param 结的半径 4.0 120.0 1.0 0 px 48.0
+// @param 线头 0.0 1200.0 10.0 0 px 480.0
+// @param 跟场走 0.0 2.0 0.05 2 - 1.0
+// @param 折角 0.0 1.0 0.05 2 - 0.9
+// scribblr: a flat ground and the ink exactly as stage 1 left it. The fill's fade and the thread that
+// leaves the outline are worked out on the CPU per element (strand.rs, DESIGN.md §1.30) and drawn into
+// stage 1, so a line over a loose glyph is never faded with it; at looseness 0 this is plain's frame.
+fn m_scribblr(p: vec2f) -> vec3f { return exact(p); }
 
 /// How much of what is at `q` leaves a scroll trace: text, and shapes drawn in the ink itself (rules,
 /// strokes); not panels, fills in the ground's tone, accent planes or pictures, which would smear whole
