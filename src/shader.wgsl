@@ -296,7 +296,12 @@ fn ink_of(i: VOut, solid: bool) -> vec4f {
     return vec4f(r * a, g * a, code * a, a);
   }
   if (i.paint.w > 1.5) { return vec4f(textureSampleLevel(tex1, samp, clamp(i.uv, vec2f(0.0), vec2f(1.0)), 0.0).rgb * a, a); }
-  return vec4f(i.paint.x * (1.0 - i.paint.y) * a, i.paint.y * a, ink_code(i) * a, a);
+  // Text set in the ground's colour (a label on a solid button) under `near`, which draws panels open:
+  // written as the ink's colour, by the text's own paint, so its antialiased edges over the panel decode
+  // as text and panel, not as a colour between the panel and the ground.
+  var tone = i.paint.x;
+  if (i.paint.w < 0.5 && i.paint.x < 0.02 && i.paint.y < 0.02 && eff_mat(i.look.x) == NEAR) { tone = 1.0; }
+  return vec4f(tone * (1.0 - i.paint.y) * a, i.paint.y * a, ink_code(i) * a, a);
 }
 fn near_of(i: VOut) -> vec4f {
   let s = inst(i);
@@ -982,10 +987,9 @@ fn m_near(p: vec2f) -> vec3f {
   col = mix(col, u.third.rgb, clamp(loose_t(p) + half_plane(p), 0.0, 1.0) * 0.35 * step(0.5, n.r));
   // Text keeps its own ink whole, the bands around it: a glyph's outline alone is too thin to read
   // at text sizes, and on a filled panel (a selected row, a button) the panel's nearness, max-blended
-  // over the glyph's, leaves it no outline at all.
-  // Text set in the ground's colour (a label on a solid button) was meant for a solid panel, which
-  // this material draws open: it takes the ink's colour.
-  if (d.txt) { col = mix(col, select(d.rgb, u.fg.rgb, distance(d.rgb, g) < 0.25), d.a); }
+  // over the glyph's, leaves it no outline at all. (Text in the ground's colour is written in the ink's
+  // colour by the first pass, `ink_of`.)
+  if (d.txt) { col = mix(col, d.rgb, d.a); }
   return col;
 }
 
