@@ -552,6 +552,7 @@ pub struct Ui<S, M> {
     strand_cache: HashMap<u64, Vec<Vec<[f32; 2]>>>,
     strand_hold: HashMap<String, (i64, f32, Vec<crate::strand::Seg>)>,
     strand_drawn: Vec<(String, f32, Vec<crate::strand::Seg>)>,
+    trace_drawn: Vec<(String, Vec<[f32; 2]>)>,
     trace_head: HashMap<String, [f32; 2]>,
 }
 
@@ -806,7 +807,7 @@ impl<S, M: Clone> Ui<S, M> {
             scrolling: Scrolling::default(), touch: None, touches: HashSet::new(), touching: false, fling: None, over: HashMap::new(), motion: HashMap::new(), scroll_paint: false, event_t: None,
             recs: HashMap::new(), recomps: HashMap::new(), slides: HashMap::new(), no_recompose: false,
             meshes: crate::mesh::Library::default(), mesh_hover: None, glyphs: Default::default(), prep: Default::default(), move_over: None, particle_gpu: false, motes: vec![], shed_at: HashMap::new(), shed_owed: HashMap::new(), field_marks: HashMap::new(), seen: HashMap::new(), outlines: HashMap::new(), decodes: HashMap::new(), decode_last: HashMap::new(), queued: vec![], flushing: false, motes_made: 0,
-            fmap: crate::fieldmap::FieldMap::default(), stirr_at: HashMap::new(), fmap_size: (0.0, 0.0), fmap_ink: u64::MAX, strand_faded: HashMap::new(), strand_cache: HashMap::new(), strand_hold: HashMap::new(), strand_drawn: vec![], trace_head: HashMap::new(),
+            fmap: crate::fieldmap::FieldMap::default(), stirr_at: HashMap::new(), fmap_size: (0.0, 0.0), fmap_ink: u64::MAX, strand_faded: HashMap::new(), strand_cache: HashMap::new(), strand_hold: HashMap::new(), strand_drawn: vec![], trace_drawn: vec![], trace_head: HashMap::new(),
         };
         ui.resize(w, h, scale);
         ui
@@ -3290,6 +3291,7 @@ impl<S, M: Clone> Ui<S, M> {
         for (&i, &a) in &self.strand_faded { if let Some(inst) = self.scene.instances.get_mut(i) { inst.paint[2] = a; } }
         self.strand_faded.clear();
         self.strand_drawn.clear();
+        self.trace_drawn.clear();
         let s = self.scale;
         let now = self.clock;
         let screen = [0.0, 0.0, self.size.0 * s, self.size.1 * s];
@@ -3310,6 +3312,32 @@ impl<S, M: Clone> Ui<S, M> {
             let grown: Vec<[f32; 4]> = pics.iter().map(|p| [p[0] - pad, p[1] - pad, p[2] + pad, p[3] + pad]).collect();
             for (a, b) in strand::outside(a, b, &grown) { out.push(bar(a, b, w, paint, look, resp, clip)); }
         };
+        // Each element's own glyphs and shapes (not pictures, 3D views or drawings), in reading order.
+        let mut own: Vec<Vec<usize>> = vec![vec![]; self.nodes.len()];
+        for i in 0..self.page_len.min(self.scene.instances.len()) {
+            let inst = &self.scene.instances[i];
+            if inst.paint[3] != GLYPH && inst.paint[3] != SHAPE { continue; }
+            if inst.paint[2] <= 0.0 || inst.rect[2] <= 0.0 || inst.rect[3] <= 0.0 { continue; }
+            own[self.owners[i].0].push(i);
+        }
+        // Morphs, recomposition and decoding hand over to the first pass's own ink pixel for pixel, so
+        // their elements loosen as plain does (no thread).
+        let running = self.run.is_some();
+        let (grain_k, atlas) = (if crate::budget::usage().scale < 0.5 { 2.0 } else { 1.0 }, &self.text.pixels);
+        // What the tails keep out of: calm boxes and the boxes of text to read and controls (not pictures).
+        let mut calm: Vec<[f32; 4]> = self.field.calm.iter().filter(|r| r[2] > r[0]).copied().collect();
+        let ink_from = calm.len();
+        // Each one's ink: its instances' boxes (a glyph's without the spread around it), within its clip.
+        let spread = crate::text::SPREAD as f32;
+        for (ni, idx) in own.iter().enumerate() {
+            let n = &self.nodes[ni];
+            if idx.is_empty() || !n.legible || n.hidden { continue; }
+            let b = idx.iter().map(|&i| { let r = self.scene.instances[i].rect; let p = if self.scene.instances[i].paint[3] == GLYPH { spread } else { 0.0 }; [r[0] + p, r[1] + p, r[0] + r[2] - p, r[1] + r[3] - p] })
+                .fold([f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY], |a, r| [a[0].min(r[0]), a[1].min(r[1]), a[2].max(r[2]), a[3].max(r[3])]);
+            let c = [n.clip.x * s, n.clip.y * s, n.clip.right() * s, n.clip.bottom() * s];
+            let b = [b[0].max(c[0]), b[1].max(c[1]), b[2].min(c[2]), b[3].min(c[3])];
+            if b[2] > b[0] && b[3] > b[1] { calm.push(b); }
+        }
         // Traces, under any material: the drawn part, pushed by the map's flow.
         let drift = self.timing.map.drift;
         let mut out: Vec<Instance> = vec![];
@@ -3319,7 +3347,7 @@ impl<S, M: Clone> Ui<S, M> {
         // What a drawn path keeps clear of: pictures (it goes round them, 12 px out) and text to read (its
         // tips stop 24 px short of it).
         let pics: Vec<[f32; 4]> = self.nodes.iter().filter(|n| n.kind() == "image" && !n.hidden).map(|n| { let r = n.rect.intersect(&n.clip); [r.x * s, r.y * s, r.right() * s, r.bottom() * s] }).filter(|b| b[2] > b[0] && b[3] > b[1]).collect();
-        let read: Vec<[f32; 4]> = self.nodes.iter().filter(|n| n.legible && !n.hidden && matches!(n.kind(), "text" | "control")).map(|n| { let r = n.rect.intersect(&n.clip); [r.x * s, r.y * s, r.right() * s, r.bottom() * s] }).filter(|b| b[2] > b[0] && b[3] > b[1]).collect();
+        let read: Vec<[f32; 4]> = calm[ink_from..].to_vec();
         for n in self.nodes.iter().filter(|n| n.trace.is_some() && !n.hidden && modal.is_none()) {
             let tr = n.trace.as_ref().expect("filtered");
             let o = n.origin();
@@ -3329,12 +3357,21 @@ impl<S, M: Clone> Ui<S, M> {
                 [(x + f[0] * drift * tr.pull) * s, (y + f[1] * drift * tr.pull) * s]
             }).collect();
             let pts = strand::clear_path(pts, &pics, 12.0 * s, &read, 24.0 * s);
+            self.trace_drawn.push((n.key.clone(), pts.clone()));
             let pieces = strand::dashes(&pts, tr.progress, tr.dash * s, tr.gap * s);
             let want: usize = pieces.iter().map(|p| p.len().saturating_sub(1)).sum();
             let got = crate::budget::grant(want);
-            // Fewer bars than asked: every n-th point of each piece, still unbroken.
-            let every = if got == 0 { usize::MAX } else { want.div_ceil(got).max(1) };
-            if every == usize::MAX { continue; }
+            if got == 0 { continue; }
+            // Fewer bars than asked: each piece simplified, a quarter pixel off it and then twice as far
+            // each time until it fits, so it stays a curve with fewer, longer bars (and still unbroken).
+            let mut pieces = pieces;
+            let mut tol = 0.25 * s;
+            while pieces.iter().map(|p| p.len().saturating_sub(1)).sum::<usize>() > got && tol < 64.0 * s {
+                pieces = pieces.iter().map(|p| strand::simplify(p, tol)).collect();
+                tol *= 2.0;
+            }
+            let have: usize = pieces.iter().map(|p| p.len().saturating_sub(1)).sum();
+            let every = have.div_ceil(got).max(1);
             let clip = [n.clip.x * s, n.clip.y * s, n.clip.right() * s, n.clip.bottom() * s];
             let p = tr.paint;
             let w = line_px(tr.weight * s, self.timing.binary);
@@ -3356,31 +3393,6 @@ impl<S, M: Clone> Ui<S, M> {
         let clock = self.mclock;
         let beat = if hold > 0.0 { (clock * 1000.0 / hold).floor() as i64 } else { (clock * 1000.0).round() as i64 };
         let t = if hold > 0.0 { beat as f32 * hold / 1000.0 } else { clock };
-        // Each element's own glyphs and shapes (not pictures, 3D views or drawings), in reading order.
-        let mut own: Vec<Vec<usize>> = vec![vec![]; self.nodes.len()];
-        for i in 0..self.page_len.min(self.scene.instances.len()) {
-            let inst = &self.scene.instances[i];
-            if inst.paint[3] != GLYPH && inst.paint[3] != SHAPE { continue; }
-            if inst.paint[2] <= 0.0 || inst.rect[2] <= 0.0 || inst.rect[3] <= 0.0 { continue; }
-            own[self.owners[i].0].push(i);
-        }
-        // Morphs, recomposition and decoding hand over to the first pass's own ink pixel for pixel, so
-        // their elements loosen as plain does (no thread).
-        let running = self.run.is_some();
-        let (grain_k, atlas) = (if crate::budget::usage().scale < 0.5 { 2.0 } else { 1.0 }, &self.text.pixels);
-        // What the tails keep out of: calm boxes and the boxes of text to read and controls (not pictures).
-        let mut calm: Vec<[f32; 4]> = self.field.calm.iter().filter(|r| r[2] > r[0]).copied().collect();
-        // Each one's ink: its instances' boxes (a glyph's without the spread around it), within its clip.
-        let spread = crate::text::SPREAD as f32;
-        for (ni, idx) in own.iter().enumerate() {
-            let n = &self.nodes[ni];
-            if idx.is_empty() || !n.legible || n.hidden { continue; }
-            let b = idx.iter().map(|&i| { let r = self.scene.instances[i].rect; let p = if self.scene.instances[i].paint[3] == GLYPH { spread } else { 0.0 }; [r[0] + p, r[1] + p, r[0] + r[2] - p, r[1] + r[3] - p] })
-                .fold([f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY], |a, r| [a[0].min(r[0]), a[1].min(r[1]), a[2].max(r[2]), a[3].max(r[3])]);
-            let c = [n.clip.x * s, n.clip.y * s, n.clip.right() * s, n.clip.bottom() * s];
-            let b = [b[0].max(c[0]), b[1].max(c[1]), b[2].min(c[2]), b[3].min(c[3])];
-            if b[2] > b[0] && b[3] > b[1] { calm.push(b); }
-        }
         // A transition's Loosen steps loosen everything, on the CPU as the material pass does (render.rs).
         let tr_k = match &self.split {
             Some(sp) if self.timing.transition > 0.0 && self.split_alive(sp, now) =>
@@ -3474,6 +3486,9 @@ impl<S, M: Clone> Ui<S, M> {
     /// The threads scribblr drew in the last frame: each element's key, its looseness and its pieces
     /// (device px; DESIGN.md §1.30).
     pub fn strands(&self) -> &[(String, f32, Vec<crate::strand::Seg>)] { &self.strand_drawn }
+    /// The drawn paths (`El::trace`) of the last frame: each element's key and its whole path as kept
+    /// clear of pictures and text to read (device px), before progress and dashes cut it.
+    pub fn traces(&self) -> &[(String, Vec<[f32; 2]>)] { &self.trace_drawn }
 
     /// The motes as instances, over the page (shapes in the ink, under the annotation layer).
     fn paint_motes(&mut self) {
