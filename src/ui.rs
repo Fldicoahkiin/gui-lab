@@ -42,6 +42,12 @@ pub struct Node<M> {
     /// Scrolls along x rather than y.
     pub horizontal: bool,
     pub focusable: bool,
+    /// `El::tab_order`.
+    pub tab_order: i32,
+    /// `El::skip_to`.
+    pub skip_to: Option<String>,
+    /// `El::focus_shown`.
+    pub focus_shown: bool,
     /// Takes no input (it or an ancestor was marked disabled) and is drawn faint.
     pub disabled: bool,
     /// For scroll nodes: length of what they hold along their axis, so offsets can be clamped.
@@ -1464,6 +1470,7 @@ impl<S, M: Clone> Ui<S, M> {
             self.drag(Phase::Start, x, y);
             return;
         }
+        if let Some(t) = hit.and_then(|i| self.up(i, |n| n.skip_to.is_some())).and_then(|i| self.nodes[i].skip_to.clone()) { self.skip(&t); return; }
         let pressed = hit.and_then(|i| self.up(i, |n| n.on_press.is_some()));
         // Nothing to press here: selectable text starts a selection there; anywhere else ends one.
         if pressed.is_none() {
@@ -1568,6 +1575,7 @@ impl<S, M: Clone> Ui<S, M> {
             return true;
         }
         let Some(fi) = fi else { return self.key_scroll(None, k) || self.unused(k, shift) };
+        if matches!(k, Key::Enter | Key::Char(' ')) && let Some(t) = self.nodes[fi].skip_to.clone() { self.skip(&t); return true; }
         if matches!(k, Key::Enter | Key::Char(' ')) && let Some(m) = self.nodes[fi].on_press.clone() {
             let (cx, cy) = self.nodes[fi].rect.center();
             if self.up(fi, |n| n.commit).is_some() { self.snapshot(cx, cy); }
@@ -1662,6 +1670,7 @@ impl<S, M: Clone> Ui<S, M> {
         self.dirty = true;
         self.heard();
         let Some(i) = self.nodes.iter().position(|n| n.key == key) else { return false };
+        if let Some(t) = self.nodes[i].skip_to.clone() { self.skip(&t); return true; }
         if self.nodes[i].focusable { self.set_focus(Some(key.to_owned())); }
         let Some(i) = self.nodes.iter().position(|n| n.key == key) else { return false };
         let Some(m) = self.nodes[i].on_press.clone() else { return false };
@@ -1893,6 +1902,16 @@ impl<S, M: Clone> Ui<S, M> {
 
     fn within(&self, i: usize, root: usize) -> bool { within(&self.nodes, i, root) }
 
+    /// A skip link's activation: focus `target`, or the first element inside it that takes focus, as
+    /// the keyboard would, and scroll it into view.
+    fn skip(&mut self, target: &str) {
+        self.dirty = true;
+        let Some(root) = self.nodes.iter().position(|n| n.key == target) else { return };
+        let Some(i) = (root..self.nodes.len()).take_while(|&i| self.within(i, root)).find(|&i| self.nodes[i].focusable && !self.nodes[i].disabled) else { self.reveal_key(target); return };
+        self.keyboard = true;
+        self.set_focus(Some(self.nodes[i].key.clone()));
+    }
+
     fn set_focus(&mut self, to: Option<String>) {
         if to == self.focus { return; }
         let old = std::mem::replace(&mut self.focus, to);
@@ -1905,7 +1924,9 @@ impl<S, M: Clone> Ui<S, M> {
 
     fn cycle_focus(&mut self, back: bool) {
         // While a modal layer is open, focus goes round inside it only.
-        let order: Vec<usize> = (self.modal_at.unwrap_or(0)..self.nodes.len()).filter(|&i| self.nodes[i].focusable).collect();
+        // Positive tab orders first, lowest first; then 0 in document order; negative ones never.
+        let mut order: Vec<usize> = (self.modal_at.unwrap_or(0)..self.nodes.len()).filter(|&i| self.nodes[i].focusable && self.nodes[i].tab_order >= 0).collect();
+        order.sort_by_key(|&i| match self.nodes[i].tab_order { 0 => i32::MAX, t => t });
         if order.is_empty() { return; }
         let cur = self.focus.as_deref().and_then(|f| order.iter().position(|&i| self.nodes[i].key == f));
         let n = order.len();
@@ -2437,6 +2458,9 @@ impl<S, M: Clone> Ui<S, M> {
         self.field.calm = [[0.0; 4]; 4];
         let mut calms = 0;
         let mut held = vec![false; self.nodes.len()];
+        // `El::focus_shown` subtrees without focus inside are not drawn.
+        let focus_at = self.focus.as_deref().and_then(|f| self.nodes.iter().position(|n| n.key == f));
+        let mut veiled = vec![false; self.nodes.len()];
         // Whether a node is in the subtree of something that stirs the field map (it does not read the
         // map: a floating window would loosen itself by its own trail).
         let mut stirred = vec![false; self.nodes.len()];
@@ -2484,11 +2508,12 @@ impl<S, M: Clone> Ui<S, M> {
             // page like the modal layer: where it has ink it replaces the near image, so the loose
             // decoration it passes over never shows through it as loose marks (DESIGN.md §1.29).
             if self.modal_at.is_none() && self.scene.layer.is_none() && n.stirr.is_some() && n.fill.is_some() && !n.hidden { self.scene.begin_layer(); }
+            veiled[i] = n.parent.is_some_and(|p| veiled[p]) || n.focus_shown && !focus_at.is_some_and(|f| within(&self.nodes, f, i));
             held[i] = self.pressed.as_deref() == Some(n.key.as_str()) || n.parent.is_some_and(|p| held[p]);
             stirred[i] = n.stirr.is_some() || n.parent.is_some_and(|p| stirred[p]);
             unit[i] = n.parent.and_then(|p| unit[p]).or(n.active().then_some(i));
             let seen = n.rect.intersect(&n.clip);
-            if seen.w <= 0.0 || seen.h <= 0.0 { continue; }
+            if seen.w <= 0.0 || seen.h <= 0.0 || veiled[i] { continue; }
             let role = self.roles[i];
             // Reads the field map (DESIGN.md §1.29): not a stirring element's own subtree, not what a
             // morph shows (its hand-over must match the first stage exactly).
@@ -4378,7 +4403,7 @@ fn measure_key(c: &Content) -> u64 {
 /// A virtual list's rows are built here, for what its viewport shows.
 #[allow(clippy::too_many_arguments)]
 fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], off: (bool, bool), flow: Option<(Rc<str>, usize)>, inh: Inherit, vx: &mut VirtCtx, built: &mut Built, nodes: &mut Vec<Node<M>>) -> usize {
-    let El { key, style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, mut on_text, multiline, selectable, cursor, virt, access, ripple, mut on_pick, mut on_wheel, mut on_move, guide, skeleton, rtl, on_visible, on_outline, decode, form, turn, reveal_by, ongoing, mut children } = el;
+    let El { key, style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, mut on_text, multiline, selectable, cursor, virt, access, ripple, mut on_pick, mut on_wheel, mut on_move, guide, skeleton, rtl, on_visible, on_outline, decode, form, turn, reveal_by, ongoing, mut children } = el;
     let mut style = style;
     let mut inh = inh;
     if let Some(r) = rtl { inh.rtl = r; }
@@ -4434,7 +4459,7 @@ fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], of
     }
     let placeholder = NodeId::from(0u64);
     nodes.push(Node {
-        key, parent, rect: Rect::default(), clip: Rect::default(), inner: Rect::default(), scroll, horizontal, focusable, disabled: off, extent: 0.0,
+        key, parent, rect: Rect::default(), clip: Rect::default(), inner: Rect::default(), scroll, horizontal, focusable, tab_order, skip_to, focus_shown, disabled: off, extent: 0.0,
         content, fill, border, radius, on_press, on_key, on_drag, on_blur, loose, wipe, bar, reveal, commit, modal, hidden, shift, shed, flow_field, stirr, trace, flow: flow.clone(),
         mat: inh.code(), loosen: inh.loosen, annotate, scope: gaze_scope, anchor, clips, calm, on_text, multiline, selectable: inh.select, cursor,
         virt: virt_info, access, respond, legible, ripple: inh.scope.clone(), ripple_scope: ripple.container, recompose, recompose_always: is_text && ripple.recompose == Some(true), unframed: ripple.unframed, keyed,

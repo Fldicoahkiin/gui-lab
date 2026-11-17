@@ -545,6 +545,24 @@
       "recompose": "keyed labels recompose when their text changes"
     },
     {
+      "name": "skip-link",
+      "title": "跳到正文",
+      "group": "navigation",
+      "functions": [
+        "skip_link"
+      ],
+      "description": "键盘用户最先遇到的链接，把焦点跳过导航，直接移到正文。",
+      "description_en": "A link keyboard users meet first that moves focus past the navigation to the main content.",
+      "files": [
+        "src/widgets/skip_link.rs"
+      ],
+      "dependencies": [
+        "base"
+      ],
+      "response": "nudge (a control: pushed as one piece by fronts, held and condensing at most to Look::legible_cap)",
+      "recompose": "keyed labels recompose when their text changes"
+    },
+    {
       "name": "pagination",
       "title": "分页",
       "group": "navigation",
