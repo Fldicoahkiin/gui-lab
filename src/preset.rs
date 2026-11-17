@@ -114,12 +114,12 @@ pub struct Interaction {
     /// The field map: how strong the trails of moving things are, how they spread and settle (DESIGN.md §1.29).
     #[serde(default)]
     pub map: crate::fieldmap::MapFx,
-    /// How long `scribblr`'s line holds each pose, ms (0: every frame; DESIGN.md §1.30).
+    /// The tempo things fall on (DESIGN.md §1.32; `bpm` 0: off).
     #[serde(default)]
-    pub hold_ms: f32,
+    pub beat: crate::beat::Beat,
 }
 impl Default for Interaction {
-    fn default() -> Self { Self { press_ms: 350.0, front_speed: 760.0, front_width: 26.0, front_life: 1.4, text: Response::Nudge, decoration: Response::Loosen, recompose: Recompose::default(), scroll: crate::style::Scroll::default(), map: crate::fieldmap::MapFx::default(), hold_ms: 0.0 } }
+    fn default() -> Self { Self { press_ms: 350.0, front_speed: 760.0, front_width: 26.0, front_life: 1.4, text: Response::Nudge, decoration: Response::Loosen, recompose: Recompose::default(), scroll: crate::style::Scroll::default(), map: crate::fieldmap::MapFx::default(), beat: crate::beat::Beat::default() } }
 }
 
 /// A style preset as data.
@@ -169,7 +169,7 @@ impl Preset {
         l.roles = [i.text, i.decoration];
         l.scroll = i.scroll;
         l.map = i.map;
-        l.hold_ms = i.hold_ms;
+        l.beat = i.beat;
         l.transition = self.transition;
         l.post = self.post.look();
         l.marks = self.marks;
@@ -177,7 +177,7 @@ impl Preset {
     }
     pub fn to_json(&self) -> String { serde_json::to_string_pretty(self).unwrap_or_default() }
     /// The preset as a recipe: what differs from the built-in preset it started from (by `hash`; the
-    /// first one when it has no built-in), as `look:v2:` + base64url of `{"base": hash, "set": {path:
+    /// first one when it has no built-in), as `look:v3:` + base64url of `{"base": hash, "set": {path:
     /// value}}`. Short enough for a URL hash; every PNG the render tool writes carries one.
     pub fn recipe(&self) -> String {
         let all = presets();
@@ -193,9 +193,19 @@ impl Preset {
         let s = s.trim().trim_start_matches('#');
         if s.starts_with("look:v1:") {
             let renamed: Vec<String> = crate::style::RENAMED.iter().map(|(a, b)| format!("{a} → {b}")).collect();
-            return Err(bad(&format!("it is a look:v1: recipe, from before the materials were renamed ({}); make it again, and it starts with look:v2:", renamed.join(", "))));
+            return Err(bad(&format!("it is a look:v1: recipe, from before the materials were renamed ({}); make it again, and it starts with {RECIPE_PREFIX}", renamed.join(", "))));
         }
-        let body = s.strip_prefix(RECIPE_PREFIX).ok_or_else(|| bad("it does not start with look:v2:"))?;
+        if let Some(old) = s.strip_prefix("look:v2:") {
+            // From before the beat: a held pose was `interaction.hold_ms`.
+            let hold = un_b64url(old).and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+                .and_then(|d| d.get("set").and_then(|v| v.get("interaction.hold_ms")).and_then(|v| v.as_f64()));
+            let beat = match hold {
+                Some(h) if h > 0.0 => { let b = crate::beat::Beat::of_hold(h as f32); format!("; its `interaction.hold_ms` {h} is now `interaction.beat` {{ bpm: {}, steps: {}, swing: 0 }}", b.bpm, b.steps) }
+                _ => String::new(),
+            };
+            return Err(bad(&format!("it is a look:v2: recipe, from before the beat{beat}; make it again, and it starts with {RECIPE_PREFIX}")));
+        }
+        let body = s.strip_prefix(RECIPE_PREFIX).ok_or_else(|| bad(&format!("it does not start with {RECIPE_PREFIX}")))?;
         let bytes = un_b64url(body).ok_or_else(|| bad("its body is not base64url"))?;
         let doc: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| bad(&e.to_string()))?;
         let all = presets();
@@ -239,7 +249,7 @@ impl Preset {
     }
 }
 /// What starts every look recipe (the version is part of it: a later format gets a new prefix).
-pub const RECIPE_PREFIX: &str = "look:v2:";
+pub const RECIPE_PREFIX: &str = "look:v3:";
 /// Every leaf of a JSON value (numbers, strings, booleans) by its dotted path.
 fn leaves(v: &serde_json::Value) -> std::collections::BTreeMap<String, serde_json::Value> {
     fn go(v: &serde_json::Value, path: String, out: &mut std::collections::BTreeMap<String, serde_json::Value>) {
@@ -310,7 +320,7 @@ pub fn presets() -> Vec<Preset> {
             // A short fade and a small move.
             "cyberminimal" => (Interaction { press_ms: 160.0, front_width: 12.0, ..base }, Transition::of(120.0, &[step(Fade, 0.0, 1.0, [6.0, 90.0, 0.0, 0.0, 0.0])])),
             // Everything loosens into thread, then the outlines draw and the content fills.
-            "loose-thread" => (Interaction { press_ms: 320.0, front_speed: 600.0, front_width: 30.0, hold_ms: 83.0, text: Response::Loosen, ..base },
+            "loose-thread" => (Interaction { press_ms: 320.0, front_speed: 600.0, front_width: 30.0, beat: crate::beat::Beat::of_hold(83.0), text: Response::Loosen, ..base },
                 Transition::of(700.0, &[step(Loosen, 0.0, 0.55, [1.0, 0.0, 0.0, 0.0, 0.0]), step(Outline, 0.45, 1.0, [1.0, 0.6, 0.0, 0.0, 0.0])])),
             // Flat colour planes slide across and uncover the new page.
             _ => (Interaction { press_ms: 380.0, front_speed: 680.0, front_width: 40.0, ..base }, Transition::of(860.0, &[step(Planes, 0.0, 1.0, [5.0, 3.0, 0.0, 0.0, 0.0])])),

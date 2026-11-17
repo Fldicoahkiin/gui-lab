@@ -58,6 +58,14 @@ pub enum LookError {
         /// The tags there are.
         known: String,
     },
+    #[error("`{given}` is not a number of the look that can be set. Write one of: {known} (or a material's number as `<material>.<name>`, such as `glitchr.位移`).")]
+    /// `Look::set` (and `Cmd::Set`) was given a name it does not know.
+    UnknownSetting {
+        /// What was asked for.
+        given: String,
+        /// The names there are.
+        known: String,
+    },
 }
 
 /// The off-screen renderer could not start.
@@ -133,6 +141,15 @@ pub enum DriveError {
         /// One past the last.
         to: u32,
     },
+    #[error("`at` `{at}` is not a place on the beat: write `bar.beat.step` (each from 1, such as `3.2.1`, or `3.2` for its first step), and give the look a beat (`beat.bpm` above 0), or write `at_ms`.")]
+    /// An event's `at` could not be put on the look's beat (no beat, or not `bar.beat.step`).
+    BadBeatTime {
+        /// What was written.
+        at: String,
+    },
+    #[error("a command for the page was refused: {0}")]
+    /// A scheduled command named something the look or the page does not have.
+    BadCommand(String),
     #[error("event {index}: {inner}")]
     /// An error in one event of the list.
     AtEvent {
@@ -226,7 +243,7 @@ pub enum PresetError {
     #[error("the preset has no number at `{0}`. Paths are the JSON keys joined by dots, array places by their index: `transition.steps.0.a`, `interaction.press_ms`.")]
     /// No number at that path.
     NoSuchNumber(String),
-    #[error("not a look recipe ({0}). A recipe is `look:v2:` and then base64url of a small JSON object: `base` (a preset's hash, such as \"normcore\") and `set` (paths as `numbers` names them, with their values). Copy one from the 风格 page, or from a PNG the render tool wrote (its `amenui-recipe` text chunk).")]
+    #[error("not a look recipe ({0}). A recipe is `look:v3:` and then base64url of a small JSON object: `base` (a preset's hash, such as \"normcore\") and `set` (paths as `numbers` names them, with their values). Copy one from the 风格 page, or from a PNG the render tool wrote (its `amenui-recipe` text chunk).")]
     /// Not a look recipe.
     Recipe(String),
 }

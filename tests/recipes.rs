@@ -19,7 +19,7 @@ fn every_recipe_page_shows_its_file_exactly() {
 
 #[test]
 fn every_recipe_lays_out_and_answers() {
-    let ev = |at: f32, input: Input| Event { at_ms: at, input };
+    let ev = |at: f32, input: Input| Event { at_ms: at, at: None, input };
     let press = |k: &str| Input::Press { x: None, y: None, target: Some(k.into()), shift: false };
     // Released anywhere: a press already acted (the dialog's save button is gone by the release).
     let release = |_: &str| Input::Release { x: Some(1.0), y: Some(1.0), target: None };

@@ -13,7 +13,13 @@ use serde::Deserialize;
 /// One input event of a script, at `at_ms` on the page's clock (which starts at 0).
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct Event {
+    /// When, ms on the page's clock.
+    #[serde(default)]
     pub at_ms: f32,
+    /// When, as a place on the look's beat (`"3.2.1"`: bar 3, beat 2, step 1; DESIGN.md §1.32), in
+    /// place of `at_ms`. Refused when the look has no beat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<String>,
     #[serde(flatten)]
     pub input: Input,
 }
@@ -31,6 +37,67 @@ pub enum Input {
     Wheel { x: Option<f32>, y: Option<f32>, target: Option<String>, #[serde(default)] dx: f32, #[serde(default)] dy: f32 },
     /// Text typed into the focused field.
     Text { text: String },
+    /// A command for the runtime, as an application's `on_commands` would give it (`morph::Cmd`).
+    Cmd { cmd: CmdSpec },
+}
+
+/// The commands a script can send (DESIGN.md §1.32), in JSON as `{"ripplr_at": {"key": "title",
+/// "strength": 1}}`, `"retrigger"` and so on.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum CmdSpec {
+    /// `Cmd::Ripplr`: a front from (x, y), logical px.
+    Ripplr { x: f32, y: f32, #[serde(default = "one")] strength: f32 },
+    /// `Cmd::RipplrAt`: a front from an element's centre.
+    RipplrAt { key: String, #[serde(default = "one")] strength: f32 },
+    /// `Cmd::Stir` at a point (`x`, `y`), at an element (`key`), or along a path (`path`, `from`, `to`).
+    Stir {
+        #[serde(default)] x: Option<f32>, #[serde(default)] y: Option<f32>, #[serde(default)] key: Option<String>,
+        #[serde(default)] path: Option<Vec<[f32; 2]>>, #[serde(default)] from: f32, #[serde(default = "one")] to: f32,
+        #[serde(default)] v: [f32; 2], #[serde(default = "one")] energy: f32, #[serde(default = "radius")] radius: f32,
+    },
+    /// `Cmd::Press`: press an element as a person would.
+    Press { key: String },
+    /// `Cmd::Commit`: play the look's transition from (x, y).
+    Commit { x: f32, y: f32 },
+    /// `Cmd::Hold`: stop the beat clock for this many steps.
+    Hold(u8),
+    /// `Cmd::Retrigger`: play the current step again.
+    Retrigger,
+    /// `Cmd::Rewind`: take the beat clock back this many beats.
+    Rewind(f32),
+    /// `Cmd::Set`: set one number of the look by its name.
+    Set { name: String, value: f32 },
+}
+fn one() -> f32 { 1.0 }
+fn radius() -> f32 { 120.0 }
+impl CmdSpec {
+    /// The command it stands for.
+    pub fn cmd(&self) -> Result<crate::morph::Cmd, DriveError> {
+        use crate::morph::{Cmd, StirAt};
+        Ok(match self.clone() {
+            CmdSpec::Ripplr { x, y, strength } => Cmd::Ripplr { x, y, strength },
+            CmdSpec::RipplrAt { key, strength } => Cmd::RipplrAt { key, strength },
+            CmdSpec::Stir { x, y, key, path, from, to, v, energy, radius } => {
+                let at = match (key, path, x, y) {
+                    (Some(k), _, _, _) => StirAt::Key(k),
+                    (None, Some(p), _, _) => StirAt::Path { points: std::rc::Rc::new(p), from, to },
+                    (None, None, Some(x), Some(y)) => StirAt::Point([x, y]),
+                    _ => return Err(DriveError::NoPosition),
+                };
+                Cmd::Stir { at, v, energy, radius, scope: crate::el::Scope::Global }
+            }
+            CmdSpec::Press { key } => Cmd::Press { key },
+            CmdSpec::Commit { x, y } => Cmd::Commit { x, y },
+            CmdSpec::Hold(n) => Cmd::Hold(n),
+            CmdSpec::Retrigger => Cmd::Retrigger,
+            CmdSpec::Rewind(b) => Cmd::Rewind(b),
+            CmdSpec::Set { name, value } => {
+                Look::default().set(&name, value).map_err(|e| DriveError::BadCommand(e.to_string()))?;
+                Cmd::Set { name, value }
+            }
+        })
+    }
 }
 
 /// Read a script: a JSON list of events.
@@ -48,6 +115,8 @@ pub trait Driven {
     fn problems(&self) -> Vec<ViewProblem>;
     fn needs_frame(&self, t: f32) -> bool;
     fn draw(&mut self, o: &mut Offscreen, look: &Look) -> Vec<u8>;
+    /// Take a command for the runtime (`Ui::command`); a page that has none refuses it.
+    fn command(&mut self, _cmd: crate::morph::Cmd) -> Result<(), DriveError> { Err(DriveError::BadCommand("this page takes no commands".into())) }
     /// The look as a recipe string (`Preset::recipe`), when the page has one.
     fn recipe(&self) -> Option<String> { None }
     /// Something visible moves on purpose (`El::ongoing`).
@@ -69,6 +138,16 @@ impl<S, M: Clone> Driven for Ui<S, M> {
     fn draw(&mut self, o: &mut Offscreen, look: &Look) -> Vec<u8> { o.render(self, look) }
     fn ongoing(&self) -> bool { Ui::ongoing(self) }
     fn frame_drawn(&mut self) { Ui::frame_drawn(self) }
+    fn command(&mut self, cmd: crate::morph::Cmd) -> Result<(), DriveError> {
+        let check = match &cmd {
+            crate::morph::Cmd::RipplrAt { key, .. } | crate::morph::Cmd::Press { key } => Some(key.clone()),
+            crate::morph::Cmd::Stir { at: crate::morph::StirAt::Key(k), .. } => Some(k.clone()),
+            _ => None,
+        };
+        if let Some(k) = check && self.node(&k).is_none() { return Err(DriveError::UnknownTarget { near: near_keys(self, &k), key: k }); }
+        Ui::command(self, cmd);
+        Ok(())
+    }
     fn audit(&mut self, o: &mut Offscreen, look: &Look, px: &[u8]) -> Vec<crate::audit::Finding> {
         let (partial, hide) = (o.r.partial, o.r.hide_glyphs);
         o.r.partial = false;
@@ -103,6 +182,7 @@ impl<S, M: Clone> Driven for Ui<S, M> {
                 self.key_mods(k, Mods { shift: *shift, cmd: *cmd, alt: *alt });
             }
             Input::Text { text } => { self.text_input(text); }
+            Input::Cmd { cmd } => { let c = cmd.cmd()?; Driven::command(self, c)?; }
         }
         Ok(())
     }
@@ -136,6 +216,7 @@ impl Driven for Styled {
     fn draw(&mut self, o: &mut Offscreen, look: &Look) -> Vec<u8> { self.inner.draw(o, look) }
     fn ongoing(&self) -> bool { self.inner.ongoing() }
     fn frame_drawn(&mut self) { self.inner.frame_drawn() }
+    fn command(&mut self, cmd: crate::morph::Cmd) -> Result<(), DriveError> { self.inner.command(cmd) }
     fn audit(&mut self, o: &mut Offscreen, look: &Look, px: &[u8]) -> Vec<crate::audit::Finding> { self.inner.audit(o, look, px) }
 }
 
@@ -164,28 +245,36 @@ pub const FPS: [u32; 5] = [60, 30, 20, 15, 12];
 /// Play `events` on a fixed 60 Hz clock from 0 to `at_ms` (each event is applied on the first frame at
 /// or after its time, in the order given), then tick exactly at `at_ms`.
 pub fn play(d: &mut dyn Driven, events: &[Event], at_ms: f32) -> Result<(), DriveError> {
-    let mut p = Player::new(events);
+    let mut p = Player::new(events, &d.look().beat)?;
     p.to(d, at_ms.max(0.0) / 1000.0)?;
     // Events after the end are not played.
     Ok(())
 }
 
 /// The 60 Hz clock and the events still to play, so a run of frames plays on from where it is.
-struct Player<'a> { order: Vec<(usize, &'a Event)>, next: usize, k: u32 }
+struct Player<'a> { order: Vec<(usize, f32, &'a Event)>, next: usize, k: u32 }
 impl<'a> Player<'a> {
-    fn new(events: &'a [Event]) -> Self {
-        let mut order: Vec<(usize, &Event)> = events.iter().enumerate().collect();
-        order.sort_by(|a, b| a.1.at_ms.total_cmp(&b.1.at_ms));
-        Self { order, next: 0, k: 0 }
+    /// The events in time order; an `at` on the beat is put in ms by `beat`.
+    fn new(events: &'a [Event], beat: &crate::beat::Beat) -> Result<Self, DriveError> {
+        let mut order = vec![];
+        for (i, e) in events.iter().enumerate() {
+            let ms = match &e.at {
+                Some(at) => beat.parse_at(at).map(|s| s * 1000.0).ok_or_else(|| DriveError::AtEvent { index: i, inner: Box::new(DriveError::BadBeatTime { at: at.clone() }) })?,
+                None => e.at_ms,
+            };
+            order.push((i, ms, e));
+        }
+        order.sort_by(|a, b| a.1.total_cmp(&b.1));
+        Ok(Self { order, next: 0, k: 0 })
     }
     /// Tick from where the clock is to `end` s (each event applied on the first tick at or after its
     /// time, in the order given), then exactly at `end`.
     fn to(&mut self, d: &mut dyn Driven, end: f32) -> Result<(), DriveError> {
         loop {
             let t = (self.k as f32 / 60.0).min(end);
-            while self.next < self.order.len() && self.order[self.next].1.at_ms / 1000.0 <= t + 1e-6 {
+            while self.next < self.order.len() && self.order[self.next].1 / 1000.0 <= t + 1e-6 {
                 d.tick(t);
-                let (index, e) = self.order[self.next];
+                let (index, _, e) = self.order[self.next];
                 d.apply(&e.input).map_err(|e| DriveError::AtEvent { index, inner: Box::new(e) })?;
                 self.next += 1;
             }
@@ -249,7 +338,7 @@ fn frames_inner(spec: &RenderSpec, range: std::ops::Range<u32>, fps: u32, faces:
     let o = match o { Some(o) => o, None => { own = Offscreen::try_new(spec.w, spec.h)?; &mut own } };
     if (o.w, o.h) != (spec.w, spec.h) { return Err(SurfaceError::SizeMismatch { w: spec.w, h: spec.h, have_w: o.w, have_h: o.h }.into()); }
     let step = 60 / fps;
-    let mut p = Player::new(&spec.events);
+    let mut p = Player::new(&spec.events, &d.look().beat)?;
     // Each frame drawn whole, as a single `render` draws it.
     let partial = o.r.partial;
     o.r.partial = false;

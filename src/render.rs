@@ -225,6 +225,8 @@ pub struct Renderer {
     tr: [[f32; 4]; 9],
     boxes: [[f32; 4]; 16],
     tr_loose: f32,
+    /// The beat clock off the grid this frame (`Ui::beat_time`): what condenses goes on between steps.
+    t_cont: f32,
 }
 
 /// The mesh pass's uniforms (see `mesh.wgsl`).
@@ -380,7 +382,7 @@ impl Renderer {
             pictures: HashMap::new(), instances, capacity, pipes, annots, annot_capacity: 256, up_pipe: None, shader, pl,
             ink: blank.clone(), lo: blank.clone(), lo_key: (0, 0, 0), material_up: material.clone(), auto: Default::default(), always_lo: false, no_map: false,
             near: blank, material_first: material.clone(), material, size: (0, 0), tiles, mesh, sim_rows: 0,
-            region: crate::dirty::Region::All, partial: true, frame_view: blank_view.clone(), prev: None, zero, blit, post: None, blit_group: blank_group, warm: None, condense: false, last_region: None, tr: [[0.0; 4]; 9], boxes: [[0.0; 4]; 16], tr_loose: 0.0,
+            region: crate::dirty::Region::All, partial: true, frame_view: blank_view.clone(), prev: None, zero, blit, post: None, blit_group: blank_group, warm: None, condense: false, last_region: None, tr: [[0.0; 4]; 9], boxes: [[0.0; 4]; 16], tr_loose: 0.0, t_cont: 0.0,
         };
         r.set_picture(u32::MAX, 1, 1, &[0, 0, 0, 255]);
         r.resize(w, h);
@@ -920,7 +922,9 @@ impl Renderer {
             );
             text.dirty = false;
         }
-        let (scale, now, mt) = (ui.scale(), ui.now(), [ui.material_clock(), ui.ground_clock()]);
+        // What falls on the beat is drawn at the start of its step; condensing goes on between (`t_cont`).
+        let (scale, now, mt) = (ui.scale(), ui.beat_grid(), [ui.material_clock(), ui.ground_clock()]);
+        self.t_cont = ui.beat_time();
         // The old frame of a commit and a morph's pictures are drawn without the field map.
         self.fmap_u = [0.0; 4];
         // A new commit: the frame as it is on the screen (mid-transition too, so a second switch goes on
@@ -1251,7 +1255,7 @@ impl Renderer {
             tr: if split[3] > 0.0 { self.tr } else { [[0.0; 4]; 9] }, boxes: self.boxes,
             scrolls: field.scrolls, scrollo: field.scrollo,
             scrp: [look.scroll.trail * scale, look.scroll.misreg * scale, look.scroll.slip * scale, look.scroll.band.max(4.0) * scale],
-            scrq: [look.scroll.slip_ms.max(16.0) / 1000.0, 0.0, 0.0, 0.0],
+            scrq: [look.scroll.slip_ms.max(16.0) / 1000.0, if look.beat.on() { self.t_cont } else { t }, 0.0, 0.0],
             post: post.0, pal: post.1, fmap: self.fmap_u,
         };
         self.queue.write_buffer(&self.ubuf, 0, bytemuck::bytes_of(&u));

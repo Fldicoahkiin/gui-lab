@@ -43,7 +43,7 @@ struct U {
   scrolls: array<vec4f, 8>, // scroll nodes' viewports (x0, y0, x1, y1, device px), DESIGN.md §1.8.3
   scrollo: array<vec4f, 8>, // their content offsets (x, y, whole device px), trace strength, the way the content moves (±1 down/up, ±2 right/left)
   scrp: vec4f,     // the trace's lengths (device px): trail, misregistration, glitch slip, glitch band
-  scrq: vec4f,     // the least time between two glitch slips (s)
+  scrq: vec4f,     // the least time between two glitch slips (s); the beat clock off the grid (condensing)
   post: array<vec4f, 6>, // the finishing pass (post.rs Post::pack): dither kind, levels, palette size, on; bloom strength, threshold, radius, dither strength; chroma offset, scanline strength, period, grain; vignette strength, radius, curvature, grain cell; invert
   pal: array<vec4f, 16>, // the palette, sRGB 0–1
   fmap: vec4f,     // the field map (DESIGN.md §1.29): cell (device px), drift (device px), nodes across, down (0: all zero, not read)
@@ -254,7 +254,7 @@ fn loose1(i: VOut) -> f32 { return clamp(own_loose(i) * loose_scale(), 0.0, u.ri
 /// An instance's own looseness here (held, born, set at rest) plus what the fronts that reach it add,
 /// which only fills up to its cap: text to read never passes `legible_cap` by the field.
 fn own_loose(i: VOut) -> f32 {
-  let born = clamp((u.res.w - i.extra.w) / max(u.fc.z, 1e-3), 0.0, 1.0);
+  let born = clamp((u.scrq.y - i.extra.w) / max(u.fc.z, 1e-3), 0.0, 1.0);
   let k = max(i.extra.z, 1.0 - born);
   if (i.resp.x <= 0.0) { return k; }
   var w = wave_in(i.pos.xy, i.resp.zw, 0.6);
@@ -305,7 +305,7 @@ fn ink_of(i: VOut, solid: bool) -> vec4f {
 }
 fn near_of(i: VOut) -> vec4f {
   let s = inst(i);
-  let born = clamp((u.res.w - i.extra.w) / max(u.fc.z, 1e-3), 0.0, 1.0);
+  let born = clamp((u.scrq.y - i.extra.w) / max(u.fc.z, 1e-3), 0.0, 1.0);
   // Looseness belongs to the instance's own ink: where it has ink (coverage over a half) it is written
   // as 0.5 + k / 2, in its halo as 0.49 k. Max-blended, any ink beats any halo, so one instance's
   // looseness never spills onto a neighbour's ink (a new marker beside a column of dots).
