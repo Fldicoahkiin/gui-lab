@@ -1143,7 +1143,7 @@ fn tr_step(p: vec2f, x: f32, k: i32, s: ptr<function, TS>) {
     let centre = rot((cell + h2(cell + 0.71) * 0.6 + 0.2) / sq * cs, ang);
     // Measured against the farthest corner from the press, so the last pieces leave at the step's end.
     let far = max(max(length(o), length(o - vec2f(u.res.x, 0.0))), max(length(o - vec2f(0.0, u.res.y)), length(o - u.res.xy)));
-    let leave = 0.28 + 0.5 * (0.6 * clamp(distance(centre, o) / max(far, 1.0), 0.0, 1.0) + 0.4 * h1(cell + 3.17));
+    let leave = 0.28 + 0.6 * (0.6 * clamp(distance(centre, o) / max(far, 1.0), 0.0, 1.0) + 0.4 * h1(cell + 3.17));
     let own = clamp((e - leave) / 0.15, 0.0, 1.0);
     // Slow at first and fast at the end, so a piece is seldom half gone.
     let width = max(hair, select(0.0, mix(hair, 1.6 * cs, own * own * own * own), own > 0.0));

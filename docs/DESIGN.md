@@ -2493,7 +2493,7 @@ sliding away offset) and crack (`StepKind::Crack`, id 11; numbers `preset::CRACK
 across it by the bias. The cracks run out from where the commit was pressed (the page's centre without one): a pixel's
 crack is drawn once the run (0 to the page's diagonal over the first 0.4 of the step) has passed it, and the cracks
 stay thin, from 0.6 px to `0.06 a` (7 px) at 0.4, measured in page px whichever way they run. Their edges are straight
-but for a slow waver (`d` px every `a / 5` px). Then each piece leaves whole at its own time `t = 0.28 + 0.5 × (0.6 ×
+but for a slow waver (`d` px every `a / 5` px). Then each piece leaves whole at its own time `t = 0.28 + 0.6 × (0.6 ×
 distance from the press ÷ the farthest corner's + 0.4 × the piece's hash)`: between `t` and `t + 0.15` its own crack
 widens (slowly, then fast: the fourth power) until it covers the piece, so at any moment most pieces are whole or
 gone. (Against the farthest corner rather than the diagonal, so the last pieces leave at the step's end wherever the
