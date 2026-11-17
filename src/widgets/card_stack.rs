@@ -157,7 +157,19 @@ pub fn card_stack<M: Clone + 'static>(key: &str, s: &Stack, width: f32, height: 
         .on_key(move |k, _| matches!(k, Key::Up | Key::Down | Key::Left | Key::Right | Key::Enter | Key::Char(' ') | Key::Escape).then(|| b(StackMsg::Key(k))));
     // Marks: the material draws the cards as its marks at rest too (held loose, like a picture).
     if let StackLook::Marks(m) = s.look { e = e.material(m.id()).loose(1.0).legible(false); }
-    e
+    // The cards swing inside one 3D element: a point at each card's far corner (where it is in the
+    // view, as the straight-on camera shows it) stirs the field map as the card turns (DESIGN.md
+    // §1.29). The stack is a stirring element itself, so its cards do not read their own trail.
+    let (w, h) = s.card;
+    let k = height / 1.25;
+    for i in 0..s.count {
+        let (sn, cs) = s.angle_of(i).to_radians().sin_cos();
+        let (px, py) = (-w * 0.4, -h * 0.7);
+        let (x, y) = (px + w * cs - h * sn, py + w * sn + h * cs);
+        let at = (width * 0.5 + x * k, height * 0.5 - y * k);
+        e = e.child(crate::el::space(0.0, 0.0).key(format!("{key}/corner/{i}")).absolute(Some(at.0), Some(at.1), None, None).stirr(crate::el::Stirr::default()));
+    }
+    e.stirr(crate::el::Stirr::default())
 }
 
 #[cfg(test)]

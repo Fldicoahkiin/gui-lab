@@ -102,9 +102,12 @@ pub struct Interaction {
     /// How scrolling looks (DESIGN.md §1.8.3).
     #[serde(default)]
     pub scroll: crate::style::Scroll,
+    /// The field map: how strong the trails of moving things are, how they spread and settle (DESIGN.md §1.29).
+    #[serde(default)]
+    pub map: crate::fieldmap::MapFx,
 }
 impl Default for Interaction {
-    fn default() -> Self { Self { press_ms: 350.0, front_speed: 760.0, front_width: 26.0, front_life: 1.4, text: Response::Nudge, decoration: Response::Loosen, recompose: Recompose::default(), scroll: crate::style::Scroll::default() } }
+    fn default() -> Self { Self { press_ms: 350.0, front_speed: 760.0, front_width: 26.0, front_life: 1.4, text: Response::Nudge, decoration: Response::Loosen, recompose: Recompose::default(), scroll: crate::style::Scroll::default(), map: crate::fieldmap::MapFx::default() } }
 }
 
 /// A style preset as data.
@@ -153,6 +156,7 @@ impl Preset {
         l.press_ms = i.press_ms;
         l.roles = [i.text, i.decoration];
         l.scroll = i.scroll;
+        l.map = i.map;
         l.transition = self.transition;
         l.post = self.post.look();
         l.marks = self.marks;
@@ -300,6 +304,20 @@ pub fn presets() -> Vec<Preset> {
             "lofi-print" => sc.misreg = 4.0,
             "glitch" => { sc.slip = 34.0; sc.slip_ms = 90.0; }
             "linocut" => sc.trail = 34.0,
+            _ => {}
+        }
+        // How strong each preset's trails are (DESIGN.md §1.29): none in Normcore, quiet in the plain
+        // presets, strong where the material shows energy (dots, glitch).
+        let map = &mut interaction.map;
+        match st.hash {
+            "normcore" => map.stirr = 0.0,
+            "cyberminimal" => { map.stirr = 0.25; map.stirr_radius = 32.0; }
+            "tech-manual" => map.stirr = 0.2,
+            "gaze" => map.stirr = 0.3,
+            "bauhaus" => map.stirr = 0.4,
+            "lofi-print" | "linocut" => map.stirr = 0.5,
+            "glitch" => { map.stirr = 0.7; map.energy_life = 0.25; }
+            "dotmatrix" => { map.stirr = 0.8; map.energy_life = 0.7; }
             _ => {}
         }
         Preset {

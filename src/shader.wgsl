@@ -46,6 +46,7 @@ struct U {
   scrq: vec4f,     // the least time between two glitch slips (s)
   post: array<vec4f, 6>, // the finishing pass (post.rs Post::pack): dither kind, levels, palette size, on; bloom strength, threshold, radius, dither strength; chroma offset, scanline strength, period, grain; vignette strength, radius, curvature, grain cell
   pal: array<vec4f, 16>, // the palette, sRGB 0–1
+  fmap: vec4f,     // the field map (DESIGN.md §1.29): cell (device px), drift (device px), nodes across, down (0: all zero, not read)
 };
 @group(0) @binding(0) var<uniform> u: U;
 @group(0) @binding(1) var samp: sampler;
@@ -55,6 +56,7 @@ struct U {
 @group(0) @binding(5) var palettes: texture_2d<f32>; // 16 × rows
 @group(0) @binding(6) var chars: texture_2d<f32>;    // character tiles cut per device pitch (marks.rs char_tiles)
 @group(0) @binding(7) var before: texture_2d<f32>;   // the frame before the last commit
+@group(0) @binding(8) var fmap_t: texture_2d<f32>;   // the field map: r energy, g b 128 + 127 × flow (fieldmap.rs)
 @group(0) @binding(9) var lo: texture_2d<f32>;       // the material at reduced resolution (DESIGN.md §1.12)
 
 const PLAIN: i32 = 0; const DOT: i32 = 1; const HALFTONE: i32 = 2; const ASCII: i32 = 3; const PRINT: i32 = 4;
@@ -76,6 +78,27 @@ fn front_at(p: vec2f, r: vec4f) -> vec2f {
 fn in_scope(c: vec2f, j: i32) -> bool {
   let r = u.scopes[j];
   return c.x >= r.x && c.y >= r.y && c.x < r.z && c.y < r.w;
+}
+
+// ── The field map (DESIGN.md §1.29) ───────────────────────────────────────────────────────────────
+// Node (i, j) is at (i, j) × cell; between nodes, bilinear by hand (the vertex stage reads it too, and the
+// CPU's model reads the same bytes the same way). When the map is all zero it is not read at all.
+fn fmap_raw(p: vec2f) -> vec4f {
+  let q = max(p / u.fmap.x, vec2f(0.0));
+  let i = vec2i(floor(q)); let f = q - floor(q);
+  let lim = vec2i(i32(u.fmap.z) - 1, i32(u.fmap.w) - 1);
+  let a = textureLoad(fmap_t, min(i, lim), 0);
+  let b = textureLoad(fmap_t, min(i + vec2i(1, 0), lim), 0);
+  let c = textureLoad(fmap_t, min(i + vec2i(0, 1), lim), 0);
+  let d = textureLoad(fmap_t, min(i + vec2i(1, 1), lim), 0);
+  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+fn fmap_on() -> bool { return u.fmap.z > 0.5; }
+fn fmap_e(p: vec2f) -> f32 { if (!fmap_on()) { return 0.0; } return fmap_raw(p).r; }
+fn fmap_flow(p: vec2f) -> vec2f {
+  if (!fmap_on()) { return vec2f(0.0); }
+  let f = (fmap_raw(p).gb * 255.0 - 128.0) / 127.0;
+  return select(f, vec2f(0.0), abs(f) < vec2f(0.5 / 127.0));
 }
 
 // ── Stage 1 ───────────────────────────────────────────────────────────────────────────────────────
@@ -144,6 +167,9 @@ fn vs_pad(i: VIn, spad: f32) -> VOut {
     let dir = normalize(centre - u.fronts[k].xy + vec2f(1e-4));
     push += dir * exp(-(f.y * f.y) / (w * w)) * f.x * u.fc.x * u.res.z;
   }
+  // The field map's flow carries what may be pushed and reads it (look.z), by its centre; not a picture
+  // or a 3D view (look.w), which loosens in place.
+  if (!still && i.look.z > 0.5 && i.look.w < 0.5) { push += fmap_flow(centre) * u.fmap.y; }
   p += push;
   var o: VOut;
   o.pos = vec4f(p.x / u.res.x * 2.0 - 1.0, 1.0 - p.y / u.res.y * 2.0, 0.0, 1.0);
@@ -235,6 +261,9 @@ fn own_loose(i: VOut) -> f32 {
   // The lens is a source of the field like a front: it reaches pictures and 3D elements that may be
   // loosened and that the pointer is not operating (the flag in radius.y), up to their cap.
   if (i.radius.y > 0.5) { w = max(w, lens(i.pos.xy)); }
+  // The field map is one more source, read where the instance is drawn (not a stirring element's own
+  // subtree, not what a morph or recomposition flies: look.z is 0 there).
+  if (i.look.z > 0.5) { w = max(w, fmap_e(i.pos.xy)); }
   // A 3D element also loosens under a hover's burst.
   if (i.paint.w > 2.5) { w = max(w, burst_k(i.pos.xy)); }
   return k + clamp(w, 0.0, max(i.resp.x - k, 0.0));
@@ -704,8 +733,11 @@ fn m_dot(frag: vec2f) -> vec3f {
   let mt = u.rip.w;
   let drift = (sin(gc.x * 0.21 + mt * 0.33) + sin(gc.y * 0.37 - mt * 0.21) + sin((gc.x + gc.y) * 0.13 + mt * 0.17)) / 3.0;
   var lvl = max(0.0, drift - 0.25) * 0.55 * step(h1(gc), 0.4) + wave(gcen, 0.16) * 0.95 + lens(gcen) * 0.7;
+  // The field map: its energy lifts the units like a front, its flow leans them up to half a pitch.
+  var gat = gcen;
+  if (fmap_on() && !calm_at(gcen)) { lvl += fmap_e(gcen) * 0.95; gat = gcen + fmap_flow(gcen) * gp * 0.5; }
   lvl *= 1.0 - smoothstep(0.1, 0.35, near(gcen).r);
-  let gu = unit(frag - gcen, gp * 0.42 * clamp(lvl, 0.0, 1.0)) * step(0.05, lvl);
+  let gu = unit(frag - gat, gp * 0.42 * clamp(lvl, 0.0, 1.0)) * step(0.05, lvl);
   g = mix(g, u.fg.rgb, gu * 0.34);
   return mix(g, col, alpha);
 }
@@ -898,7 +930,9 @@ fn m_glitch(p: vec2f, pic: bool) -> vec3f {
   let slice = max(a0.x * s, 1.0); let shift = a0.y * s; let split = a0.z * s; let hold = max(a0.w, 16.0); let block = max(a1.x * s, 2.0);
   let row = floor(lat(p).y / slice);
   let rc = vec2f(p.x, (row + 0.5) * slice - anc.y);
-  let kr = clamp(kt(rc) + burst_k(rc), 0.0, 1.0);
+  var kr = clamp(kt(rc) + burst_k(rc), 0.0, 1.0);
+  // On the ground (no outline near), the field map's energy is the looseness the rows slip by.
+  if (fmap_on() && near_t(p).r < 0.02 && !calm_at(rc)) { kr = max(kr, clamp(fmap_e(rc), 0.0, 1.0)); }
   let here = select(exact(p), scene_at(p), pic);
   if (kr <= 0.0) { return here; }
   let tq = floor(u.fa.y * 1000.0 / hold);

@@ -120,6 +120,8 @@ pub fn floating<M: Clone + 'static>(key: &str, f: &Floating, content: El<M>, msg
         .fill(Paint::GROUND).border(1.0, Paint::DIM).focusable(true).role(Role::Group).label(crate::i18n::tr("widget.floating.label"))
         .cursor(if f.dragging() { crate::el::Cursor::Grabbing } else { crate::el::Cursor::Grab })
         .shift(x, y)
+        // Dragged, thrown or gliding, it leaves a trail in the field map (DESIGN.md §1.29).
+        .stirr(crate::el::Stirr::default())
         .on_drag_with(move |d| Some(a(FloatMsg::Drag(d))))
         .on_key(move |k, _| matches!(k, Key::Left | Key::Right | Key::Up | Key::Down).then(|| b(FloatMsg::Key(k))))
         .child(content)

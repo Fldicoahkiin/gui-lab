@@ -54,6 +54,8 @@ struct Uniforms {
     /// The finishing pass (`post::Post::pack`) and its palette.
     post: [[f32; 4]; 6],
     pal: [[f32; 4]; crate::post::PALETTE_MAX],
+    /// The field map: cell and drift (device px), nodes across and down (0: all zero, not read).
+    fmap: [f32; 4],
 }
 
 const INK: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -147,6 +149,12 @@ pub struct Renderer {
     chars_view: wgpu::TextureView,
     /// A 1 × 1 texture for bindings a pass does not read.
     blank: wgpu::TextureView,
+    /// The field map's texture (`fieldmap::MAX_NODES` square; the map's nodes in its top left), the
+    /// bytes last uploaded, and what the uniforms say about it this frame.
+    fmap: wgpu::Texture,
+    fmap_view: wgpu::TextureView,
+    fmap_seen: Option<std::rc::Rc<Vec<u8>>>,
+    fmap_u: [f32; 4],
     /// The frame as it was before the last commit, and which commit that was.
     before: wgpu::TextureView,
     split_seen: u32,
@@ -182,6 +190,9 @@ pub struct Renderer {
     pub auto: crate::perf::AutoQuality,
     /// Draw the reduced pass even when nothing is loose (for checks that compare rest pixels).
     pub always_lo: bool,
+    /// Never read the field map (the check's control for DESIGN.md §1.29: with the map all zero, a
+    /// frame is the same with or without it).
+    pub no_map: bool,
     size: (u32, u32),
     tiles: Tiles,
     mesh: MeshGpu,
@@ -261,6 +272,8 @@ impl Renderer {
             wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::VERTEX_FRAGMENT, count: None, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None } },
             wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::FRAGMENT, count: None, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering) },
             tex_entry(2), tex_entry(3), tex_entry(4), tex_entry(5), tex_entry(6), tex_entry(7), tex_entry(9),
+            // The field map is read in the vertex stage too (its flow pushes instances), by textureLoad.
+            wgpu::BindGroupLayoutEntry { binding: 8, visibility: wgpu::ShaderStages::VERTEX_FRAGMENT, count: None, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false } },
         ] });
         let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
         let inst_layout = wgpu::VertexBufferLayout {
@@ -326,14 +339,20 @@ impl Renderer {
         let capacity = 4096;
         let instances = Self::instance_buffer(&device, capacity);
         let blank = Self::target(&device, 1, 1, INK);
-        let material = Self::bind(&device, &layout, &ubuf, &sampler, [&blank, &blank, &marks_view, &palette_view, &chars_view, &blank, &blank]);
+        let n = crate::fieldmap::MAX_NODES as u32;
+        let fmap = device.create_texture_with_data(&queue, &wgpu::TextureDescriptor {
+            label: Some("field map"), size: wgpu::Extent3d { width: n, height: n, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,
+            dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba8Unorm, usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST, view_formats: &[],
+        }, wgpu::util::TextureDataOrder::LayerMajor, &[0u8, 128, 128, 0].repeat((n * n) as usize));
+        let fmap_view = fmap.create_view(&Default::default());
+        let material = Self::bind(&device, &layout, &ubuf, &sampler, [&blank, &blank, &marks_view, &palette_view, &chars_view, &blank, &blank, &fmap_view]);
         let annots = Self::instance_buffer(&device, 256);
         let (blank_view, blank_group) = (blank.clone(), material.clone());
         let mut r = Self {
             device, queue, out_format, layout, ubuf, sampler, atlas, atlas_view, marks, marks_view, palette_view, chars, chars_view,
-            before: blank.clone(), blank: blank.clone(), split_seen: 0, split: [0.0; 4], last_look: None, marks_ready: false, hide_glyphs: false,
+            before: blank.clone(), blank: blank.clone(), fmap, fmap_view: fmap_view.clone(), fmap_seen: None, fmap_u: [0.0; 4], split_seen: 0, split: [0.0; 4], last_look: None, marks_ready: false, hide_glyphs: false,
             pictures: HashMap::new(), instances, capacity, pipes, annots, annot_capacity: 256, up_pipe: None, shader, pl,
-            ink: blank.clone(), lo: blank.clone(), lo_key: (0, 0, 0), material_up: material.clone(), auto: Default::default(), always_lo: false,
+            ink: blank.clone(), lo: blank.clone(), lo_key: (0, 0, 0), material_up: material.clone(), auto: Default::default(), always_lo: false, no_map: false,
             near: blank, material_first: material.clone(), material, size: (0, 0), tiles, mesh, sim_rows: 0,
             region: crate::dirty::Region::All, partial: true, frame_view: blank_view.clone(), prev: None, zero, blit, post, blit_group: blank_group, last_region: None, tr: [[0.0; 4]; 9], boxes: [[0.0; 4]; 16], tr_loose: 0.0,
         };
@@ -516,7 +535,7 @@ impl Renderer {
         let b = &self.blank;
         // The mesh pass reads nothing; mask reads normal + depth and id; h the mask; v the mask, h, normal and id.
         let groups = [group([b, b, &views[1], &views[2]]), group([&views[4], b, b, b]), group([&views[4], &views[5], &views[1], &views[2]]), group([b, b, b, b])];
-        let stage1 = Self::bind(d, &self.layout, &self.ubuf, &self.sampler, [&views[6], &views[0], &self.marks_view, &self.palette_view, &self.chars_view, b, b]);
+        let stage1 = Self::bind(d, &self.layout, &self.ubuf, &self.sampler, [&views[6], &views[0], &self.marks_view, &self.palette_view, &self.chars_view, b, b, &self.fmap_view]);
         let capacity = 64;
         let copies = d.create_buffer(&wgpu::BufferDescriptor { label: None, size: (capacity * std::mem::size_of::<MeshCopy>()) as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         MeshTarget { size, ubuf, copies, capacity, views, groups, stage1, drawn: None }
@@ -553,7 +572,7 @@ impl Renderer {
     /// Every pass uses one layout: uniforms, sampler, then six textures (stage 1: glyph atlas and a
     /// picture; stage 2: ink and near), the mark atlas, the palettes, the character tiles and the frame
     /// before the last commit.
-    fn bind(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, ubuf: &wgpu::Buffer, sampler: &wgpu::Sampler, t: [&wgpu::TextureView; 7]) -> wgpu::BindGroup {
+    fn bind(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, ubuf: &wgpu::Buffer, sampler: &wgpu::Sampler, t: [&wgpu::TextureView; 8]) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout, entries: &[
             wgpu::BindGroupEntry { binding: 0, resource: ubuf.as_entire_binding() },
             wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
@@ -564,6 +583,7 @@ impl Renderer {
             wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(t[4]) },
             wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::TextureView(t[5]) },
             wgpu::BindGroupEntry { binding: 9, resource: wgpu::BindingResource::TextureView(t[6]) },
+            wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::TextureView(t[7]) },
         ] })
     }
 
@@ -574,7 +594,7 @@ impl Renderer {
             dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba8Unorm, usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST, view_formats: &[],
         }, wgpu::util::TextureDataOrder::LayerMajor, rgba);
         let view = tex.create_view(&Default::default());
-        let group = Self::bind(&self.device, &self.layout, &self.ubuf, &self.sampler, [&self.atlas_view, &view, &self.marks_view, &self.palette_view, &self.chars_view, &self.blank, &self.blank]);
+        let group = Self::bind(&self.device, &self.layout, &self.ubuf, &self.sampler, [&self.atlas_view, &view, &self.marks_view, &self.palette_view, &self.chars_view, &self.blank, &self.blank, &self.fmap_view]);
         self.pictures.insert(id, group);
     }
 
@@ -584,17 +604,17 @@ impl Renderer {
         if (w, h) == self.size { return; }
         self.size = (w, h);
         self.ink = Self::target(&self.device, w, h, INK);
-        self.near = Self::target(&self.device, w, h, NEAR);
+        self.near = Self::target_with(&self.device, w, h, NEAR, wgpu::TextureUsages::COPY_SRC);
         self.before = Self::target(&self.device, w, h, self.out_format);
-        self.material = Self::bind(&self.device, &self.layout, &self.ubuf, &self.sampler, [&self.ink, &self.near, &self.marks_view, &self.palette_view, &self.chars_view, &self.before, &self.blank]);
-        self.material_first = Self::bind(&self.device, &self.layout, &self.ubuf, &self.sampler, [&self.ink, &self.near, &self.marks_view, &self.palette_view, &self.chars_view, &self.blank, &self.blank]);
+        self.material = Self::bind(&self.device, &self.layout, &self.ubuf, &self.sampler, [&self.ink, &self.near, &self.marks_view, &self.palette_view, &self.chars_view, &self.before, &self.blank, &self.fmap_view]);
+        self.material_first = Self::bind(&self.device, &self.layout, &self.ubuf, &self.sampler, [&self.ink, &self.near, &self.marks_view, &self.palette_view, &self.chars_view, &self.blank, &self.blank, &self.fmap_view]);
         self.lo_key = (0, 0, 0);
         let frame = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("frame"), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,
             dimension: wgpu::TextureDimension::D2, format: self.out_format, usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC, view_formats: &[],
         });
         self.frame_view = frame.create_view(&Default::default());
-        self.blit_group = Self::bind(&self.device, &self.layout, &self.ubuf, &self.sampler, [&self.frame_view, &self.blank, &self.marks_view, &self.palette_view, &self.chars_view, &self.blank, &self.blank]);
+        self.blit_group = Self::bind(&self.device, &self.layout, &self.ubuf, &self.sampler, [&self.frame_view, &self.blank, &self.marks_view, &self.palette_view, &self.chars_view, &self.blank, &self.blank, &self.fmap_view]);
         self.prev = None;
         // The old frame is gone with the old size.
         self.split = [0.0; 4];
@@ -748,6 +768,25 @@ impl Renderer {
     }
 
     pub fn device(&self) -> &wgpu::Device { &self.device }
+    /// The last frame's near image read back (RGBA8 rows; `b` is the looseness stage 1 wrote), for checks.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn read_near(&self) -> Vec<u8> {
+        let (w, h) = self.size;
+        let row = (w * 4).div_ceil(256) * 256;
+        let buf = self.device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (row * h) as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
+        let mut enc = self.device.create_command_encoder(&Default::default());
+        enc.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo { texture: self.near.texture(), mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyBufferInfo { buffer: &buf, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(h) } },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 });
+        self.queue.submit([enc.finish()]);
+        buf.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+        self.device.poll(wgpu::PollType::wait_indefinitely()).expect("poll");
+        let data = buf.slice(..).get_mapped_range().expect("mapped");
+        let mut px = Vec::with_capacity((w * h * 4) as usize);
+        for y in 0..h { px.extend_from_slice(&data[(y * row) as usize..(y * row + w * 4) as usize]); }
+        px
+    }
     pub fn queue(&self) -> &wgpu::Queue { &self.queue }
 
     fn upload_marks(&mut self, atlas: &Atlas, chars: &marks::CharTiles) {
@@ -786,7 +825,7 @@ impl Renderer {
         if key != self.lo_key {
             self.lo_key = key;
             self.lo = Self::target(&self.device, w, h, self.out_format);
-            self.material_up = Self::bind(&self.device, &self.layout, &self.ubuf, &self.sampler, [&self.ink, &self.near, &self.marks_view, &self.palette_view, &self.chars_view, &self.before, &self.lo]);
+            self.material_up = Self::bind(&self.device, &self.layout, &self.ubuf, &self.sampler, [&self.ink, &self.near, &self.marks_view, &self.palette_view, &self.chars_view, &self.before, &self.lo, &self.fmap_view]);
         }
         (w, h)
     }
@@ -811,6 +850,8 @@ impl Renderer {
             text.dirty = false;
         }
         let (scale, now, mt) = (ui.scale(), ui.now(), [ui.material_clock(), ui.ground_clock()]);
+        // The old frame of a commit and a morph's pictures are drawn without the field map.
+        self.fmap_u = [0.0; 4];
         // A new commit: the frame as it is on the screen (mid-transition too, so a second switch goes on
         // from there) into `before`, once; before any frame was kept, the old scene in its old look.
         if let Some(sp) = ui.split() && sp.id != self.split_seen {
@@ -912,10 +953,22 @@ impl Renderer {
         let loose = tiles.is_some() || ui.loose_estimate(now, look.fx.lens) >= LO_MIN_AREA;
         let lo = (q < 1.0 && (loose || self.always_lo)).then(|| { let (w, h) = self.lo_for(q); [1.0 / q, q, w as f32, h as f32] });
         let pending = ui.perf().pending;
+        // The field map (DESIGN.md §1.29): its bytes when they changed (a few KB), and the numbers.
+        let snap = ui.fieldmap().snapshot().clone();
+        if self.fmap_seen.as_ref().is_none_or(|b| !std::rc::Rc::ptr_eq(b, &snap.bytes)) && snap.cols > 0 {
+            self.queue.write_texture(
+                wgpu::TexelCopyTextureInfo { texture: &self.fmap, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                &snap.bytes,
+                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(snap.cols as u32 * 4), rows_per_image: Some(snap.rows as u32) },
+                wgpu::Extent3d { width: snap.cols as u32, height: snap.rows as u32, depth_or_array_layers: 1 },
+            );
+            self.fmap_seen = Some(snap.bytes.clone());
+        }
+        self.fmap_u = if snap.nonzero && !self.no_map { [snap.cell * scale, look.map.drift * scale, snap.cols as f32, snap.rows as f32] } else { [0.0; 4] };
         // What changed since the last frame (DESIGN.md §1.19).
         let inputs = crate::dirty::Inputs {
             instances: ui.scene().instances.clone(), annot: ui.scene().annot.clone(), meshes: ui.scene().meshes.iter().map(|m| m.scene.fingerprint() ^ (m.rect[2].to_bits() as u64) << 32 ^ m.rect[3].to_bits() as u64).collect(),
-            field: *ui.field(), look: *look, now, mclock: mt[0], gclock: mt[1], size: self.size,
+            field: *ui.field(), look: *look, now, mclock: mt[0], gclock: mt[1], size: self.size, map: snap,
             global: split[3] > 0.0 || tiles.is_some() || lo.is_some() || self.hide_glyphs,
         };
         let region = match (&self.prev, self.partial) { (Some(p), true) => crate::dirty::region(p, &inputs, scale), _ => crate::dirty::Region::All };
@@ -1123,7 +1176,7 @@ impl Renderer {
             scrolls: field.scrolls, scrollo: field.scrollo,
             scrp: [look.scroll.trail * scale, look.scroll.misreg * scale, look.scroll.slip * scale, look.scroll.band.max(4.0) * scale],
             scrq: [look.scroll.slip_ms.max(16.0) / 1000.0, 0.0, 0.0, 0.0],
-            post: post.0, pal: post.1,
+            post: post.0, pal: post.1, fmap: self.fmap_u,
         };
         self.queue.write_buffer(&self.ubuf, 0, bytemuck::bytes_of(&u));
     }

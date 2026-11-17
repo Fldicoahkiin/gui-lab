@@ -48,6 +48,8 @@ pub struct Inputs {
     pub size: (u32, u32),
     /// Something acts on every pixel this frame: a commit's front, flying tiles, the reduced pass.
     pub global: bool,
+    /// The field map's bytes (DESIGN.md §1.29).
+    pub map: crate::fieldmap::Snapshot,
 }
 
 /// The two boxes, or everything.
@@ -139,6 +141,15 @@ pub fn region(prev: &Inputs, cur: &Inputs, scale: f32) -> Region {
         let held = clock_moved && i.extra[2] > 0.0;
         if condensing || fronted || meshy || held { st1 = union(st1, if lensed { meet(lenses, r) } else { r }); }
     }
+    // The field map: where its bytes changed, every instance that reads it there (its looseness, and the
+    // whole of it where its flow carries it), and the ground the materials draw from it.
+    let map_box = cur.map.changed(&prev.map).map(|b| meet([b[0] * s, b[1] * s, b[2] * s, b[3] * s], [0.0, 0.0, cur.size.0 as f32, cur.size.1 as f32]));
+    if let Some(mb) = map_box {
+        let drift = look.map.drift * s + 1.0;
+        for i in a.iter().chain(b) {
+            if i.look[2] > 0.5 && i.resp[0] + i.resp[1] > 0.0 && !is_empty(meet(mb, i.bounds(pad + drift))) { st1 = union(st1, i.bounds(pad + drift)); }
+        }
+    }
     // Stage 2: what stage 1 changed, as far as the materials read around it, and the field on the ground.
     // Pictures' marks read their own cells (and the parallax its depth): only where a picture changed.
     let pic_changed = b.iter().chain(a.iter()).any(|i| i.paint[3] == PICTURE && !is_empty(meet(i.bounds(pad), st1)));
@@ -149,6 +160,8 @@ pub fn region(prev: &Inputs, cur: &Inputs, scale: f32) -> Region {
     // The lens acts on the pictures and 3D elements that let it (above) and on the dot ground.
     if mats.contains(&Material::Dot) { st2 = union(st2, grow(lenses, rch)); }
     st2 = union(st2, grow(bursts, rch));
+    // The ground under the field map (dot's units lean up to half their pitch, glitch's rows slip).
+    if let Some(mb) = map_box { st2 = union(st2, grow(mb, rch + 9.0 * s)); }
     // Scroll nodes whose content moved (the lattices follow it) or whose trace shows (DESIGN.md §1.8.3).
     for j in 0..8 {
         for f in [&prev.field, &cur.field] {
@@ -184,7 +197,7 @@ pub fn scissor(b: Bx, w: u32, h: u32) -> Option<[u32; 4]> {
 mod tests {
     use super::*;
     fn inputs(insts: Vec<Instance>) -> Inputs {
-        Inputs { instances: insts, annot: vec![], meshes: vec![], field: Field::default(), look: Look { material: Material::Plain, ..Look::default() }, now: 10.0, mclock: 0.0, gclock: 0.0, size: (800, 600), global: false }
+        Inputs { instances: insts, annot: vec![], meshes: vec![], field: Field::default(), look: Look { material: Material::Plain, ..Look::default() }, now: 10.0, mclock: 0.0, gclock: 0.0, size: (800, 600), global: false, map: Default::default() }
     }
     fn inst(x: f32) -> Instance { Instance { rect: [x, 100.0, 40.0, 20.0], paint: [1.0, 0.0, 1.0, 1.0], extra: [0.0, 0.0, 0.0, -100.0], ..Default::default() } }
 

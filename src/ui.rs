@@ -66,6 +66,7 @@ pub struct Node<M> {
     shift: (f32, f32),
     shed: Option<crate::motes::Shed>,
     flow_field: Option<crate::motes::FlowField>,
+    stirr: Option<crate::el::Stirr>,
     /// The nearest flow id at or above this node, and the node that carries it.
     flow: Option<(Rc<str>, usize)>,
     /// The material override of this subtree as the instance code (0 = none, see `style::override_code`).
@@ -438,6 +439,13 @@ pub struct Ui<S, M> {
     decode_last: HashMap<String, Vec<Instance>>,
     /// The renderer can simulate particles on the GPU (it says so on every draw).
     particle_gpu: bool,
+    // ── The field map (DESIGN.md §1.29) ──
+    /// The map; where each `stirr` element's centre was at the last tick; the window size then; which
+    /// scene the map's ink (for `creep`) was taken from.
+    fmap: crate::fieldmap::FieldMap,
+    stirr_at: HashMap<String, (f32, f32)>,
+    fmap_size: (f32, f32),
+    fmap_ink: u64,
 }
 
 /// One element of the accessibility mirror (DESIGN.md §1.14): what a screen reader is told about it.
@@ -525,6 +533,8 @@ pub struct Timing {
     pub press: f32, pub roles: [Response; 2], pub transition: f32,
     /// How scrolling looks (DESIGN.md §1.8.3): the speeds the trace eases in between and how it settles.
     pub scroll: crate::style::Scroll,
+    /// The field map's numbers (DESIGN.md §1.29).
+    pub map: crate::fieldmap::MapFx,
 }
 impl Default for Timing {
     fn default() -> Self { Self::of(&Look::default()) }
@@ -533,7 +543,7 @@ impl Timing {
     pub fn of(l: &Look) -> Self {
         Self { wave_life: l.fx.wave_life, wave_speed: l.fx.wave_speed, enter: l.fx.enter, material: l.material.id(), overlay: l.overlay,
                fx: l.fx, legible_cap: l.legible_cap, loose_max: l.loose_max, recompose: l.recompose,
-               press: l.press_ms / 1000.0, roles: l.roles, transition: l.transition.duration_ms / 1000.0, scroll: l.scroll }
+               press: l.press_ms / 1000.0, roles: l.roles, transition: l.transition.duration_ms / 1000.0, scroll: l.scroll, map: l.map }
     }
 }
 
@@ -621,6 +631,7 @@ impl<S, M: Clone> Ui<S, M> {
             scrolling: Scrolling::default(), touch: None, touches: HashSet::new(), touching: false, fling: None, over: HashMap::new(), motion: HashMap::new(), scroll_paint: false, event_t: None,
             recs: HashMap::new(), recomps: HashMap::new(), slides: HashMap::new(), no_recompose: false,
             meshes: crate::mesh::Library::default(), mesh_hover: None, move_over: None, particle_gpu: false, motes: vec![], shed_at: HashMap::new(), shed_owed: HashMap::new(), field_marks: HashMap::new(), seen: HashMap::new(), outlines: HashMap::new(), decodes: HashMap::new(), decode_last: HashMap::new(), queued: vec![], flushing: false, motes_made: 0,
+            fmap: crate::fieldmap::FieldMap::default(), stirr_at: HashMap::new(), fmap_size: (0.0, 0.0), fmap_ink: u64::MAX,
         };
         ui.resize(w, h, scale);
         ui
@@ -636,6 +647,11 @@ impl<S, M: Clone> Ui<S, M> {
     pub fn move_over(&self) -> Option<&str> { self.move_over.as_deref() }
     pub fn scene(&self) -> &Scene { &self.scene }
     pub fn field(&self) -> &Field { &self.field }
+    /// The field map (DESIGN.md §1.29): energy and flow on a coarse grid, logical px.
+    pub fn fieldmap(&self) -> &crate::fieldmap::FieldMap { &self.fmap }
+    /// The viewer asked for less motion (the web page's `prefers-reduced-motion`): the field map keeps
+    /// its energy but puts in no flow, and lives half as long.
+    pub fn set_reduced_motion(&mut self, on: bool) { self.fmap.reduced = on; }
     pub fn text_mut(&mut self) -> &mut Text { &mut self.text }
     pub fn scale(&self) -> f32 { self.scale }
     pub fn now(&self) -> f32 { self.now }
@@ -670,7 +686,7 @@ impl<S, M: Clone> Ui<S, M> {
         crate::dirty::Inputs {
             instances: sc.instances.clone(), annot: sc.annot.clone(),
             meshes: sc.meshes.iter().map(|m| m.scene.fingerprint() ^ (m.rect[2].to_bits() as u64) << 32 ^ m.rect[3].to_bits() as u64).collect(),
-            field: *self.field(), look: *look, now: self.now, mclock: self.mclock, gclock: self.gclock, size: self.device_size(),
+            field: *self.field(), look: *look, now: self.now, mclock: self.mclock, gclock: self.gclock, size: self.device_size(), map: self.fmap.snapshot().clone(),
             global: self.split.as_ref().is_some_and(|sp| self.split_alive(sp, self.now)) || self.run.as_ref().is_some_and(|r| r.clock(self.now).is_some()),
         }
     }
@@ -707,7 +723,12 @@ impl<S, M: Clone> Ui<S, M> {
             let born = ((now - inst.extra[3]) / tm.enter.max(1e-3)).clamp(0.0, 1.0);
             let own = inst.extra[2].max(1.0 - born);
             let c = if inst.resp[1] > 1.5 { [inst.resp[2], inst.resp[3]] } else { [inst.rect[0] + inst.rect[2] * 0.5, inst.rect[1] + inst.rect[3] * 0.5] };
-            let add = if inst.resp[0] > 0.0 { self.field.wave_at(c, c, now, &tm.fx, self.scale, 0.6).clamp(0.0, (inst.resp[0] - own).max(0.0)) } else { 0.0 };
+            let add = if inst.resp[0] > 0.0 {
+                let mut w = self.field.wave_at(c, c, now, &tm.fx, self.scale, 0.6);
+                // The field map, where the instance reads it (as the first stage does at each pixel).
+                if inst.look[2] > 0.5 { w = w.max(self.fmap.energy_at(c[0] / self.scale, c[1] / self.scale)); }
+                w.clamp(0.0, (inst.resp[0] - own).max(0.0))
+            } else { 0.0 };
             (own + add).min(tm.loose_max)
         }).fold(0.0, f32::max)
     }
@@ -856,7 +877,7 @@ impl<S, M: Clone> Ui<S, M> {
             || self.run.is_some() || !self.flows.is_empty() || !self.ghosts.is_empty() || self.animating
             || self.marks_moving || now < self.gaze_until || self.fling.is_some() || !self.over.is_empty()
             || self.static_loose || !self.recomps.is_empty() || !self.slides.is_empty() || self.motion_alive(now)
-            || self.motes_moving() || self.decodes.values().any(|d| d.spec.hold.is_none())
+            || self.motes_moving() || self.decodes.values().any(|d| d.spec.hold.is_none()) || self.fmap.moving(&tm.map)
     }
     /// Whether some scroll node's trace (DESIGN.md §1.8.3) is still showing or settling at `now`.
     fn motion_alive(&self, now: f32) -> bool {
@@ -1011,6 +1032,7 @@ impl<S, M: Clone> Ui<S, M> {
         self.slides.retain(|_, sl| t < sl.start + sl.dur);
         let scrolled = self.step_scrolling(dt);
         if self.step_motes(dt) { self.dirty = true; }
+        if self.step_map(dt) { self.dirty = true; }
         // The readout: switched on or off, or a second past the last frame (it then says idle, once).
         let hud = self.timing.overlay != self.overlay || (self.overlay > 0 && !self.hud_idle && t >= self.overlay_at + 1.05);
         if repaint || scrolled || hud { self.paint(); } else { self.finish(); }
@@ -1914,6 +1936,7 @@ impl<S, M: Clone> Ui<S, M> {
                     let (x, y) = self.nodes[i].rect.center();
                     self.front_from(Some(i), x, y, true, strength);
                 },
+                Cmd::Stir { at, v, energy, radius, scope } => self.stir_cmd(at, v, energy, radius, scope),
                 Cmd::Press { key } => { self.scripted = true; self.activate(&key); self.scripted = false; }
                 Cmd::Pointer { x, y } => { let s = self.scale; self.field.pointer[0] = x * s; self.field.pointer[1] = y * s; self.dirty = true; }
                 Cmd::Focus { key } => self.focus_key(&key),
@@ -2292,6 +2315,9 @@ impl<S, M: Clone> Ui<S, M> {
         self.field.calm = [[0.0; 4]; 4];
         let mut calms = 0;
         let mut held = vec![false; self.nodes.len()];
+        // Whether a node is in the subtree of something that stirs the field map (it does not read the
+        // map: a floating window would loosen itself by its own trail).
+        let mut stirred = vec![false; self.nodes.len()];
         // The outermost control each node is in: legible things are pushed as one piece with it.
         let mut unit: Vec<Option<usize>> = vec![None; self.nodes.len()];
         // Everything beneath an open modal layer is held partly loose.
@@ -2332,11 +2358,19 @@ impl<S, M: Clone> Ui<S, M> {
         for i in 0..self.nodes.len() {
             let n = &self.nodes[i];
             if Some(i) == self.modal_at { self.scene.begin_layer(); }
+            // A filled element that leaves a trail (a floating window, a sheet's panel) is drawn over the
+            // page like the modal layer: where it has ink it replaces the near image, so the loose
+            // decoration it passes over never shows through it as loose marks (DESIGN.md §1.29).
+            if self.modal_at.is_none() && self.scene.layer.is_none() && n.stirr.is_some() && n.fill.is_some() && !n.hidden { self.scene.begin_layer(); }
             held[i] = self.pressed.as_deref() == Some(n.key.as_str()) || n.parent.is_some_and(|p| held[p]);
+            stirred[i] = n.stirr.is_some() || n.parent.is_some_and(|p| stirred[p]);
             unit[i] = n.parent.and_then(|p| unit[p]).or(n.active().then_some(i));
             let seen = n.rect.intersect(&n.clip);
             if seen.w <= 0.0 || seen.h <= 0.0 { continue; }
             let role = self.roles[i];
+            // Reads the field map (DESIGN.md §1.29): not a stirring element's own subtree, not what a
+            // morph shows (its hand-over must match the first stage exactly).
+            let reads = if stirred[i] || role != 0 { 0.0 } else { 1.0 };
             let hidden = match (role, &self.run) { (1, Some(r)) => now >= r.src_until, (2, Some(r)) => now < r.dst_from, _ => n.hidden };
             let c = n.clip;
             let clip = [c.x * s, c.y * s, c.right() * s, c.bottom() * s];
@@ -2373,6 +2407,10 @@ impl<S, M: Clone> Ui<S, M> {
                 // A negative push marks what fronts pass by whatever its element says (the caret, a
                 // selection's halo).
                 inst.resp = if inst.resp[1] < 0.0 { [0.0; 4] } else { resp };
+                inst.look[2] = reads;
+                // A picture or a 3D view loosens where the map is, in place: its flow never carries it
+                // off its own box (so a trail never shows the page under a picture, §1.29).
+                inst.look[3] = if inst.paint[3] == PICTURE || inst.paint[3] == MESH { 1.0 } else { 0.0 };
                 inst.paint[2] *= dim;
                 inst.extra[2] = loose;
                 // Hidden instances are kept for sampling only: they get no birth time, so a view that
@@ -2628,7 +2666,7 @@ impl<S, M: Clone> Ui<S, M> {
             }
             if r.reverse && plan.shows_content(u) { pushed.extend(r.ghost.iter().copied()); }
             for b in plan.at(u) {
-                pushed.push(Instance { rect: [b.x, b.y, b.size, b.size], paint: [1.0, 1.0, 1.0, SHAPE], clip, extra: [0.0, 0.0, 0.0, -1e4], look: [0.0, b.hue as f32, b.y, b.size], resp: IGNORE, ..Default::default() });
+                pushed.push(Instance { rect: [b.x, b.y, b.size, b.size], paint: [1.0, 1.0, 1.0, SHAPE], clip, extra: [0.0, 0.0, 0.0, -1e4], look: [0.0, b.hue as f32, 0.0, 0.0], resp: IGNORE, ..Default::default() });
             }
         }
         for i in pushed { self.scene.push(i); }
@@ -2639,6 +2677,121 @@ impl<S, M: Clone> Ui<S, M> {
     pub fn motes_moving(&self) -> bool { !self.motes.is_empty() || self.nodes.iter().any(|n| n.flow_field.is_some_and(|f| f.speed > 0.0) && !n.hidden) }
     /// Shed marks in flight now (for tests and the readout).
     pub fn motes(&self) -> &[crate::motes::Mote] { &self.motes }
+    /// The box (logical px) a stir with `scope` reaches when it comes from node `i` (or from no node).
+    fn stir_scope(&self, i: Option<usize>, scope: &Scope) -> Option<[f32; 4]> {
+        let window = Rect::new(0.0, 0.0, self.size.0, self.size.1);
+        let seen = |n: &Node<M>| n.rect.intersect(&n.clip);
+        let r = match scope {
+            Scope::Off => return None,
+            Scope::Global => return Some(crate::fieldmap::EVERYWHERE),
+            Scope::Own => i.map_or(window, |i| seen(&self.nodes[i])),
+            Scope::Container(None) => i.and_then(|i| self.up(i, |n| n.ripple_scope)).map_or(window, |c| seen(&self.nodes[c])),
+            Scope::Container(Some(k)) => self.nodes.iter().find(|n| &n.key == k).map_or(window, seen),
+        };
+        Some([r.x, r.y, r.right(), r.bottom()])
+    }
+    /// `Cmd::Stir` (DESIGN.md §1.29).
+    fn stir_cmd(&mut self, at: crate::morph::StirAt, v: [f32; 2], energy: f32, radius: f32, scope: Scope) {
+        use crate::morph::StirAt;
+        self.fit_map();
+        let len = (v[0] * v[0] + v[1] * v[1]).sqrt();
+        let flow = len * self.timing.map.flow;
+        match at {
+            StirAt::Point(p) => {
+                let Some(sc) = self.stir_scope(None, &scope) else { return };
+                let dir = if len > 0.0 { [v[0] / len, v[1] / len] } else { [0.0; 2] };
+                self.fmap.stir(crate::fieldmap::Stir { at: p, dir, energy, flow, radius, scope: sc });
+            }
+            StirAt::Key(k) => {
+                let Some(i) = self.nodes.iter().position(|n| n.key == k) else { return };
+                let Some(sc) = self.stir_scope(Some(i), &scope) else { return };
+                let (x, y) = self.nodes[i].rect.center();
+                let dir = if len > 0.0 { [v[0] / len, v[1] / len] } else { [0.0; 2] };
+                self.fmap.stir(crate::fieldmap::Stir { at: [x, y], dir, energy, flow, radius, scope: sc });
+            }
+            StirAt::Path { points, from, to } => {
+                let Some(sc) = self.stir_scope(None, &scope) else { return };
+                let total: f32 = points.windows(2).map(|w| ((w[1][0] - w[0][0]).powi(2) + (w[1][1] - w[0][1]).powi(2)).sqrt()).sum();
+                let (a, b) = (from.clamp(0.0, 1.0), to.clamp(0.0, 1.0));
+                if total <= 0.0 || b <= a { return; }
+                // A stir every half cell along the part drawn, the flow along the path and across it.
+                let n = ((total * (b - a)) / (self.fmap.cell * 0.5)).ceil().max(1.0) as usize;
+                for k in 0..=n {
+                    let (p, d) = crate::fieldmap::along(&points, a + (b - a) * k as f32 / n as f32);
+                    let f = [d[0] * v[0] - d[1] * v[1], d[1] * v[0] + d[0] * v[1]];
+                    let fl = (f[0] * f[0] + f[1] * f[1]).sqrt();
+                    let dir = if fl > 0.0 { [f[0] / fl, f[1] / fl] } else { [0.0; 2] };
+                    self.fmap.stir(crate::fieldmap::Stir { at: p, dir, energy, flow: fl * self.timing.map.flow, radius, scope: sc });
+                }
+            }
+        }
+        self.dirty = true;
+    }
+    /// The map over the window at the look's cell size, the calm boxes and the viewer's preference.
+    fn fit_map(&mut self) {
+        let cell = self.timing.map.cell;
+        if self.fmap.fit(self.size.0, self.size.1, cell) { self.stirr_at.clear(); self.fmap_ink = u64::MAX; }
+        let s = self.scale;
+        self.fmap.calm = self.field.calm.iter().filter(|r| r[2] > r[0]).map(|r| [r[0] / s, r[1] / s, r[2] / s, r[3] / s]).collect();
+    }
+    /// Step the field map by `dt` s and stir it where `stirr` elements went since the last tick (the
+    /// distance their centres moved, as shedding measures it); whether its bytes changed.
+    fn step_map(&mut self, dt: f32) -> bool {
+        self.fit_map();
+        let fx = self.timing.map;
+        // A new window size moves everything: that is not motion.
+        if self.size != self.fmap_size { self.stirr_at.clear(); self.fmap_size = self.size; }
+        // Where there is ink (for creep), taken again when the scene changed and the map is in use.
+        if fx.creep > 0.0 && self.fmap.moving(&fx) && self.fmap_ink != self.perf.counters.scenes {
+            self.fmap_ink = self.perf.counters.scenes;
+            self.fmap.set_ink(self.map_ink());
+        }
+        let before = self.fmap.snapshot().bytes.clone();
+        self.fmap.advance(dt, &fx);
+        let mut seen: Vec<String> = vec![];
+        // (from, to, energy, flow, radius, scope) of each element that moved.
+        type Trail = ([f32; 2], [f32; 2], f32, f32, f32, [f32; 4]);
+        let mut stirs: Vec<Trail> = vec![];
+        for (i, n) in self.nodes.iter().enumerate() {
+            let Some(st) = n.stirr.as_ref() else { continue };
+            if n.hidden { continue; }
+            let c = n.rect.center();
+            seen.push(n.key.clone());
+            let Some(last) = self.stirr_at.insert(n.key.clone(), c) else { continue };
+            let d = ((c.0 - last.0).powi(2) + (c.1 - last.1).powi(2)).sqrt();
+            let energy = st.energy * fx.stirr;
+            if d < 0.5 || energy <= 0.0 { continue; }
+            let Some(scope) = self.stir_scope(Some(i), &st.scope) else { continue };
+            let a = (d / 24.0).min(1.0);
+            let radius = st.radius.unwrap_or(fx.stirr_radius + 0.5 * n.rect.w.min(n.rect.h));
+            stirs.push(([last.0, last.1], [c.0, c.1], energy * a, fx.flow * a, radius, scope));
+        }
+        self.stirr_at.retain(|k, _| seen.contains(k));
+        for (a, b, e, f, r, sc) in stirs { self.fmap.stir_along(a, b, e, f, r, sc); }
+        !std::rc::Rc::ptr_eq(&before, &self.fmap.snapshot().bytes) && *before != *self.fmap.snapshot().bytes
+    }
+    /// How much ink each node of the map has (0..1): the coverage of what reads the map, at the node and
+    /// a quarter cell around it.
+    fn map_ink(&self) -> Vec<f32> {
+        let m = &self.fmap;
+        let (s, c) = (self.scale, m.cell);
+        let mut ink = vec![0.0f32; m.cols * m.rows];
+        for inst in self.scene.instances[..self.page_len.min(self.scene.instances.len())].iter().filter(|i| i.look[2] > 0.5 && i.paint[2] > 0.01) {
+            let b = inst.bounds(0.0);
+            let (i0, i1) = (((b[0] / s) / c).floor().max(0.0) as usize, (((b[2] / s) / c).ceil().max(0.0) as usize).min(m.cols - 1));
+            let (j0, j1) = (((b[1] / s) / c).floor().max(0.0) as usize, (((b[3] / s) / c).ceil().max(0.0) as usize).min(m.rows - 1));
+            for j in j0..=j1 {
+                for i in i0..=i1 {
+                    let (x, y) = (i as f32 * c * s, j as f32 * c * s);
+                    let q = c * s * 0.25;
+                    let v = [(0.0, 0.0), (-q, -q), (q, -q), (-q, q), (q, q)].iter().map(|(dx, dy)| crate::morph::ink_at(inst, x + dx, y + dy, &self.text.pixels)).fold(0.0, f32::max);
+                    let k = j * m.cols + i;
+                    ink[k] = ink[k].max(v);
+                }
+            }
+        }
+        ink
+    }
     /// Move the motes by `dt` s (DESIGN.md §1.22); whether anything changed.
     fn step_motes(&mut self, dt: f32) -> bool {
         use crate::motes::{FlowField, Mote};
@@ -2718,7 +2871,7 @@ impl<S, M: Clone> Ui<S, M> {
         let now = self.now;
         let mote = |x: f32, y: f32, size: f32, p: crate::el::Paint, alpha: f32, clip: [f32; 4]| Instance {
             rect: [((x - size * 0.5) * s).round(), ((y - size * 0.5) * s).round(), (size * s).round().max(1.0), (size * s).round().max(1.0)],
-            uv: [size * s * 0.5, 0.0, 0.0, 0.0], paint: [p.tone, p.accent, alpha, SHAPE], clip, extra: [0.0, 0.0, 0.0, -1e4], look: [0.0, p.hue as f32, (y * s).round(), (size * s).max(1.0)], resp: IGNORE, xf: [0.0; 4],
+            uv: [size * s * 0.5, 0.0, 0.0, 0.0], paint: [p.tone, p.accent, alpha, SHAPE], clip, extra: [0.0, 0.0, 0.0, -1e4], look: [0.0, p.hue as f32, 0.0, 0.0], resp: IGNORE, xf: [0.0; 4],
         };
         for n in self.nodes.iter().filter(|n| n.flow_field.is_some() && !n.hidden) {
             let (f, Some(marks)) = (n.flow_field.expect("filtered"), self.field_marks.get(&n.key)) else { continue };
@@ -2789,6 +2942,7 @@ impl<S, M: Clone> Ui<S, M> {
                 format!("tree          {} nodes  changed {}  layouts {}", self.nodes.len(), self.rebuilt, p.counters.layouts),
                 format!("text          {} cached  {} shaped  atlas {:.0}%", self.text.cached(), self.text.shaped(), self.text.atlas_use() * 100.0),
                 format!("textures      ~{:.0} MB  fronts {fronts}", p.tex_mb),
+                format!("field map     {} of {}x{} nodes not zero  level {:.3}", self.fmap.nonzero(), self.fmap.cols, self.fmap.rows, self.fmap.level()),
                 format!("look          {mat}  quality {}{}", p.quality, if p.auto { " auto" } else { "" }),
                 format!("device        {backend}  {}", if p.adapter.is_empty() { "-" } else { &p.adapter }),
                 format!("surface       {:.0}x{:.0} @{}  {}", self.size.0, self.size.1, self.scale, crate::i18n::current().tag()),
@@ -3637,6 +3791,8 @@ fn tile_pieces(t: &RTile, clock: f32, settled: bool) -> Vec<Instance> {
             i.rect[0] += at[0];
             i.rect[1] += at[1];
             i.paint[2] *= a;
+            // Flying tiles do not read the field map: the hand-over must match the first stage exactly.
+            i.look[2] = 0.0;
             out.push(i);
         }
     }
@@ -3728,7 +3884,7 @@ fn measure_key(c: &Content) -> u64 {
 /// A virtual list's rows are built here, for what its viewport shows.
 #[allow(clippy::too_many_arguments)]
 fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], off: (bool, bool), flow: Option<(Rc<str>, usize)>, inh: Inherit, vx: &mut VirtCtx, built: &mut Built, nodes: &mut Vec<Node<M>>) -> usize {
-    let El { key, style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, annotate, gaze_scope, material, loosen, anchor, clips, calm, mut on_text, multiline, selectable, cursor, virt, access, ripple, mut on_pick, mut on_wheel, mut on_move, guide, skeleton, rtl, on_visible, on_outline, decode, mut children } = el;
+    let El { key, style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, annotate, gaze_scope, material, loosen, anchor, clips, calm, mut on_text, multiline, selectable, cursor, virt, access, ripple, mut on_pick, mut on_wheel, mut on_move, guide, skeleton, rtl, on_visible, on_outline, decode, mut children } = el;
     let mut style = style;
     let mut inh = inh;
     if let Some(r) = rtl { inh.rtl = r; }
@@ -3785,7 +3941,7 @@ fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], of
     let placeholder = NodeId::from(0u64);
     nodes.push(Node {
         key, parent, rect: Rect::default(), clip: Rect::default(), inner: Rect::default(), scroll, horizontal, focusable, disabled: off, extent: 0.0,
-        content, fill, border, radius, on_press, on_key, on_drag, on_blur, loose, wipe, bar, reveal, commit, modal, hidden, shift, shed, flow_field, flow: flow.clone(),
+        content, fill, border, radius, on_press, on_key, on_drag, on_blur, loose, wipe, bar, reveal, commit, modal, hidden, shift, shed, flow_field, stirr, flow: flow.clone(),
         mat: inh.code(), loosen: inh.loosen, annotate, scope: gaze_scope, anchor, clips, calm, on_text, multiline, selectable: inh.select, cursor,
         virt: virt_info, access, respond, legible, ripple: inh.scope.clone(), ripple_scope: ripple.container, recompose, recompose_always: is_text && ripple.recompose == Some(true), unframed: ripple.unframed, keyed,
         on_pick, on_wheel, on_move, guide, on_visible, on_outline, decode, skeleton: inh.skeleton, local: taffy::Layout::new(), tid: placeholder,
