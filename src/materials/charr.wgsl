@@ -11,11 +11,12 @@ fn m_charr(p: vec2f) -> vec3f {
   let P0 = clamp(round(a0.x * s), CHAR_MIN, CHAR_MAX);
   let levels = clamp(round(a0.y), 2.0, 16.0);
   let coarse = floor(lat(p) / P0);
-  let kc = kt((coarse + 0.5) * P0 - anc);
-  if (kc <= 0.0 && kt(p) <= 0.0) { return exact(p); }
+  let kc = kt_loose((coarse + 0.5) * P0 - anc);
+  if (kc <= 0.0 && kt_loose(p) <= 0.0) { return exact(p); }
   let P = select(P0, max(CHAR_MIN, round(P0 * 0.5)), kc < 0.6);
   let cell = floor(lat(p) / P);
-  if (kt((cell + 0.5) * P - anc) <= 0.1 + 0.4 * h1(cell + 1.3)) { return exact(p); }
+  // Characters only where the ink is really loose: text held at the cap stays as it is.
+  if (kt_loose((cell + 0.5) * P - anc) <= 0.1 + 0.4 * h1(cell + 1.3)) { return exact(p); }
   let avg = cell_avg(cell, P);
   let centre = (cell + 0.5) * P - anc;
   let d = dec_at(avg, centre);

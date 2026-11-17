@@ -12,7 +12,8 @@ fn m_glitchr(p: vec2f, pic: bool) -> vec3f {
   let slice = max(a0.x * s, 1.0); let shift = a0.y * s; let split = a0.z * s; let hold = max(a0.w, 16.0); let block = max(a1.x * s, 2.0);
   let row = floor(lat(p).y / slice);
   let rc = vec2f(p.x, (row + 0.5) * slice - anc.y);
-  var kr = clamp(kt(rc) + burst_k(rc), 0.0, 1.0);
+  // Rows slip only where the ink is really loose (or a burst is on it): text held at the cap stays.
+  var kr = clamp(kt_loose(rc) + burst_k(rc), 0.0, 1.0);
   // On the ground (no outline near), the field map's energy is the looseness the rows slip by.
   if (fmap_on() && near_t(p).r < 0.02 && !calm_at(rc)) { kr = max(kr, clamp(fmap_e(rc), 0.0, 1.0)); }
   let here = select(exact(p), scene_at(p), pic);

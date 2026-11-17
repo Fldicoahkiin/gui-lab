@@ -9,7 +9,8 @@ fn m_smudgr(p: vec2f) -> vec3f {
   let s = u.res.z;
   let a0 = mp(SELF, 0);
   let grain = a0.x; let mis = a0.y * s; let speckle = a0.z; let spread = a0.w * s;
-  let k = kt(p);
+  // Speckle, drop-outs and spreading only where the ink is really loose, not on text held at the cap.
+  let k = kt_loose(p);
   let pa = lat(p);
   var g = gnd(p) * (1.0 - grain * (0.035 * (vnoise(pa * 0.45 / s) - 0.5) + 0.02 * (h1(floor(pa)) - 0.5)));
   let paper = lum(g) > 0.5;

@@ -10,7 +10,8 @@
 fn m_carvr(p: vec2f) -> vec3f {
   let s = u.res.z;
   let a0 = mp(SELF, 0); let a1 = mp(SELF, 1);
-  let k = kt(p);
+  // Cut only where the ink is really loose: text held at the cap stays as it is.
+  let k = kt_loose(p);
   if (k <= 0.0) { return exact(p); }
   let carve = a0.x; let band = min(a0.y * s * k, u.fd.z - 0.5); let slen = max(a0.z * s, 2.0); let spitch = max(a0.w * s, 2.0); let wob = a1.x;
   let sd = sdist(p);

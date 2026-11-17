@@ -8,14 +8,15 @@ fn m_halftonr(p: vec2f) -> vec3f {
   let s = u.res.z;
   let a0 = mp(SELF, 0);
   let pitch = max(2.0, a0.x * s); let ang = radians(a0.y); let split = a0.z * s; let gain = a0.w;
-  if (kt(p) <= 0.0 && kt(p + vec2f(pitch)) <= 0.0 && kt(p - vec2f(pitch)) <= 0.0) { return exact(p); }
+  // Dots only where the ink is really loose: text held at the cap stays as it is.
+  if (kt_loose(p) <= 0.0 && kt_loose(p + vec2f(pitch)) <= 0.0 && kt_loose(p - vec2f(pitch)) <= 0.0) { return exact(p); }
   let g = gnd(p);
   let ex = exact(p);
   if (split <= 0.0) {
     let q = rot(lat(p), ang);
     let cell = floor(q / pitch);
     let c = rot((cell + 0.5) * pitch, -ang) - anc;
-    if (kt(c) <= 0.12 + 0.5 * h1(cell + vec2f(ang * 7.0, 3.0))) { return ex; }
+    if (kt_loose(c) <= 0.12 + 0.5 * h1(cell + vec2f(ang * 7.0, 3.0))) { return ex; }
     let e = pitch * 0.25;
     let avg = (ink_t(c + vec2f(-e, -e)) + ink_t(c + vec2f(e, -e)) + ink_t(c + vec2f(-e, e)) + ink_t(c + vec2f(e, e))) * 0.25;
     let r = pitch * 0.56 * sqrt(clamp(avg.a * gain, 0.0, 1.0));
@@ -30,7 +31,7 @@ fn m_halftonr(p: vec2f) -> vec3f {
     let q = rot(lat(p), angs[j]);
     let cell = floor(q / pitch);
     let c = rot((cell + 0.5) * pitch, -angs[j]) - anc;
-    if (kt(c) <= 0.12 + 0.5 * h1(cell + vec2f(angs[j] * 7.0, 3.0))) { continue; }
+    if (kt_loose(c) <= 0.12 + 0.5 * h1(cell + vec2f(angs[j] * 7.0, 3.0))) { continue; }
     let e = pitch * 0.25;
     let avg = (ink_t(c + off + vec2f(-e, -e)) + ink_t(c + off + vec2f(e, -e)) + ink_t(c + off + vec2f(-e, e)) + ink_t(c + off + vec2f(e, e))) * 0.25;
     let d = dec_at(avg, c);
