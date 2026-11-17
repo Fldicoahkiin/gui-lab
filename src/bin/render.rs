@@ -1,7 +1,7 @@
-//! One deterministic frame of any gallery page or recipe, and its tree (DESIGN.md §1.17). Fixed 60 Hz
+//! One deterministic frame of any recipe, and its tree (DESIGN.md §1.17). Fixed 60 Hz
 //! clock from 0, fixed seeds: the same arguments give byte-identical PNGs.
 //!
-//! usage: render --page <hash | recipe-name> [--size 1280x800] [--scale 1] [--material <id>] [--theme <id>] [--locale en|zh-Hans]
+//! usage: render --page <recipe-name> [--size 1280x800] [--scale 1] [--material <id>] [--theme <id>] [--locale en|zh-Hans]
 //!               [--at <ms>] [--events <file.json>] [--out out.png] [--tree out.json] [--strict]
 //!
 //! `--events` is a JSON list such as `[{"at_ms": 200, "kind": "press", "target": "button/live"},
@@ -10,7 +10,7 @@
 //! them an error.
 use amenui::drive::{RenderSpec, parse_events, render};
 
-const USAGE: &str = "usage: render --page <hash | recipe-name> [--size 1280x800] [--scale 1] [--material <id>] [--theme <id>] [--locale en|zh-Hans] [--at <ms>] [--events <file.json>] [--out out.png] [--tree out.json] [--strict]";
+const USAGE: &str = "usage: render --page <recipe-name> [--size 1280x800] [--scale 1] [--material <id>] [--theme <id>] [--locale en|zh-Hans] [--at <ms>] [--events <file.json>] [--out out.png] [--tree out.json] [--strict]";
 
 fn fail(msg: impl std::fmt::Display) -> ! {
     eprintln!("render: {msg}");

@@ -16,7 +16,7 @@ pub enum LookError {
     UnknownMaterial { given: String, known: String, last: usize },
     #[error("unknown theme `{given}`. Write one of: {known} (or its number 0–{last}).")]
     UnknownTheme { given: String, known: String, last: usize },
-    #[error("unknown page `{given}`. Write a gallery page hash such as `button`, `number`, `material-dot` or `scene-morph`, or a recipe: {recipes}.")]
+    #[error("unknown page `{given}`. Write a recipe ({recipes}) or a page the application adds, such as a site page hash.")]
     UnknownPage { given: String, recipes: String },
     #[error("unknown language `{given}`. Write one of: {known}.")]
     UnknownLocale { given: String, known: String },
@@ -107,6 +107,10 @@ pub enum I18nError {
     Syntax { line: usize, text: String },
     #[error("line {line} of the catalog gives `{key}` a second time; keep one of them")]
     Duplicate { line: usize, key: String },
+    #[error("{path}: {error}")]
+    Catalog { path: String, error: String },
+    #[error("another set of catalogs is already installed; call `i18n::install` once, at start")]
+    AlreadyInstalled,
 }
 
 /// `amenui add` could not do what it was asked.

@@ -900,22 +900,12 @@ src/particles.wgsl 粒子的一遍
 src/widgets/     组件
 src/gaze.rs      标注层：选哪些元素、编号、标签排布（不依赖 GPU）
 src/wrap.rs      绕开轮廓排字：剪影、每条带子的空段（不依赖 GPU）
-src/gallery/     gallery：外壳、路由（mod.rs）、组件和记号等页（pages.rs）、材质和标注页（looks.rs）、风格页（styles.rs）、展示场景（scenes.rs）
-src/demo.rs      骨架的演示应用（gallery 里的一页）
 src/perf.rs      帧时间、计数、自动质量（不依赖 GPU）
-src/lib.rs       网页入口
 src/offscreen.rs 离屏渲染和读回（原生工具用）
-src/bin/shot.rs  离屏出图（演示）
-src/bin/pages.rs gallery 每一页在每个主题、plain 和 dot 下的截图；`materials` 出材质的样张和拼版，`perf` 量每种材质一帧的时间
-src/bin/window.rs 原生窗口
+src/pictures.rs  示例图片（代码生成）
+src/sources.rs   编进库里的文字和组件源码（给文档站和工具用）
 src/bin/sheet.rs 记号表样张
-src/bin/check.rs 读回像素的验收
-src/bin/film.rs  变形和换页的样张；`film <目录> perf` 量粒子上限时的帧时间
-src/bin/scenes.rs 展示场景的样张（脚本化的指针和按键）；`scenes <目录> perf` 量每个场景的帧时间
-src/bin/bench.rs 不依赖显卡的计时：按钮页、一万行滚动、绕开障碍物重排
 src/bin/render.rs 一帧和它的树（给模型用，§1.17）
-src/bin/samples.rs 三维、粒子、过渡的样张
-src/gallery/body.rs 形体（§6.2），代码在 examples/body.rs
 src/mesh.rs      三维：矩阵、网格、glTF 子集、场景、拾取（不依赖 GPU）
 src/mesh.wgsl    网格的一遍和解算
 src/sim_cs.wgsl  粒子模拟的计算着色器（接在 particles.wgsl 后面）
@@ -927,10 +917,11 @@ src/error.rs     公开路径上的错误
 src/recipes.rs   配方（examples/ 里的文件）
 examples/        配方的代码；docs/recipes/ 配方页
 AGENTS.md、llms.txt  给模型看的入口
-web/             网页壳和打包脚本
 registry.json    组件清单（§3）
-tests/           验收测试
+tests/           框架的测试
 ```
+
+官网（gallery 外壳和各页、骨架演示、形体和实验室的代码、站点文档、网页壳和打包脚本、原生窗口，以及 pages、scenes、film、samples、shot、check、bench 这些样张、验收和计时工具）在单独的仓库 [amenui-dev/website](https://github.com/amenui-dev/website)，文件路径和这里写的一样。
 
 ## 9. 和设计不一样的地方
 

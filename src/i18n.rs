@@ -21,6 +21,10 @@
 //! number given) with CLDR's cardinal rules (`intl_pluralrules`). A key missing in a locale falls back
 //! along the chain (zh-Hans → en); missing everywhere, `try_tr` says so (`I18nError`) and `tr` shows
 //! the key in brackets and remembers it (`misses`), so tests can list what is missing.
+//!
+//! The framework's catalogs hold its components' own text (`widget.*`). An application ships its own
+//! catalogs in the same format and installs them once at start (`install`); its keys are looked up
+//! first, then the framework's.
 use crate::error::I18nError;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -90,7 +94,7 @@ impl Locale {
             at = l.fallback();
         }
         let chain: Vec<&str> = std::iter::successors(Some(self), |l| l.fallback()).map(|l| l.tag()).collect();
-        let files: Vec<&str> = std::iter::successors(Some(self), |l| l.fallback()).map(|l| FILES.iter().find(|f| f.0 == l).map_or("?", |f| f.1)).collect();
+        let files: Vec<&str> = std::iter::successors(Some(self), |l| l.fallback()).map(|l| APP.get().and_then(|a| a.iter().find(|c| c.0 == l)).map(|c| c.1).or_else(|| FILES.iter().find(|f| f.0 == l).map(|f| f.1)).unwrap_or("?")).collect();
         Err(I18nError::MissingKey { key: key.to_owned(), chain: chain.join(" → "), files: files.join(", ") })
     }
     /// A number the locale's way: grouped thousands, `decimals` places.
@@ -170,17 +174,35 @@ pub fn parse(src: &str) -> Result<Catalog, I18nError> {
     }
     Ok(m)
 }
-/// Every shipped catalog, parsed once.
+/// An application's catalog files: (locale, path, text).
+pub type Files = &'static [(Locale, &'static str, &'static str)];
+static APP: OnceLock<Vec<(Locale, &'static str, Catalog)>> = OnceLock::new();
+/// Install an application's catalogs (one per locale; see the module's documentation), looked up before
+/// the framework's. The first call wins; later calls with the same files change nothing, and with other
+/// files they are an error.
+pub fn install(files: Files) -> Result<(), I18nError> {
+    let parsed = files.iter().map(|(l, path, src)| parse(src).map(|c| (*l, *path, c)).map_err(|e| I18nError::Catalog { path: (*path).to_owned(), error: e.to_string() })).collect::<Result<Vec<_>, _>>()?;
+    match APP.get() {
+        Some(have) if *have == parsed => Ok(()),
+        Some(_) => Err(I18nError::AlreadyInstalled),
+        None => { let _ = APP.set(parsed); Ok(()) }
+    }
+}
+/// The installed application catalog for `l`, if any.
+pub fn app_catalog(l: Locale) -> Option<&'static Catalog> { APP.get().and_then(|a| a.iter().find(|c| c.0 == l)).map(|c| &c.2) }
+/// The framework's catalog for `l`, parsed once.
 pub fn catalog(l: Locale) -> &'static Catalog {
     static ALL: OnceLock<Vec<(Locale, Catalog)>> = OnceLock::new();
     let all = ALL.get_or_init(|| FILES.iter().map(|(l, path, src)| (*l, parse(src).unwrap_or_else(|e| panic!("{path}: {e}")))).collect());
     &all.iter().find(|c| c.0 == l).expect("a catalog for every locale").1
 }
-/// The shipped catalog files (locale, path, text), for tools and tests.
+/// The framework's catalog files (locale, path, text), for tools and tests.
 pub fn files() -> &'static [(Locale, &'static str, &'static str)] { &FILES }
 
 fn lookup(l: Locale, key: &str, args: &[(&str, Arg)]) -> Option<String> {
-    let c = catalog(l);
+    app_catalog(l).and_then(|c| find(c, l, key, args)).or_else(|| find(catalog(l), l, key, args))
+}
+fn find(c: &Catalog, l: Locale, key: &str, args: &[(&str, Arg)]) -> Option<String> {
     if let Some(v) = c.get(key) { return Some(v.clone()); }
     // A plural message: the form for the count.
     let n = args.iter().find(|a| a.0 == "n").or_else(|| args.iter().find(|a| matches!(a.1, Arg::Num(_)))).and_then(|a| match a.1 { Arg::Num(v) => Some(v), _ => None });
@@ -243,5 +265,17 @@ mod tests {
         assert_eq!(t!(Locale::En, "widget.dialog.close"), "Close");
         assert_eq!(t!(Locale::En, "widget.list.rows", n = 1), "1 row");
         assert_eq!(t!(Locale::En, "widget.list.rows", n = 10000), "10,000 rows");
+    }
+    #[test]
+    fn an_application_catalog_comes_first_and_falls_back_to_the_framework() {
+        static FILES: [(Locale, &str, &str); 2] = [(Locale::ZhHans, "app/zh-Hans.txt", "app.title = 标题\n"), (Locale::En, "app/en.txt", "app.title = Title\n")];
+        install(&FILES).expect("installs");
+        install(&FILES).expect("the same files again change nothing");
+        assert_eq!(install(&FILES[..1]), Err(I18nError::AlreadyInstalled));
+        assert_eq!(t!(Locale::ZhHans, "app.title"), "标题");
+        assert_eq!(t!(Locale::En, "widget.image.alt"), "Picture");
+        assert_eq!(t!(Locale::ZhHans, "widget.image.alt"), "图片");
+        let e = Locale::En.try_tr("app.nothing", &[]).expect_err("missing");
+        assert!(e.to_string().contains("app/en.txt"), "{e}");
     }
 }

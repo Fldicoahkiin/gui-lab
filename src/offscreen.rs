@@ -8,10 +8,10 @@ use crate::error::SurfaceError;
 pub struct Offscreen { pub r: Renderer, target: wgpu::Texture, buf: wgpu::Buffer, pub w: u32, pub h: u32, row: u32 }
 
 impl Offscreen {
-    /// Device px. Registers every demo picture. Panics with `SurfaceError`'s message when it cannot start;
+    /// Device px. Registers every sample picture (`pictures`). Panics with `SurfaceError`'s message when it cannot start;
     /// `try_new` returns it instead.
     pub fn new(w: u32, h: u32) -> Self { Self::try_new(w, h).unwrap_or_else(|e| panic!("{e}")) }
-    /// Device px. Registers every demo picture.
+    /// Device px. Registers every sample picture (`pictures`).
     pub fn try_new(w: u32, h: u32) -> Result<Self, SurfaceError> {
         if w == 0 || h == 0 { return Err(SurfaceError::ZeroSize { w, h }); }
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
@@ -27,7 +27,7 @@ impl Offscreen {
         let buf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (row * h) as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
         let mut r = Renderer::new(device, queue, format, w, h);
         r.set_particle_tier(crate::render::particle_tier(&adapter));
-        for (id, pw, ph, px) in crate::demo::pictures() { r.set_picture(id, pw, ph, &px); }
+        for (id, pw, ph, px) in crate::pictures::pictures() { r.set_picture(id, pw, ph, &px); }
         Ok(Self { r, target, buf, w, h, row })
     }
 
