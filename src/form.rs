@@ -15,21 +15,21 @@ use std::rc::Rc;
 /// | name | what | range | step | default |
 /// |---|---|---|---|---|
 /// | `back` | opacity kept by glyphs facing away | 0–1 | 0.05 | 0 |
-/// | `edge` | glyphs facing less than this fade out (edge-on glyphs are not drawn) | 0–0.6 | 0.05 | 0.25 |
+/// | `edge` | glyphs facing less than this fade out, gone at 60 % of it (edge-on glyphs are not drawn) | 0–0.8 | 0.05 | 0.6 |
 /// | `overlap` | a glyph whose ink is covered by nearer glyphs more than this is not drawn | 0.1–1 | 0.05 | 0.35 |
 /// | `fog` | tone of the farthest glyphs (the nearest keep theirs) | 0–1 | 0.05 | 0.6 |
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct FormFx { pub back: f32, pub edge: f32, pub overlap: f32, pub fog: f32 }
-impl Default for FormFx { fn default() -> Self { Self { back: 0.0, edge: 0.25, overlap: 0.35, fog: 0.6 } } }
+impl Default for FormFx { fn default() -> Self { Self { back: 0.0, edge: 0.6, overlap: 0.35, fog: 0.6 } } }
 impl FormFx {
     /// The numbers' ranges and steps, for controls: (name, min, max, step).
-    pub const PARAMS: [(&'static str, f32, f32, f32); 4] = [("back", 0.0, 1.0, 0.05), ("edge", 0.0, 0.6, 0.05), ("overlap", 0.1, 1.0, 0.05), ("fog", 0.0, 1.0, 0.05)];
+    pub const PARAMS: [(&'static str, f32, f32, f32); 4] = [("back", 0.0, 1.0, 0.05), ("edge", 0.0, 0.8, 0.05), ("overlap", 0.1, 1.0, 0.05), ("fog", 0.0, 1.0, 0.05)];
     /// The same with every number inside its range.
     pub fn clamped(self) -> Self {
-        Self { back: self.back.clamp(0.0, 1.0), edge: self.edge.clamp(0.0, 0.6), overlap: self.overlap.clamp(0.1, 1.0), fog: self.fog.clamp(0.0, 1.0) }
+        Self { back: self.back.clamp(0.0, 1.0), edge: self.edge.clamp(0.0, 0.8), overlap: self.overlap.clamp(0.1, 1.0), fog: self.fog.clamp(0.0, 1.0) }
     }
     /// How much of a glyph's opacity is kept for how it faces: `back` when turned away, fading in
-    /// smoothly from a third of `edge` (0) to `edge`, whole beyond it.
+    /// smoothly from 60 % of `edge` (0) to `edge`, whole beyond it.
     pub fn facing_alpha(&self, facing: f32) -> f32 {
         if facing < 0.0 { return self.back; }
         if self.edge <= 0.0 || facing >= self.edge { return 1.0; }
@@ -368,8 +368,10 @@ mod tests {
     fn facing_fades_smoothly() {
         let fx = FormFx::default();
         assert_eq!(fx.facing_alpha(-0.3), 0.0);
-        assert_eq!(fx.facing_alpha(0.5), 1.0);
-        let (a, b) = (fx.facing_alpha(0.05), fx.facing_alpha(0.2));
-        assert!(a < b && b < 1.0);
+        assert_eq!(fx.facing_alpha(0.7), 1.0);
+        // Gone at 60 % of `edge`, whole at `edge`.
+        assert_eq!(fx.facing_alpha(0.6 * fx.edge - 0.01), 0.0);
+        let (a, b) = (fx.facing_alpha(0.4), fx.facing_alpha(0.5));
+        assert!(0.0 < a && a < b && b < 1.0);
     }
 }
