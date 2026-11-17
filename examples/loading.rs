@@ -45,10 +45,12 @@ pub fn update(s: &mut App, m: Msg) {
 pub fn ui(faces: Vec<Face>, w: u32, h: u32, scale: f32) -> Ui<App, Msg> {
     Ui::new(App { loading: Loading::default(), latency_ms: 900.0, now: 0.0 }, view, update, faces, w, h, scale)
         .on_tick(|s, t| {
+            let before: Vec<Show> = (0..ROWS.len()).map(|i| s.loading.show(i, s.now)).collect();
             s.now = t;
             // The data comes `latency_ms` after the request (a stand-in for the network).
             if let Some(st) = s.loading.started() && s.loading.arrived().is_none() && t >= st + s.latency_ms / 1000.0 { s.loading.arrive(t); }
-            true
+            // A new view only when a row is shown another way.
+            (0..ROWS.len()).any(|i| s.loading.show(i, t) != before[i])
         })
         .on_wake(|s, t| {
             let data = s.loading.started().filter(|_| s.loading.arrived().is_none()).map(|st| st + s.latency_ms / 1000.0);
