@@ -150,3 +150,35 @@ fn off_the_beat_changes_nothing() {
     assert_eq!(a.beat(), amenui::beat::BeatNow { bar: 1, beat: 1, step: 1, phase: 0.0 });
     let _ = Driven::now(&a);
 }
+
+#[test]
+fn on_the_beat_text_to_read_stays_where_it_is() {
+    // A front passing the body: where its ink lies (the centre of its ink, weighted) is where it was at
+    // rest, within half a pixel, every frame.
+    let Ok(mut o) = Offscreen::try_new(W, H) else { eprintln!("no GPU adapter here: skipped"); return };
+    for beat in [ON, Beat::default()] {
+        let mut ui = open(beat, Material::Plain);
+        settle(&mut ui, 2.0);
+        let r = ui.node("body").expect("the body").rect;
+        let (x0, y0, x1, y1) = ((r.x - 10.0) as u32, (r.y - 10.0) as u32, ((r.right() + 10.0) as u32).min(W), ((r.bottom() + 10.0) as u32).min(H));
+        let centre = |px: &[u8]| {
+            let g = &px[((y0 * W + x0) * 4) as usize..((y0 * W + x0) * 4 + 3) as usize].to_vec();
+            let (mut sx, mut sy, mut sw) = (0.0f64, 0.0f64, 0.0f64);
+            for y in y0..y1 { for x in x0..x1 {
+                let i = ((y * W + x) * 4) as usize;
+                let w = (0..3).map(|c| (px[i + c] as f64 - g[c] as f64).abs()).sum::<f64>();
+                sx += w * x as f64; sy += w * y as f64; sw += w;
+            } }
+            [sx / sw.max(1.0), sy / sw.max(1.0)]
+        };
+        let rest = centre(&frame(&mut o, &mut ui));
+        ui.command(Cmd::RipplrAt { key: "body".into(), strength: 1.0 });
+        let mut most = 0.0f64;
+        for k in 1..=45 {
+            ui.tick(2.0 + k as f32 / 60.0);
+            let c = centre(&frame(&mut o, &mut ui));
+            most = most.max((c[0] - rest[0]).abs().max((c[1] - rest[1]).abs()));
+        }
+        if beat.on() { assert!(most <= 0.5, "on the beat the body moved {most:.2} px"); } else { eprintln!("off the beat the body moves {most:.2} px"); }
+    }
+}

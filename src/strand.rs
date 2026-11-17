@@ -309,6 +309,9 @@ pub struct Ctx<'a> {
     pub scope: [f32; 4],
     /// The boxes the tails keep out of, device px.
     pub calm: &'a [[f32; 4]],
+    /// The pictures' boxes, device px: the line goes round them, 12 px clear (a picture is drawn over
+    /// what lies under it, so a line across one would break).
+    pub pics: &'a [[f32; 4]],
     /// The element's line height, device px (a text's line, a shape's short side).
     pub lh: f32,
 }
@@ -834,6 +837,8 @@ fn tail_from(from: [f32; 2], dir: [f32; 2], len: f32, k: f32, seed: u32, turns: 
         pts.push(p);
         last = p;
     }
+    // Its tip keeps 24 px from text to read: a tail stopped short of a box ends that far before it.
+    while pts.last().is_some_and(|p| c.calm.iter().any(|b| box_dist(*p, b) < 24.0 * c.scale)) { pts.pop(); }
     pts
 }
 
@@ -896,6 +901,7 @@ pub fn thread(rest: &Rest, fx: &StrandFx, c: &Ctx, field: &dyn Fn(f32, f32) -> (
             let corners: Vec<[f32; 2]> = keep.iter().map(|&j| line[j]).collect();
             pts = bend_line(&corners, blend, turn).into_iter().map(|(q, j)| (q, pts[keep[j]].1)).collect();
         }
+        let pts = if c.pics.is_empty() { pts } else { detour(pts, c.pics, 12.0 * s) };
         let mut pts = detour(pts, c.calm, 5.0 * s);
         pts.dedup_by(|b, a| d2(a.0, b.0) <= 1e-6);
         pts
@@ -971,6 +977,20 @@ fn tails(rest: &Rest, at: &[[f32; 2]], fx: &StrandFx, c: &Ctx, field: &dyn Fn(f3
     (head, end)
 }
 
+/// A drawn path (a `Trace`'s points) kept clear: off the boxes `round` (pictures) by `m` px, and its
+/// two tips drawn back, and any turn pushed out, until they are `tip` px from every box of `read` (text
+/// to read).
+pub fn clear_path(pts: Vec<[f32; 2]>, round: &[[f32; 4]], m: f32, read: &[[f32; 4]], tip: f32) -> Vec<[f32; 2]> {
+    // A point that comes within `m` of a box goes out to that distance by the nearest way, so the path
+    // keeps its own course beside the box instead of being routed round its corners.
+    // Its turns (a figure's tail that goes down and back) stop the same distance short of text to read.
+    let mut pts: Vec<[f32; 2]> = pts.into_iter().map(|p| off_boxes(off_boxes(p, round, m), read, tip)).collect();
+    let near = |p: &[f32; 2]| read.iter().any(|b| box_dist(*p, b) < tip);
+    while pts.last().is_some_and(near) { pts.pop(); }
+    let first = pts.iter().position(|p| !near(p)).unwrap_or(pts.len());
+    pts.drain(..first);
+    pts
+}
 /// How far `p` is from box `b` (0 inside it).
 fn box_dist(p: [f32; 2], b: &[f32; 4]) -> f32 {
     let (dx, dy) = ((b[0] - p[0]).max(p[0] - b[2]).max(0.0), (b[1] - p[1]).max(p[1] - b[3]).max(0.0));
@@ -1188,7 +1208,7 @@ pub fn dashes(p: &[[f32; 2]], progress: f32, dash: f32, gap: f32) -> Vec<Vec<[f3
 mod tests {
     use super::*;
     fn square(x: f32, y: f32, w: f32) -> Vec<[f32; 2]> { vec![[x, y], [x + w, y], [x + w, y + w], [x, y + w], [x, y]] }
-    fn ctx(k: f32) -> Ctx<'static> { Ctx { k, t: 1.0, seed: 3, scale: 1.0, drift: 6.0, scope: [-1e4, -1e4, 1e4, 1e4], calm: &[], lh: 60.0 } }
+    fn ctx(k: f32) -> Ctx<'static> { Ctx { k, t: 1.0, seed: 3, scale: 1.0, drift: 6.0, scope: [-1e4, -1e4, 1e4, 1e4], calm: &[], pics: &[], lh: 60.0 } }
     fn still(_: f32, _: f32) -> (f32, [f32; 2]) { (0.0, [0.0; 2]) }
     /// A wavy ring: many vertices, most of them close to their chords.
     fn ring(cx: f32, cy: f32, r: f32, n: usize) -> Vec<[f32; 2]> {
