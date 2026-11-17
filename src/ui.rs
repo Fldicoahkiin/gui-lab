@@ -461,6 +461,9 @@ pub struct Ui<S, M> {
     /// latest last, and when the last one was taken.
     echoes: HashMap<String, Vec<(f32, [f32; 4])>>,
     echo_at: f32,
+    /// The scene as it was when a `Cmd::Hold` began: what is presented until the hold ends, whatever
+    /// the state does meanwhile.
+    frozen: Option<Scene>,
     /// The marks moved or faded on the last tick.
     marks_moving: bool,
     /// The caret: its page instance, when it last moved (blinking restarts there), its rect, and
@@ -849,7 +852,7 @@ impl<S, M: Clone> Ui<S, M> {
             scrolling: Scrolling::default(), touch: None, touches: HashSet::new(), touching: false, fling: None, over: HashMap::new(), motion: HashMap::new(), scroll_paint: false, event_t: None,
             recs: HashMap::new(), recomps: HashMap::new(), slides: HashMap::new(), no_recompose: false,
             meshes: crate::mesh::Library::default(), mesh_hover: None, glyphs: Default::default(), prep: Default::default(), move_over: None, particle_gpu: false, motes: vec![], shed_at: HashMap::new(), shed_owed: HashMap::new(), field_marks: HashMap::new(), seen: HashMap::new(), outlines: HashMap::new(), decodes: HashMap::new(), decode_last: HashMap::new(), last_morph: None, left: Default::default(), queued: vec![], flushing: false, motes_made: 0,
-            fmap: crate::fieldmap::FieldMap::default(), stirr_at: HashMap::new(), fmap_size: (0.0, 0.0), fmap_ink: u64::MAX, strand_faded: HashMap::new(), strand_cache: HashMap::new(), strand_hold: HashMap::new(), strand_drawn: vec![], trace_drawn: vec![], leaders: vec![], echoes: HashMap::new(), echo_at: f32::NEG_INFINITY, trace_head: HashMap::new(),
+            fmap: crate::fieldmap::FieldMap::default(), stirr_at: HashMap::new(), fmap_size: (0.0, 0.0), fmap_ink: u64::MAX, strand_faded: HashMap::new(), strand_cache: HashMap::new(), strand_hold: HashMap::new(), strand_drawn: vec![], trace_drawn: vec![], leaders: vec![], echoes: HashMap::new(), echo_at: f32::NEG_INFINITY, frozen: None, trace_head: HashMap::new(),
         };
         ui.resize(w, h, scale);
         ui
@@ -869,7 +872,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// The element whose `El::on_move` hears the pointer now (a menu, a chart that scrubs), if any.
     pub fn move_over(&self) -> Option<&str> { self.move_over.as_deref() }
     /// The scene last built for drawing.
-    pub fn scene(&self) -> &Scene { &self.scene }
+    pub fn scene(&self) -> &Scene { self.frozen.as_ref().unwrap_or(&self.scene) }
     /// The key of the element that drew page instance `i` of the scene, for checks.
     pub fn owner_key(&self, i: usize) -> Option<&str> { (i < self.page_len).then(|| self.owners.get(i)).flatten().map(|o| self.nodes[o.0].key.as_str()) }
     /// The field (fronts, the lens, bursts) as it is now.
@@ -1352,6 +1355,8 @@ impl<S, M: Clone> Ui<S, M> {
         let wall = t;
         self.wall = t;
         self.bclock.step(t);
+        // A hold that has ended presents the page as the state has it now.
+        if !self.held(t) { self.frozen = None; }
         // Everything that moves on its own runs on the beat clock (the runtime's own without a beat).
         let t = self.beat_of(t);
         let dt = (t - self.clock).clamp(0.0, 0.1);
@@ -2362,7 +2367,13 @@ impl<S, M: Clone> Ui<S, M> {
                 Cmd::Focus { key } => self.focus_key(&key),
                 Cmd::ScrollTo { key } => self.scroll_to(&key),
                 Cmd::Scrub(at) => self.scrub(at),
-                Cmd::Hold(n) => { let b = self.timing.beat; self.bclock.hold(&b, self.wall, n); self.dirty = true; }
+                Cmd::Hold(n) => {
+                    let b = self.timing.beat;
+                    self.bclock.hold(&b, self.wall, n);
+                    // The frame presented stays as it is, byte for byte, until the hold ends.
+                    if self.frozen.is_none() && b.on() { self.frozen = Some(self.scene.clone()); }
+                    self.dirty = true;
+                }
                 Cmd::Retrigger => { let b = self.timing.beat; self.bclock.retrigger(&b, self.wall); self.clock = self.beat_of(self.wall); self.dirty = true; }
                 Cmd::Rewind(n) => { let b = self.timing.beat; self.bclock.rewind(&b, self.wall, n); self.clock = self.beat_of(self.wall); self.dirty = true; }
                 Cmd::Set { name, value } => {
@@ -4329,7 +4340,7 @@ impl<S, M: Clone> Ui<S, M> {
                 }
             }
             for h in self.echoes.values_mut() {
-                let keep_last = h.len().saturating_sub(n_echo + 1);
+                let keep_last = h.len().saturating_sub(n_echo);
                 h.drain(..keep_last);
                 let latest = h.len().saturating_sub(1);
                 let mut k = 0;
@@ -4391,13 +4402,11 @@ impl<S, M: Clone> Ui<S, M> {
                 }
             }
             if let Some(Some((b, end))) = inks.get(annots.iter().position(|x| x.node == a.node).unwrap_or(usize::MAX)) {
-                // Its echoes: the boxes it had before, each fainter than the one after it.
+                // Its echoes: the boxes it had before, newest first, the k-th (from 1) of n at
+                // 0.6 × (1 − (k − 1) ÷ n) of the live box's opacity; thin lines, no label, no fill.
                 if let Some(h) = echoes.get(&a.key) {
-                    let older = h.len().saturating_sub(1);
-                    for (k, (t0, eb)) in h[..older].iter().enumerate() {
-                        if eb == b { continue; }
-                        let fade = (1.0 - (tg - t0) / life.max(1e-3)).clamp(0.0, 1.0) * (k + 1) as f32 / (older + 1) as f32 * 0.6;
-                        if fade <= 0.0 { continue; }
+                    for (k, (_, eb)) in h.iter().rev().filter(|(_, eb)| eb != b).take(n_echo).enumerate() {
+                        let fade = 0.9 * 0.6 * (1.0 - k as f32 / n_echo.max(1) as f32);
                         let (x0, y0, x1, y1) = (eb[0].floor(), eb[1].floor(), eb[2].ceil(), eb[3].ceil());
                         bar(&mut out, x0, y0, x1 - x0, t, fade, false);
                         bar(&mut out, x0, y1 - t, x1 - x0, t, fade, false);
