@@ -181,6 +181,13 @@ only: scope size, pointer, material and theme, loosest element, non-zero map nod
 row, `gaze::LEVEL` a bar of its mean; `Ui::readout()` returns what they drew and `export_tree()`'s root has `field: { level, nonzero }`.
 The tenth preset, Loose Thread (`loose-thread`), puts these together; `post.binary` (black and white only) and `post.invert` are
 finishing-pass switches.
+Text on a form (DESIGN.md §1.26): a pose has a depth and a facing (`Pose::z`, `Pose::facing`) and glyphs draw far to near;
+`El::form(FormFx { back, edge, overlap, fog })` leaves out what faces away, fades the rim and thins glyphs nearer ones cover;
+`form::Form { shape, spin, camera, cover }` wraps text onto a sphere, a surface or a mesh (`.pose(move |g| form.pose_of(g))`) and
+`Form::hit(x, y, w, h)` finds the pointer on it (`docs/recipes/form3d.md`). `El::reveal_by(Reveal::Word)` shows words whole.
+`Ui::glyph_at(x, y)` is the glyph drawn there (`Point::glyph` in `on_point`); `El::turn(radians)` turns an element, and it is
+pressed where it is drawn. Slow one-off work goes through `Ui::prepare(key, |s| progress)` and `Ui::ready(key)`; the renderer
+warms up with `Renderer::begin` and `Warmup::step` (DESIGN.md §1.23).
 Text flows around true outlines with `.around(Around::new(vec![Silhouette::circle(..)], gap))`; a piece of a line
 beside an obstacle is justified so both its edges are flush, adding at most `Around::justify_max` ems per gap
 (default 0.25; inter-character next to CJK, inter-word at spaces, between Latin letters only with
@@ -203,6 +210,7 @@ hyphenate the next word (`Around::hyphenate`, on by default); a piece that would
 ```sh
 cargo run --release --bin render -- --page recipe-form --size 1280x800 --at 1000 --out out.png --tree out.json
 cargo run --release --bin render -- --page recipe-counter --events inc.json --at 300 --out c.png --tree c.json
+cargo run --release --bin render -- --page recipe-form --audit --strict   # what is wrong with the frame, most serious first
 ```
 
 `inc.json`: `[{"at_ms": 100, "kind": "press", "target": "inc"}, {"at_ms": 130, "kind": "release", "target": "inc"}]`
@@ -211,6 +219,8 @@ wheel — `dx`, `dy`; text — `text`). The clock is fixed at 60 Hz from 0, so t
 same bytes. The tree (`--tree`, or `Ui::export_tree()`) has each element's key, kind, role and label,
 rect, text, material, response, legibility, focus / hover / press, scroll offset and looseness.
 `--material` takes `plain`, `dot`, `halftone`… (or a number), `--theme` takes `dark`, `light`, `paper`…
+`--audit` measures the frame (`amenui::audit`, DESIGN.md §1.31): text cut off, contrast by WCAG, glyphs over each other, text
+under 9 device px, a page that never settles; each finding names the element, the number and what to do.
 
 ## Commands
 

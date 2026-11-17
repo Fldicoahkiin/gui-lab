@@ -8,6 +8,30 @@ crate and the `amenui` npm package (`web/`) always carry the same version, becau
 match the module that `web_app!` generates. The minimum Rust is the one CI builds with (`rust-version`
 in Cargo.toml); raising it is a breaking change before 1.0 only in the second number.
 
+## Text on a form, the warm-up and the audit
+
+- Glyph poses have a depth and a facing (`Pose::z`, `Pose::facing`; the defaults draw as before), and a
+  text element's glyphs are drawn far to near. `El::form(FormFx { back, edge, overlap, fog })` keeps text
+  on a form legible: what faces away is left out, what is edge on fades, a glyph mostly covered by nearer
+  ones is not drawn (measured on the true ink), the far side is dimmer (§1.26).
+- `amenui::form`: `Form` wraps a block of text onto a sphere, a surface function or a mesh seen by a
+  `mesh::Camera` (`Form::pose_of`), and `Form::hit` finds the pointer on the surface. The recipe `form3d`.
+- `El::reveal_by(Reveal::Word | Line)`: clips, poses and the window show words and lines whole.
+- Hits follow what is drawn: `Ui::glyph_at`, `Point::glyph` and `Point::z`; `El::turn` turns an element
+  and its subtree, and it is pressed where it is drawn; `MeshHit` has `point`, `normal`, `t` and `uv`, and
+  `Mesh::ray` casts a ray at a mesh.
+- A button or link inside an element that drags (a scene with `on_point`) takes its own press.
+- The warm-up (§1.23): `Renderer::begin` draws plain at once, `Warmup::step` / `Renderer::warm_step` make
+  the rest a piece at a time, and the page condenses into its look when it is ready;
+  `Offscreen::try_warming`. `Ui::prepare`, `Ui::ready` and `Ui::readiness` run an application's own work
+  in the frames' spare time; the annotation layer reads `READY`.
+- The audit (§1.31): `amenui::audit`, `drive::audit`, `render --audit` (with `--strict`, a P0 or P1 fails):
+  text cut off, contrast, glyphs over each other, text too small, a page that never settles. The
+  annotation layer's `INK` kind draws the same measured ink box.
+- What the audit found: `Paint::DIM` is 0.66 (it was 0.5, 3.2:1 on light); the light theme's accent is
+  darker (5.6:1) and the selection tint 12 %; `near` keeps text's ink whole; the loading recipe no longer
+  asks for a frame every tick.
+
 ## Running applications
 
 - `amenui::app`: the framework runs applications itself. `app::native::run` opens a winit window

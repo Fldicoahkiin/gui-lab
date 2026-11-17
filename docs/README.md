@@ -28,7 +28,7 @@ Each recipe is a page in [recipes/](recipes/) and a file in `examples/`, compile
 - [A 3D object in a card](recipes/mesh.md), [a stack of cards](recipes/stack.md),
   [a dot chart](recipes/chart.md)
 - [Gestures: a bottom sheet and a floating box](recipes/gesture.md), [a menu with submenus](recipes/submenu.md),
-  [a list that loads](recipes/loading.md)
+  [a list that loads](recipes/loading.md), [text on a form](recipes/form3d.md)
 
 ## Reference
 
