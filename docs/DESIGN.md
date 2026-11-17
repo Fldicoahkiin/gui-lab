@@ -2230,7 +2230,13 @@ glyphs fill in. Text to read and controls never become thread and always stay as
   (`strand::clear_path`). The clearances move the control points and the knot centres, before the curve is made
   through them, rather than the sampled curve, so the curve stays one smooth line; tails are cut where they meet
   the line and go round picture corners; every point draws
-  back in proportion to `k`. Tails, and the long line once drawn, are at `tail_tone` (0.5) of the line's opacity, and knots are whole:
+  back in proportion to `k`. Once the line bends, where it turns into a tail tighter than a 10 px radius it turns
+  on an arc of `12 px × smoothstep(0.3, 0.5, k)` instead (from 4 px before the join, or farther back while the
+  line there is tighter), then on a curve tangent to the tail three radii on; on the side the tail goes, or the
+  long way round on the other when that side is outside the scope or in a box to keep clear of. A line end or a
+  tail stub that would run straight for 20 px or more between two control points (a glyph's upright stroke, a
+  tail drawn back) gets one more control point halfway, `15 % × smoothstep(0.3, 0.5, k)` of its length to the side
+  away from the next turn, so it bends to its end. Tails, and the long line once drawn, are at `tail_tone` (0.5) of the line's opacity, and knots are whole:
   bright knots on quiet lines, so the density reads. Leaving the scope box, the last segment is cut at the edge, and a tail stops before the
   box of text to read or a control (and before calm boxes). (6) Past `k = 0.3` the line bends toward the curve
   through its vertices: the vertices left are simplified (to `2 px × smoothstep(0.3, 0.7, k)`), the polyline
