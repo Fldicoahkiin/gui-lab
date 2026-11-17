@@ -1,10 +1,10 @@
-// @material halftone
+// @material halftonr
 // @param 点距 2.0 32.0 0.5 1 px 7.0
 // @param 角度 0.0 90.0 1.0 0 ° 45.0
 // @param 分色错开 0.0 8.0 0.25 2 px 1.25
 // @param 增益 0.2 3.0 0.05 2 - 1.1
-// halftone: ink as round dots on a rotated screen, with the second colour out of register.
-fn m_halftone(p: vec2f) -> vec3f {
+// halftonr: ink as round dots on a rotated screen, with the second colour out of register.
+fn m_halftonr(p: vec2f) -> vec3f {
   let s = u.res.z;
   let a0 = mp(SELF, 0);
   let pitch = max(2.0, a0.x * s); let ang = radians(a0.y); let split = a0.z * s; let gain = a0.w;

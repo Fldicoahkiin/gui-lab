@@ -3,7 +3,7 @@
 //! put in at its place, in id order. A file begins with its name and its numbers:
 //!
 //! ```text
-//! // @material print
+//! // @material smudgr
 //! // @param 纸纹 0.0 1.0 0.05 2 - 0.6
 //! ```
 //!
@@ -21,12 +21,12 @@ const PLACE: &str = "src/materials/<name>.wgsl, in id order";
 /// Every built-in material's source, in id order, as `(name, wgsl)`.
 pub const BUILT_IN: [(&str, &str); crate::style::MATERIAL_COUNT] = [
     ("plain", include_str!("materials/plain.wgsl")),
-    ("dot", include_str!("materials/dot.wgsl")),
-    ("halftone", include_str!("materials/halftone.wgsl")),
-    ("ascii", include_str!("materials/ascii.wgsl")),
-    ("print", include_str!("materials/print.wgsl")),
-    ("lino", include_str!("materials/lino.wgsl")),
-    ("glitch", include_str!("materials/glitch.wgsl")),
+    ("dottr", include_str!("materials/dottr.wgsl")),
+    ("halftonr", include_str!("materials/halftonr.wgsl")),
+    ("charr", include_str!("materials/charr.wgsl")),
+    ("smudgr", include_str!("materials/smudgr.wgsl")),
+    ("carvr", include_str!("materials/carvr.wgsl")),
+    ("glitchr", include_str!("materials/glitchr.wgsl")),
     ("near", include_str!("materials/near.wgsl")),
     ("scribblr", include_str!("materials/scribblr.wgsl")),
 ];

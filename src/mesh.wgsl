@@ -65,8 +65,8 @@ struct GOut { @location(0) c: vec4f, @location(1) g: vec4f, @location(2) k: vec4
   let d = clamp((i.z - mu.misc.x) / max(mu.misc.y - mu.misc.x, 1e-4), 0.0, 1.0);
   let hi = floor(d * 255.0);
   // Marks by depth: far parts are dimmer (`depth_dim` takes the shade down) and carry less ink
-  // (`depth_scale` takes the tone down), so materials that size their marks by the ink there (dot,
-  // halftone, ascii, picture marks) draw them smaller and fainter with distance.
+  // (`depth_scale` takes the tone down), so materials that size their marks by the ink there (dottr,
+  // halftonr, charr, picture marks) draw them smaller and fainter with distance.
   let far = clamp((i.z - mu.depth.z) / max(mu.depth.w - mu.depth.z, 1e-4), 0.0, 1.0);
   shade *= 1.0 - mu.depth.y * far;
   let tone = i.paint.x * (1.0 - mu.depth.x * far);

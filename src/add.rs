@@ -43,7 +43,7 @@ pub fn material_files(registry: &str, names: &[&str]) -> Result<Vec<String>, Add
     Ok(out)
 }
 /// The known name closest to `n` (for the error).
-fn near(n: &str, known: &[&str]) -> String {
+pub(crate) fn near(n: &str, known: &[&str]) -> String {
     let d = |a: &str, b: &str| { let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect()); let mut p: Vec<usize> = (0..=b.len()).collect();
         for i in 1..=a.len() { let mut c = vec![i; b.len() + 1]; for j in 1..=b.len() { c[j] = (p[j] + 1).min(c[j - 1] + 1).min(p[j - 1] + usize::from(a[i - 1] != b[j - 1])); } p = c; } p[b.len()] };
     known.iter().min_by_key(|k| d(n, k)).map(|s| s.to_string()).unwrap_or_default()

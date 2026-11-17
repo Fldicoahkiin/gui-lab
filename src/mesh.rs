@@ -480,7 +480,7 @@ impl MeshInstances {
 }
 
 /// What a `scene3d` element draws: meshes with transforms, one camera, one light (DESIGN.md §1.18).
-/// `picture`: draw it as a picture with this `PicFx` slot (its marks, its own ground) instead of
+/// `picture`: draw it as a picture with this `Markr` slot (its marks, its own ground) instead of
 /// through the material.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Scene3d { pub items: Vec<MeshInstances>, pub camera: Camera, pub light: Light, pub spec: Mesh3d, pub picture: Option<u8> }

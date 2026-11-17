@@ -1,11 +1,11 @@
-// @material print
+// @material smudgr
 // @param 纸纹 0.0 1.0 0.05 2 - 0.6
 // @param 套印错位 0.0 6.0 0.25 2 px 1.5
 // @param 斑点 0.0 1.0 0.05 2 - 0.6
 // @param 洇开 0.0 10.0 0.5 1 px 3.0
-// print: paper grain on the ground and accent ink out of register at rest; loosened, photocopy speckle
+// smudgr: paper grain on the ground and accent ink out of register at rest; loosened, photocopy speckle
 // and ink spreading past its outline.
-fn m_print(p: vec2f) -> vec3f {
+fn m_smudgr(p: vec2f) -> vec3f {
   let s = u.res.z;
   let a0 = mp(SELF, 0);
   let grain = a0.x; let mis = a0.y * s; let speckle = a0.z; let spread = a0.w * s;

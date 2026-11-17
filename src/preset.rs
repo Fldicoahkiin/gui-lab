@@ -7,7 +7,7 @@
 //! style": always the target's.
 use crate::el::Response;
 use crate::morph::Recompose;
-use crate::style::{Gaze, Look, Material, MaterialParams, PicFx, THEMES, Theme, styles, theme_index};
+use crate::style::{Gaze, Look, Material, MaterialParams, Markr, THEMES, Theme, styles, theme_index};
 use serde::{Deserialize, Serialize};
 
 /// What one step of a transition does. The numbers `a`–`e` mean what `StepKind::params` says.
@@ -128,7 +128,7 @@ pub struct Preset {
     pub loose_scale: f32,
     /// The lattice pitch of text and shapes.
     pub pitch: f32,
-    pub pic: PicFx,
+    pub pic: Markr,
     pub interaction: Interaction,
     pub transition: Transition,
     /// The finishing pass (post effects, dither, palette), off unless a preset says.
@@ -168,7 +168,7 @@ impl Preset {
     }
     pub fn to_json(&self) -> String { serde_json::to_string_pretty(self).unwrap_or_default() }
     /// The preset as a recipe: what differs from the built-in preset it started from (by `hash`; the
-    /// first one when it has no built-in), as `look:v1:` + base64url of `{"base": hash, "set": {path:
+    /// first one when it has no built-in), as `look:v2:` + base64url of `{"base": hash, "set": {path:
     /// value}}`. Short enough for a URL hash; every PNG the render tool writes carries one.
     pub fn recipe(&self) -> String {
         let all = presets();
@@ -181,7 +181,12 @@ impl Preset {
     /// The preset a recipe describes: its base with every path set.
     pub fn from_recipe(s: &str) -> Result<Self, crate::error::PresetError> {
         let bad = |m: &str| crate::error::PresetError::Recipe(m.to_owned());
-        let body = s.trim().trim_start_matches('#').strip_prefix(RECIPE_PREFIX).ok_or_else(|| bad("it does not start with look:v1:"))?;
+        let s = s.trim().trim_start_matches('#');
+        if s.starts_with("look:v1:") {
+            let renamed: Vec<String> = crate::style::RENAMED.iter().map(|(a, b)| format!("{a} → {b}")).collect();
+            return Err(bad(&format!("it is a look:v1: recipe, from before the materials were renamed ({}); make it again, and it starts with look:v2:", renamed.join(", "))));
+        }
+        let body = s.strip_prefix(RECIPE_PREFIX).ok_or_else(|| bad("it does not start with look:v2:"))?;
         let bytes = un_b64url(body).ok_or_else(|| bad("its body is not base64url"))?;
         let doc: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| bad(&e.to_string()))?;
         let all = presets();
@@ -225,7 +230,7 @@ impl Preset {
     }
 }
 /// What starts every look recipe (the version is part of it: a later format gets a new prefix).
-pub const RECIPE_PREFIX: &str = "look:v1:";
+pub const RECIPE_PREFIX: &str = "look:v2:";
 /// Every leaf of a JSON value (numbers, strings, booleans) by its dotted path.
 fn leaves(v: &serde_json::Value) -> std::collections::BTreeMap<String, serde_json::Value> {
     fn go(v: &serde_json::Value, path: String, out: &mut std::collections::BTreeMap<String, serde_json::Value>) {
@@ -341,7 +346,7 @@ pub fn presets() -> Vec<Preset> {
 fn post_of(hash: &str) -> crate::post::PostSpec {
     use crate::post::*;
     match hash {
-        "dotmatrix" => PostSpec { dither: Dither { kind: DitherKind::Bayer4, levels: 4, strength: 0.8 }, palette: Palette { kind: PaletteKind::Amber, colors: vec![] }, bloom: Bloom { strength: 0.35, threshold: 0.6, radius: 6.0 }, ..PostSpec::default() },
+        "dotmatrix" => PostSpec { dithr: Dithr { kind: DithrKind::Bayer4, levels: 4, strength: 0.8 }, palette: Palette { kind: PaletteKind::Amber, colors: vec![] }, bloom: Bloom { strength: 0.35, threshold: 0.6, radius: 6.0 }, ..PostSpec::default() },
         "glitch" => PostSpec { chroma: Chroma { offset: 1.5 }, scanlines: Scanlines { strength: 0.22, period: 3.0 }, grain: Grain { amount: 0.05, size: 1.0 }, vignette: Vignette { strength: 0.35, radius: 0.6 }, curvature: Curvature { amount: 0.03 }, ..PostSpec::default() },
         "lofi-print" => PostSpec { grain: Grain { amount: 0.06, size: 1.5 }, vignette: Vignette { strength: 0.18, radius: 0.7 }, ..PostSpec::default() },
         _ => PostSpec::default(),
@@ -367,11 +372,11 @@ mod tests {
         assert!(Preset::from_json("{\"name\": 3}").is_err());
         // The finishing pass is data in the recipe too.
         let mut p = presets()[0].clone();
-        p.set_number("post.dither.levels", 3.0).expect("a post number");
+        p.set_number("post.dithr.levels", 3.0).expect("a post number");
         p.set_number("post.scanlines.strength", 0.25).expect("a post number");
         let q = Preset::from_recipe(&p.recipe()).expect("the recipe reads");
         assert_eq!(q.post, p.post);
-        assert!(presets().iter().any(|p| p.post.palette.kind != crate::post::PaletteKind::Off && p.post.dither.kind != crate::post::DitherKind::None));
+        assert!(presets().iter().any(|p| p.post.palette.kind != crate::post::PaletteKind::Off && p.post.dithr.kind != crate::post::DithrKind::None));
         // An older preset without the field reads with everything off.
         let mut v: serde_json::Value = serde_json::from_str(&presets()[7].to_json()).expect("json");
         v.as_object_mut().expect("object").remove("post");

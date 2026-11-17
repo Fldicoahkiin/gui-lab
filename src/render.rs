@@ -27,7 +27,7 @@ struct Uniforms {
     /// A commit in progress: where its front started (device px), when, and whether it is on.
     split: [f32; 4],
     fronts: [[f32; 4]; 8],
-    /// Eight `PicFx` slots, seven vec4s each.
+    /// Eight `Markr` slots, seven vec4s each.
     pics: [[f32; 4]; 56],
     /// The ground at the bottom of the window, and the looseness scale in w.
     ground2: [f32; 4],
@@ -999,7 +999,7 @@ impl Renderer {
                 self.queue.write_buffer(&t.buf, 0, bytemuck::cast_slice(&run.particles));
                 t.count = run.particles.len() as u32;
             }
-            // A picture on either side: its PicFx slot, as near.g stores it.
+            // A picture on either side: its Markr slot, as near.g stores it.
             let pic = run.src.iter().chain(&run.dst).find(|i| i.paint[3] == crate::scene::PICTURE).map_or(0.0, |i| (i.paint[1] + 1.0) / 8.0);
             let len = run.flight.map_or(0.0, |f| f[1] - f[0]);
             tiles = run.clock(now).map(|c| [c, run.spec.curl * scale, run.spec.ease.index() as f32, pic, len]);

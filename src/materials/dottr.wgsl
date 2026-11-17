@@ -1,7 +1,7 @@
-// @material dot
-// dot: the global lattice; text loosens into units sized by the ink under them, the ground is a field
+// @material dottr
+// dottr: the global lattice; text loosens into units sized by the ink under them, the ground is a field
 // of small units.
-fn m_dot(frag: vec2f) -> vec3f {
+fn m_dottr(frag: vec2f) -> vec3f {
   let s = u.res.z; let t = u.res.w;
   var p = frag;
   // While a front is passing, some thin horizontal bands slip sideways.

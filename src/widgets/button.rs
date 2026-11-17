@@ -5,7 +5,7 @@
 //! States: rest, hovered, focused, pressed (held at the legibility cap, condenses back from it),
 //!   disabled (`.disabled(true)`).
 //! Messages: sends `msg` on press, Enter or Space; its front reaches only itself unless
-//!   `.ripple(..)` says otherwise.
+//!   `.ripplr(..)` says otherwise.
 //! Usage: `button_as("save", "保存", Variant::Accent, Msg::Save)`
 //!
 //! A button: a label that sends a message when pressed (pointer, Enter or Space). To make it

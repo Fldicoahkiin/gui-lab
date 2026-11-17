@@ -139,7 +139,7 @@ pub const THEMES: [Theme; 15] = [DARK, LIGHT, PIXEL_THEME, PAPER, CREAM, COOL, M
 pub fn theme_index(name: &str) -> usize { THEMES.iter().position(|t| t.name == name).unwrap_or(0) }
 
 /// How stage 2 draws text, shapes and the ground (DESIGN.md §1.6). Pictures always follow their own
-/// `PicFx` slot, whichever material is on: the slot is the instance's override. The discriminant is
+/// `Markr` slot, whichever material is on: the slot is the instance's override. The discriminant is
 /// the id the shader dispatches on.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -151,17 +151,17 @@ pub enum Material {
     /// The global dot lattice: loosening text breaks into units sized by the ink under them, and the
     /// ground is a field of small units.
     #[default]
-    Dot = 1,
+    Dottr = 1,
     /// Ink as round dots on a rotated screen, with the second colour out of register.
-    Halftone = 2,
+    Halftonr = 2,
     /// Ink as characters chosen by brightness, on a grid.
-    Ascii = 3,
+    Charr = 3,
     /// Lo-fi print: paper grain, misregistered spot ink, specks and bleed.
-    Print = 4,
+    Smudgr = 4,
     /// Linocut: carved gouges along the outline, in bands.
-    Lino = 5,
+    Carvr = 5,
     /// Rows that slip sideways, colour fringes and held blocks while something is loose.
-    Glitch = 6,
+    Glitchr = 6,
     /// The intermediate images made visible: the signed nearness as contour bands (warm inside the
     /// ink, cool outside), the outline itself, and the looseness as a tint. A view of the machinery,
     /// so it has its own look at rest.
@@ -178,19 +178,19 @@ pub enum Material {
 pub const MATERIAL_COUNT: usize = 9;
 /// Every built-in material with its name, in id order.
 pub const MATERIALS: [(Material, &str); MATERIAL_COUNT] = [
-    (Material::Plain, "plain"), (Material::Dot, "dot"), (Material::Halftone, "halftone"), (Material::Ascii, "ascii"), (Material::Print, "print"),
-    (Material::Lino, "lino"), (Material::Glitch, "glitch"), (Material::Near, "near"),
+    (Material::Plain, "plain"), (Material::Dottr, "dottr"), (Material::Halftonr, "halftonr"), (Material::Charr, "charr"), (Material::Smudgr, "smudgr"),
+    (Material::Carvr, "carvr"), (Material::Glitchr, "glitchr"), (Material::Near, "near"),
     (Material::Scribblr, "scribblr"),
 ];
 impl Material {
-    /// Whether the material has a time term that moves loose things by itself (glitch's held rows,
+    /// Whether the material has a time term that moves loose things by itself (glitchr's held rows,
     /// while something is loose under it, frames keep coming.
-    pub fn time_varying(self) -> bool { matches!(self, Material::Glitch) }
+    pub fn time_varying(self) -> bool { matches!(self, Material::Glitchr) }
     /// The id the shader dispatches on.
     pub fn id(self) -> u8 {
         match self {
-            Material::Plain => 0, Material::Dot => 1, Material::Halftone => 2, Material::Ascii => 3, Material::Print => 4,
-            Material::Lino => 5, Material::Glitch => 6, Material::Near => 7, Material::Scribblr => 8, Material::Custom(i) => i,
+            Material::Plain => 0, Material::Dottr => 1, Material::Halftonr => 2, Material::Charr => 3, Material::Smudgr => 4,
+            Material::Carvr => 5, Material::Glitchr => 6, Material::Near => 7, Material::Scribblr => 8, Material::Custom(i) => i,
         }
     }
     /// The material with id `i`: a built-in one, one added with `Look::material_source`, or the last
@@ -413,9 +413,9 @@ pub mod colour {
     pub const ORIGINAL: u8 = 0;
     /// The theme's ink.
     pub const THEME_INK: u8 = 1;
-    /// Two colours (`PicFx::tint_a`, `tint_b`), by brightness.
+    /// Two colours (`Markr::tint_a`, `tint_b`), by brightness.
     pub const TWO: u8 = 2;
-    /// One given colour (`PicFx::tint_a`).
+    /// One given colour (`Markr::tint_a`).
     pub const GIVEN: u8 = 3;
     /// Each mode's label.
     pub const NAMES: [&str; 4] = ["原色", "墨色", "双色", "指定色"];
@@ -423,7 +423,7 @@ pub mod colour {
 
 /// How a picture turns into marks (DESIGN.md §1.6.1). Every field is a plain number.
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct PicFx {
+pub struct Markr {
     /// Cell size, logical px, 1–64.
     pub pitch: f32,
     /// Brightness levels, 2–16.
@@ -464,7 +464,7 @@ pub struct PicFx {
     /// The second colour of mode 2.
     pub tint_b: [f32; 3],
 }
-impl Default for PicFx {
+impl Default for Markr {
     fn default() -> Self {
         Self {
             pitch: 8.0, levels: 8.0, set: set::DOTS as f32, colour: 0.0, ground: 0.2, gamma: 0.6, spread: 0.0, follow: 0.0,
@@ -474,7 +474,7 @@ impl Default for PicFx {
         }
     }
 }
-impl PicFx {
+impl Markr {
     /// The defaults with mark set `s`.
     pub fn with_set(s: u8) -> Self { Self { set: s as f32, ..Self::default() } }
     /// The uniform form: seven vec4s, in the order the shader reads them.
@@ -506,16 +506,16 @@ pub struct Scroll {
     pub full_speed: f32,
     /// How long the trace takes to settle once the motion stops.
     pub settle_ms: f32,
-    /// How far behind the motion the trailing edge reaches at full strength (plain's soft edge, dot's
-    /// phosphor, ascii's character trail, lino's carved echo, liquid's smear).
+    /// How far behind the motion the trailing edge reaches at full strength (plain's soft edge, dottr's
+    /// phosphor, charr's character trail, carvr's carved echo, liquid's smear).
     pub trail: f32,
-    /// How far the second colour falls out of register at full strength (halftone, print).
+    /// How far the second colour falls out of register at full strength (halftonr, smudgr).
     pub misreg: f32,
-    /// Glitch: how far a band slips, how tall a band is, and at least how long between two slips.
+    /// Glitchr: how far a band slips, how tall a band is, and at least how long between two slips.
     pub slip: f32,
-    /// Glitch: how tall a slipping band is.
+    /// Glitchr: how tall a slipping band is.
     pub band: f32,
-    /// Glitch: the least time between two slips, ms.
+    /// Glitchr: the least time between two slips, ms.
     pub slip_ms: f32,
 }
 impl Default for Scroll {
@@ -542,7 +542,7 @@ pub struct Look {
     /// The material of everything without its own.
     pub material: Material,
     /// The picture-mark slots picture instances choose between.
-    pub pics: [PicFx; 8],
+    pub pics: [Markr; 8],
     /// Every material's numbers, in id order.
     pub params: [MaterialParams; MATERIAL_COUNT],
     /// The annotation layer.
@@ -611,7 +611,7 @@ impl Look {
     }
 }
 impl Default for Look {
-    fn default() -> Self { Self { fx: Fx::default(), theme: DARK, material: Material::Dot, pics: [PicFx::default(); 8], params: MaterialParams::all(), gaze: Gaze::default(), loose_scale: 1.0, quality: 1.0, overlay: 0, legible_cap: LEGIBLE_CAP, loose_max: 1.0, recompose: crate::morph::Recompose::default(), particles: crate::morph::Particles::default(), press_ms: 350.0, roles: [crate::el::Response::Nudge, crate::el::Response::Loosen], transition: crate::preset::Transition { duration_ms: 0.0, steps: [crate::preset::Step { kind: crate::preset::StepKind::None, from: 0.0, to: 0.0, a: 0.0, b: 0.0, c: 0.0, d: 0.0, e: 0.0 }; 4] }, scroll: Scroll::default(), post: crate::post::Post::default(), marks: Marks::default(), map: MapFx::default(), hold_ms: 0.0 } }
+    fn default() -> Self { Self { fx: Fx::default(), theme: DARK, material: Material::Dottr, pics: [Markr::default(); 8], params: MaterialParams::all(), gaze: Gaze::default(), loose_scale: 1.0, quality: 1.0, overlay: 0, legible_cap: LEGIBLE_CAP, loose_max: 1.0, recompose: crate::morph::Recompose::default(), particles: crate::morph::Particles::default(), press_ms: 350.0, roles: [crate::el::Response::Nudge, crate::el::Response::Loosen], transition: crate::preset::Transition { duration_ms: 0.0, steps: [crate::preset::Step { kind: crate::preset::StepKind::None, from: 0.0, to: 0.0, a: 0.0, b: 0.0, c: 0.0, d: 0.0, e: 0.0 }; 4] }, scroll: Scroll::default(), post: crate::post::Post::default(), marks: Marks::default(), map: MapFx::default(), hold_ms: 0.0 } }
 }
 /// The default `Look::legible_cap`.
 pub const LEGIBLE_CAP: f32 = 0.15;
@@ -637,7 +637,7 @@ pub struct Style {
     /// The lattice pitch of text and shapes (`Fx::pitch`).
     pub pitch: f32,
     /// How the style's pictures turn into marks.
-    pub pic: PicFx,
+    pub pic: Markr,
 }
 
 fn with(m: Material, vals: &[(usize, f32)]) -> MaterialParams {
@@ -652,44 +652,51 @@ pub fn styles() -> [Style; 10] {
     let off = Gaze::default();
     let base = |name, hash, th: Theme, material: Material| Style {
         name, hash, theme: theme_index(th.name), material, params: MaterialParams::defaults(material), gaze: off, loose_scale: 1.0, pitch: 5.0,
-        pic: PicFx { pitch: 7.0, levels: 8.0, ground: 0.15, ..PicFx::with_set(set::DOTS) },
+        pic: Markr { pitch: 7.0, levels: 8.0, ground: 0.15, ..Markr::with_set(set::DOTS) },
     };
     [
         Style { gaze: Gaze { mode: GazeMode::All, kinds: FRAME | INDEX | SIZE | CROSS | KIND, density: 14.0, draw_ms: 320.0, colour: GAZE.accent, only_marked: false, ..Gaze::default() },
-            pic: PicFx { pitch: 4.0, levels: 6.0, colour: colour::GIVEN as f32, tint_a: GAZE.accent, ground: 0.05, ..PicFx::with_set(set::DITHER) },
+            pic: Markr { pitch: 4.0, levels: 6.0, colour: colour::GIVEN as f32, tint_a: GAZE.accent, ground: 0.05, ..Markr::with_set(set::DITHER) },
             ..base("Algorithmic Gaze", "gaze", GAZE, Material::Plain) },
-        Style { pitch: 7.0, pic: PicFx { pitch: 7.0, levels: 6.0, colour: colour::GIVEN as f32, tint_a: LED.accent, ground: 0.0, glow: 1.0, gamma: 0.8, ..PicFx::with_set(set::GLOW) },
-            ..base("Neo-Dotmatrix", "dotmatrix", LED, Material::Dot) },
-        Style { params: with(Material::Print, &[(1, 1.75)]),
-            pic: PicFx { pitch: 4.0, levels: 8.0, colour: colour::TWO as f32, tint_a: [0.13, 0.12, 0.14], tint_b: PAPER.accent, ground: 0.25, ..PicFx::with_set(set::DOTS) },
-            ..base("Lo-Fi Print", "lofi-print", PAPER, Material::Print) },
-        Style { pic: PicFx { pitch: 3.0, levels: 4.0, palette: 3.0, colours: 4.0, spread: 0.6, ..PicFx::with_set(set::PIXEL) },
-            ..base("Glitch", "glitch", GLITCH, Material::Glitch) },
-        Style { pic: PicFx { pitch: 7.0, levels: 6.0, colour: colour::TWO as f32, tint_a: [0.085, 0.075, 0.07], tint_b: [0.925, 0.886, 0.792], ground: 0.0, follow: 1.0, gamma: 0.55, ..PicFx::with_set(set::STROKE) },
-            ..base("Metamorphosis Linocut", "linocut", CREAM, Material::Lino) },
+        Style { pitch: 7.0, pic: Markr { pitch: 7.0, levels: 6.0, colour: colour::GIVEN as f32, tint_a: LED.accent, ground: 0.0, glow: 1.0, gamma: 0.8, ..Markr::with_set(set::GLOW) },
+            ..base("Neo-Dotmatrix", "dotmatrix", LED, Material::Dottr) },
+        Style { params: with(Material::Smudgr, &[(1, 1.75)]),
+            pic: Markr { pitch: 4.0, levels: 8.0, colour: colour::TWO as f32, tint_a: [0.13, 0.12, 0.14], tint_b: PAPER.accent, ground: 0.25, ..Markr::with_set(set::DOTS) },
+            ..base("Lo-Fi Print", "lofi-print", PAPER, Material::Smudgr) },
+        Style { pic: Markr { pitch: 3.0, levels: 4.0, palette: 3.0, colours: 4.0, spread: 0.6, ..Markr::with_set(set::PIXEL) },
+            ..base("Glitch", "glitch", GLITCH, Material::Glitchr) },
+        Style { pic: Markr { pitch: 7.0, levels: 6.0, colour: colour::TWO as f32, tint_a: [0.085, 0.075, 0.07], tint_b: [0.925, 0.886, 0.792], ground: 0.0, follow: 1.0, gamma: 0.55, ..Markr::with_set(set::STROKE) },
+            ..base("Metamorphosis Linocut", "linocut", CREAM, Material::Carvr) },
         Style { gaze: Gaze { mode: GazeMode::All, kinds: LEADER | INDEX | RULER, density: 12.0, draw_ms: 380.0, colour: MANUAL.ink, only_marked: true, ..Gaze::default() },
-            pic: PicFx { pitch: 4.0, levels: 6.0, colour: colour::THEME_INK as f32, ground: 1.0, ..PicFx::with_set(set::DIAGONAL) },
+            pic: Markr { pitch: 4.0, levels: 6.0, colour: colour::THEME_INK as f32, ground: 1.0, ..Markr::with_set(set::DIAGONAL) },
             ..base("Tech-Manual", "tech-manual", MANUAL, Material::Plain) },
-        Style { loose_scale: 0.3, pic: PicFx { pitch: 3.0, ..PicFx::with_set(set::PIXEL) }, ..base("Normcore", "normcore", NORMCORE, Material::Plain) },
+        Style { loose_scale: 0.3, pic: Markr { pitch: 3.0, ..Markr::with_set(set::PIXEL) }, ..base("Normcore", "normcore", NORMCORE, Material::Plain) },
         Style { gaze: Gaze { mode: GazeMode::Hover, kinds: BOX | SIZE | KIND, density: 4.0, draw_ms: 200.0, colour: CYBER.accent, only_marked: false, ..Gaze::default() },
-            pic: PicFx { pitch: 6.0, levels: 10.0, colour: colour::GIVEN as f32, tint_a: CYBER.accent, ground: 0.0, gamma: 1.1, ..PicFx::with_set(set::CHARS) },
+            pic: Markr { pitch: 6.0, levels: 10.0, colour: colour::GIVEN as f32, tint_a: CYBER.accent, ground: 0.0, gamma: 1.1, ..Markr::with_set(set::CHARS) },
             ..base("Cyberminimalism", "cyberminimal", CYBER, Material::Plain) },
-        Style { params: with(Material::Halftone, &[(0, 9.0), (2, 0.0), (1, 15.0)]),
-            pic: PicFx { pitch: 8.0, levels: 8.0, palette: 6.0, colours: 5.0, spread: 0.4, ..PicFx::with_set(set::DOTS) },
-            ..base("Bauhaus", "bauhaus", BAUHAUS, Material::Halftone) },
+        Style { params: with(Material::Halftonr, &[(0, 9.0), (2, 0.0), (1, 15.0)]),
+            pic: Markr { pitch: 8.0, levels: 8.0, palette: 6.0, colours: 5.0, spread: 0.4, ..Markr::with_set(set::DOTS) },
+            ..base("Bauhaus", "bauhaus", BAUHAUS, Material::Halftonr) },
         // Loose Thread (DESIGN.md §4.4): black, white and one accent; plain at rest, threads where the
         // field is stirred; edge notes and a frame under the pointer.
         Style { gaze: Gaze { mode: GazeMode::Hover, kinds: EDGE | FRAME, density: 4.0, draw_ms: 240.0, colour: THREAD.accent, only_marked: false, ..Gaze::default() },
-            pic: PicFx { pitch: 4.0, levels: 2.0, colour: colour::THEME_INK as f32, ground: 0.0, ..PicFx::with_set(set::DITHER) },
+            pic: Markr { pitch: 4.0, levels: 2.0, colour: colour::THEME_INK as f32, ground: 0.0, ..Markr::with_set(set::DITHER) },
             ..base("Loose Thread", "loose-thread", THREAD, Material::Scribblr) },
     ]
 }
 
-/// The material with this name or number.
+/// The names six materials had before they were named for what they do (DESIGN.md §1.6), and the
+/// names they have now: an old name is refused, and the error says the new one.
+pub const RENAMED: [(&str, &str); 6] = [("dot", "dottr"), ("halftone", "halftonr"), ("ascii", "charr"), ("print", "smudgr"), ("lino", "carvr"), ("glitch", "glitchr")];
+/// The material with this name or number (or one added with `Look::material_source`).
 pub fn material_named(id: &str) -> Result<Material, crate::error::LookError> {
     let found = MATERIALS.iter().position(|(_, n)| *n == id).or_else(|| id.parse::<usize>().ok().filter(|&i| i < MATERIALS.len()));
     if let Some(i) = crate::materials::added_named(id) { return Ok(Material::Custom(i)); }
-    found.map(|i| MATERIALS[i].0).ok_or_else(|| crate::error::LookError::UnknownMaterial { given: id.to_owned(), known: MATERIALS.iter().map(|m| m.1).collect::<Vec<_>>().join(", "), last: MATERIALS.len() - 1 })
+    found.map(|i| MATERIALS[i].0).ok_or_else(|| {
+        let known: Vec<&str> = MATERIALS.iter().map(|m| m.1).collect();
+        let nearest = RENAMED.iter().find(|r| r.0 == id).map_or_else(|| crate::add::near(id, &known), |r| r.1.to_owned());
+        crate::error::LookError::UnknownMaterial { given: id.to_owned(), nearest, known: known.join(", "), last: MATERIALS.len() - 1 }
+    })
 }
 /// Short ASCII ids of the themes, in `style::THEMES` order.
 pub const THEME_IDS: [&str; 15] = ["dark", "light", "pixel", "paper", "cream", "cool", "manual", "normcore", "cyber", "bauhaus", "led", "gaze", "glitch", "thread", "thread-paper"];

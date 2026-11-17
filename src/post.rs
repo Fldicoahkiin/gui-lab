@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 /// How the frame is dithered before it is quantised.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum DitherKind {
+pub enum DithrKind {
     #[default]
     None,
     /// Ordered dither by the 2×2, 4×4 and 8×8 Bayer matrices.
@@ -26,8 +26,8 @@ pub enum DitherKind {
     /// pixel and does not fit one fragment pass.
     AtkinsonLike,
 }
-impl DitherKind {
-    pub const ALL: [DitherKind; 6] = [DitherKind::None, DitherKind::Bayer2, DitherKind::Bayer4, DitherKind::Bayer8, DitherKind::BlueNoise, DitherKind::AtkinsonLike];
+impl DithrKind {
+    pub const ALL: [DithrKind; 6] = [DithrKind::None, DithrKind::Bayer2, DithrKind::Bayer4, DithrKind::Bayer8, DithrKind::BlueNoise, DithrKind::AtkinsonLike];
     pub fn id(self) -> f32 { Self::ALL.iter().position(|k| *k == self).unwrap_or(0) as f32 }
     /// The threshold (0–1) at device pixel (x, y); the shader computes the same.
     pub fn threshold(self, x: u32, y: u32) -> f32 {
@@ -43,12 +43,12 @@ impl DitherKind {
             (v as f32 + 0.5) / (n * n) as f32
         };
         match self {
-            DitherKind::None => 0.5,
-            DitherKind::Bayer2 => bayer(2),
-            DitherKind::Bayer4 => bayer(4),
-            DitherKind::Bayer8 => bayer(8),
-            DitherKind::BlueNoise => (x as f32 * 0.754_877_7 + y as f32 * 0.569_840_3).fract(),
-            DitherKind::AtkinsonLike => 0.125 + 0.75 * bayer(4),
+            DithrKind::None => 0.5,
+            DithrKind::Bayer2 => bayer(2),
+            DithrKind::Bayer4 => bayer(4),
+            DithrKind::Bayer8 => bayer(8),
+            DithrKind::BlueNoise => (x as f32 * 0.754_877_7 + y as f32 * 0.569_840_3).fract(),
+            DithrKind::AtkinsonLike => 0.125 + 0.75 * bayer(4),
         }
     }
 }
@@ -56,8 +56,8 @@ impl DitherKind {
 /// The dither: its kind, how many levels each channel keeps when there is no palette (2–16), and how
 /// strong the pattern is (0–1; 1 is a full quantisation step).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Dither { pub kind: DitherKind, pub levels: u8, pub strength: f32 }
-impl Default for Dither { fn default() -> Self { Self { kind: DitherKind::None, levels: 4, strength: 1.0 } } }
+pub struct Dithr { pub kind: DithrKind, pub levels: u8, pub strength: f32 }
+impl Default for Dithr { fn default() -> Self { Self { kind: DithrKind::None, levels: 4, strength: 1.0 } } }
 
 /// The fixed palettes, as data (sRGB bytes). All are this project's own values.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -148,7 +148,7 @@ pub struct PostSpec {
     #[serde(default)] pub grain: Grain,
     #[serde(default)] pub vignette: Vignette,
     #[serde(default)] pub curvature: Curvature,
-    #[serde(default)] pub dither: Dither,
+    #[serde(default)] pub dithr: Dithr,
     #[serde(default)] pub palette: Palette,
     /// Two colours only (DESIGN.md §1.21): the 1-bit palette with no dither, whatever `dither` and
     /// `palette` say, and scribblr's threads a whole number of device px wide.
@@ -162,8 +162,8 @@ impl PostSpec {
         let cols = if self.binary { PaletteKind::OneBit.colors().to_vec() } else { self.palette.resolved() };
         let mut colors = [[0u8; 3]; PALETTE_MAX];
         for (i, c) in cols.iter().enumerate() { colors[i] = *c; }
-        let dither = if self.binary { Dither { kind: DitherKind::None, ..self.dither } } else { self.dither };
-        Post { bloom: self.bloom, chroma: self.chroma, scanlines: self.scanlines, grain: self.grain, vignette: self.vignette, curvature: self.curvature, dither, colors, count: cols.len() as u8, binary: self.binary, invert: self.invert }
+        let dithr = if self.binary { Dithr { kind: DithrKind::None, ..self.dithr } } else { self.dithr };
+        Post { bloom: self.bloom, chroma: self.chroma, scanlines: self.scanlines, grain: self.grain, vignette: self.vignette, curvature: self.curvature, dithr, colors, count: cols.len() as u8, binary: self.binary, invert: self.invert }
     }
 }
 
@@ -171,7 +171,7 @@ impl PostSpec {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Post {
     pub bloom: Bloom, pub chroma: Chroma, pub scanlines: Scanlines, pub grain: Grain, pub vignette: Vignette, pub curvature: Curvature,
-    pub dither: Dither, pub colors: [[u8; 3]; PALETTE_MAX], pub count: u8, pub binary: bool, pub invert: bool,
+    pub dithr: Dithr, pub colors: [[u8; 3]; PALETTE_MAX], pub count: u8, pub binary: bool, pub invert: bool,
 }
 impl Post {
     pub fn bloom_on(&self) -> bool { self.bloom.strength > 0.0 && self.bloom.radius > 0.0 }
@@ -180,19 +180,19 @@ impl Post {
     pub fn grain_on(&self) -> bool { self.grain.amount > 0.0 }
     pub fn vignette_on(&self) -> bool { self.vignette.strength > 0.0 }
     pub fn curvature_on(&self) -> bool { self.curvature.amount != 0.0 }
-    pub fn dither_on(&self) -> bool { self.dither.kind != DitherKind::None && self.dither.strength > 0.0 }
+    pub fn dithr_on(&self) -> bool { self.dithr.kind != DithrKind::None && self.dithr.strength > 0.0 }
     pub fn palette_on(&self) -> bool { self.count > 0 }
     /// Whether the finishing pass runs at all (otherwise the frame is copied out unchanged).
     pub fn active(&self) -> bool {
-        self.bloom_on() || self.chroma_on() || self.scanlines_on() || self.grain_on() || self.vignette_on() || self.curvature_on() || self.dither_on() || self.palette_on() || self.invert
+        self.bloom_on() || self.chroma_on() || self.scanlines_on() || self.grain_on() || self.vignette_on() || self.curvature_on() || self.dithr_on() || self.palette_on() || self.invert
     }
     /// The uniform form (device px where lengths): six vec4s (the fifth's x is `invert`, y `binary`), then the
     /// palette's sixteen.
     pub fn pack(&self, scale: f32) -> ([[f32; 4]; 6], [[f32; 4]; PALETTE_MAX]) {
         let f = |b: bool| if b { 1.0 } else { 0.0 };
-        let d = &self.dither;
+        let d = &self.dithr;
         let mut p = [[0.0; 4]; 6];
-        p[0] = [if self.dither_on() { d.kind.id() } else { 0.0 }, d.levels.clamp(2, 16) as f32, self.count as f32, f(self.active())];
+        p[0] = [if self.dithr_on() { d.kind.id() } else { 0.0 }, d.levels.clamp(2, 16) as f32, self.count as f32, f(self.active())];
         p[1] = [if self.bloom_on() { self.bloom.strength } else { 0.0 }, self.bloom.threshold, self.bloom.radius * scale, d.strength.clamp(0.0, 1.0)];
         p[2] = [self.chroma.offset * scale, if self.scanlines_on() { self.scanlines.strength.clamp(0.0, 1.0) } else { 0.0 }, self.scanlines.period.max(1.0) * scale, self.grain.amount.max(0.0)];
         p[3] = [self.vignette.strength.clamp(0.0, 1.0), self.vignette.radius.clamp(0.0, 1.5), self.curvature.amount, (self.grain.size.max(0.25) * scale).max(1.0)];
@@ -218,7 +218,7 @@ mod tests {
     use super::*;
     #[test]
     fn bayer_thresholds_are_a_permutation() {
-        for (k, n) in [(DitherKind::Bayer2, 2u32), (DitherKind::Bayer4, 4), (DitherKind::Bayer8, 8)] {
+        for (k, n) in [(DithrKind::Bayer2, 2u32), (DithrKind::Bayer4, 4), (DithrKind::Bayer8, 8)] {
             let mut v: Vec<u32> = (0..n).flat_map(|y| (0..n).map(move |x| (x, y))).map(|(x, y)| (k.threshold(x, y) * (n * n) as f32 - 0.5).round() as u32).collect();
             v.sort();
             assert_eq!(v, (0..n * n).collect::<Vec<_>>(), "{k:?}");
@@ -226,17 +226,17 @@ mod tests {
             assert_eq!(k.threshold(1, 0), k.threshold(1 + n, n));
         }
         // The classic 2×2: 0 2 / 3 1 (of 4).
-        assert_eq!([DitherKind::Bayer2.threshold(0, 0), DitherKind::Bayer2.threshold(1, 0), DitherKind::Bayer2.threshold(0, 1), DitherKind::Bayer2.threshold(1, 1)], [0.125, 0.625, 0.875, 0.375]);
-        let a: Vec<f32> = (0..16).map(|i| DitherKind::AtkinsonLike.threshold(i % 4, i / 4)).collect();
+        assert_eq!([DithrKind::Bayer2.threshold(0, 0), DithrKind::Bayer2.threshold(1, 0), DithrKind::Bayer2.threshold(0, 1), DithrKind::Bayer2.threshold(1, 1)], [0.125, 0.625, 0.875, 0.375]);
+        let a: Vec<f32> = (0..16).map(|i| DithrKind::AtkinsonLike.threshold(i % 4, i / 4)).collect();
         assert!(a.iter().all(|t| (0.125..=0.875).contains(t)));
-        let b: Vec<f32> = (0..64).map(|i| DitherKind::BlueNoise.threshold(i % 8, i / 8)).collect();
+        let b: Vec<f32> = (0..64).map(|i| DithrKind::BlueNoise.threshold(i % 8, i / 8)).collect();
         assert!(b.iter().all(|t| (0.0..1.0).contains(t)));
     }
     #[test]
     fn palettes_and_round_trip() {
         assert_eq!(PaletteKind::Originals8.colors().len(), 8);
         for k in PaletteKind::ALL { assert!(k.colors().len() <= PALETTE_MAX); }
-        let p = PostSpec { palette: Palette { kind: PaletteKind::User, colors: vec![[1, 2, 3], [250, 250, 250]] }, dither: Dither { kind: DitherKind::Bayer4, ..Dither::default() }, ..PostSpec::default() };
+        let p = PostSpec { palette: Palette { kind: PaletteKind::User, colors: vec![[1, 2, 3], [250, 250, 250]] }, dithr: Dithr { kind: DithrKind::Bayer4, ..Dithr::default() }, ..PostSpec::default() };
         let j = serde_json::to_string(&p).expect("json");
         assert_eq!(serde_json::from_str::<PostSpec>(&j).expect("parses"), p);
         let l = p.look();

@@ -5,7 +5,7 @@ use amenui::error::{DriveError, LookError};
 use amenui::offscreen::Offscreen;
 
 fn fonts() -> Vec<amenui::text::Face> { amenui::text::load_bundled(concat!(env!("CARGO_MANIFEST_DIR"), "/assets")).expect("fonts") }
-fn spec(page: &str) -> RenderSpec { RenderSpec { page: page.into(), w: 480, h: 360, scale: 1.0, material: Some("dot".into()), theme: Some("light".into()), at_ms: 700.0, events: vec![], locale: None } }
+fn spec(page: &str) -> RenderSpec { RenderSpec { page: page.into(), w: 480, h: 360, scale: 1.0, material: Some("dottr".into()), theme: Some("light".into()), at_ms: 700.0, events: vec![], locale: None } }
 
 #[test]
 fn the_same_arguments_give_the_same_bytes() {
@@ -35,7 +35,7 @@ fn events_parse_and_errors_say_what_to_write() {
     assert!(bad.to_string().contains("s.json") && bad.to_string().contains("press, release"), "{bad}");
     assert!(matches!(amenui::drive::material("dott"), Err(LookError::UnknownMaterial { .. })));
     let m = amenui::drive::material("dott").unwrap_err().to_string();
-    assert!(m.contains("dot") && m.contains("halftone"), "{m}");
+    assert!(m.contains("dottr") && m.contains("halftonr"), "{m}");
     assert!(amenui::drive::theme("sepia").unwrap_err().to_string().contains("light"));
     assert_eq!(amenui::drive::theme("light"), Ok(1));
     let e = match amenui::drive::open("buton", fonts(), 100, 100, 1.0, None, None) { Err(e) => e, Ok(_) => panic!("opened") };
@@ -57,7 +57,7 @@ fn events_parse_and_errors_say_what_to_write() {
 #[test]
 fn a_drag_through_the_field_map_gives_the_same_bytes_three_times() {
     let Ok(mut o) = Offscreen::try_new(900, 640) else { eprintln!("no GPU adapter here: skipped"); return };
-    let mut s = RenderSpec { page: "recipe-gesture".into(), w: 900, h: 640, scale: 1.0, material: Some("dot".into()), theme: Some("light".into()), at_ms: 600.0, events: vec![], locale: None };
+    let mut s = RenderSpec { page: "recipe-gesture".into(), w: 900, h: 640, scale: 1.0, material: Some("dottr".into()), theme: Some("light".into()), at_ms: 600.0, events: vec![], locale: None };
     let mut ev = vec![r#"{"at_ms": 100, "kind": "press", "target": "pip/label"}"#.to_owned()];
     for i in 1..=12 { ev.push(format!(r#"{{"at_ms": {}, "kind": "move", "x": {}, "y": {}}}"#, 100 + i * 16, 60 + i * 12, 150 + i * 8)); }
     ev.push(r#"{"at_ms": 320, "kind": "release", "x": 204, "y": 246}"#.to_owned());
