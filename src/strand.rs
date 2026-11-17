@@ -1109,8 +1109,8 @@ fn tightest(p: &[[f32; 2]], lo: f32, hi: f32) -> f32 {
 }
 
 /// Where the line `pts` turns into its tail at point `j` (the last of the line), tighter than `r`:
-/// from 4 px before `j` (or farther back, by up to three radii, while the line turns tighter there) the
-/// pen goes round an arc of radius `r` toward the way the
+/// from 4 px before `j`, or 4 px before the first place within three radii back (and 6 px past the
+/// line's last knot) that turns tighter than 10 px, the pen goes round an arc of radius `r` toward the way the
 /// tail goes, then on a curve that meets the tail, tangent to it, three radii or more from `j` (the
 /// tail's points before that are dropped). On the side the tail goes, or else the other, if every new
 /// point is `clear`; otherwise left as it is.
@@ -1119,48 +1119,58 @@ fn round_join(pts: &mut Vec<([f32; 2], Kind)>, j: usize, r: f32, clear: &dyn Fn(
     let line: Vec<[f32; 2]> = pts.iter().map(|p| p.0).collect();
     let arc_at: Vec<f32> = std::iter::once(0.0).chain(line.windows(2).scan(0.0, |a, w| { *a += d2(w[0], w[1]).sqrt(); Some(*a) })).collect();
     let at = arc_at[j];
-    if tightest(&line, at - 4.0, at + 3.0 * r) >= 10.0f32.min(r) { return; }
+    // Back along the line to 6 px past its last knot (a knot's loops and its way out are its own) or
+    // three radii, whichever is nearer: the first place there that turns tighter than 10 px, or 4 px
+    // before the join.
+    let least = 10.0f32.min(r);
+    let knot = (0..j).rev().find(|&i| pts[i].1 == Kind::Knot).map_or(0.0, |i| arc_at[i] + 6.0);
+    let lo = (at - 3.0 * r).max(knot).max(0.0);
+    let first_tight = (0..((at - lo).max(0.0) as usize)).map(|d| lo + d as f32).find(|&x| tightest(&line, x - 3.0, x + 3.0) < least);
+    if first_tight.is_none() && tightest(&line, at - 4.0, at + 3.0 * r) >= least { return; }
     let unit = |d: [f32; 2]| { let l = (d[0] * d[0] + d[1] * d[1]).sqrt().max(1e-6); [d[0] / l, d[1] / l] };
     // From: 4 px back along the line (and the way it comes there); to: the tail's first point three
     // radii on and as far from `j` (or its end), and the way it goes on from there.
-    // The arc starts 4 px back, or farther (up to three radii) while the line there turns tighter.
-    let least = 10.0f32.min(r);
-    let mut back = 4.0;
-    while back < 3.0 * r && back < at && tightest(&line, at - back - 3.0, at - back + 3.0) < least { back += 1.0; }
-    let Some(b) = (0..j).rev().find(|&i| at - arc_at[i] >= back) else { return };
-    let start = at_length(&line, at - back);
+    let back = first_tight.map_or(4.0, |x| (at - x + 4.0).max(4.0));
     let Some(t) = (j + 1..pts.len()).find(|&i| arc_at[i] - at >= 3.0 * r && d2(line[i], line[j]) >= 9.0 * r * r).or(Some(pts.len() - 1)).filter(|&i| i > j) else { return };
-    let u = unit([line[b + 1][0] - line[b][0], line[b + 1][1] - line[b][1]]);
-    let vt = if t + 1 < line.len() { unit([line[t + 1][0] - line[t][0], line[t + 1][1] - line[t][1]]) } else { unit([line[t][0] - line[t - 1][0], line[t][1] - line[t - 1][1]]) };
-    let toward = unit([line[t][0] - start[0], line[t][1] - start[1]]);
-    let first = if u[0] * toward[1] - u[1] * toward[0] >= 0.0 { 1.0 } else { -1.0 };
-    for side in [first, -first] {
-        let w = [-u[1] * side, u[0] * side];
-        let c = [start[0] + w[0] * r, start[1] + w[1] * r];
-        let at_turn = |f: f32| { let (sn, cs) = (side * f).sin_cos(); [c[0] - (w[0] * cs - w[1] * sn) * r, c[1] - (w[0] * sn + w[1] * cs) * r] };
-        let tangent = |f: f32| { let (sn, cs) = (side * f).sin_cos(); [u[0] * cs - u[1] * sn, u[0] * sn + u[1] * cs] };
-        // Round until the pen heads for the tail's point (or by at most 300°).
-        let aim = |f: f32| { let (p, d) = (at_turn(f), tangent(f)); let to = unit([line[t][0] - p[0], line[t][1] - p[1]]); side * (d[0] * to[1] - d[1] * to[0]) };
-        let step = 5f32.to_radians();
-        // The other side turns the long way: on until the tail's point comes round to that side.
-        let most = 300f32.to_radians();
-        let mut f = 0.0;
-        while f < most && aim(f) <= 0.0 { f += step; }
-        while f < most && aim(f) > 0.0 { f += step; }
-        let mut new: Vec<[f32; 2]> = (0..=(f / step).round() as usize).map(|i| at_turn(i as f32 * step)).collect();
-        let q = new.last().copied().unwrap_or(start);
-        let dq = tangent(f);
-        // A curve from the arc's end to the tail's point, tangent to both.
-        let l = d2(q, line[t]).sqrt();
-        let n = (l / 3.0).ceil().max(1.0) as usize;
-        for i in 1..n {
-            let x = i as f32 / n as f32;
-            let (h00, h10, h01, h11) = (2.0 * x * x * x - 3.0 * x * x + 1.0, x * x * x - 2.0 * x * x + x, -2.0 * x * x * x + 3.0 * x * x, x * x * x - x * x);
-            new.push(std::array::from_fn(|a| h00 * q[a] + h10 * dq[a] * l + h01 * line[t][a] + h11 * vt[a] * l));
+    // Where that side and the other are both in the way (text just over the join, say), the arc starts
+    // a radius farther back, up to three times.
+    for extra in 0..4 {
+        let back = back + extra as f32 * r;
+        if back >= at { return; }
+        let Some(b) = (0..j).rev().find(|&i| at - arc_at[i] >= back) else { return };
+        let start = at_length(&line, at - back);
+        let u = unit([line[b + 1][0] - line[b][0], line[b + 1][1] - line[b][1]]);
+        let vt = if t + 1 < line.len() { unit([line[t + 1][0] - line[t][0], line[t + 1][1] - line[t][1]]) } else { unit([line[t][0] - line[t - 1][0], line[t][1] - line[t - 1][1]]) };
+        let toward = unit([line[t][0] - start[0], line[t][1] - start[1]]);
+        let first = if u[0] * toward[1] - u[1] * toward[0] >= 0.0 { 1.0 } else { -1.0 };
+        for side in [first, -first] {
+            let w = [-u[1] * side, u[0] * side];
+            let c = [start[0] + w[0] * r, start[1] + w[1] * r];
+            let at_turn = |f: f32| { let (sn, cs) = (side * f).sin_cos(); [c[0] - (w[0] * cs - w[1] * sn) * r, c[1] - (w[0] * sn + w[1] * cs) * r] };
+            let tangent = |f: f32| { let (sn, cs) = (side * f).sin_cos(); [u[0] * cs - u[1] * sn, u[0] * sn + u[1] * cs] };
+            // Round until the pen heads for the tail's point (or by at most 300°).
+            let aim = |f: f32| { let (p, d) = (at_turn(f), tangent(f)); let to = unit([line[t][0] - p[0], line[t][1] - p[1]]); side * (d[0] * to[1] - d[1] * to[0]) };
+            let step = 5f32.to_radians();
+            // The other side turns the long way: on until the tail's point comes round to that side.
+            let most = 300f32.to_radians();
+            let mut f = 0.0;
+            while f < most && aim(f) <= 0.0 { f += step; }
+            while f < most && aim(f) > 0.0 { f += step; }
+            let mut new: Vec<[f32; 2]> = (0..=(f / step).round() as usize).map(|i| at_turn(i as f32 * step)).collect();
+            let q = new.last().copied().unwrap_or(start);
+            let dq = tangent(f);
+            // A curve from the arc's end to the tail's point, tangent to both.
+            let l = d2(q, line[t]).sqrt();
+            let n = (l / 3.0).ceil().max(1.0) as usize;
+            for i in 1..n {
+                let x = i as f32 / n as f32;
+                let (h00, h10, h01, h11) = (2.0 * x * x * x - 3.0 * x * x + 1.0, x * x * x - 2.0 * x * x + x, -2.0 * x * x * x + 3.0 * x * x, x * x * x - x * x);
+                new.push(std::array::from_fn(|a| h00 * q[a] + h10 * dq[a] * l + h01 * line[t][a] + h11 * vt[a] * l));
+            }
+            if !new.iter().all(|p| clear(*p)) { continue; }
+            pts.splice(b + 1..t, new.into_iter().map(|p| (p, Kind::Tail)));
+            return;
         }
-        if !new.iter().all(|p| clear(*p)) { continue; }
-        pts.splice(b + 1..t, new.into_iter().map(|p| (p, Kind::Tail)));
-        return;
     }
 }
 
