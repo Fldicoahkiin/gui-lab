@@ -21,10 +21,10 @@ const SCENES: [&str; 2] = ["normcore", "dotmatrix"];
 pub fn view(s: &Film) -> El<Msg> {
     let c = s.scene;
     // The actors: a key of this scene, a flow id of the film.
-    let sentence = text("松开，再合上", if c == 0 { 40.0 } else { 64.0 }, Paint::INK).font(Font::Display).key(format!("s{c}/sentence")).flow("sentence");
+    let sentence = text("Loosen, then close", if c == 0 { 40.0 } else { 64.0 }, Paint::INK).font(Font::Display).key(format!("s{c}/sentence")).flow("sentence");
     let number = text(format!("{:02}", s.n), if c == 0 { 40.0 } else { 28.0 }, Paint::ACCENT).key(format!("s{c}/number")).flow("number");
-    let cut = button_as("cut", "下一场", Variant::Default, Msg::Cut);
-    let count = button_as("count", "加一", Variant::Quiet, Msg::Count);
+    let cut = button_as("cut", "Next scene", Variant::Default, Msg::Cut);
+    let count = button_as("count", "Add one", Variant::Quiet, Msg::Count);
     match c {
         0 => col().key("scene0").pad(48.0, 40.0).gap(24.0).child(row().gap(40.0).child(sentence).child(number)).child(row().gap(12.0).child(cut).child(count)),
         _ => col().key("scene1").pad(48.0, 40.0).gap(24.0).child(number).child(sentence).child(row().gap(12.0).child(count).child(cut)),

@@ -28,7 +28,7 @@ fn view(s: &S) -> El<M> {
         .child(skeleton("sk", 120.0, 12.0, false))
         .child(breadcrumb("bc", &["文档", "组件", "按钮"], |_| M::Nothing))
         .child(command("cmd", &s.q, &CMDS, s.active, M::Query, M::Run))
-        .child(context_menu("cm", s.menu, &["打开", "重命名"], s.active, M::Pick, M::Active, M::Close))
+        .child(context_menu("cm", s.menu, &["Open", "Rename"], s.active, M::Pick, M::Active, M::Close))
 }
 fn update(s: &mut S, m: M) {
     match m {

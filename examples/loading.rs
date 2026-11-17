@@ -13,7 +13,7 @@ pub struct App { pub loading: Loading, pub latency_ms: f32, pub now: f32 }
 pub enum Msg { Reload }
 
 pub const ROWS: [(&str, &str); 5] = [
-    ("晨间的港口", "三张照片 · 上周"), ("一份长一些的读书笔记", "两千字"), ("会议记录", "昨天"), ("旅行清单", "十二项"), ("草图", "一张图"),
+    ("Harbour in the morning", "Three photos · last week"), ("A longer set of reading notes", "2,000 words"), ("Meeting notes", "Yesterday"), ("Packing list", "Twelve items"), ("Sketch", "One picture"),
 ];
 
 /// Row `i` as it is when loaded; the loading state decides how it is drawn.
@@ -34,7 +34,7 @@ pub fn view(s: &App) -> El<Msg> {
         });
     }
     col().key("page").pad(24.0, 24.0).gap(16.0)
-        .child(row().gap(16.0).child(text("最近", 22.0, Paint::INK).font(Font::Display)).child(button_as("reload", "重新载入", Variant::Default, Msg::Reload)))
+        .child(row().gap(16.0).child(text("Recent", 22.0, Paint::INK).font(Font::Display)).child(button_as("reload", "Reload", Variant::Default, Msg::Reload)))
         .child(list)
 }
 

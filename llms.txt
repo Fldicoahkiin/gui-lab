@@ -9,7 +9,9 @@ Start with AGENTS.md (the mental model, the ten things you write, the rules, how
 - [AGENTS.md](AGENTS.md): how to write and verify interfaces here
 - [DESIGN.md](docs/DESIGN.md): the design contract, every number and acceptance
 - [registry.json](registry.json): the widgets, their files, responses, recomposition and recipes
-- [README.md](README.md): what exists and how to run it
+- [README.md](README.md): what amenui is, install and quick start
+- [docs/README.md](docs/README.md): the documentation index: guides, references, design
+- [Architecture](docs/reference/architecture.md): the pipeline and what each module owns
 
 ## Recipes
 
@@ -24,6 +26,11 @@ Start with AGENTS.md (the mental model, the ten things you write, the rules, how
 - [A 3D object in a card](docs/recipes/mesh.md): code in examples/mesh.rs
 - [A custom preset with its own transition](docs/recipes/preset.md): code in examples/preset.rs
 - [A chapter: one scene with actors that flow in](docs/recipes/chapter.md): code in examples/chapter.rs
+- [Gestures: a bottom sheet and a floating box](docs/recipes/gesture.md): code in examples/gesture.rs
+- [A menu with submenus and a safe zone](docs/recipes/submenu.md): code in examples/submenu.rs
+- [A list that loads](docs/recipes/loading.md): code in examples/loading.rs
+- [A stack of cards that fans](docs/recipes/stack.md): code in examples/stack.rs
+- [A dot chart](docs/recipes/chart.md): code in examples/chart.rs
 
 ## Lab
 
@@ -72,21 +79,21 @@ Every documentation page as Markdown, at `md/en/<page>.md` and `md/zh-Hans/<page
 - [Theming and dark mode](md/en/docs-theming.md): A theme is a set of colours and the faces for display, body and monospace (style::THEMES).
 - [Right to left](md/en/docs-rtl.md): A row lays out from the right when its direction is right to left: El::rtl(true) on the row (or any ancestor), or a locale that reads right to left.
 - [Registry schema](md/en/docs-registry-schema.md): `registry.
-- [button](md/en/button.md): 执行一个操作。
-- [number](md/en/number.md): 精确设置一个数值：获得焦点后直接键入，或用方向键和两侧的按钮按步长改；在数值上横向拖动可以连续调。
-- [input](md/en/input.md): 输入一行或多行文字（textarea）。
-- [switch](md/en/switch.md): 在两种状态之间切换一项设置。
-- [slider](md/en/slider.md): 在一个范围内大致地选一个值。
-- [tabs](md/en/tabs.md): 在同一位置的几组内容之间切换。
-- [choice](md/en/choice.md): 从几个互斥的选项中选一个。
-- [list](md/en/list.md): 显示一组条目，可以选中其中一项；条目多时可以滚动。
-- [card](md/en/card.md): 把相关的内容放在一个带边框的区域里。
-- [dialog](md/en/dialog.md): 在页面之上显示需要处理的内容。
-- [image](md/en/image.md): 按原比例显示一张图片。
-- [divider](md/en/divider.md): 分开两组内容。
-- [scroll area](md/en/scroll-area.md): 在固定的高度里显示更长的内容，用滚轮滚动；一侧的细条表示当前位置。
-- [menu](md/en/menu.md): 按钮显示当前选项；按下后在它下方的一层里列出全部选项。
-- [orbit](md/en/orbit.md): 转动一个三维视图：拖动环绕，滚轮推近拉远，获得焦点后方向键转动；快速拖动后松手会慢慢停下。
+- [button](md/en/button.md): Perform an action.
+- [number](md/en/number.md): Set a value exactly: type it once focused, or step it with the arrow keys and the buttons on either side; drag across the value to scrub it.
+- [input](md/en/input.md): Enter one line or several (textarea).
+- [switch](md/en/switch.md): Turn a setting on or off.
+- [slider](md/en/slider.md): Pick a value roughly within a range.
+- [tabs](md/en/tabs.md): Switch between groups of content in the same place.
+- [choice](md/en/choice.md): Choose one of a few mutually exclusive options.
+- [list](md/en/list.md): Show a set of items, one of which can be selected; it scrolls when there are many.
+- [card](md/en/card.md): Keep related content together in a bordered area.
+- [dialog](md/en/dialog.md): Show content that needs attention above the page.
+- [image](md/en/image.md): Show a picture at its own aspect ratio.
+- [divider](md/en/divider.md): Separate two groups of content.
+- [scroll area](md/en/scroll-area.md): Show longer content in a fixed height, scrolled with the wheel; a thin bar at one side shows the position.
+- [menu](md/en/menu.md): A button that shows the current option; pressing it lists every option in a layer below it.
+- [orbit](md/en/orbit.md): Turn a 3D view: drag to orbit, the wheel to dolly, the arrow keys once focused; a quick drag coasts to a stop.
 - [checkbox](md/en/checkbox.md): Choose whether one option applies.
 - [radio](md/en/radio.md): Choose one of a few visible options.
 - [select](md/en/select.md): Choose one option from a list that opens on demand.
@@ -114,7 +121,7 @@ Every documentation page as Markdown, at `md/en/<page>.md` and `md/zh-Hans/<page
 - [AGENTS.md](md/en/ai-agents.md): amenui is a self-drawn interface framework in Rust (wgpu; the same code runs natively and on the web).
 - [llms.txt](md/en/ai-llms.md): Start with AGENTS.
 - [Registry](md/en/ai-registry.md): {
-- [Changelog](md/en/changelog.md): 按 DESIGN.
+- [Changelog](md/en/changelog.md): What changed, newest first.
 
 ## Optional
 

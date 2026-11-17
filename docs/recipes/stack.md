@@ -21,7 +21,7 @@ pub enum Msg { Stack(StackMsg) }
 pub fn view(s: &App) -> El<Msg> {
     let st = &s.stack;
     col().key("page").pad(24.0, 24.0).gap(12.0)
-        .child(text("一叠卡片", 20.0, Paint::INK).font(Font::Display).key("title"))
+        .child(text("A stack of cards", 20.0, Paint::INK).font(Font::Display).key("title"))
         .child(card_stack("deck", st, 480.0, 320.0, Msg::Stack))
         // The formula, from the same fields.
         .child(text(format!("angle(n) = {:.0}° × {:.2}^n · delay(n) = {:.0} ms × n", st.angle0, st.falloff, st.delay_ms), 11.5, Paint::DIM).font(Font::Mono).key("formula"))

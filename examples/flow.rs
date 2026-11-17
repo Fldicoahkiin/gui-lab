@@ -12,7 +12,7 @@ pub struct Pages { pub open: Option<usize>, pub cmds: Vec<Cmd> }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Msg { Open(Option<usize>) }
 
-const TITLES: [&str; 3] = ["山脊", "河口", "海岬"];
+const TITLES: [&str; 3] = ["Ridge", "Estuary", "Headland"];
 
 pub fn view(s: &Pages) -> El<Msg> {
     let title = |i: usize, size: f32| text(TITLES[i], size, Paint::INK).font(Font::Display).key(format!("title/{i}")).flow(format!("title-{i}"));
@@ -21,9 +21,9 @@ pub fn view(s: &Pages) -> El<Msg> {
             r.child(card(format!("card/{i}"), None, title(i, 20.0)).width(180.0).on_press(Msg::Open(Some(i))))
         }),
         Some(i) => col().key("detail").pad(32.0, 28.0).gap(16.0)
-            .child(button_as("back", "‹ 返回", Variant::Quiet, Msg::Open(None)))
+            .child(button_as("back", "‹ Back", Variant::Quiet, Msg::Open(None)))
             .child(title(i, 44.0))
-            .child(text("详情页：标题从卡片里流到这里。", 15.0, Paint::DIM)),
+            .child(text("The detail page: the title flowed here from its card.", 15.0, Paint::DIM)),
     }
 }
 

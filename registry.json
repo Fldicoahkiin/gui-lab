@@ -1,6 +1,7 @@
 {
   "name": "amenui",
   "description": "组件以源码分发：把 files 里的文件和 dependencies 里各项的文件拷进自己的项目，再按需要改。组件只依赖框架的 el 模块（界面树）和 taffy 的对齐类型。",
+  "description_en": "Components are distributed as source: copy the files in `files`, and those of each entry in `dependencies`, into your project and change them as you need. Components depend only on the framework's el module (the interface tree) and taffy's alignment types.",
   "requires": [
     "src/el.rs"
   ],
@@ -9,6 +10,7 @@
       "name": "base",
       "title": "共用尺寸",
       "description": "组件共用的尺寸（字号、控件高度、线宽、圆角）和选中时的颜色。每个组件都用到它。",
+      "description_en": "The sizes every component shares (type sizes, control heights, line widths, corner radii) and the selection colour. Every component uses it.",
       "files": [
         "src/widgets/mod.rs"
       ],
@@ -23,6 +25,7 @@
         "button_as"
       ],
       "description": "执行一个操作。按下时立即触发，也可以用 Enter 或空格键触发。",
+      "description_en": "Perform an action. It fires on press, and Enter or Space fire it too.",
       "files": [
         "src/widgets/button.rs"
       ],
@@ -41,6 +44,7 @@
         "number"
       ],
       "description": "精确设置一个数值：获得焦点后直接键入，或用方向键和两侧的按钮按步长改；在数值上横向拖动可以连续调。",
+      "description_en": "Set a value exactly: type it once focused, or step it with the arrow keys and the buttons on either side; drag across the value to scrub it.",
       "files": [
         "src/widgets/number.rs"
       ],
@@ -60,6 +64,7 @@
         "textarea"
       ],
       "description": "输入一行或多行文字（textarea）。可以点、拖动、双击选择，Shift 加方向键扩展选区；Ctrl / ⌘ 加 A、C、X、V、Z 全选、复制、剪切、粘贴、撤销；支持输入法，正在组字的部分画在插入点上，带下划线。",
+      "description_en": "Enter one line or several (textarea). Click, drag or double-click to select, Shift with the arrows to extend; Ctrl / ⌘ with A, C, X, V, Z to select all, copy, cut, paste and undo; input methods are supported, with the composition drawn underlined at the caret.",
       "files": [
         "src/widgets/input.rs"
       ],
@@ -79,6 +84,7 @@
         "switch_sized"
       ],
       "description": "在两种状态之间切换一项设置。",
+      "description_en": "Turn a setting on or off.",
       "files": [
         "src/widgets/switch.rs"
       ],
@@ -97,6 +103,7 @@
         "slider"
       ],
       "description": "在一个范围内大致地选一个值。需要精确的值时，用数字控件。",
+      "description_en": "Pick a value roughly within a range. For an exact value, use a number control.",
       "files": [
         "src/widgets/slider.rs"
       ],
@@ -115,6 +122,7 @@
         "tabs"
       ],
       "description": "在同一位置的几组内容之间切换。",
+      "description_en": "Switch between groups of content in the same place.",
       "files": [
         "src/widgets/tabs.rs"
       ],
@@ -133,6 +141,7 @@
         "segmented"
       ],
       "description": "从几个互斥的选项中选一个。",
+      "description_en": "Choose one of a few mutually exclusive options.",
       "files": [
         "src/widgets/choice.rs"
       ],
@@ -150,6 +159,7 @@
         "list"
       ],
       "description": "显示一组条目，可以选中其中一项；条目多时可以滚动。",
+      "description_en": "Show a set of items, one of which can be selected; it scrolls when there are many.",
       "files": [
         "src/widgets/list.rs"
       ],
@@ -168,6 +178,7 @@
         "menu"
       ],
       "description": "按钮显示当前选项；按下后在它下方的一层里列出全部选项。按一项选中它，按列表以外的地方或 Esc 关闭。",
+      "description_en": "A button that shows the current option; pressing it lists every option in a layer below it. Press one to choose it; press outside the list or Esc to close.",
       "files": [
         "src/widgets/menu.rs"
       ],
@@ -185,6 +196,7 @@
         "card"
       ],
       "description": "把相关的内容放在一个带边框的区域里。",
+      "description_en": "Keep related content together in a bordered area.",
       "files": [
         "src/widgets/card.rs"
       ],
@@ -203,6 +215,7 @@
         "dialog"
       ],
       "description": "在页面之上显示需要处理的内容。关闭之前，页面的其余部分不响应操作；Esc 或关闭按钮关闭它。",
+      "description_en": "Show content that needs attention above the page. Until it closes, the rest of the page does not respond; Esc or the close button closes it.",
       "files": [
         "src/widgets/dialog.rs"
       ],
@@ -222,6 +235,7 @@
         "image"
       ],
       "description": "按原比例显示一张图片。图片松开时变成记号；指针在图上移动时，图会在指针附近松开。",
+      "description_en": "Show a picture at its own aspect ratio. A loosened picture turns into marks; under the pointer it loosens nearby.",
       "files": [
         "src/widgets/image.rs"
       ],
@@ -240,6 +254,7 @@
         "vdivider"
       ],
       "description": "分开两组内容。",
+      "description_en": "Separate two groups of content.",
       "files": [
         "src/widgets/divider.rs"
       ],
@@ -260,6 +275,7 @@
         "scroll_area"
       ],
       "description": "在固定的高度里显示更长的内容，用滚轮滚动；一侧的细条表示当前位置。",
+      "description_en": "Show longer content in a fixed height, scrolled with the wheel; a thin bar at one side shows the position.",
       "files": [
         "src/widgets/scroll.rs"
       ],
@@ -277,6 +293,7 @@
         "orbit"
       ],
       "description": "转动一个三维视图：拖动环绕，滚轮推近拉远，获得焦点后方向键转动；快速拖动后松手会慢慢停下。相机是状态里的 Orbit，组件只报告输入。",
+      "description_en": "Turn a 3D view: drag to orbit, the wheel to dolly, the arrow keys once focused; a quick drag coasts to a stop. The camera is an Orbit in the state; the component only reports input.",
       "files": [
         "src/widgets/orbit.rs",
         "src/mesh.rs"

@@ -18,9 +18,9 @@ pub fn view(s: &Shop) -> El<Msg> {
     let body = col().gap(12.0)
         .child(orbit("ring", torus, &s.orbit, Msg::Orbit).height(220.0))
         .child(row().gap(12.0)
-            .child(button_as("turn", "转 45°", Variant::Default, Msg::Turn))
-            .child(text(format!("转过 {} 次", s.turns), 14.0, Paint::DIM).key("turns")));
-    col().key("page").pad(32.0, 28.0).child(card("ring-card", Some("一枚戒指"), body).width(360.0))
+            .child(button_as("turn", "Turn 45°", Variant::Default, Msg::Turn))
+            .child(text(format!("Turns: {}", s.turns), 14.0, Paint::DIM).key("turns")));
+    col().key("page").pad(32.0, 28.0).child(card("ring-card", Some("A ring"), body).width(360.0))
 }
 
 pub fn update(s: &mut Shop, m: Msg) {

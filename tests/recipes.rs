@@ -32,21 +32,21 @@ fn every_recipe_lays_out_and_answers() {
         // Its own interaction.
         type Check = Box<dyn Fn(&amenui::tree::TreeNode) -> bool>;
         let (key, check): (&str, Check) = match name {
-            "form" => ("form/send", Box::new(|t| t.find("form/sent").and_then(|n| n.text.as_deref()) == Some("已提交 1 次"))),
-            "list" => ("files/list:3", Box::new(|t| t.find("files/picked").and_then(|n| n.text.as_deref()) == Some("选中：封面.jpg"))),
+            "form" => ("form/send", Box::new(|t| t.find("form/sent").and_then(|n| n.text.as_deref()) == Some("Sent: 1"))),
+            "list" => ("files/list:3", Box::new(|t| t.find("files/picked").and_then(|n| n.text.as_deref()) == Some("Selected: cover.jpg"))),
             "dialog" => ("rename/save", Box::new(|t| t.find("rename").is_none())),
             "flow" => ("card/1", Box::new(|t| t.find("detail").is_some())),
             "morph" => ("swap", Box::new(|t| t.find("b").is_some())),
             "material" => ("ripple", Box::new(|t| t.find("card").is_some_and(|n| n.material == "halftone"))),
             "annotate" => ("", Box::new(|t| t.find("panel").is_some())),
             "chapter" => ("cut", Box::new(|t| t.find("scene1").is_some() && t.find("s1/sentence").is_some())),
-            "preset" => ("switch", Box::new(|t| t.find("title").and_then(|n| n.text.as_deref()) == Some("自己的风格"))),
+            "preset" => ("switch", Box::new(|t| t.find("title").and_then(|n| n.text.as_deref()) == Some("A style of its own"))),
             "chart" => ("", Box::new(|t| t.find("chart/d0.0").is_some())),
             "stack" => ("deck", Box::new(|t| t.find("deck").is_some_and(|n| n.kind == "mesh"))),
             "loading" => ("reload", Box::new(|t| t.find("row4/title").is_some())),
             "submenu" => ("menu/m0/r0", Box::new(|t| t.find("menu/m1").is_some())),
             "gesture" => ("open", Box::new(|t| t.find("sheet/panel").is_some_and(|n| n.role == Some("dialog")))),
-            "mesh" => ("turn", Box::new(|t| t.find("turns").and_then(|n| n.text.as_deref()) == Some("转过 1 次") && t.find("ring").is_some_and(|n| n.kind == "mesh"))),
+            "mesh" => ("turn", Box::new(|t| t.find("turns").and_then(|n| n.text.as_deref()) == Some("Turns: 1") && t.find("ring").is_some_and(|n| n.kind == "mesh"))),
             _ => ("inc", Box::new(|t| t.find("count").and_then(|n| n.text.as_deref()) == Some("10"))),
         };
         if !key.is_empty() { play(d.as_mut(), &[ev(700.0, press(key)), ev(720.0, release(key))], 2000.0).unwrap_or_else(|e| panic!("{name}: {e}")); }

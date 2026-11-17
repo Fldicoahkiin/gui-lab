@@ -20,9 +20,9 @@ pub enum Msg { Chart(ChartMsg) }
 pub fn view(s: &App) -> El<Msg> {
     let c = &s.chart;
     col().key("page").pad(24.0, 24.0).gap(12.0)
-        .child(text("负载", 20.0, Paint::INK).font(Font::Display).key("title"))
+        .child(text("Load", 20.0, Paint::INK).font(Font::Display).key("title"))
         .child(dot_chart("chart", c, Msg::Chart))
-        .child(text(format!("范围 {:.2}–{:.2} 的面积 {:.3}", c.range.0, c.range.1, c.range_area()), 12.0, Paint::DIM).font(Font::Mono).key("area"))
+        .child(text(format!("Area over {:.2}–{:.2}: {:.3}", c.range.0, c.range.1, c.range_area()), 12.0, Paint::DIM).font(Font::Mono).key("area"))
 }
 
 pub fn update(s: &mut App, m: Msg) {
