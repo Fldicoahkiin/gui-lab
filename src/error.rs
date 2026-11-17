@@ -119,6 +119,20 @@ pub enum DriveError {
         /// The name given.
         name: String,
     },
+    #[error("{given} frames a second is not one the fixed 60 Hz clock can step by: use 60, 30, 20, 15 or 12.")]
+    /// `frames` was asked for a rate that does not divide the 60 Hz clock.
+    BadFps {
+        /// The rate given.
+        given: u32,
+    },
+    #[error("the frames {from}..{to} are empty: give the first frame and one past the last, e.g. 0..120.")]
+    /// `frames` was given an empty range.
+    NoFrames {
+        /// The first frame.
+        from: u32,
+        /// One past the last.
+        to: u32,
+    },
     #[error("event {index}: {inner}")]
     /// An error in one event of the list.
     AtEvent {

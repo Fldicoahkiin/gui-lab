@@ -87,6 +87,33 @@ pub struct Sheet {
     pub px: Vec<u8>,
     /// Each cell's looseness, in order; the arrival cells have `None`.
     pub cells: Vec<Option<f32>>,
+    /// For each looseness cell, the share (0–1) of the pixels in the title's ink box that differ from
+    /// the page at rest (looseness 0) in the same material: how far the title has come apart. The
+    /// arrival cells have `None`.
+    pub changed: Vec<Option<f32>>,
+}
+
+/// The title's ink on a page (its glyphs' boxes without the spread), device px.
+fn title_box(ui: &Ui<Sample, ()>) -> [u32; 4] {
+    let sp = crate::text::SPREAD as f32;
+    let b = ui.scene().instances.iter().enumerate().filter(|(i, _)| ui.owner_key(*i) == Some("title"))
+        .fold([f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY], |a, (_, x)| [a[0].min(x.rect[0] + sp), a[1].min(x.rect[1] + sp), a[2].max(x.rect[0] + x.rect[2] - sp), a[3].max(x.rect[1] + x.rect[3] - sp)]);
+    if b[2] <= b[0] { return [0; 4]; }
+    [b[0].floor().max(0.0) as u32, b[1].floor().max(0.0) as u32, (b[2].ceil() as u32).min(CELL.0), (b[3].ceil() as u32).min(CELL.1)]
+}
+/// The share of the pixels in `r` that differ between two frames of a cell.
+fn share_changed(a: &[u8], b: &[u8], r: [u32; 4]) -> f32 {
+    let (mut diff, mut all) = (0usize, 0usize);
+    for y in r[1]..r[3] { for x in r[0]..r[2] { let i = ((y * CELL.0 + x) * 4) as usize; all += 1; if a[i..i + 4] != b[i..i + 4] { diff += 1; } } }
+    diff as f32 / all.max(1) as f32
+}
+
+/// `sheet` at `n + 1` evenly spaced loosenesses from 0 to 1 (`sheet --sweep <n>`): how a material
+/// comes apart, with `Sheet::changed` saying how much of the title has changed at each step.
+pub fn sweep(o: &mut Offscreen, faces: &dyn Fn() -> Vec<crate::text::Face>, material: Material, n: usize, theme: usize) -> Result<Sheet, SampleError> {
+    let n = n.max(1);
+    let loose: Vec<f32> = (0..=n).map(|i| i as f32 / n as f32).collect();
+    sheet(o, faces, material, &loose, theme, false)
 }
 
 /// Whether `material` draws its rest as plain does, byte for byte (`scribblr`; the others have a look of
@@ -111,6 +138,13 @@ pub fn sheet(o: &mut Offscreen, faces: &dyn Fn() -> Vec<crate::text::Face>, mate
     let plain = crate::render::plain(&look);
     let mut frames: Vec<(u32, u32, Vec<u8>)> = vec![];
     let mut cells = vec![];
+    let mut changed = vec![];
+    // The page at rest in this material, to measure the title against (labelled as the cell at 0 is).
+    let settle = |ui: &mut Ui<Sample, ()>| { let mut t = 0.0; while t < 0.5 { t += 1.0 / 60.0; ui.tick(t); } };
+    let mut rest_ui = page(faces(), 0.0, format!("{name} · loose {:.2}", 0.0), look);
+    settle(&mut rest_ui);
+    let rest = o.render(&mut rest_ui, &look);
+    let tb = title_box(&rest_ui);
     for &k in loose {
         let mut ui = page(faces(), k, format!("{name} · loose {k:.2}"), look);
         // A while after the stir, frame by frame: what is held loose is held, the map still warm.
@@ -127,6 +161,7 @@ pub fn sheet(o: &mut Offscreen, faces: &dyn Fn() -> Vec<crate::text::Face>, mate
             if pixels > 0 { return Err(SampleError::NotPlain { material: name, pixels }); }
         }
         if let (Some((_, _, prev)), Some(Some(pk))) = (frames.last(), cells.last()) && *prev == px { return Err(SampleError::Same { material: name, a: *pk, b: k }); }
+        changed.push(Some(share_changed(&px, &rest, tb)));
         frames.push((CELL.0, CELL.1, px));
         cells.push(Some(k));
     }
@@ -137,6 +172,7 @@ pub fn sheet(o: &mut Offscreen, faces: &dyn Fn() -> Vec<crate::text::Face>, mate
         frames.push((CELL.0, CELL.1, o.render(&mut ui, &plain)));
         let plain_px = frames.last().map(|f| f.2.clone()).unwrap_or_default();
         cells.push(None);
+        changed.push(None);
         // The label says the first stage before the material arrives, so its own change of text has
         // settled by the first frame.
         ui.state.label = format!("{name} · ready +120 ms");
@@ -157,9 +193,10 @@ pub fn sheet(o: &mut Offscreen, faces: &dyn Fn() -> Vec<crate::text::Face>, mate
             if ms == 120.0 && !rests_as_plain(material) && px[below..] == plain_px[below..] { return Err(SampleError::NotArrived { material: name }); }
             frames.push((CELL.0, CELL.1, px));
             cells.push(None);
+            changed.push(None);
         }
     }
     let cols = frames.len().min(if arrival { 4 } else { 5 });
     let (w, h, px) = crate::offscreen::sheet(&frames, cols);
-    Ok(Sheet { w, h, px, cells })
+    Ok(Sheet { w, h, px, cells, changed })
 }
