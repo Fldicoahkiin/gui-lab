@@ -1058,9 +1058,10 @@ impl<S, M: Clone> Ui<S, M> {
     pub fn set_render_ready(&mut self, f: f32) { if (self.prep.render - f).abs() > 1e-6 { self.prep.render = f; self.dirty = true; } }
     /// Everything on the page loosens and condenses again from now (the frame the look's material is
     /// ready after the warm-up, DESIGN.md §1.23): over `RAMP` each element loosens from 0 to its cap,
-    /// then condenses as a new element does from there. Text to read and controls only nudge,
-    /// decoration and pictures come apart and condense; the frame the material arrives is the page at
-    /// rest, so nothing jumps.
+    /// then condenses as a new element does from there. Text to read and controls stay as they are (their
+    /// cap on the ramp is 0: a nudge on 12 px type reads as missing strokes); titles, decoration and
+    /// pictures come apart and condense. The frame the material arrives is the page at rest, so nothing
+    /// jumps.
     pub fn condense_all(&mut self) {
         self.ramp = Some(self.now);
         self.ramp_births();
@@ -1074,7 +1075,9 @@ impl<S, M: Clone> Ui<S, M> {
         // the element condenses from its cap.
         let at = if x < 1.0 { self.now } else { t0 + RAMP };
         for &(owner, id) in &self.owners {
-            let (_, cap, _) = response_caps(&self.nodes[owner], self.timing.legible_cap);
+            // Text to read and controls do not move as the material arrives: they are born condensed.
+            let n = &self.nodes[owner];
+            let cap = if n.legible { 0.0 } else { response_caps(n, self.timing.legible_cap).1 };
             self.births.insert(id, at - enter * (1.0 - cap * x));
         }
         if x >= 1.0 { self.ramp = None; }
