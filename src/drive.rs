@@ -70,11 +70,20 @@ impl<S, M: Clone> Driven for Ui<S, M> {
     fn frame_drawn(&mut self) { Ui::frame_drawn(self) }
     fn audit(&mut self, o: &mut Offscreen, look: &Look, px: &[u8]) -> Vec<crate::audit::Finding> {
         let (partial, hide) = (o.r.partial, o.r.hide_glyphs);
-        (o.r.partial, o.r.hide_glyphs) = (false, true);
-        self.invalidate();
-        let ground = o.render(self, look);
+        o.r.partial = false;
+        let mut frame = |ui: &mut Self, look: &Look, hide: bool| { o.r.hide_glyphs = hide; ui.invalidate(); o.render(ui, look) };
+        let ground = frame(self, look, true);
+        // The same frame in plain (the material alone swapped), for text the material wears away.
+        let plain = (look.material != Material::Plain).then(|| {
+            let p = Look { material: Material::Plain, ..*look };
+            (frame(self, &p, false), frame(self, &p, true))
+        });
         (o.r.partial, o.r.hide_glyphs) = (partial, hide);
-        crate::audit::audit(self, px, &ground)
+        self.invalidate();
+        let mut f = crate::audit::audit(self, px, &ground);
+        if let Some((p, pg)) = &plain { f.extend(crate::audit::eroded(self, (px, &ground), (p, pg), look.material.name())); }
+        crate::audit::sort(&mut f);
+        f
     }
     fn apply(&mut self, input: &Input) -> Result<(), DriveError> {
         let at = |ui: &Self, x: &Option<f32>, y: &Option<f32>, target: &Option<String>| -> Result<(f32, f32), DriveError> {

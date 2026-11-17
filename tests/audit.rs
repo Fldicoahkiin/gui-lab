@@ -27,6 +27,9 @@ fn stacked(_: &()) -> El<()> {
 fn tiny(_: &()) -> El<()> { col().pad(20.0, 20.0).child(text("six pixels tall", 6.0, Paint::TEXT).key("tiny")) }
 fn moving(t: &f32) -> El<()> { col().pad(20.0, 20.0).child(space(60.0 + (t * 3.0).sin() * 30.0, 12.0).fill(Paint::INK).key("bar")) }
 fn moving_on_purpose(t: &f32) -> El<()> { col().pad(20.0, 20.0).child(space(60.0 + (t * 3.0).sin() * 30.0, 12.0).fill(Paint::INK).key("bar").ongoing()) }
+fn boxed(_: &()) -> El<()> {
+    col().pad(20.0, 20.0).child(col().key("box").width(200.0).clip().child(text("this line is longer than the box that clips it", 18.0, Paint::TEXT).nowrap().key("boxed")))
+}
 fn calm(_: &()) -> El<()> { col().pad(20.0, 20.0).gap(8.0).child(text("A calm page", 22.0, Paint::INK).key("title")).child(text("Everything on it reads.", 15.0, Paint::DIM).key("note")) }
 
 fn broken(page: &str, faces: Vec<amenui::text::Face>, (w, h, s): (u32, u32, f32), _: (Option<amenui::style::Material>, Option<usize>, Option<amenui::i18n::Locale>)) -> Result<Box<dyn Driven>, LookError> {
@@ -38,6 +41,7 @@ fn broken(page: &str, faces: Vec<amenui::text::Face>, (w, h, s): (u32, u32, f32)
         "stacked" => still(stacked),
         "tiny" => still(tiny),
         "calm" => still(calm),
+        "boxed" => still(boxed),
         "moving" => Box::new(Ui::new(0.0f32, moving, |_, _| {}, faces, w, h, s).on_tick(tick)),
         "moving-on-purpose" => Box::new(Ui::new(0.0f32, moving_on_purpose, |_, _| {}, faces, w, h, s).on_tick(tick)),
         _ => return Err(LookError::UnknownPage { given: page.into(), recipes: String::new() }),
@@ -58,6 +62,12 @@ fn five_broken_pages_each_report_what_is_wrong() {
     assert!(calm.is_empty(), "a calm page has nothing: {calm:?}");
     let f = findings("outside", &mut o);
     assert!(has(&f, Kind::Clipped, Level::P0, "long"), "text past the window: {f:?}");
+    // What to do says which side, how far and what cuts it.
+    let cut = f.iter().find(|f| f.kind == Kind::Clipped && f.key == "long").expect("clipped");
+    assert!(cut.fix.contains("right") && cut.fix.contains("the window") && cut.fix.chars().any(|c| c.is_ascii_digit()), "{}", cut.fix);
+    let f = findings("boxed", &mut o);
+    let cut = f.iter().find(|f| f.kind == Kind::Clipped && f.key == "boxed" && f.level == Level::P0).unwrap_or_else(|| panic!("clipped by its box: {f:?}"));
+    assert!(cut.fix.contains("right") && cut.fix.contains("`box`") && cut.fix.contains(" px"), "{}", cut.fix);
     let f = findings("grey", &mut o);
     assert!(has(&f, Kind::Contrast, Level::P0, "grey"), "grey on grey: {f:?}");
     let f = findings("stacked", &mut o);
@@ -89,4 +99,28 @@ fn every_recipe_in_every_material_dark_and_light_has_no_p0_or_p1() {
         }
     }
     assert!(bad.is_empty(), "{} findings:\n{}", bad.len(), bad.join("\n"));
+}
+
+#[test]
+fn text_a_material_wears_away_at_rest_is_found() {
+    let Ok(mut o) = Offscreen::try_new(W, H) else { eprintln!("no GPU adapter here: skipped"); return };
+    let mut ui = Ui::new((), calm, |_, _| {}, fonts(), W, H, 1.0);
+    ui.tick(1.0);
+    let look = amenui::style::Look { material: amenui::style::Material::Plain, ..ui.look() };
+    o.r.partial = false;
+    let px = o.render(&mut ui, &look);
+    o.r.hide_glyphs = true;
+    ui.invalidate();
+    let ground = o.render(&mut ui, &look);
+    o.r.hide_glyphs = false;
+    // The same frame is the same ink: nothing.
+    assert!(amenui::audit::eroded(&ui, (&px, &ground), (&px, &ground), "plain").is_empty());
+    // A material that drew none of the strokes (its frame is the ground) wears both texts away.
+    let f = amenui::audit::eroded(&ui, (&ground, &ground), (&px, &ground), "worn");
+    for key in ["title", "note"] { assert!(has(&f, Kind::Eroded, Level::P1, key), "{key}: {f:?}"); }
+    // Half of every other row of pixels taken away is still under 85 %.
+    let mut half = px.clone();
+    for (k, row) in half.chunks_mut((W * 4) as usize).enumerate() { if k % 2 == 0 { let g = &ground[k * (W * 4) as usize..(k + 1) * (W * 4) as usize]; row.copy_from_slice(g); } }
+    let f = amenui::audit::eroded(&ui, (&half, &ground), (&px, &ground), "half");
+    assert!(has(&f, Kind::Eroded, Level::P1, "title"), "{f:?}");
 }
