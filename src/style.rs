@@ -292,7 +292,7 @@ pub mod gaze {
     /// The level bar of the mean energy (see `OSC`).
     pub const LEVEL: u16 = 2048;
     /// The true ink (`INK`): a dashed box round what an element really draws (moved, turned, posed, on
-    /// a form), its size, and a dashed leader from its layout box to the nearest point of its outline;
+    /// a form), its size, and a dotted leader from its layout box to the nearest point of its outline;
     /// the audit measures the same boxes (`amenui::audit`).
     pub const INK: u16 = 4096;
     /// How many kinds there are.

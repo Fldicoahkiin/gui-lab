@@ -457,7 +457,9 @@ frame with a blend-only pipeline that honours each instance's own `xf`, used onl
   labels packed greedily downward at their wanted heights without overlapping and pushed back up from the
   end when they pass the bottom (`gaze::pack`); `RULER` rulers along the scope's top and left edges (10 /
   50 / 100) marking the pointer; `CROSS` a crosshair and coordinates at the pointer; `GRID` a baseline
-  every 8 px and 12 columns; `EDGE` edge notes (§4.2); `OSC` a waveform and `LEVEL` a level bar (§4.3).
+  every 8 px and 12 columns; `EDGE` edge notes (§4.2); `OSC` a waveform and `LEVEL` a level bar (§4.3), with a
+  `READY 0.62` readout beside it while the page is still preparing (§1.23); `INK` the box round the element's true
+  ink, dashed, with a dotted leader to its drawn outline and an `INK w×h` label (§1.31).
   Two labels on the same corner step aside to the right. The last three are readouts of the whole scope,
   not tied to elements: always present in "all" mode, and in hover and focus-path modes while the pointer
   is in the scope; what they drew is recorded in `Ui::readout()` (`gaze::Readout`).
@@ -1704,6 +1706,37 @@ heading has as many bars as lines, each bar as wide as its line (±1); when the 
 4 still skeleton; every row's box is equal in skeleton and content; no frames wanted afterwards. Samples
 `craft <dir> loading`.
 
+**The warm-up and the application's own preparation.** The first frame is a readable page you can use: what takes
+long to make comes in over the next frames. `Renderer::begin(device, queue, format, w, h) -> Warmup` makes at once
+only what plain needs to draw (the main shader, the ink, nearness, material, annotation and copy pipelines).
+`Warmup::step(budget_ms, text)` (or `Renderer::warm_step` on the renderer it hands over) makes the rest in a fixed
+order, at least one piece a call and more while the budget lasts: the mark atlas one set at a time
+(`marks::Atlas::begin`, `AtlasBuild::step`, `finish`), the finishing pass, then the reduced-resolution upsample,
+the morph tiles' and the mesh pass's pipelines; `Progress { done, total, stage }` says how far it is
+(`Stage::Plain`, `Pipelines`, `Ready`). Until the atlas and the finishing pass are made, frames are drawn in the
+plain look (`render::plain`: material plain, no finishing pass, no material overrides). Rule 3 of §0 says a page at
+rest is plain, so this is the same page arriving early, not a lesser one; on the frame the look is ready, the page
+condenses into it (`Ui::condense_all`) with the preset's own timing, each element from no looser than its cap: text
+to read and controls only nudge, decoration and pictures condense from loose. `Renderer::new` is the same thing
+done in one go, for offline rendering and tests, with the same bytes; `Offscreen::try_warming` is an offscreen
+target that warms up. On the web the shell calls `step` once a frame.
+
+An application prepares its own one-off work the same way (`src/warmup.rs`): `Ui::prepare(key, job)` takes a job
+that does one small piece on the state per call and returns how much is done (0..1). The runtime calls each job at
+least once a frame while it runs, then again while the frame's spare time lasts (`Ui::set_prepare_budget`, 6 ms by
+default); a page with jobs running wants frames. `Ui::ready(key)` reads a job's progress (1 when finished or never
+asked for) and `Ui::readiness()` the least ready of the jobs and the renderer. The element being prepared is drawn
+as its own skeleton (`El::skeleton()`), measured to the size it will have, so it arrives without moving.
+
+The rules of how loading looks: never a spinner or a progress bar as the main thing on the page; the first frame is
+the plain page, readable and usable; progress is shown only as a readout of the annotation layer, `READY 0.62`
+beside `LEVEL` (§4.3), and only while something is not ready.
+
+Acceptance of the warm-up: `tests/warmup.rs` (before any step the frame equals the plain look's frame byte for
+byte; after the last step and the condensing it equals a frame of `Renderer::new`; at most 32 steps, none over a
+fixed 3 s on lavapipe; a prepared job runs a piece a frame, its progress only goes forward, and the page rests
+afterwards).
+
 ### 1.24 A stack of cards
 
 `widgets::card_stack` (`Stack { count 5, angle0 42, falloff 0.7, delay_ms 28, spring (k 260, c 24), look, card }`).
@@ -1790,6 +1823,63 @@ Acceptance: unit tests in `field.rs` (a circle's contour is closed and on the ra
 continuous and deterministic, curl has no divergence, reaction–diffusion grows only inside the mask and
 deterministically, a stirred flow comes to rest); `tests/lab.rs` (each experiment runs deterministically in the
 headless runtime, Grown receives its outline and grows only inside it, lit text has light and dark).
+
+**Depth and facing: text on a form.** A pose also has a depth and a facing: `Pose::z` (logical px, positive toward
+the viewer) and `Pose::facing` (1 facing the viewer, 0 edge on, negative facing away). The defaults, 0 and 1, draw
+exactly as before. The glyphs of one text element are drawn far to near by `z` (a stable sort; there is no depth
+buffer). `El::form(FormFx)` keeps such text legible, with four numbers:
+
+| name | what | range | step | default |
+|---|---|---|---|---|
+| `back` | opacity kept by glyphs facing away | 0–1 | 0.05 | 0 |
+| `edge` | glyphs facing less than this fade out; at 60 % of it they are not drawn | 0–0.6 | 0.05 | 0.25 |
+| `overlap` | a glyph whose ink is covered by nearer glyphs more than this is not drawn | 0.1–1 | 0.05 | 0.35 |
+| `fog` | tone of the farthest glyphs (the nearest keep theirs) | 0–1 | 0.05 | 0.6 |
+
+`overlap` is how dense a form may be, and it is measured on the true ink, not guessed from spacing: going from near
+to far, the turned bounding boxes find the candidates, then `morph::cover_at` on a 7 × 7 grid over the glyph's ink
+measures how much of it the nearer drawn glyphs cover; the samples come out of the frame budget (`budget::grant`),
+and past it the boxes alone decide.
+
+`El::reveal_by(Reveal::Word | Line | Glyph)` says how clips, poses and the window take text away. With `Word` (or
+`Line`), a word (a line) is drawn whole or not at all: it takes the faintest of its glyphs' opacities, it is left
+out when any of its ink would be cut by its clip or the window, and on a form it is thinned as one (left out if any
+of its glyphs is covered past `overlap`). Words are Unicode word boundaries with the punctuation after a word
+belonging to it (`Text::reveal_groups`). `Glyph` is the default and is what happened before.
+
+The `amenui::form` module wraps a block of text onto a shape seen by a `mesh::Camera`. `Form { shape, spin, camera,
+cover }`: the shape is `Shape::Sphere(r)`, `Shape::Surface(f)` (how far the surface is along each direction) or
+`Shape::Mesh`; `spin` turns it (yaw and pitch, degrees); `cover` is how much of it the block covers (a fraction of
+the longitudes and of the latitudes). `Form::pose_of(GlyphAt)` (or `form.pose()` for `El::pose`) gives each glyph
+its place, turn and scale on the surface, with `z` and `facing` filled in; across and down use the same angular
+step, so glyphs keep their proportions where the shape faces you. `Form::hit(x, y, w, h)` casts the pointer's ray
+and returns `FormHit { point, normal, t, uv }`, the place on the surface in the block's own terms (analytic for a
+sphere, `Mesh::ray` for a mesh, a march and bisection for a surface function), so what the pointer lights follows
+the form as it turns, and a pointer off the form finds nothing.
+
+**Hits follow what is drawn.** `Ui::glyph_at(x, y) -> Option<GlyphHit { key, i, z, local }>` answers with the
+nearest glyph drawn at that point, after poses, turns and thinning (`hit::glyph_under` over the last paint's
+glyphs, `Ui::glyphs`); `El::on_point` gets the same in `Point::glyph` and `Point::z` while hovering (during a drag
+they are `None` and 0). An element turned with `El::turn(radians)` is drawn turned about its centre, and so is its
+subtree; hits go through the same transform (`hit::Affine`, `hit::contains`), so a turned button is pressed where
+it is drawn, not in the empty corners of its box. A 3D hit says where it is: `MeshHit` has `point` (world),
+`normal`, `t` (along the ray) and `uv` (the place in the view); `Pick` is unchanged.
+
+A press goes to the nearest element under the pointer that takes a press or a drag: a button or link inside an
+element that drags (a scene hearing the pointer with `on_point`) gets its own press, and the outer element's drag
+starts on its own area or on something inside it that takes no press. Fingers follow the same rule.
+
+The recipe `form3d` (`docs/recipes/form3d.md`) is a passage on a sphere with `edge` 0.5, words revealed whole, the
+words around the pointer's place on the surface lit, and a drag that turns it.
+
+Acceptance of depth and forms: `tests/form.rs` (a passage on a sphere turned a whole way round in twelve steps
+draws no glyph facing away, no two drawn glyphs cover more of each other's ink than `overlap` (+0.15 for the grid),
+depths never fall along the drawing order, the same turn gives the same instances, words come and go whole, a pose
+with the default depth and facing draws exactly as before, `Form::hit` finds the glyph drawn under the pointer);
+`tests/pointer.rs` (after a quarter turn of the sphere the glyph `glyph_at` gives at the same point is the one now
+drawn there; a square turned 30° presses at its drawn corner and not at its box's empty corner; a button inside a
+pointer scene takes its own press, and the scene still drags from its own area and from text inside it); unit tests
+in `mesh.rs` (a ray hits the unit sphere at length 1 with the normal along the point, within 1e-4) and `form.rs`.
 
 ### 1.27 The frame budget for marks
 
@@ -2039,6 +2129,47 @@ from 1 back to 0, each frame stirring the map by its looseness and filling the w
 looseness before drawing, so the energy at the heading is at least 0.8 in frame 1; the last frame waits for the map
 to settle; dark and light grounds), and `craft <dir> thread-ref` (the style page with the heading held fully loose,
 one frame each on black and paper, to compare side by side with the reference).
+
+### 1.31 The audit
+
+One command says what is wrong with a page as drawn: `render --page <name> --audit` prints a list of findings, most
+serious first, and with `--strict` a P0 or P1 is an error. `amenui::audit::audit(ui, px, ground)` takes a
+deterministic frame's pixels, the same frame drawn with every glyph hidden (the ground under the text, before the
+finishing pass) and the runtime that drew them, and returns `Vec<Finding>` (`level`, `key`, `kind`, `measured`,
+`limit`, `fix`); `drive::audit(spec, faces, o)` renders a page and audits it, `drive::audit_with` for an
+application's own pages (`Driven::audit`). The view's structural problems (`Ui::problems()`) are on the same list as P1 `Structure`.
+Everything is measured; each `fix` is one sentence to act on, naming the element and the number.
+
+| kind | what is measured | level |
+|---|---|---|
+| `Clipped` | text to read whose ink (`Instance` boxes after poses and turns) is cut by a clip, the window or a reveal; or a word drawn in part | a whole glyph or more, or a word in part: P0; less than a glyph: P1 |
+| `Contrast` | per line of text, the strongest ink pixel against what is drawn under it (WCAG 2) | text to read below 3:1 P0, below 4.5:1 P1; a lone mark (no letter or digit, such as › or −) below 3:1 P1; text not to read below 3:1 P3 |
+| `Overlap` | the share of a glyph's ink covered by another drawn glyph, in one element or between two to read | text to read over 10 %: P1; posed text over its `overlap` + 0.05: P2 |
+| `Small` | the drawn height of text to read (size × scale × the pose's vertical scale) | under 9 device px: P1 |
+| `Restless` | after the last input, the clock run on at 60 Hz: still asking for frame after frame 2 s later with nothing visible marked `El::ongoing()` (a timed wake now and then, such as a caret's blink, is not restless) | P1 |
+
+Posed text dimmed by depth on purpose is read by its nearer half; the smallest size of posed text is its 10th
+percentile among the glyphs drawn at half opacity or more. A clipped finding suggests `reveal_by(Reveal::Word)`
+when a reveal cuts a word.
+
+The annotation layer shows what the audit measures: `gaze::INK` draws the true ink's bounding box of an element
+(after transforms and poses) dashed, with a dotted leader from its layout corner to the nearest point of the drawn
+outline and an `INK w×h` label (`hit::ink_of`), from the same measure the clipping and overlap checks use.
+
+What the audit found on the recipes, and what changed for it: `Paint::DIM` was 0.5 of the way from ground to ink,
+under 4.5:1 on the light theme (3.2:1); it is 0.66 (5.2:1 light, 6.9:1 dark). The light theme's accent was under
+4.5:1 against its ground, both as text and under a solid button's label (3.4:1); it is darker, (0.64, 0.20, 0.035)
+at 5.6:1, and the selection tint is 12 % instead of 14 %. A selected list row's note is `TEXT`. The `near` material
+drew text as outline and 25 % fill, too faint at text sizes, and lost the outline entirely on a filled panel (the
+panel's nearness is max-blended over the glyph's); text keeps its own ink whole there, and text set in the ground's
+colour (a label on a solid button) takes the ink's colour, since `near` draws the panel open. The loading recipe's
+tick asked for a new view every frame forever; it asks only when a row changes.
+
+Acceptance: `tests/audit.rs` (five pages broken on purpose, each reporting its finding at its level: text past the
+window `Clipped` P0, grey on grey `Contrast` P0, two lines over each other `Overlap` P1, 6 px text `Small` P1, an
+element that never stops moving `Restless` P1, and not when it is marked `ongoing`; a calm page has no findings;
+the seventeen recipes in every material, dark and light, have no P0 or P1); `render --page recipe-form --audit
+--strict` exits 0.
 
 ## 2. Parameters must be exact
 
@@ -2493,6 +2624,7 @@ language marking names the current language); `labsheet <dir> body` gives `body.
 | 3D, GPU particles, drawing only what changed, presets and transitions | Done: `cargo test` (with `tests/mesh.rs` and the unit tests of `mesh.rs`, `dirty.rs`, `preset.rs`, `orbit.rs`), no `clippy` warnings, `check` items 1–16; `samples <dir> mesh / particles / transitions` give three samples; the `bench` sections for particles and dirty boxes; the web version under WebGL2 opens the 3D, particle and style switching pages and operates each once with no console errors |
 | Fixes (bounded recomposition, particles from mesh surfaces, xray meshes, local clocks, legible pictures in controls, repeated GPU particle reversal) and the film (§6) | Done: `cargo test` (with `tests/film.rs`, the two thousand frames and the pictures in controls of `tests/ripple.rs`, surface projection in `mesh.rs`, repeated reversal in `morph.rs`), no `clippy` warnings, `check` items 1–17; `reel <dir>` gives four samples; the web version under WebGL2 walks through twelve chapters by keyboard with no console errors; the native window opens the film under Xvfb |
 | The field map and trails (§1.29), the `scribblr` thread material and long paths (§1.30), small type and edge notes, field map readouts, Loose Thread, black and white only and invert (§4.2–§4.4, §1.21) | Field map and trails: unit tests in `fieldmap.rs`, `tests/fieldmap.rs`, the drag in `tests/render.rs`, `check` item 19, `bench … map`, `craft <dir> stirr`. Thread: unit tests in `strand.rs`, `tests/strand.rs`, `check` item 20 (1–5), `bench … strand`, `craft <dir> scribblr`. Small type, readouts, black and white only and invert (§4.2–§4.4, `binary` and `invert` in §1.21): the edge note and readout tests in `tests/gaze.rs`, `check` items 7.2, 7.3, 20.6 and 20.7, `craft <dir> loose-thread`. `cargo test`, no `clippy` warnings, all of `check` |
+| Text on a form with depth and facing, hits where things are drawn, words shown whole, the warm-up and the application's own preparation, the audit and the measured ink box (§1.23, §1.26, §1.31) | Done: `cargo test` (with `tests/form.rs`, `tests/pointer.rs`, `tests/warmup.rs`, `tests/audit.rs` and the unit tests of `form.rs`, `hit.rs`, `mesh.rs`), no `clippy` warnings (native and web), rustdoc without warnings; `render --page recipe-form --audit --strict` exits 0, and the audit of every recipe in every material, dark and light, has no P0 or P1 |
 
 Since the split into two repositories, the tools `check`, `pages`, `scenes`, `film`, `samples`, `craft`, `bench`, `shot`,
 `labsheet`, `scroll` and `window`, and the tests that drive gallery pages, are in the website repository.
@@ -3054,3 +3186,21 @@ Where the changes made for looks (field maps, threads, small type, Loose Thread)
   only reached 0.7.
 - `craft <dir> thread-ref` only gives the style page's two frames; the side by side with the reference picture is put
   together outside the repository (no third-party pictures in the repository).
+
+Text on a form, the warm-up and the audit (§1.23, §1.26, §1.31):
+
+- Showing text by whole words is `El::reveal_by(Reveal::Word)`: `El::reveal(bool)` already names something else (an
+  element that asks to be scrolled into view, such as a selected row).
+- A word shown whole takes its faintest glyph's opacity, and on a form it is thinned as one, by its most covered glyph.
+  Averaging drew a word half turned away at half strength.
+- `edge` fades from the full value down to 60 % of it, where a glyph is no longer drawn; the recipe uses 0.5, so no
+  word is drawn squeezed at the rim.
+- `Point::glyph` is `None` during a drag: a drag comes through `Drag`, which has no glyph, and adding one would have
+  changed every literal of it.
+- `Warmup::step` takes the text system (the mark atlas is built from the faces the runtime draws with), and
+  `Renderer::begin` makes the core pipelines at once rather than over the first steps, since plain needs them for the
+  first frame. A view reads progress from the state or through `Ui::ready` (it has no runtime to ask).
+- The audit is its own entry (`drive::audit`), not a field of `RenderSpec`, so code that builds `RenderSpec` keeps
+  building. `MeshHit` lost `Eq` and `Hash` with its float fields.
+- The contrast measure is the strongest ink pixel of a line, the colour the text is drawn in; percentiles of the ink
+  read antialiased edges at small sizes as low contrast.

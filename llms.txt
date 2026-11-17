@@ -31,6 +31,7 @@ Start with AGENTS.md (the mental model, the ten things you write, the rules, how
 - [A list that loads](docs/recipes/loading.md): code in examples/loading.rs
 - [A stack of cards that fans](docs/recipes/stack.md): code in examples/stack.rs
 - [A dot chart](docs/recipes/chart.md): code in examples/chart.rs
+- [Text on a form](docs/recipes/form3d.md): code in examples/form3d.rs; depth, facing, thinning, words whole, the pointer on the surface (`El::form`, `form::Form`, `Form::hit`)
 
 ## Lab
 
@@ -51,6 +52,9 @@ The Lab (`#lab`) is a grid of small live experiments, one file each in the websi
 - [Field map](src/fieldmap.rs): `El::stirr` trails and `Cmd::Stir`, energy and flow that settle to zero; decoration loosens and drifts behind what moves (`#stirr`)
 - [scribblr](src/strand.rs): the thread material, plain at rest, loose ink as one line that knots and trails off and writes itself back; `El::trace` long paths, solid or dashed (`#material-scribblr`, `#stirr`)
 - [Edge notes and readouts](src/gaze.rs): `El::tracking`, `El::whisper()` in a small serif; `gaze::EDGE`, `OSC`, `LEVEL` read the runtime and the field map (`Ui::readout()`); the Loose Thread preset with `post.binary` and `post.invert` (`#style-loose-thread`)
+- [Text on a form](src/form.rs): `Pose::z` and `Pose::facing`, `El::form(FormFx)`, `form::Form` and `Form::hit`; `Ui::glyph_at` and `El::turn` hit what is drawn (`src/hit.rs`)
+- [Warm-up](src/render_warm.rs): `Renderer::begin`, `Warmup::step`, plain first and condensing into the look; `Ui::prepare` / `Ui::ready` (`src/warmup.rs`)
+- [Audit](src/audit.rs): `render --audit [--strict]`, `drive::audit`: text cut off, contrast, overlap, size, restlessness, each with a fix; `gaze::INK`
 
 ## Pages
 
