@@ -2497,7 +2497,11 @@ but for a slow waver (`d` px every `a / 5` px). Then each piece leaves whole at 
 distance from the press ÷ the farthest corner's + 0.4 × the piece's hash)`: between `t` and `t + 0.15` its own crack
 widens (slowly, then fast: the fourth power) until it covers the piece, so at any moment most pieces are whole or
 gone. (Against the farthest corner rather than the diagonal, so the last pieces leave at the step's end wherever the
-press was.) The `preset` recipe's Crack button commits the tech-manual look through an 800 ms crack
+press was.) Inside a commit's scope (`El::commit_scope`) the Crack is measured against the scope's box: pieces of
+`clamp(short side ÷ 3.5, 16, a)` px, the cracks' width (`0.06 ×` that, at least 1 px) and waver (every fifth of it)
+with them, the run over the box's diagonal and the distance against the box's farthest corner from the press; and the
+step takes `clamp(box diagonal ÷ page diagonal, 0.5, 1)` of its time (`Split::span`). Without a scope the bytes are
+as before. The `preset` recipe's Crack button commits the tech-manual look through an 800 ms crack
 (`tests/transition.rs`: the last frame is the new page drawn directly, a tenth of the way in under a tenth of it
 shows, what shows only grows, the same numbers give the same bytes; at 0.2 nothing of the new page shows farther than
 0.6 diagonals from the press; at 0.3 under 12 % shows; at 0.6 at most a quarter of the pieces are between 15 % and

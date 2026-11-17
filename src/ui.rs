@@ -224,6 +224,13 @@ pub struct Split {
     /// frame stays as it was.
     pub scope: Option<[f32; 4]>,
 }
+impl Split {
+    /// How much of the look's transition time a commit takes (DESIGN.md §1.1): all of it on the whole
+    /// page; within a scope, the scope's diagonal over the page's (`w`, `h` device px), from half to all.
+    pub fn span(&self, w: f32, h: f32) -> f32 {
+        match self.scope { Some(b) => ((b[2] - b[0]).hypot(b[3] - b[1]) / w.hypot(h).max(1.0)).clamp(0.5, 1.0), None => 1.0 }
+    }
+}
 
 /// The four accent corners that frame the hovered or focused element. They are on their target in the
 /// frame the target changes (the pointer's frame); the only easing is `MARKS_SETTLE`, a cosmetic close
@@ -1273,8 +1280,8 @@ impl<S, M: Clone> Ui<S, M> {
     /// crossing the window.
     fn split_alive(&self, sp: &Split, now: f32) -> bool {
         let tm = &self.timing;
-        if tm.transition > 0.0 { return now - sp.t < tm.transition + 1.0 / 60.0; }
         let (w, h) = (self.size.0 * self.scale, self.size.1 * self.scale);
+        if tm.transition > 0.0 { return now - sp.t < tm.transition * sp.span(w, h) + 1.0 / 60.0; }
         (now - sp.t) * tm.wave_speed * self.scale < (w * w + h * h).sqrt() + 1.0
     }
     /// What moves the material clock: the field and what loosens (fronts, a commit, condensing, morphs,
@@ -3509,7 +3516,7 @@ impl<S, M: Clone> Ui<S, M> {
         // A transition's Loosen steps loosen everything, on the CPU as the material pass does (render.rs).
         let tr_k = match &self.split {
             Some(sp) if self.timing.transition > 0.0 && self.split_alive(sp, now) =>
-                self.look().transition.loosen(((now - sp.t) / self.timing.transition).clamp(0.0, 1.0)).min(self.timing.loose_max),
+                self.look().transition.loosen(((now - sp.t) / (self.timing.transition * sp.span(self.size.0 * self.scale, self.size.1 * self.scale))).clamp(0.0, 1.0)).min(self.timing.loose_max),
             _ => 0.0,
         };
         let mut keep_hold: Vec<String> = vec![];

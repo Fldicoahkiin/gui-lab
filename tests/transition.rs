@@ -36,6 +36,8 @@ fn crack_from(o: &mut Offscreen, ms: f32) -> (Vec<u8>, Vec<Vec<u8>>, [f32; 2]) {
 }
 
 fn px(f: &[u8], i: usize) -> &[u8] { &f[i * 4..i * 4 + 4] }
+/// The largest difference of two pixels' colour channels.
+fn gap_of(a: &[u8], b: &[u8]) -> i32 { a.iter().zip(b).take(3).map(|(x, y)| (*x as i32 - *y as i32).abs()).max().unwrap_or(0) }
 
 #[test]
 fn the_page_cracks_open_onto_the_new_one() {
@@ -192,4 +194,94 @@ fn a_scoped_commit_plays_inside_its_box_and_nothing_outside_it_changes() {
     let direct = o2.render(&mut fresh, &look);
     let differ = last.chunks_exact(4).zip(direct.chunks_exact(4)).enumerate().filter(|(i, (a, b))| inside(*i) && a != b).count();
     assert_eq!(differ, 0, "{differ} px inside the panel differ from the new state drawn directly");
+}
+
+/// A panel marked `commit_scope` beside a note; its button commits the Crack for the panel alone, and
+/// the panel's ground changes with it, so every pixel of it changes.
+mod scoped_crack {
+    use amenui::el::{El, Paint, col, row, text};
+    use amenui::style::{Look, Material};
+    use amenui::widgets::button;
+    pub struct S { pub alt: bool }
+    pub fn view(s: &S) -> El<bool> {
+        // The same elements before and after (nothing is born): only the panel's ground changes.
+        let panel = col().key("panel").width(220.0).height(220.0).pad(16.0, 16.0).gap(12.0)
+            .fill(Paint::tone(if s.alt { 0.3 } else { 0.08 }))
+            .child(text("A panel", 22.0, Paint::INK).key("panel/title"))
+            .child(button("swap", "Swap", !s.alt).commit())
+            .commit_scope();
+        row().key("page").pad(24.0, 24.0).gap(40.0)
+            .child(col().key("left").width(160.0).child(text("Outside the panel. Nothing here changes.", 15.0, Paint::TEXT).key("note")))
+            .child(panel)
+    }
+    pub fn update(s: &mut S, m: bool) { s.alt = m; }
+    pub fn look(_: &S) -> Look { Look { material: Material::Plain, transition: amenui::recipes::preset::cracked().transition, ..Look::default() } }
+}
+
+#[test]
+fn a_scoped_crack_breaks_the_scope_into_pieces_of_its_own_size() {
+    let Ok(mut o) = Offscreen::try_new(W, H) else { eprintln!("no GPU adapter here: skipped"); return };
+    let mut ui = amenui::ui::Ui::new(scoped_crack::S { alt: false }, scoped_crack::view, scoped_crack::update, fonts(), W, H, 1.0).on_look(scoped_crack::look);
+    let mut t = 0.0;
+    while t < 1.0 { t += 1.0 / 60.0; ui.tick(t); let look = ui.look(); let _ = o.render(&mut ui, &look); }
+    let look = ui.look();
+    let before = o.render(&mut ui, &look);
+    let b = ui.node("panel").expect("panel").rect;
+    let (x, y) = ui.node("swap").expect("swap").rect.center();
+    ui.press(x, y);
+    ui.release(x, y);
+    ui.pointer_leave();
+    let mut frames = vec![];
+    for _ in 0..60 { t += 1.0 / 60.0; ui.tick(t); let look = ui.look(); frames.push(o.render(&mut ui, &look)); }
+    let last = frames.last().expect("frames").clone();
+    // The transition takes the scope's share of the look's 800 ms.
+    let page = (W as f32).hypot(H as f32);
+    let dur = 0.8 * (b.w.hypot(b.h) / page).clamp(0.5, 1.0);
+    let at = |x: f32| &frames[((x * dur * 60.0).round() as usize).clamp(1, frames.len()) - 1];
+    let inside = |i: usize| { let (x, y) = ((i as u32 % W) as f32 + 0.5, (i as u32 / W) as f32 + 0.5); x >= b.x && y >= b.y && x < b.right() && y < b.bottom() };
+    let changing: Vec<usize> = (0..(W * H) as usize).filter(|&i| inside(i) && gap_of(px(&before, i), px(&last, i)) >= 12).collect();
+    assert!(changing.len() as f32 > 0.8 * b.w * b.h, "the panel changes: {} px", changing.len());
+    // The new page shows where a pixel is nearer to it than to the old one (the press's front and the
+    // focus marks still move a little over both).
+    let new = |f: &[u8], i: usize| gap_of(px(f, i), px(&last, i)) < gap_of(px(f, i), px(&before, i));
+    let shown = |f: &[u8]| changing.iter().filter(|&&i| new(f, i)).count() as f32 / changing.len() as f32;
+    // At 0.3 the cracks are thin.
+    let s3 = shown(at(0.3));
+    assert!(s3 < 0.12, "{:.1} % of the panel shows at 0.3", s3 * 100.0);
+    // No frame shows more than a third more of it than the one before: it never changes at a stroke.
+    let shares: Vec<f32> = frames.iter().map(|f| shown(f)).collect();
+    for (k, w) in shares.windows(2).enumerate() { assert!(w[1] - w[0] <= 0.35, "frame {k} to {}: {:.2} to {:.2}", k + 1, w[0], w[1]); }
+    // The pieces, as the cracks have parted them once their run is done (0.4).
+    let f35 = at(0.4);
+    let n = (W * H) as usize;
+    let mut id = vec![usize::MAX; n];
+    let mut sizes = vec![];
+    // A crack is anything that has moved off the old page (a thin one is drawn blended).
+    let live = |i: usize| inside(i) && gap_of(px(f35, i), px(&before, i)) <= 6 && gap_of(px(&before, i), px(&last, i)) >= 12;
+    for s0 in 0..n {
+        if id[s0] != usize::MAX || !live(s0) { continue; }
+        let k = sizes.len();
+        let mut stack = vec![s0];
+        id[s0] = k;
+        let mut size = 0;
+        while let Some(i) = stack.pop() {
+            size += 1;
+            let (x, y) = (i as u32 % W, i as u32 / W);
+            for (dx, dy) in [(-1i32, 0i32), (1, 0), (0, -1), (0, 1)] {
+                let (nx, ny) = (x as i32 + dx, y as i32 + dy);
+                if nx < 0 || ny < 0 || nx >= W as i32 || ny >= H as i32 { continue; }
+                let j = (ny as u32 * W + nx as u32) as usize;
+                if id[j] == usize::MAX && live(j) { id[j] = k; stack.push(j); }
+            }
+        }
+        sizes.push(size);
+    }
+    let f6 = at(0.6);
+    let mut gone = vec![0usize; sizes.len()];
+    for i in 0..n { if id[i] != usize::MAX && new(f6, i) { gone[id[i]] += 1; } }
+    let pieces: Vec<f32> = sizes.iter().zip(&gone).filter(|(s, _)| **s >= 100).map(|(s, g)| *g as f32 / *s as f32).collect();
+    let between = pieces.iter().filter(|f| **f > 0.15 && **f < 0.85).count();
+    eprintln!("{} pieces, {between} on their way at 0.6; shown {:?}", pieces.len(), shares.iter().map(|s| (s * 100.0).round() / 100.0).collect::<Vec<_>>());
+    assert!(pieces.len() >= 8, "only {} pieces in the panel", pieces.len());
+    assert!(between * 4 <= pieces.len(), "{between} of {} pieces are partly gone at 0.6", pieces.len());
 }
