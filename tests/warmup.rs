@@ -213,3 +213,76 @@ fn text_to_read_and_controls_hold_still_as_the_material_arrives() {
     }
     eprintln!("the least alike to its rest: {:.2} % ({}); to plain: {:.2} % ({})", worst.0 * 100.0, worst.1, worst_plain.0 * 100.0, worst_plain.1);
 }
+
+/// A page that reads the warm-up (`Ui::on_warm`) and shows it, as a loading line would.
+mod loading {
+    use amenui::el::{El, Paint, col, text};
+    pub struct S { pub seen: Vec<Option<(u32, u32)>> }
+    pub fn view(s: &S) -> El<()> {
+        let line = match s.seen.last().copied().flatten() { Some((d, n)) => format!("{d} / {n}"), None => "ready".into() };
+        col().key("page").pad(24.0, 24.0).child(text(line, 14.0, Paint::INK).key("line"))
+    }
+    pub fn warmed(s: &mut S, p: Option<amenui::render::Progress>) -> bool { s.seen.push(p.map(|p| (p.done, p.total))); true }
+}
+
+#[test]
+fn the_host_path_warms_within_the_budget_and_tells_the_page_how_far_it_is() {
+    let (Ok(mut cold), Ok(mut whole)) = (Offscreen::try_warming(W, H), Offscreen::try_new(W, H)) else { eprintln!("no GPU adapter here: skipped"); return };
+    let budget = amenui::render::WARM_MS;
+    let mut a = page();
+    let mut b = page();
+    let look = Look { material: Material::Dottr, ..a.look() };
+    let mut t = 0.5;
+    a.tick(t);
+    b.tick(t);
+    // As a host does it: draw the frame, then warm for the rest of it (`Renderer::warm_frame`).
+    let mut steps: Vec<(u32, f64)> = vec![];
+    let mut seen: Vec<amenui::render::Progress> = vec![];
+    let mut frames = 0;
+    loop {
+        cold.render(&mut a, &look);
+        let before = a.warm().map_or(0, |p| p.done);
+        let t0 = std::time::Instant::now();
+        let p = cold.r.warm_frame(&mut a, budget);
+        let ms = t0.elapsed().as_secs_f64() * 1000.0;
+        frames += 1;
+        assert!(frames < 200, "the warm-up ends");
+        steps.push((p.done - before, ms));
+        seen.push(p);
+        if p.stage == Stage::Ready { break; }
+        assert!(a.needs_frame(t), "frames go on while it warms");
+        t += 1.0 / 60.0;
+        a.tick(t);
+    }
+    eprintln!("host warm-up: {frames} frames, {:?}", steps.iter().map(|(n, ms)| format!("{n}:{ms:.1}")).collect::<Vec<_>>());
+    // A step that made more than one piece stayed within 1.5 × the budget (one piece alone may be
+    // longer: one pipeline is made in one go).
+    for (n, ms) in &steps {
+        if *n > 1 { assert!(*ms <= 1.5 * budget as f64, "a step of {n} pieces took {ms:.1} ms"); }
+    }
+    // Done only goes forward, and ends at the total.
+    assert!(seen.windows(2).all(|w| w[0].done < w[1].done && w[0].total == w[1].total), "{seen:?}");
+    let last = seen.last().expect("at least one step");
+    assert_eq!(last.done, last.total, "it ends at the total");
+    assert!(a.warm().is_none() && !cold.r.warming());
+    // Settled, it draws the bytes a renderer made at once draws.
+    let end = t + 3.0;
+    a.tick(end);
+    b.tick(end);
+    let warm = cold.render(&mut a, &look);
+    let made = whole.render(&mut b, &look);
+    assert!(warm == made, "a renderer warmed by the host draws as one made at once");
+    // The page hears each step and then `None`, and can show it.
+    let Ok(mut cold) = Offscreen::try_warming(W, H) else { return };
+    let mut ui = amenui::ui::Ui::new(loading::S { seen: vec![] }, loading::view, |_, _| {}, fonts(), W, H, 1.0).on_warm(loading::warmed);
+    let mut t = 0.5;
+    ui.tick(t);
+    cold.render(&mut ui, &look);
+    cold.r.warm_frame(&mut ui, 0.0);
+    assert!(ui.state.seen.len() == 1 && ui.state.seen[0].is_some_and(|(d, n)| d == 1 && n > 1), "{:?}", ui.state.seen);
+    while ui.warm().is_some() { t += 1.0 / 60.0; ui.tick(t); cold.render(&mut ui, &look); cold.r.warm_frame(&mut ui, 0.0); }
+    assert_eq!(ui.state.seen.last(), Some(&None));
+    assert!(ui.state.seen.iter().flatten().collect::<Vec<_>>().windows(2).all(|w| w[0].0 < w[1].0));
+    // The view shows it: the line reads as the page's own state says.
+    assert!(ui.node("line").is_some());
+}

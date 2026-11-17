@@ -59,13 +59,16 @@ impl<S: App, M: Clone> Host<S, M> {
         let format = caps.formats.iter().copied().find(|f| !f.is_srgb()).or_else(|| caps.formats.first().copied()).ok_or("the canvas offers no format")?;
         let config = surface.get_default_config(&adapter, w, h).map(|mut c| { c.format = format; c }).ok_or("the canvas is not supported by the adapter")?;
         surface.configure(&device, &config);
-        let mut r = Renderer::new(device, queue, format, w, h);
+        // Made a piece at a time (DESIGN.md §1.9): the first frame is plain and comes at once; each frame
+        // after it makes the next pieces within `WARM_MS` (`Host::frame`).
+        let mut r = Renderer::begin(device, queue, format, w, h).into_renderer();
         r.set_particle_tier(crate::render::particle_tier(&adapter));
         setup(&mut r);
         let [sans, pixel, mono] = fonts;
         let faces = crate::text::with_serif(crate::text::with_geist(crate::text::bundled(sans, pixel, mono), crate::text::geist_bytes()), crate::text::serif_bytes());
         let mut ui = make(faces, w, h, scale);
         if !hash.trim_start_matches('#').is_empty() && ui.state.route(hash) { ui.relayout(); }
+        ui.set_warm(Some(r.warm_progress()));
         ui.perf_mut().backend = backend_name(adapter.get_info().backend).into();
         ui.perf_mut().adapter = adapter.get_info().name;
         Ok(Self { ui, r, surface, config, started: false, dropping: vec![] })
@@ -166,9 +169,12 @@ impl<S: App, M: Clone> Host<S, M> {
     pub fn frame(&mut self, t: f32) -> f32 {
         if !self.started { self.ui.restart(t); self.started = true; }
         self.ui.tick(t);
-        if self.ui.needs_frame(t) { self.draw(); } else { self.ui.perf_mut().skipped += 1; }
+        if self.ui.needs_frame(t) { self.draw(); self.r.warm_frame(&mut self.ui, crate::render::WARM_MS); } else { self.ui.perf_mut().skipped += 1; }
         self.ui.next_wake(t).map_or(-1.0, |w| (w - t).max(0.0))
     }
+
+    /// How far the renderer's warm-up is, `[done, total]` (`Ui::warm`); empty once it is done.
+    pub fn warm(&self) -> Vec<u32> { self.ui.warm().map(|p| vec![p.done, p.total]).unwrap_or_default() }
 
     fn draw(&mut self) {
         let tex = match self.surface.get_current_texture() {
@@ -277,6 +283,9 @@ macro_rules! web_app {
             pub fn cursor() -> String { host(|s| s.ui.cursor().css().to_owned()).unwrap_or_else(|| "default".into()) }
             #[wasm_bindgen(wasm_bindgen = $crate::app::web::__rt::wasm_bindgen)]
             pub fn frame(t: f32) -> f32 { host(|s| s.frame(t)).unwrap_or(-1.0) }
+            /// How far the warm-up is, `[done, total]`; empty once it is done.
+            #[wasm_bindgen(wasm_bindgen = $crate::app::web::__rt::wasm_bindgen)]
+            pub fn warm() -> Vec<u32> { host(|s| s.warm()).unwrap_or_default() }
             // For automation and tests.
             #[wasm_bindgen(wasm_bindgen = $crate::app::web::__rt::wasm_bindgen)]
             pub fn flinging() -> bool { host(|s| s.ui.flinging()).unwrap_or(false) }

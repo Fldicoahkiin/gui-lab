@@ -276,7 +276,7 @@ struct Frame<'a> { scene: &'a Scene, field: &'a Field, look: &'a Look, lib: &'a 
 
 #[path = "render_warm.rs"]
 mod warm;
-pub use warm::{Progress, Stage, Warmup, plain};
+pub use warm::{Progress, Stage, WARM_MS, Warmup, plain};
 
 impl Renderer {
     /// A renderer with everything made at once (offline rendering, tests): the same frames, byte for

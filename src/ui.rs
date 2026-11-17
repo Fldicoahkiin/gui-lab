@@ -409,6 +409,9 @@ pub struct Ui<S, M> {
     /// A scripted press (`Cmd::Press`) is going on: it is not a person's input.
     scripted: bool,
     ticked: Option<fn(&mut S, f32) -> bool>,
+    /// How far the renderer's warm-up is (`None`: warm), and who is told (`Ui::on_warm`).
+    warm: Option<crate::render::Progress>,
+    warmed: Option<fn(&mut S, Option<crate::render::Progress>) -> bool>,
     /// Keys nothing on the page used (the flag is Shift), and keys let go; either returns whether
     /// the state changed.
     unused_key: Option<fn(&mut S, Key, bool) -> bool>,
@@ -752,6 +755,10 @@ impl<S, M: Clone> Ui<S, M> {
     /// Let the state know the time on every tick (for things that change by themselves, like a clock);
     /// `f` returns whether the view changed.
     pub fn on_tick(mut self, f: fn(&mut S, f32) -> bool) -> Self { self.ticked = Some(f); self }
+    /// Let the state know how far the renderer's warm-up is, each time it moves on and once more with
+    /// `None` when it is done (DESIGN.md §1.9), so the view can show it (a loading line, a mark that
+    /// fills); `f` returns whether the view changed.
+    pub fn on_warm(mut self, f: fn(&mut S, Option<crate::render::Progress>) -> bool) -> Self { self.warmed = Some(f); self }
     /// Read the look from the state, for the timings `needs_frame` uses (front life and speed, how long
     /// new things condense, whether the material moves by itself).
     /// Read the locale from the state (DESIGN.md §1.20): before every view it becomes the current one
@@ -801,7 +808,7 @@ impl<S, M: Clone> Ui<S, M> {
             hover: None, focus: None, pressed: None, capture: None, modal_at: None, modal_key: None, return_focus: None, split: None, splits: 0,
             keyboard: false, marks: Marks::default(), sized: None, commands: None, unseen: vec![], base: vec![], tags: vec![], roles: vec![],
             run: None, painted_phase: 0, flows: HashMap::new(), ghosts: vec![], body_len: 0, animating: false, lifted: HashMap::new(),
-            gaze_of: None, gaze_seen: HashMap::new(), annots: vec![], readout: gaze::Readout::default(), hovered: None, pointer_of: None, scripted: false, ticked: None, unused_key: None, shortcut: None, scrolled_of: None, released: None, input: None,
+            gaze_of: None, gaze_seen: HashMap::new(), annots: vec![], readout: gaze::Readout::default(), hovered: None, pointer_of: None, scripted: false, ticked: None, warm: None, warmed: None, unused_key: None, shortcut: None, scrolled_of: None, released: None, input: None,
             dirty: true, look_of: None, locale_of: None, timing: Timing::default(), wake_of: None, latest_birth: f32::NEG_INFINITY, gaze_until: f32::NEG_INFINITY,
             marks_moving: false, caret: None, caret_on: true, static_loose: false, mclock: 0.0, moving: false, gclock: 0.0, ground_moving: false,
             perf: crate::perf::Perf { quality: 1.0, ..Default::default() }, span: 0, painting: false, overlay: 0, overlay_at: 0.0, shape_seen: 0.0, hud_idle: false, rebuilt: 0,
@@ -1059,7 +1066,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// input or `next_wake`.
     pub fn needs_frame(&self, now: f32) -> bool {
         let b = self.beat_of(now);
-        self.dirty || self.prep.pending() || self.held(now) || self.moving_at(b) || self.wake_at(b).is_some_and(|w| w <= b)
+        self.dirty || self.warm.is_some() || self.prep.pending() || self.held(now) || self.moving_at(b) || self.wake_at(b).is_some_and(|w| w <= b)
     }
     /// A `Cmd::Hold` is going on: frames go on (the same) until it ends.
     fn held(&self, now: f32) -> bool { self.timing.beat.on() && self.bclock.hold.is_some_and(|(_, until)| now < until) }
@@ -1067,7 +1074,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// when only input can change anything.
     pub fn next_wake(&self, now: f32) -> Option<f32> {
         let b = self.beat_of(now);
-        if self.dirty || self.prep.pending() || self.held(now) || self.moving_at(b) { return Some(now); }
+        if self.dirty || self.warm.is_some() || self.prep.pending() || self.held(now) || self.moving_at(b) { return Some(now); }
         // A wake on the beat clock is that much later on the runtime's.
         self.wake_at(b).map(|w| (w + now - b).max(now))
     }
@@ -1096,6 +1103,19 @@ impl<S, M: Clone> Ui<S, M> {
     /// How long preparation may take of each frame (ms; 0: each job once a frame, the same steps on
     /// every run, for tests and tools).
     pub fn set_prepare_budget(&mut self, ms: f32) { self.prep.budget_ms = ms.max(0.0); }
+    /// How far the renderer's warm-up is (DESIGN.md §1.9): `Some` from the first frame of a host that
+    /// warms up (`Renderer::warm_frame`) until the last piece is made, then `None`. A renderer made at
+    /// once (`Renderer::new`) never says anything, so this stays `None`.
+    pub fn warm(&self) -> Option<crate::render::Progress> { self.warm }
+    /// The host says how far the warm-up is (`Renderer::warm_frame` does it); one that says
+    /// `Stage::Ready` is `None`. While it is `Some` frames go on, so the last step's frame is drawn.
+    pub fn set_warm(&mut self, p: Option<crate::render::Progress>) {
+        let p = p.filter(|p| p.stage != crate::render::Stage::Ready);
+        if p == self.warm { return; }
+        self.warm = p;
+        self.dirty = true;
+        if let Some(f) = self.warmed && f(&mut self.state, p) { self.relayout(); }
+    }
     /// The renderer says how far its warm-up is (`render::Warmup`).
     pub fn set_render_ready(&mut self, f: f32) { if (self.prep.render - f).abs() > 1e-6 { self.prep.render = f; self.dirty = true; } }
     /// Everything on the page loosens and condenses again from now (the frame the look's material is
