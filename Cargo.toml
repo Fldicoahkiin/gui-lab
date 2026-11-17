@@ -8,9 +8,6 @@ homepage = "https://github.com/amenui-dev/amenui"
 # The files in examples/ are the recipes (docs/recipes/): compiled into the library as `amenui::recipes`.
 autoexamples = false
 
-[lib]
-crate-type = ["cdylib", "rlib"]
-
 [features]
 default = ["gltf"]
 # A small glTF 2.0 reader (`mesh::load_gltf`): positions, normals, indices and node transforms.
@@ -35,19 +32,13 @@ unic-langid = "0.9"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 png = "0.17"
-winit = "0.30"
-# The system clipboard for the native window (X11 through x11rb, no C libraries).
-arboard = { version = "3", default-features = false }
 
 # macOS draws through Metal (Vulkan is not there without a translation layer).
 [target.'cfg(target_os = "macos")'.dependencies]
 wgpu = { version = "30", default-features = false, features = ["metal"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-wasm-bindgen = "0.2"
-wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = ["HtmlCanvasElement", "Window", "Document", "console", "Performance"] }
-console_error_panic_hook = "0.1"
+web-sys = { version = "0.3", features = ["Window", "Performance"] }
 
 [profile.release]
 opt-level = "s"

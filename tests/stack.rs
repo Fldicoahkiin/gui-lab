@@ -3,7 +3,6 @@
 //! at rest nothing asks for frames. The page's look follows the material.
 use amenui::recipes::stack::{App, Msg, ui};
 use amenui::ui::Ui;
-use amenui::widgets::StackLook;
 
 fn fonts() -> Vec<amenui::text::Face> { amenui::text::load_bundled(concat!(env!("CARGO_MANIFEST_DIR"), "/assets")).expect("fonts") }
 
@@ -27,14 +26,4 @@ fn the_fan_follows_its_formula() {
     ui.pointer_move(2.0, 2.0);
     for _ in 0..120 { t += 1.0 / 60.0; ui.tick(t); }
     assert!((1..5).all(|i| ui.state.stack.angle_of(i) == 0.0), "leaving closes it");
-}
-
-#[test]
-fn the_look_follows_the_material() {
-    let mut g = amenui::gallery::Gallery { material: amenui::style::Material::Plain, ..Default::default() };
-    assert_eq!(amenui::gallery::craft::stack_now(&g).look, StackLook::Plain);
-    g.material = amenui::style::Material::Print;
-    assert_eq!(amenui::gallery::craft::stack_now(&g).look, StackLook::Thick);
-    g.material = amenui::style::Material::Ascii;
-    assert_eq!(amenui::gallery::craft::stack_now(&g).look, StackLook::Marks(amenui::style::Material::Ascii));
 }

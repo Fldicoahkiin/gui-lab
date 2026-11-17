@@ -1,8 +1,8 @@
 //! Contact sheets of the picture marks: one PNG per mark set, plus palettes, relief, regions, follow,
-//! glow, parallax and the compare wipe, each over the three detailed demo pictures, fully loosened.
+//! glow, parallax and the compare wipe, each over the three detailed sample pictures, fully loosened.
 //! Also writes the mark atlas itself and the raw pictures.
 //! usage: sheet <out_dir>
-use amenui::demo::{self, BUST, PICTURE_SIZES, SKY, TERRAIN};
+use amenui::pictures::{self, BUST, PICTURE_SIZES, SKY, TERRAIN};
 use amenui::el::{El, col, picture, row};
 use amenui::marks::{self, Atlas};
 use amenui::offscreen::{Offscreen, save_png};
@@ -54,7 +54,7 @@ fn main() {
     } } }
     save_png(&format!("{out}/atlas.png"), aw * 2, ah * 4, &img);
     eprintln!("characters by ink: {:?}", atlas.chars.iter().collect::<String>());
-    for (id, w, h, px) in demo::pictures() { save_png(&format!("{out}/picture-{id}.png"), w, h, &px); }
+    for (id, w, h, px) in pictures::pictures() { save_png(&format!("{out}/picture-{id}.png"), w, h, &px); }
 
     let mut shoot = |ui: &mut Ui<Sheet, ()>, name: &str, a: PicFx, b: PicFx| {
         let mut look = Look { theme: DARK, material: Material::Plain, ..Look::default() };

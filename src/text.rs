@@ -63,6 +63,10 @@ pub fn with_serif(mut faces: Vec<Face>, serif: Vec<u8>) -> Vec<Face> {
     faces.push(Face::outline(serif));
     faces
 }
+/// Where the bundled fonts are on disk: this crate's `assets/` (a checkout, or Cargo's copy of it), for
+/// tests and tools of applications built on amenui (`load_bundled(text::ASSETS)`).
+#[cfg(not(target_arch = "wasm32"))]
+pub const ASSETS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets");
 /// Read the bundled faces from a directory, Geist Pixel and the serif included (native only; the web
 /// page passes the three main faces' bytes in and carries Geist Pixel and the serif in the module).
 #[cfg(not(target_arch = "wasm32"))]

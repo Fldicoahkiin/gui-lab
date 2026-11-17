@@ -41,18 +41,6 @@ fn every_preset_round_trips() {
 }
 
 #[test]
-fn the_gallery_takes_a_recipe_from_its_address() {
-    let faces = amenui::text::load_bundled(concat!(env!("CARGO_MANIFEST_DIR"), "/assets")).expect("fonts");
-    let mut ui = amenui::gallery::new_ui(faces, 900, 600, 1.0);
-    let mut p = presets()[5].clone();
-    p.set_number("loose_scale", 0.42).unwrap();
-    assert!(ui.state.route(&format!("#{}", p.recipe())));
-    assert_eq!(ui.state.style, Some(5));
-    assert_eq!(ui.state.presets[5], p);
-    assert_eq!(ui.state.recipe(), p.recipe());
-}
-
-#[test]
 fn a_png_carries_its_recipe() {
     let rgba = vec![200u8; 4 * 4 * 4];
     let r = presets()[2].recipe();

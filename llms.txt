@@ -27,19 +27,19 @@ Start with AGENTS.md (the mental model, the ten things you write, the rules, how
 
 ## Lab
 
-The Lab (`#lab`) is a grid of small live experiments, one file each in `examples/lab/`, written against the public API (`amenui::experiment::Experiment`); each has a page `#lab-<name>` with its formula and parameters (registry.json `experiments`). Each piece fills a 4:3 stage; the numbers open under `[ params ]`; seen cells run every frame (reduced motion: they rest).
+The Lab (`#lab`) is a grid of small live experiments, one file each in the website repository's `examples/lab/`, written against the public API (`amenui::experiment::Experiment`); each has a page `#lab-<name>` with its formula and parameters (registry.json `experiments`). Each piece fills a 4:3 stage; the numbers open under `[ params ]`; seen cells run every frame (reduced motion: they rest).
 
-- [Lumen](docs/site/en/lab-lumen.md): light on text, tone by distance, outlines untouched (`El::pose`)
-- [Contours](docs/site/en/lab-contours.md): iso-lines of noise plus a pointer bump (`field::Grid::contours`)
-- [Silk](docs/site/en/lab-silk.md): marks advected by curl noise and a stirred flow (`field::Swarm`, `budget::grant`)
-- [Grown](docs/site/en/lab-grown.md): Gray–Scott inside an element's true outline (`El::on_outline`, `field::GrayScott`)
-- [Mercury](docs/site/en/lab-mercury.md): metaballs with a spring-followed ball (`field::Balls`)
-- [Flow](docs/site/en/lab-flow.md): text on a waving path (`Pose::angle`)
-- [Loupe](docs/site/en/lab-loupe.md): text on a sphere, drag to spin
-- [Orbit](docs/site/en/lab-orbit.md): Kepler orbits with pointer attraction
-- [Spring](docs/site/en/lab-spring.md): the gesture spring, dragged and thrown
-- [Stack](docs/site/en/lab-stack.md): the card stack in the lab's look
-- [Body](docs/site/en/scene-body.md): the landing page and first scene (`#body`, `examples/body.rs`): a passage gathers into a turning, luminous body of its own glyphs and back; full-bleed, markings in the picture; two rest states, glyph count conserved
+- [Lumen](https://github.com/amenui-dev/website/blob/main/docs/site/en/lab-lumen.md): light on text, tone by distance, outlines untouched (`El::pose`)
+- [Contours](https://github.com/amenui-dev/website/blob/main/docs/site/en/lab-contours.md): iso-lines of noise plus a pointer bump (`field::Grid::contours`)
+- [Silk](https://github.com/amenui-dev/website/blob/main/docs/site/en/lab-silk.md): marks advected by curl noise and a stirred flow (`field::Swarm`, `budget::grant`)
+- [Grown](https://github.com/amenui-dev/website/blob/main/docs/site/en/lab-grown.md): Gray–Scott inside an element's true outline (`El::on_outline`, `field::GrayScott`)
+- [Mercury](https://github.com/amenui-dev/website/blob/main/docs/site/en/lab-mercury.md): metaballs with a spring-followed ball (`field::Balls`)
+- [Flow](https://github.com/amenui-dev/website/blob/main/docs/site/en/lab-flow.md): text on a waving path (`Pose::angle`)
+- [Loupe](https://github.com/amenui-dev/website/blob/main/docs/site/en/lab-loupe.md): text on a sphere, drag to spin
+- [Orbit](https://github.com/amenui-dev/website/blob/main/docs/site/en/lab-orbit.md): Kepler orbits with pointer attraction
+- [Spring](https://github.com/amenui-dev/website/blob/main/docs/site/en/lab-spring.md): the gesture spring, dragged and thrown
+- [Stack](https://github.com/amenui-dev/website/blob/main/docs/site/en/lab-stack.md): the card stack in the lab's look
+- [Body](https://github.com/amenui-dev/website/blob/main/docs/site/en/scene-body.md): the landing page and first scene (`#body`, the website's `examples/body.rs`): a passage gathers into a turning, luminous body of its own glyphs and back; full-bleed, markings in the picture; two rest states, glyph count conserved
 - [Decode](src/decode.rs): `El::decode`, blocks over the true outline resolving coarse to fine (`#decode`)
 - [Field map](src/fieldmap.rs): `El::stirr` trails and `Cmd::Stir`, energy and flow that settle to zero; decoration loosens and drifts behind what moves (`#stirr`)
 - [scribblr](src/strand.rs): the thread material, plain at rest, loose ink as one line that knots and trails off and writes itself back; `El::trace` long paths, solid or dashed (`#material-scribblr`, `#stirr`)

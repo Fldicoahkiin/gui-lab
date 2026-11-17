@@ -1,5 +1,5 @@
 //! Driving a page from outside, deterministically (DESIGN.md §1.17): the `render` tool and the tests open
-//! a gallery page or a recipe, play a list of input events on a fixed 60 Hz clock, and read back one
+//! a recipe (or a page an application adds, `render_with`), play a list of input events on a fixed 60 Hz clock, and read back one
 //! frame (PNG) and the laid-out tree (JSON). Same arguments, same bytes.
 use crate::error::{DriveError, LookError, SurfaceError, ViewProblem};
 use crate::el::{Key, Mods};
@@ -50,20 +50,6 @@ pub trait Driven {
     /// The look as a recipe string (`Preset::recipe`), when the page has one.
     fn recipe(&self) -> Option<String> { None }
 }
-/// A gallery page: driven as any page, and its preset is its recipe.
-struct Gallery(crate::gallery::GalleryUi);
-impl Driven for Gallery {
-    fn now(&self) -> f32 { self.0.now() }
-    fn tick(&mut self, t: f32) { self.0.tick(t) }
-    fn apply(&mut self, input: &Input) -> Result<(), DriveError> { self.0.apply(input) }
-    fn look(&self) -> Look { Driven::look(&self.0) }
-    fn tree(&self) -> TreeNode { self.0.export_tree() }
-    fn problems(&self) -> Vec<ViewProblem> { self.0.problems() }
-    fn needs_frame(&self, t: f32) -> bool { self.0.needs_frame(t) }
-    fn draw(&mut self, o: &mut Offscreen, look: &Look) -> Vec<u8> { o.render(&mut self.0, look) }
-    fn recipe(&self) -> Option<String> { Some(self.0.state.recipe()) }
-}
-
 impl<S, M: Clone> Driven for Ui<S, M> {
     fn now(&self) -> f32 { Ui::now(self) }
     fn tick(&mut self, t: f32) { Ui::tick(self, t) }
@@ -122,31 +108,24 @@ impl Driven for Styled {
     fn draw(&mut self, o: &mut Offscreen, look: &Look) -> Vec<u8> { self.inner.draw(o, look) }
 }
 
-/// Open a gallery page (its hash: `button`, `material-dot`, `scene-morph`…) or a recipe (`recipe-form`, or
-/// just `form`), at `w` × `h` device px and `scale`, with the material and theme given (else the page's).
+/// Open a recipe (`recipe-form`, or just `form`) at `w` × `h` device px and `scale`, with the material
+/// and theme given (else the recipe's).
 pub fn open(page: &str, faces: Vec<crate::text::Face>, w: u32, h: u32, scale: f32, material: Option<Material>, theme: Option<usize>) -> Result<Box<dyn Driven>, LookError> {
     open_in(page, faces, (w, h, scale), (material, theme, None))
 }
+/// How `render_with` opens a page: (page, faces, (w, h, scale), (material, theme, locale)).
+pub type Opener<'a> = &'a dyn Fn(&str, Vec<crate::text::Face>, (u32, u32, f32), (Option<Material>, Option<usize>, Option<crate::i18n::Locale>)) -> Result<Box<dyn Driven>, LookError>;
 /// `open` with the look and the language given together: (material, theme, locale). Recipes keep
 /// their own language.
-pub fn open_in(page: &str, faces: Vec<crate::text::Face>, (w, h, scale): (u32, u32, f32), (material, theme, locale): (Option<Material>, Option<usize>, Option<crate::i18n::Locale>)) -> Result<Box<dyn Driven>, LookError> {
-    use crate::gallery::{self, Msg, Page};
-    if let Some(p) = Page::from_hash(page) {
-        let mut ui = gallery::new_ui(faces, w, h, scale);
-        ui.pointer_leave();
-        if let Some(l) = locale { gallery::update(&mut ui.state, Msg::Locale(l)); }
-        gallery::update(&mut ui.state, Msg::Go(p));
-        if let Some(m) = material { gallery::update(&mut ui.state, Msg::Material(m.id() as usize)); }
-        if let Some(t) = theme { gallery::update(&mut ui.state, Msg::Theme(t)); }
-        ui.relayout();
-        return Ok(Box::new(Gallery(ui)));
-    }
+pub fn open_in(page: &str, faces: Vec<crate::text::Face>, (w, h, scale): (u32, u32, f32), (material, theme, _locale): (Option<Material>, Option<usize>, Option<crate::i18n::Locale>)) -> Result<Box<dyn Driven>, LookError> {
     let name = page.strip_prefix("recipe-").unwrap_or(page);
     match crate::recipes::open(name, faces, w, h, scale) {
-        Some(inner) => Ok(Box::new(Styled { inner, material, theme })),
+        Some(inner) => Ok(styled(inner, material, theme)),
         None => Err(LookError::UnknownPage { given: page.to_owned(), recipes: crate::recipes::NAMES.iter().map(|n| format!("recipe-{n}")).collect::<Vec<_>>().join(", ") }),
     }
 }
+/// A page drawn in the material and theme given (else its own).
+pub fn styled(inner: Box<dyn Driven>, material: Option<Material>, theme: Option<usize>) -> Box<dyn Driven> { Box::new(Styled { inner, material, theme }) }
 
 /// Play `events` on a fixed 60 Hz clock from 0 to `at_ms` (each event is applied on the first frame at
 /// or after its time, in the order given), then tick exactly at `at_ms`.
@@ -188,13 +167,17 @@ pub struct RenderSpec {
 /// The result of a render: the PNG bytes, the tree, and what the view got wrong.
 pub struct Rendered { pub png: Vec<u8>, pub tree: TreeNode, pub problems: Vec<ViewProblem> }
 
-/// Open, play, draw: the whole `render` tool as a function.
+/// Open, play, draw: the whole `render` tool as a function, for the recipes.
 pub fn render(spec: &RenderSpec, faces: Vec<crate::text::Face>, o: Option<&mut Offscreen>) -> Result<Rendered, DriveError> {
+    render_with(spec, faces, o, &open_in)
+}
+/// `render` with the pages an application adds (its `open` falls back to `open_in` for recipes).
+pub fn render_with(spec: &RenderSpec, faces: Vec<crate::text::Face>, o: Option<&mut Offscreen>, open: Opener) -> Result<Rendered, DriveError> {
     let material = spec.material.as_deref().map(material).transpose()?;
     let theme = spec.theme.as_deref().map(theme).transpose()?;
     if spec.w == 0 || spec.h == 0 { return Err(SurfaceError::ZeroSize { w: spec.w, h: spec.h }.into()); }
     let locale = match spec.locale.as_deref() { Some(t) => Some(crate::i18n::Locale::from_tag(t).ok_or_else(|| LookError::UnknownLocale { given: t.to_owned(), known: crate::i18n::Locale::ALL.iter().map(|l| l.tag()).collect::<Vec<_>>().join(", ") })?), None => None };
-    let mut d = open_in(&spec.page, faces, (spec.w, spec.h, spec.scale.max(0.25)), (material, theme, locale))?;
+    let mut d = open(&spec.page, faces, (spec.w, spec.h, spec.scale.max(0.25)), (material, theme, locale))?;
     play(d.as_mut(), &spec.events, spec.at_ms)?;
     let look = d.look();
     let mut own;

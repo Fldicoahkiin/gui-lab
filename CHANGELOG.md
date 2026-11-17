@@ -2,6 +2,14 @@
 
 新的在上面，各部分的验收见 DESIGN.md §7。Newest first; acceptance for each part is in DESIGN.md §7.
 
+## 框架和官网分开 · The framework and the website in two repositories
+
+- 官网（gallery 外壳和各页、骨架演示、形体和实验室、站点文档、网页壳、原生窗口，以及样张、验收和计时工具）搬到 [amenui-dev/website](https://github.com/amenui-dev/website)，保留提交历史。The site moved to amenui-dev/website with its history.
+- `i18n::install`：应用装上自己的文字目录，先查它的，再查框架的；框架的目录只留组件自己的字（`widget.*`）。Applications install their own catalogs.
+- `amenui::pictures`：代码生成的示例图片（原来在 `demo.rs`）。`amenui::sources`：编进库里的 `AGENTS.md`、`llms.txt`、`registry.json`、`CHANGELOG.md` 和每个组件的源码。`text::ASSETS`：字体在磁盘上的位置。
+- `drive::render_with`：带上应用自己的页面；`drive::open` 只开配方。`render` 工具只开配方。
+- 库不再是 `cdylib`，网页入口（`wasm-bindgen`）在官网仓库；`winit`、`arboard` 只有官网的原生窗口用，也一起搬走。
+
 ## 场图和尾迹、线、小字、Loose Thread · The field map and trails, the line, small type, Loose Thread
 
 - 形体这一页只用英文，不论界面是什么语言；语言标记写 `LANGUAGE  EN / ZH`，按下换的是 gallery 其余页的语言。Body is English only.

@@ -159,12 +159,12 @@ a true outline; its pointer handlers get points in that space; `El::on_point` he
 and grows `GrayScott` inside a mask. A text element's glyphs can be posed one by one (`El::pose(|GlyphAt| Pose)`: move, turn,
 scale, tone, alpha; no layout). `El::on_visible` says when an element can be seen (step a demo only then), `El::on_outline` sends a
 subtree's true outline as a coverage grid (a mask). Every small mark draws from one frame budget (`budget::grant(n)`). `El::decode(Decode)`
-makes an element appear by decoding and disappear by the same backwards. The Lab's experiments (`examples/lab/`) show each:
+makes an element appear by decoding and disappear by the same backwards. The Lab's experiments (`examples/lab/` in the website repository, https://github.com/amenui-dev/website) show each:
 `experiment::frame(key, name, hint, piece, formula, &params, msg, label)` puts a piece on a 4:3 stage it fills, the formula on one
 line and the numbers behind `[ params ]`; seen cells step every frame (with reduced motion they rest). Sampling (`morph::cover_at`,
 `cells`, `on_outline`, decode) follows `Instance::xf` and poses, so a posed glyph loosens from where it is drawn; `cover_at` counts any
 fill (a ground-toned panel too), `ink_at` only ink that shows. The lens touches only pictures and 3D elements that may loosen and that
-no handler operates. The landing page and first scene, Body (`examples/body.rs`, `#body`), is written the same way: one posed text element (the
+no handler operates. The landing page and first scene, Body (the website's `examples/body.rs`, `#body`), is written the same way: one posed text element (the
 skin, its glyph count conserved), drawings for its volume, reflection, dust and the instrument markings, springs for `gather`
 and the opening, a signed-distance form sampled to a spiral of surface points (DESIGN.md §6.2). `Pose::hue` picks a glyph's accent.
 The field map (DESIGN.md §1.29, `amenui::fieldmap`) is a coarse grid of energy and flow over the window that settles to exactly zero:
@@ -231,5 +231,5 @@ cargo run --release --bin amenui -- add dialog --to ../my-app   # copy a compone
   `src/shader.wgsl` the three passes, `src/text.rs` type, `src/tree.rs` the exported tree,
   `src/drive.rs` scripted input and `render`, `src/error.rs` errors.
 - `src/widgets/` one file per widget (header: purpose, props, states, messages, usage); `registry.json`.
-- `examples/` the recipes, `docs/recipes/` their pages; `src/gallery/` the gallery app.
+- `examples/` the recipes, `docs/recipes/` their pages; the site (the gallery, the Lab, the scenes, the docs pages) is the separate repository https://github.com/amenui-dev/website.
 - `docs/DESIGN.md` the contract (read §1.15–§1.17 for ripples, recomposition and this surface).
