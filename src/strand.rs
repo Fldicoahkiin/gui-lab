@@ -335,8 +335,16 @@ fn tail_from(from: [f32; 2], dir: [f32; 2], len: f32, k: f32, seed: u32, c: &Ctx
     let out = |p: [f32; 2]| p[0] < sc[0] || p[1] < sc[1] || p[0] > sc[2] || p[1] > sc[3];
     let mut pts = vec![];
     let mut last = from;
+    if in_box(from, c.calm) { return pts; }
     for p in strand_path(from, dir, len, k, seed, c.t * 0.5) {
-        if in_box(p, c.calm) { break; }
+        // Stopped just before a box of text to read where the piece would enter it (not only where a
+        // point lands in it, so a piece never jumps over a line of text).
+        let enter = c.calm.iter().filter_map(|b| span_in(last, p, b).map(|t| t.0)).fold(f32::INFINITY, f32::min);
+        if enter.is_finite() {
+            let t = (enter - 1.0 / d2(last, p).sqrt().max(1.0)).max(0.0);
+            if t > 0.0 { pts.push(lerp2(last, p, t)); }
+            break;
+        }
         if out(p) {
             let cross = |lo: f32, hi: f32, a: f32, b: f32| if b < lo { (lo - a) / (b - a) } else if b > hi { (hi - a) / (b - a) } else { 1.0 };
             let t = cross(sc[0], sc[2], last[0], p[0]).min(cross(sc[1], sc[3], last[1], p[1])).clamp(0.0, 1.0);
@@ -402,16 +410,25 @@ pub fn thread(rest: &Rest, fx: &StrandFx, c: &Ctx, field: &dyn Fn(f32, f32) -> (
         }
     }
     // The tails: out from the end along the flow as far as it is free (or the longest free way), in
-    // from the start along the way that gets farthest other than the end's. Directions are read at the rest points, so
+    // from the start along the way that gets farthest other than the end's; neither back across the
+    // middle of its own word. Directions are read at the rest points, so
     // every tail point moves in proportion to `k` and they draw back in a straight way.
     if tail_n > 0 {
         let sc = c.scope;
         let full = (fx.tail * s).max(0.6 * (sc[2] - sc[0]).max(sc[3] - sc[1]));
         // How far a whole tail from a rest point would get that way.
         let reach = |from: [f32; 2], dir: [f32; 2], seed: u32| tail_from(from, dir, full, 1.0, seed, c).last().map_or(0.0, |p| d2(*p, from).sqrt());
+        // Out of the word, not back across it: a way that does not cross the middle half of the
+        // line's box.
+        let bb = rest.pts.iter().fold([f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY], |a, p| [a[0].min(p[0]), a[1].min(p[1]), a[2].max(p[0]), a[3].max(p[1])]);
+        let (qw, qh) = ((bb[2] - bb[0]) * 0.25, (bb[3] - bb[1]) * 0.25);
+        let core = [bb[0] + qw, bb[1] + qh, bb[2] - qw, bb[3] - qh];
+        let span = (bb[2] - bb[0]) + (bb[3] - bb[1]);
+        let away = |from: [f32; 2], d: &[f32; 2]| span_in(from, [from[0] + d[0] * span, from[1] + d[1] * span], &core).is_none();
         let best = |from: [f32; 2], skip: Option<[f32; 2]>, seed: u32| -> [f32; 2] {
             let ok = |d: &[f32; 2]| skip.is_none_or(|e| d[0] * e[0] + d[1] * e[1] < 0.9);
-            COMPASS.iter().filter(|d| ok(d)).map(|d| (*d, reach(from, *d, seed))).max_by(|a, b| a.1.total_cmp(&b.1)).map_or([1.0, 0.0], |b| b.0)
+            let pick = |out: bool| COMPASS.iter().filter(|d| ok(d) && (!out || away(from, d))).map(|d| (*d, reach(from, *d, seed))).max_by(|a, b| a.1.total_cmp(&b.1)).map(|b| b.0);
+            pick(true).or_else(|| pick(false)).unwrap_or([1.0, 0.0])
         };
         let (e0, e1) = (rest.pts[0], rest.pts[n - 1]);
         let (_, fl) = field(e1[0], e1[1]);
@@ -423,7 +440,8 @@ pub fn thread(rest: &Rest, fx: &StrandFx, c: &Ctx, field: &dyn Fn(f32, f32) -> (
             let turn = |a: f32| [f[0] * a.cos() - f[1] * a.sin(), f[0] * a.sin() + f[1] * a.cos()];
             let ways: Vec<[f32; 2]> = [0.0f32, 30.0, -30.0, 60.0, -60.0].iter().map(|d| turn(d.to_radians())).chain(COMPASS).collect();
             let score = |d: &[f32; 2]| reach(e1, *d, c.seed ^ 0x77) * (0.4 + 0.6 * (d[0] * f[0] + d[1] * f[1]).max(0.0));
-            ways.into_iter().map(|d| (d, score(&d))).max_by(|a, b| a.1.total_cmp(&b.1)).map_or(f, |b| b.0)
+            let pick = |out: bool| ways.iter().filter(|d| !out || away(e1, d)).map(|d| (*d, score(d))).max_by(|a, b| a.1.total_cmp(&b.1)).map(|b| b.0);
+            pick(true).or_else(|| pick(false)).unwrap_or(f)
         } else { best(e1, None, c.seed ^ 0x77) };
         let start_dir = best(e0, Some(end_dir), c.seed ^ 0x51);
         let mut head: Vec<([f32; 2], Kind)> = tail_from(at[0], start_dir, full, k, c.seed ^ 0x51, c).into_iter().rev().map(|p| (p, Kind::Tail)).collect();
@@ -447,22 +465,52 @@ pub fn thread(rest: &Rest, fx: &StrandFx, c: &Ctx, field: &dyn Fn(f32, f32) -> (
         out.push(*pts.last().expect("points"));
         pts = out;
     }
-    pts.windows(2).filter(|w| d2(w[0].0, w[1].0) > 1e-6).map(|w| Seg { a: w[0].0, b: w[1].0, kind: w[1].1 }).take(max).collect()
+    // Points on top of the last one dropped first, so the pieces left still join end to end.
+    pts.dedup_by(|b, a| d2(a.0, b.0) <= 1e-6);
+    pts.windows(2).map(|w| Seg { a: w[0].0, b: w[1].0, kind: w[1].1 }).take(max).collect()
 }
 
 /// A drawn tangle for a page to show as content (DESIGN.md §4.4): a knot of radius `r` and a long
-/// strand `len` long through it, top to bottom, made by the same knot and tail as the thread with a
-/// fixed seed. Points about the knot's centre (logical px).
-pub fn figure(seed: u32, r: f32, len: f32) -> Vec<[f32; 2]> {
-    let above = 0.38 * len;
+/// strand through it, `above` long up from the knot and `below` long down from it, made by the same knot
+/// and tail as the thread with a fixed seed. Points about the knot's centre (logical px).
+pub fn figure(seed: u32, r: f32, above: f32, below: f32) -> Vec<[f32; 2]> {
     let mut up = strand_path([0.0, 0.0], [0.0, -1.0], above, 1.0, seed ^ 0x0A, 0.0);
     up.reverse();
     let mut pts = up;
     pts.push([0.0, 0.0]);
     pts.extend(star([0.0, 0.0], r, 44, seed, 0.0));
     pts.push([0.0, 0.0]);
-    pts.extend(strand_path([0.0, 0.0], [0.0, 1.0], len - above, 1.0, seed ^ 0x0B, 0.0));
+    pts.extend(strand_path([0.0, 0.0], [0.0, 1.0], below, 1.0, seed ^ 0x0B, 0.0));
     pts
+}
+
+/// The span of `t` (0..1) along the piece from `a` to `b` inside a box `[x0, y0, x1, y1]` (Liang–Barsky).
+fn span_in(a: [f32; 2], b: [f32; 2], bx: &[f32; 4]) -> Option<(f32, f32)> {
+    let d = [b[0] - a[0], b[1] - a[1]];
+    let (mut t0, mut t1) = (0.0f32, 1.0f32);
+    for (p, q) in [(-d[0], a[0] - bx[0]), (d[0], bx[2] - a[0]), (-d[1], a[1] - bx[1]), (d[1], bx[3] - a[1])] {
+        if p == 0.0 { if q < 0.0 { return None; } continue; }
+        let r = q / p;
+        if p < 0.0 { t0 = t0.max(r); } else { t1 = t1.min(r); }
+    }
+    (t0 < t1).then_some((t0, t1))
+}
+/// The parts of the piece from `a` to `b` outside every box (device px, `[x0, y0, x1, y1]`): where a
+/// line passes a picture it goes behind it, since a picture is drawn from its own colours only.
+pub fn outside(a: [f32; 2], b: [f32; 2], boxes: &[[f32; 4]]) -> Vec<([f32; 2], [f32; 2])> {
+    let d = [b[0] - a[0], b[1] - a[1]];
+    let mut cut: Vec<(f32, f32)> = boxes.iter().filter_map(|bx| span_in(a, b, bx)).collect();
+    if cut.is_empty() { return vec![(a, b)]; }
+    cut.sort_by(|x, y| x.0.total_cmp(&y.0));
+    let at = |t: f32| [a[0] + d[0] * t, a[1] + d[1] * t];
+    let mut out = vec![];
+    let mut from = 0.0f32;
+    for (t0, t1) in cut {
+        if t0 > from { out.push((at(from), at(t0))); }
+        from = from.max(t1);
+    }
+    if from < 1.0 { out.push((at(from), b)); }
+    out
 }
 
 /// A long path drawn by progress (DESIGN.md §1.30): points in the element's box (logical px), how much is
@@ -686,12 +734,20 @@ mod tests {
 
     #[test]
     fn a_figure_is_a_knot_and_a_long_strand_the_same_every_time() {
-        let f = figure(7, 72.0, 460.0);
-        assert_eq!(f, figure(7, 72.0, 460.0));
+        let f = figure(7, 72.0, 175.0, 285.0);
+        assert_eq!(f, figure(7, 72.0, 175.0, 285.0));
         let (lo, hi) = f.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(a, b), p| (a.min(p[1]), b.max(p[1])));
         assert!(hi - lo >= 0.99 * 460.0, "{}", hi - lo);
         let near = f.windows(2).filter(|w| d2(w[0], [0.0; 2]).sqrt() <= 72.0 + 1e-3 && d2(w[1], [0.0; 2]).sqrt() <= 72.0 + 1e-3).count();
         assert!((24..=60).contains(&near), "{near} pieces in the knot");
+    }
+
+    #[test]
+    fn a_piece_goes_behind_boxes() {
+        let p = outside([0.0, 10.0], [100.0, 10.0], &[[20.0, 0.0, 40.0, 20.0], [30.0, 0.0, 50.0, 20.0], [70.0, 0.0, 80.0, 20.0]]);
+        assert_eq!(p, vec![([0.0, 10.0], [20.0, 10.0]), ([50.0, 10.0], [70.0, 10.0]), ([80.0, 10.0], [100.0, 10.0])]);
+        assert_eq!(outside([0.0, 30.0], [100.0, 30.0], &[[20.0, 0.0, 40.0, 20.0]]).len(), 1);
+        assert!(outside([25.0, 5.0], [35.0, 15.0], &[[20.0, 0.0, 40.0, 20.0]]).is_empty());
     }
 
     #[test]
