@@ -200,3 +200,38 @@ fn after_a_quarter_turn_the_glyph_under_the_pointer_is_the_one_drawn_there() {
     let (b, _) = at(90.0, Some(p));
     assert_ne!(a, b, "a quarter turn brings another glyph under the pointer");
 }
+
+/// A drawing over the whole window, laid over a button; `pass` says whether the pointer goes through it.
+mod pass_page {
+    use amenui::el::{El, Paint, canvas, layers, text};
+    pub struct S { pub pass: bool, pub pressed: u32 }
+    pub fn view(s: &S) -> El<u32> {
+        let mut d = amenui::draw::Drawing::new(400.0, 300.0);
+        for i in 0..20 { d.dot(20.0 + i as f32 * 18.0, 150.0, 6.0, Paint::ACCENT); }
+        layers([
+            text("Press", 16.0, Paint::INK).key("button").pad(40.0, 40.0).on_press(1),
+            canvas(d).key("drawing").width(400.0).height(300.0).absolute(Some(0.0), Some(0.0), None, None).pass(s.pass),
+        ]).key("root")
+    }
+}
+
+#[test]
+fn a_drawing_the_pointer_passes_through_lets_the_button_under_it_take_the_press() {
+    let mut drawn = vec![];
+    for pass in [true, false] {
+        let mut ui = Ui::new(pass_page::S { pass, pressed: 0 }, pass_page::view, |s, m| s.pressed += m, fonts(), 400, 300, 1.0);
+        ui.tick(1.0);
+        let (x, y) = ui.node("button").expect("button").rect.center();
+        ui.pointer_moved(1, amenui::ui::PointerKind::Mouse, x, y);
+        ui.pointer_down(1, amenui::ui::PointerKind::Mouse, x, y, false);
+        ui.tick(1.05);
+        ui.pointer_up(1, amenui::ui::PointerKind::Mouse, x, y);
+        ui.tick(1.1);
+        assert_eq!(ui.state.pressed, if pass { 1 } else { 0 }, "pass({pass}): the press reaches the button {} times", ui.state.pressed);
+        drawn.push(ui.instances_of("drawing"));
+    }
+    // The drawing itself is drawn the same either way.
+    assert!(!drawn[0].is_empty());
+    assert_eq!(drawn[0].len(), drawn[1].len());
+    assert!(drawn[0].iter().zip(&drawn[1]).all(|(a, b)| a.rect == b.rect && a.paint == b.paint && a.uv == b.uv), "the drawing is drawn the same");
+}

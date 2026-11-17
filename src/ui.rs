@@ -158,6 +158,8 @@ pub struct Node<M> {
     pub reveal_by: crate::el::Reveal,
     /// It moves on purpose (`El::ongoing`, inherited).
     pub ongoing: bool,
+    /// The pointer passes through it (`El::pass`).
+    pub pass: bool,
     /// The box layout gave it, relative to its parent (scrolling does not change it).
     local: taffy::Layout,
     tid: NodeId,
@@ -2090,9 +2092,10 @@ impl<S, M: Clone> Ui<S, M> {
             .or(h)
     }
 
-    /// Topmost node under a point, honouring clips. While a modal layer is open only it can be hit.
+    /// Topmost node under a point, honouring clips; one the pointer passes through (`El::pass`) is not
+    /// there. While a modal layer is open only it can be hit.
     fn hit(&self, x: f32, y: f32) -> Option<usize> {
-        (self.modal_at.unwrap_or(0)..self.nodes.len()).rev().find(|&i| { let n = &self.nodes[i]; !n.hidden && crate::hit::contains(&n.rect, n.xf.as_ref(), x, y) && n.clip.contains(x, y) })
+        (self.modal_at.unwrap_or(0)..self.nodes.len()).rev().find(|&i| { let n = &self.nodes[i]; !n.hidden && !n.pass && crate::hit::contains(&n.rect, n.xf.as_ref(), x, y) && n.clip.contains(x, y) })
     }
     /// The glyph drawn under (x, y) (logical px) in what was painted last: the nearest one, wherever
     /// its pose put it (on a path, on a form), with its element's key, its number in the text, its
@@ -4730,7 +4733,7 @@ fn measure_key(c: &Content) -> u64 {
 /// A virtual list's rows are built here, for what its viewport shows.
 #[allow(clippy::too_many_arguments)]
 fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], off: (bool, bool), flow: Option<(Rc<str>, usize)>, inh: Inherit, vx: &mut VirtCtx, built: &mut Built, nodes: &mut Vec<Node<M>>) -> usize {
-    let El { key, style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, mut on_text, multiline, selectable, cursor, virt, access, ripple, mut on_pick, mut on_wheel, mut on_move, guide, skeleton, rtl, on_visible, on_outline, decode, form, turn, reveal_by, ongoing, mut children } = el;
+    let El { key, style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, mut on_text, multiline, selectable, cursor, virt, access, ripple, mut on_pick, mut on_wheel, mut on_move, guide, skeleton, rtl, on_visible, on_outline, decode, form, turn, reveal_by, ongoing, pass, mut children } = el;
     let mut style = style;
     let mut inh = inh;
     if let Some(r) = rtl { inh.rtl = r; }
@@ -4795,7 +4798,7 @@ fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], of
         content, fill, border, radius, on_press, on_key, on_drag, on_blur, loose, wipe, bar, reveal, commit, modal, hidden, shift, shed, flow_field, stirr, trace, flow: flow.clone(),
         mat: inh.code(), loosen: inh.loosen, annotate, scope: gaze_scope, anchor, clips, calm, on_text, multiline, selectable: inh.select, cursor,
         virt: virt_info, access, respond, legible, ripple: inh.scope.clone(), ripple_scope: ripple.container, recompose, recompose_always: is_text && ripple.recompose == Some(true), unframed: ripple.unframed, keyed,
-        on_pick, on_wheel, on_move, guide, on_visible, on_outline, decode, skeleton: inh.skeleton, form, turn, xf: None, reveal_by, ongoing: ongoing || parent.is_some_and(|p| nodes[p].ongoing), local: taffy::Layout::new(), tid: placeholder,
+        on_pick, on_wheel, on_move, guide, on_visible, on_outline, decode, skeleton: inh.skeleton, form, turn, xf: None, reveal_by, ongoing: ongoing || parent.is_some_and(|p| nodes[p].ongoing), pass, local: taffy::Layout::new(), tid: placeholder,
     });
     built.styles.push(style);
     built.kids.push(vec![]);
