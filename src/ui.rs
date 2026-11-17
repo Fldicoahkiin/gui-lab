@@ -450,6 +450,10 @@ pub struct Ui<S, M> {
     latest_birth: f32,
     /// Until when an annotation is still drawing on.
     gaze_until: f32,
+    /// `Gaze::echo`: each annotated element's earlier `INK` boxes (beat-grid time, device px), the
+    /// latest last, and when the last one was taken.
+    echoes: HashMap<String, Vec<(f32, [f32; 4])>>,
+    echo_at: f32,
     /// The marks moved or faded on the last tick.
     marks_moving: bool,
     /// The caret: its page instance, when it last moved (blinking restarts there), its rect, and
@@ -838,7 +842,7 @@ impl<S, M: Clone> Ui<S, M> {
             scrolling: Scrolling::default(), touch: None, touches: HashSet::new(), touching: false, fling: None, over: HashMap::new(), motion: HashMap::new(), scroll_paint: false, event_t: None,
             recs: HashMap::new(), recomps: HashMap::new(), slides: HashMap::new(), no_recompose: false,
             meshes: crate::mesh::Library::default(), mesh_hover: None, glyphs: Default::default(), prep: Default::default(), move_over: None, particle_gpu: false, motes: vec![], shed_at: HashMap::new(), shed_owed: HashMap::new(), field_marks: HashMap::new(), seen: HashMap::new(), outlines: HashMap::new(), decodes: HashMap::new(), decode_last: HashMap::new(), last_morph: None, left: Default::default(), queued: vec![], flushing: false, motes_made: 0,
-            fmap: crate::fieldmap::FieldMap::default(), stirr_at: HashMap::new(), fmap_size: (0.0, 0.0), fmap_ink: u64::MAX, strand_faded: HashMap::new(), strand_cache: HashMap::new(), strand_hold: HashMap::new(), strand_drawn: vec![], trace_drawn: vec![], leaders: vec![], trace_head: HashMap::new(),
+            fmap: crate::fieldmap::FieldMap::default(), stirr_at: HashMap::new(), fmap_size: (0.0, 0.0), fmap_ink: u64::MAX, strand_faded: HashMap::new(), strand_cache: HashMap::new(), strand_hold: HashMap::new(), strand_drawn: vec![], trace_drawn: vec![], leaders: vec![], echoes: HashMap::new(), echo_at: f32::NEG_INFINITY, trace_head: HashMap::new(),
         };
         ui.resize(w, h, scale);
         ui
@@ -3598,6 +3602,9 @@ impl<S, M: Clone> Ui<S, M> {
     /// The INK leaders of the last frame (`Gaze` with INK): each annotated element's key and its leader's
     /// whole path, device px, from its free end to the point on the element's true outline.
     pub fn leaders(&self) -> &[(String, Vec<[f32; 2]>)] { &self.leaders }
+    /// When the echoes of element `key`'s INK box (`Gaze::echo`) were taken, on the beat clock, oldest
+    /// first (the last is the box as it is now).
+    pub fn echo_times(&self, key: &str) -> Vec<f32> { self.echoes.get(key).map(|h| h.iter().map(|e| e.0).collect()).unwrap_or_default() }
     /// The drawn paths (`El::trace`) of the last frame: each element's key and its whole path as kept
     /// clear of pictures and text to read (device px), before progress and dashes cut it.
     pub fn traces(&self) -> &[(String, Vec<[f32; 2]>)] { &self.trace_drawn }
@@ -4298,6 +4305,35 @@ impl<S, M: Clone> Ui<S, M> {
         let inks: Vec<crate::hit::Ink> = if g.has(kinds::INK) {
             annots.iter().map(|a| crate::hit::ink_of(&self.scene.instances, &self.owners[..self.page_len.min(self.owners.len())], |n| within(&self.nodes, n, a.node), (a.rect.x * s, a.rect.y * s), &self.text.pixels)).collect()
         } else { vec![] };
+        // Echoes (`Gaze::echo`): every `echo_ms` (whole steps on a beat; the beat clock, so a hold
+        // takes none and fades none) each element's INK box is kept, the last `echo` of them drawn
+        // fainter and fainter until they are gone.
+        let tg = self.beat_grid();
+        let e = { let e = g.echo_ms.max(16.0) / 1000.0; if self.timing.beat.on() { let st = self.timing.beat.step_s(); (e / st).round().max(1.0) * st } else { e } };
+        let n_echo = g.echo.min(8) as usize;
+        let life = n_echo as f32 * e;
+        if g.has(kinds::INK) && n_echo > 0 {
+            if tg >= self.echo_at + e - 1e-4 || tg < self.echo_at {
+                self.echo_at = tg;
+                for (a, ink) in annots.iter().zip(&inks) {
+                    let Some((b, _)) = ink else { continue };
+                    let h = self.echoes.entry(a.key.clone()).or_default();
+                    if h.last().is_none_or(|(_, l)| l != b) { h.push((tg, *b)); } else if let Some(l) = h.last_mut() { l.0 = tg; }
+                }
+            }
+            for h in self.echoes.values_mut() {
+                let keep_last = h.len().saturating_sub(n_echo + 1);
+                h.drain(..keep_last);
+                let latest = h.len().saturating_sub(1);
+                let mut k = 0;
+                h.retain(|(t0, _)| { let alive = k == latest || tg - t0 < life; k += 1; alive });
+            }
+            self.echoes.retain(|key, h| !h.is_empty() && annots.iter().any(|a| &a.key == key));
+            // Frames go on until the last echo has faded.
+            let last = self.echoes.values().flat_map(|h| h[..h.len() - 1].iter()).fold(f32::NEG_INFINITY, |m, (t0, _)| m.max(t0 + life));
+            self.gaze_until = self.gaze_until.max(last);
+        } else { self.echoes.clear(); }
+        let echoes = &self.echoes;
         let text = &mut self.text;
         // A label at logical (x, y), on a plate; returns its width.
         let label = |text: &mut Text, out: &mut Vec<Instance>, str: &str, x: f32, y: f32| -> f32 {
@@ -4348,6 +4384,20 @@ impl<S, M: Clone> Ui<S, M> {
                 }
             }
             if let Some(Some((b, end))) = inks.get(annots.iter().position(|x| x.node == a.node).unwrap_or(usize::MAX)) {
+                // Its echoes: the boxes it had before, each fainter than the one after it.
+                if let Some(h) = echoes.get(&a.key) {
+                    let older = h.len().saturating_sub(1);
+                    for (k, (t0, eb)) in h[..older].iter().enumerate() {
+                        if eb == b { continue; }
+                        let fade = (1.0 - (tg - t0) / life.max(1e-3)).clamp(0.0, 1.0) * (k + 1) as f32 / (older + 1) as f32 * 0.6;
+                        if fade <= 0.0 { continue; }
+                        let (x0, y0, x1, y1) = (eb[0].floor(), eb[1].floor(), eb[2].ceil(), eb[3].ceil());
+                        bar(&mut out, x0, y0, x1 - x0, t, fade, false);
+                        bar(&mut out, x0, y1 - t, x1 - x0, t, fade, false);
+                        bar(&mut out, x0, y0, t, y1 - y0, fade, false);
+                        bar(&mut out, x1 - t, y0, t, y1 - y0, fade, false);
+                    }
+                }
                 // Dashed: 4 device px on, 3 off, along each side, drawn on with the frame.
                 let (x0, y0, x1, y1) = (b[0].floor(), b[1].floor(), b[2].ceil(), b[3].ceil());
                 let (dash, gap) = (4.0 * t, 3.0 * t);

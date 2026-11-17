@@ -301,3 +301,55 @@ fn an_ink_leader_keeps_off_text_to_read_and_ends_on_the_outline() {
         last = now;
     }
 }
+
+// Echoes of the INK box: a block that moves, on a beat of 120 bpm, four steps a beat.
+struct E { gaze: Gaze, x: f32 }
+fn echo_page(s: &E) -> El<()> {
+    col().key("page").pad(20.0, 20.0).child(space(60.0, 40.0).key("block").fill(Paint::INK).absolute(Some(s.x), Some(60.0), None, None))
+}
+fn echo_look(_: &E) -> amenui::style::Look { amenui::style::Look { material: amenui::style::Material::Plain, beat: amenui::beat::Beat { bpm: 120.0, steps: 4, swing: 0.0 }, ..amenui::style::Look::default() } }
+/// The echo boxes drawn: the faint outlines (4 bars each) that are not the INK box itself.
+fn echo_bars(u: &Ui<E, ()>) -> usize { u.scene().annot.iter().filter(|i| i.paint[3] == 1.0 && i.paint[1] == 0.0 && i.paint[2] <= 0.6 + 1e-4 && i.xf == [0.0; 4]).count() }
+#[test]
+fn echoes_keep_at_most_three_boxes_on_the_grid_and_then_ask_for_nothing() {
+    let g = Gaze { mode: GazeMode::All, kinds: kinds::INK, density: 10.0, draw_ms: 0.0, echo: 3, echo_ms: 200.0, ..Gaze::default() };
+    let mut u = Ui::new(E { gaze: g, x: 40.0 }, echo_page, |_, _| {}, fonts(), 480, 200, 1.0).on_gaze(|s| s.gaze).on_look(echo_look);
+    let mut t = 0.0;
+    let mut most = 0;
+    // It moves for two seconds.
+    for _ in 0..120 {
+        t += 1.0 / 60.0;
+        u.state.x += 2.0;
+        u.relayout();
+        u.tick(t);
+        u.frame_drawn();
+        most = most.max(echo_bars(&u) / 4);
+        assert_eq!(echo_bars(&u) % 4, 0);
+    }
+    assert!((2..=3).contains(&most), "at most three echoes, and some: {most}");
+    // Each echo was taken on the grid: two steps (0.25 s) apart at 120 bpm, 4 steps a beat.
+    let times = u.echo_times("block");
+    assert!(!times.is_empty());
+    for w in times.windows(2) { let d = w[1] - w[0]; assert!((d / 0.25 - (d / 0.25).round()).abs() < 1e-3 && d > 0.2, "echoes {times:?}"); }
+    for t0 in &times { assert!((t0 / 0.125 - (t0 / 0.125).round()).abs() < 1e-3, "{t0} is not on a step"); }
+    // It stops: the echoes fade, and two seconds after they have, no frames.
+    let mut end = t;
+    for _ in 0..240 { t += 1.0 / 60.0; u.tick(t); if u.needs_frame(t) { end = t; } u.frame_drawn(); }
+    assert_eq!(echo_bars(&u), 0, "faded");
+    assert!(t - end >= 2.0, "frames were asked until {end}, {t} now");
+}
+
+#[test]
+fn a_hold_takes_no_echo_and_fades_none() {
+    let Ok(mut o) = amenui::offscreen::Offscreen::try_new(480, 200) else { eprintln!("no GPU adapter here: skipped"); return };
+    let g = Gaze { mode: GazeMode::All, kinds: kinds::INK, density: 10.0, draw_ms: 0.0, echo: 3, echo_ms: 200.0, ..Gaze::default() };
+    let mut u = Ui::new(E { gaze: g, x: 40.0 }, echo_page, |_, _| {}, fonts(), 480, 200, 1.0).on_gaze(|s| s.gaze).on_look(echo_look);
+    let mut t = 0.0;
+    for _ in 0..60 { t += 1.0 / 60.0; u.state.x += 2.0; u.relayout(); u.tick(t); let l = u.look(); let _ = o.render(&mut u, &l); }
+    assert!(echo_bars(&u) > 0, "echoes are showing");
+    u.command(amenui::morph::Cmd::Hold(2));
+    let mut frames = vec![];
+    // Two steps at 120 bpm, 4 a beat: 0.25 s; the frames inside it.
+    for _ in 0..12 { t += 1.0 / 60.0; u.tick(t); let l = u.look(); frames.push(o.render(&mut u, &l)); }
+    assert!(frames.windows(2).all(|w| w[0] == w[1]), "the frames of a hold are the same bytes");
+}
