@@ -28,7 +28,7 @@ impl Ease {
 }
 
 /// How a morph goes. Times in milliseconds, lengths in logical px.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct MorphSpec {
     /// The source loosens 0 → 1 over this, then hands over to the tiles.
     pub loosen_ms: f32,
@@ -48,10 +48,13 @@ pub struct MorphSpec {
     pub ease: Ease,
     /// The material's lattice pitch (`Fx::pitch`), so the tiles are its cells.
     pub lattice: f32,
+    /// Take the source from the frame drawn last, not from the tree (`Ui::morph_from_last`): the
+    /// instances that frame drew for this key (for `to`'s key when `None`).
+    pub from_last: Option<String>,
 }
 impl Default for MorphSpec {
     fn default() -> Self {
-        Self { loosen_ms: 220.0, duration_ms: 900.0, tighten_ms: 260.0, count_max: 40000.0, threshold: 0.5, curl: 48.0, stagger: 0.35, ease: Ease::InOutCubic, lattice: 5.0 }
+        Self { loosen_ms: 220.0, duration_ms: 900.0, tighten_ms: 260.0, count_max: 40000.0, threshold: 0.5, curl: 48.0, stagger: 0.35, ease: Ease::InOutCubic, lattice: 5.0, from_last: None }
     }
 }
 

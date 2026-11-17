@@ -554,6 +554,9 @@ pub struct Ui<S, M> {
     /// (what its disappearance plays over).
     decodes: HashMap<String, DecodeRun>,
     decode_last: HashMap<String, Shown>,
+    /// A morph from the last frame (`Ui::morph_from_last`): its source instances, target key and spec,
+    /// started once the new view is laid out.
+    last_morph: Option<(Vec<Instance>, String, MorphSpec)>,
     /// Keyed elements the last layout dropped together with the element they were in (a page that went,
     /// not a part of it that changed): they leave nothing behind, no decode played backwards.
     left: std::collections::HashSet<String>,
@@ -832,7 +835,7 @@ impl<S, M: Clone> Ui<S, M> {
             tree: TaffyTree::new(), tids: HashMap::new(), mkeys: HashMap::new(), virt_views: HashMap::new(), virt_made: HashMap::new(),
             scrolling: Scrolling::default(), touch: None, touches: HashSet::new(), touching: false, fling: None, over: HashMap::new(), motion: HashMap::new(), scroll_paint: false, event_t: None,
             recs: HashMap::new(), recomps: HashMap::new(), slides: HashMap::new(), no_recompose: false,
-            meshes: crate::mesh::Library::default(), mesh_hover: None, glyphs: Default::default(), prep: Default::default(), move_over: None, particle_gpu: false, motes: vec![], shed_at: HashMap::new(), shed_owed: HashMap::new(), field_marks: HashMap::new(), seen: HashMap::new(), outlines: HashMap::new(), decodes: HashMap::new(), decode_last: HashMap::new(), left: Default::default(), queued: vec![], flushing: false, motes_made: 0,
+            meshes: crate::mesh::Library::default(), mesh_hover: None, glyphs: Default::default(), prep: Default::default(), move_over: None, particle_gpu: false, motes: vec![], shed_at: HashMap::new(), shed_owed: HashMap::new(), field_marks: HashMap::new(), seen: HashMap::new(), outlines: HashMap::new(), decodes: HashMap::new(), decode_last: HashMap::new(), last_morph: None, left: Default::default(), queued: vec![], flushing: false, motes_made: 0,
             fmap: crate::fieldmap::FieldMap::default(), stirr_at: HashMap::new(), fmap_size: (0.0, 0.0), fmap_ink: u64::MAX, strand_faded: HashMap::new(), strand_cache: HashMap::new(), strand_hold: HashMap::new(), strand_drawn: vec![], trace_drawn: vec![], trace_head: HashMap::new(),
         };
         ui.resize(w, h, scale);
@@ -2323,8 +2326,12 @@ impl<S, M: Clone> Ui<S, M> {
             }
         }
         let old = flow.map(|_| self.record());
+        // A morph from the last frame takes its source now, before the new view.
+        if let Some(Cmd::Morph { to, spec, .. }) = cmds.iter().find(|c| matches!(c, Cmd::Morph { spec, .. } if spec.from_last.is_some())) { let (to, spec) = (to.clone(), spec.clone()); self.morph_from_last(&to, spec); }
+        cmds.retain(|c| !matches!(c, Cmd::Morph { spec, .. } if spec.from_last.is_some()));
         self.no_recompose = flow.is_some();
         self.layout();
+        self.morph_last();
         self.no_recompose = false;
         if let (Some(f), Some(old)) = (flow, old) { self.flow_from(old, f); }
         for c in cmds {
@@ -3857,7 +3864,7 @@ impl<S, M: Clone> Ui<S, M> {
                     });
                 }
                 std::mem::swap(&mut r.from, &mut r.to);
-                r.spec = MorphSpec { ease: spec.ease, ..r.spec };
+                r.spec.ease = spec.ease;
                 r.flight = Some([now, now + dur]);
                 r.src_until = now;
                 r.dst_from = now + dur;
@@ -3884,12 +3891,39 @@ impl<S, M: Clone> Ui<S, M> {
         self.run = None;
         self.paint();
         let (src, dst) = (self.collect(from), self.collect(to));
+        self.morph_with(from, to, src, dst, spec, k0);
+    }
+
+    /// Morph into `to` from what the frame drawn last showed for `spec.from_last` (or `to`'s own key):
+    /// call it, then change the view (a route that replaces the page). The source is not looked up in
+    /// the tree: it is the instances that last frame drew under that key, kept until the morph is done,
+    /// so a title on the old page flies to the title of the new one. With nothing drawn under that key,
+    /// the new element just comes in as usual. `Cmd::Morph` with `from_last` set does the same.
+    pub fn morph_from_last(&mut self, to: &str, spec: MorphSpec) {
+        let from = spec.from_last.clone().unwrap_or_else(|| to.to_owned());
+        let src = self.collect(&from);
+        self.last_morph = Some((src, to.to_owned(), spec));
+    }
+    /// Start a morph kept by `morph_from_last`, once the new view is laid out.
+    fn morph_last(&mut self) {
+        let Some((src, to, spec)) = self.last_morph.take() else { return };
+        if src.is_empty() { return; }
+        self.run = None;
+        self.paint();
+        let dst = self.collect(&to);
+        // The source is gone from the tree: the tiles carry it from the first frame (no loosening on
+        // the page first), under a key no element has.
+        self.morph_with(LAST_FRAME, &to, src, dst, MorphSpec { loosen_ms: 0.0, ..spec }, 0.0);
+    }
+    fn morph_with(&mut self, from: &str, to: &str, src: Vec<Instance>, dst: Vec<Instance>, spec: MorphSpec, k0: f32) {
+        let now = self.clock;
+        let tighten = spec.tighten_ms / 1000.0;
         if src.is_empty() || dst.is_empty() { return; }
         let pitch = (spec.lattice * self.scale).max(1.5);
         // The tiles come out of the frame budget: its scale, and on the CPU path at most its count
         // (DESIGN.md §1.27). A smaller count only makes the tiles larger.
         let b = crate::budget::usage();
-        let spec = MorphSpec { count_max: (spec.count_max * b.scale).max(1.0), ..spec };
+        let spec = MorphSpec { count_max: (spec.count_max * b.scale).max(1.0), ..spec.clone() };
         let cpu_cap = b.max as f32;
         // 3D elements emit from their surface (on the CPU path; the GPU's grid samples what the screen
         // shows); the rest of each side from the screen.
@@ -3908,7 +3942,7 @@ impl<S, M: Clone> Ui<S, M> {
             let t = morph::tiles_with(mesh_side(&src, &es, 0, lib, atlas, cap), mesh_side(&dst, &ed, es.len() as u32, lib, atlas, cap), morph::ink_bounds(&src), morph::ink_bounds(&dst), pitch, &spec);
             for (key, sc, r) in es.iter().chain(&ed) { emit.push(Emitter { key: key.clone(), points: sc.surface(lib, surface_count(r, t.tile, cap), 0x51ab) }); }
             t
-        } else { morph::tiles(&src, &dst, pitch, &MorphSpec { count_max: spec.count_max.min(cpu_cap), ..spec }, &self.text.pixels) };
+        } else { morph::tiles(&src, &dst, pitch, &MorphSpec { count_max: spec.count_max.min(cpu_cap), ..spec.clone() }, &self.text.pixels) };
         let (loosen, flight) = (spec.loosen_ms / 1000.0 * (1.0 - k0), spec.duration_ms / 1000.0);
         let (t1, t2) = (now + loosen, now + loosen + flight);
         let id = next_run();
@@ -4580,6 +4614,9 @@ const IGNORE: [f32; 4] = [0.0, -1.0, 0.0, 0.0];
 /// over its last instances when it went.
 /// How long what comes and goes fades when the viewer asked for less motion, s.
 pub const REDUCED_FADE: f32 = 0.15;
+
+/// The key a morph from the last frame (`Ui::morph_from_last`) gives its source: no element has it.
+const LAST_FRAME: &str = "\u{0}last frame";
 
 struct DecodeRun { start: f32, reverse: bool, spec: crate::decode::Decode, plan: Option<crate::decode::Plan>, ghost: Vec<Instance>, clip: Option<[f32; 4]> }
 /// What a decoded element showed in the last frame: its instances, its own spec and its clip (device

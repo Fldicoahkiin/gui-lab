@@ -29,7 +29,7 @@ fn morph_hands_over_at_the_right_times() {
     let spec = MorphSpec::default();
     assert!(loose_of(&ui, "b").is_none(), "the target is laid out but hidden");
     assert!(ui.node("b").is_some());
-    ui.morph("a", "b", spec);
+    ui.morph("a", "b", spec.clone());
     let run = ui.morph_run().expect("a run");
     assert!(!run.particles.is_empty());
     assert_eq!(run.tile, 5.0, "tiles are the lattice cells");
@@ -71,14 +71,14 @@ fn morph_hands_over_at_the_right_times() {
 fn reversal_turns_the_tiles_around_where_they_are() {
     let mut ui = two_ui();
     let spec = MorphSpec { ease: Ease::OutExpo, ..MorphSpec::default() };
-    ui.morph("a", "b", spec);
+    ui.morph("a", "b", spec.clone());
     let t1 = 10.0 + spec.loosen_ms / 1000.0;
     ui.tick(t1 + 0.4);
     let clock = ui.morph_run().unwrap().clock(ui.now()).expect("in flight");
     let before: Vec<f32> = ui.morph_run().unwrap().particles.iter().map(|p| morph::progress(p, clock, spec.ease)).collect();
     assert!(before.iter().any(|&u| u > 0.2 && u < 1.0), "mid-flight");
     // The reverse of the morph in progress, as `update` would ask for it.
-    ui.state.cmds.push(Cmd::Morph { from: "b".into(), to: "a".into(), spec });
+    ui.state.cmds.push(Cmd::Morph { from: "b".into(), to: "a".into(), spec: spec.clone() });
     ui.relayout();
     let run = ui.morph_run().expect("still running");
     assert_eq!((run.from.as_str(), run.to.as_str()), ("b", "a"));
@@ -97,10 +97,10 @@ fn reversal_turns_the_tiles_around_where_they_are() {
 fn reversal_while_loosening_tightens_again() {
     let mut ui = two_ui();
     let spec = MorphSpec::default();
-    ui.morph("a", "b", spec);
+    ui.morph("a", "b", spec.clone());
     ui.tick(10.0 + 0.11);
     let k = loose_of(&ui, "a").unwrap();
-    ui.morph("b", "a", spec);
+    ui.morph("b", "a", spec.clone());
     let run = ui.morph_run().unwrap();
     assert!(run.flight.is_none());
     assert!((ramp(run.src_ramp, ui.now()) - k).abs() < 1e-4, "from where it was");
@@ -243,4 +243,90 @@ fn a_turned_shape_covers_its_turned_box() {
     let ground = amenui::scene::Instance { paint: [0.0, 0.0, 1.0, amenui::scene::SHAPE], xf: [0.0; 4], ..i };
     assert!(morph::cover_at(&ground, 140.0, 105.0, &[]) > 0.9);
     assert_eq!(morph::ink_at(&ground, 140.0, 105.0, &[]), 0.0);
+}
+
+/// Two pages, each with a title under the same key, in a different place and size; and a body each,
+/// far below.
+mod pages {
+    use amenui::el::{El, Paint, col, text};
+    use amenui::style::{Look, Material};
+    pub struct S { pub second: bool }
+    pub fn view(s: &S) -> El<()> {
+        if !s.second {
+            col().key("a").fill_width().fill_height()
+                .child(text("Index", 18.0, Paint::INK).key("title").absolute(Some(40.0), Some(40.0), None, None))
+                .child(text("the old page's body", 14.0, Paint::TEXT).key("a/body").absolute(Some(40.0), Some(300.0), None, None))
+        } else {
+            col().key("b").fill_width().fill_height()
+                .child(text("Index", 40.0, Paint::INK).key("title").absolute(Some(220.0), Some(120.0), None, None))
+                .child(text("the new page's body", 14.0, Paint::TEXT).key("b/body").absolute(Some(300.0), Some(320.0), None, None))
+        }
+    }
+    pub fn look(_: &S) -> Look { Look { material: Material::Plain, ..Look::default() } }
+}
+
+/// The box of what is not the ground in the top part of the frame (where the titles are).
+fn ink_box(px: &[u8], ground: &[u8], w: u32) -> Option<[f32; 4]> {
+    let mut b = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+    for (i, (p, g)) in px.chunks_exact(4).zip(ground.chunks_exact(4)).enumerate() {
+        let (x, y) = ((i as u32 % w) as f32, (i as u32 / w) as f32);
+        if y >= 260.0 || p.iter().zip(g).all(|(a, b)| (*a as i32 - *b as i32).abs() <= 24) { continue; }
+        b = [b[0].min(x), b[1].min(y), b[2].max(x + 1.0), b[3].max(y + 1.0)];
+    }
+    (b[2] > b[0]).then_some(b)
+}
+
+#[test]
+fn a_morph_from_the_last_frame_flies_the_old_title_to_the_new_one() {
+    let (w, h) = (560u32, 380u32);
+    let Ok(mut o) = amenui::offscreen::Offscreen::try_new(w, h) else { eprintln!("no GPU adapter here: skipped"); return };
+    amenui::budget::set(amenui::budget::MAX_MARKS, 1.0);
+    let spec = amenui::morph::MorphSpec { duration_ms: 600.0, tighten_ms: 200.0, ..Default::default() };
+    let run = |o: &mut amenui::offscreen::Offscreen| {
+        let mut ui = Ui::new(pages::S { second: false }, pages::view, |_, _| {}, fonts(), w, h, 1.0).on_look(pages::look);
+        let mut t = 0.0;
+        while t < 1.5 { t += 1.0 / 60.0; ui.tick(t); let look = ui.look(); let _ = o.render(&mut ui, &look); }
+        let look = ui.look();
+        let old = o.render(&mut ui, &look);
+        ui.morph_from_last("title", spec.clone());
+        ui.state.second = true;
+        ui.relayout();
+        let mut frames = vec![];
+        for _ in 0..90 { t += 1.0 / 60.0; ui.tick(t); let look = ui.look(); frames.push(o.render(&mut ui, &look)); }
+        (old, frames, t)
+    };
+    let (old, frames, t) = run(&mut o);
+    // The ground alone, and the new page drawn directly at the same time.
+    let mut o2 = amenui::offscreen::Offscreen::new(w, h);
+    let mut fresh = Ui::new(pages::S { second: true }, pages::view, |_, _| {}, fonts(), w, h, 1.0).on_look(pages::look);
+    let mut tf = 0.0;
+    while tf < t - 1e-4 { tf += 1.0 / 60.0; fresh.tick(tf); }
+    let look = fresh.look();
+    let direct = o2.render(&mut fresh, &look);
+    let ground: Vec<u8> = { let g = &direct[..4]; g.iter().copied().cycle().take(direct.len()).collect() };
+    let (a, b) = (ink_box(&old, &ground, w).expect("old title"), ink_box(&direct, &ground, w).expect("new title"));
+    let first = ink_box(&frames[0], &ground, w).expect("first frame");
+    let near = |p: [f32; 4], q: [f32; 4], tol: f32| (0..4).all(|k| (p[k] - q[k]).abs() <= tol);
+    assert!(near(first, a, 3.0), "the first frame's title {first:?} is the old one {a:?}");
+    // Each frame's ink centre stays near the line between the two centres.
+    let c = |r: [f32; 4]| [(r[0] + r[2]) * 0.5, (r[1] + r[3]) * 0.5];
+    let (ca, cb) = (c(a), c(b));
+    let len = ((cb[0] - ca[0]).powi(2) + (cb[1] - ca[1]).powi(2)).sqrt();
+    for (k, f) in frames.iter().enumerate() {
+        let Some(r) = ink_box(f, &ground, w) else { continue };
+        let p = c(r);
+        let d = ((cb[0] - ca[0]) * (ca[1] - p[1]) - (ca[0] - p[0]) * (cb[1] - ca[1])).abs() / len;
+        assert!(d <= 0.1 * len, "frame {k}: the centre {p:?} is {d:.1} px off the line ({len:.0} px long)");
+    }
+    let last = frames.last().expect("frames");
+    assert!(near(ink_box(last, &ground, w).expect("last"), b, 3.0), "the last frame's title is the new one");
+    assert!(*last == direct, "done, it is the new page drawn directly");
+    // The old page's body is not drawn after the first frame.
+    let body = |px: &[u8]| px.chunks_exact(4).zip(direct.chunks_exact(4)).enumerate().filter(|(i, (p, d))| { let (x, y) = (*i as u32 % w, *i as u32 / w); x < 280 && (290..330).contains(&y) && p != d }).count();
+    for (k, f) in frames.iter().enumerate().skip(1) { assert_eq!(body(f), 0, "frame {k} still shows the old body"); }
+    // The same input three times: the same bytes.
+    let mut o3 = amenui::offscreen::Offscreen::new(w, h);
+    assert!(run(&mut o3).1 == frames, "the same frames again");
+    let mut o4 = amenui::offscreen::Offscreen::new(w, h);
+    assert!(run(&mut o4).1 == frames, "and a third time");
 }
