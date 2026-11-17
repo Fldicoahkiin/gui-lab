@@ -915,7 +915,7 @@ fn enc(c: vec3f) -> vec3f { return select(c, pow(c, vec3f(2.2)), u.fd.y > 0.5); 
 // What they build: how much of the new frame shows here (m), where each frame is sampled from, a tint
 // laid over (planes, a light bar, box lines), how far the old frame has faded to the ground, and a
 // channel split. Kinds: 1 reveal, 2 bands, 3 fade, 4 bar, 5 planes, 6 loosen (in kt, CPU), 7 layers,
-// 8 melt, 9 boxes, 10 carve, 11 outline, 12 peel (preset.rs StepKind).
+// 8 boxes, 9 carve, 10 outline, 11 crack (preset.rs StepKind).
 struct TS { m: f32, offn: vec2f, offo: vec2f, tint: vec4f, fade: f32, split: f32, toner: f32 };
 fn dir_of(deg: f32) -> vec2f { let a = radians(deg); return vec2f(cos(a), sin(a)); }
 /// How far along a line at `deg` the point is, 0 at the window's first corner to 1 at its last.
@@ -1040,6 +1040,34 @@ fn tr_step(p: vec2f, x: f32, k: i32, s: ptr<function, TS>) {
     (*s).fade = max((*s).fade, smoothstep(0.0, 0.25, e));
     if (abs(sd) < max(a * sc, 0.8) && near_t(p).r > 0.02 && o < (e - 0.05) / 0.45) { (*s).m = max((*s).m, 1.0); }
     (*s).m = max((*s).m, smoothstep(b, 1.0, e));
+  } else if (kind == 11) {
+    // Cracks: the distance to the nearest edge of a hashed cell pattern (pieces of `a` px, squashed
+    // along the angle `b` by `c` into bands), made ragged by `d` px of fixed noise. The new page shows
+    // where that distance is under a width that starts as a hairline and grows with the square of the
+    // step's progress, so the cracks are thin at first and then open out.
+    let cs = clamp(a, 16.0, 400.0) * sc;
+    let q = rot(p, -radians(b)) / cs * vec2f(mix(1.0, 0.25, clamp(c, 0.0, 1.0)), 1.0);
+    let ip = floor(q); let fp = q - ip;
+    var mr = vec2f(0.0); var md = 8.0; var mg = vec2f(0.0);
+    for (var j = -1; j <= 1; j++) { for (var i = -1; i <= 1; i++) {
+      let g = vec2f(f32(i), f32(j));
+      let r = g + h2(ip + g + 0.71) * 0.85 + 0.075 - fp;
+      let dd = dot(r, r);
+      if (dd < md) { md = dd; mr = r; mg = g; }
+    } }
+    var edge = 8.0;
+    for (var j = -2; j <= 2; j++) { for (var i = -2; i <= 2; i++) {
+      let g = mg + vec2f(f32(i), f32(j));
+      let r = g + h2(ip + g + 0.71) * 0.85 + 0.075 - fp;
+      if (dot(mr - r, mr - r) > 1e-5) { edge = min(edge, dot(0.5 * (mr + r), normalize(r - mr))); }
+    } }
+    let rag = (vnoise(p / (5.0 * sc)) - 0.5) * 2.0 * d * sc + (vnoise(p / (1.7 * sc) + 9.0) - 0.5) * 0.6 * d * sc;
+    let dist = max(edge * cs + rag, 0.0);
+    let width = e * e * 0.75 * cs + select(0.0, 0.6 * sc, e > 0.0);
+    var m = select(smoothstep(width + 1.0 * sc, width - 1.0 * sc, dist), step(dist, width), ee >= 0.5);
+    if (e >= 1.0) { m = 1.0; }
+    if (e <= 0.0) { m = 0.0; }
+    (*s).m = max((*s).m, m);
   }
 }
 /// The state the steps build at `x` (0–1 of the transition). The loop's bound is a uniform, so it is
