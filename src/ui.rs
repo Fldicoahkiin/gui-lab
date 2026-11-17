@@ -465,6 +465,8 @@ pub struct Ui<S, M> {
     /// The readout is shown; when it was last drawn (it refreshes twice a second while shown).
     overlay: u8,
     overlay_at: f32,
+    /// Where the readout's box was drawn last (logical px).
+    overlay_box: Option<Rect>,
     /// The shaping time at the last frame, so the readout shows what this frame spent.
     shape_seen: f64,
     /// The readout last said the page is idle (so it does not ask for another frame).
@@ -816,7 +818,7 @@ impl<S, M: Clone> Ui<S, M> {
             gaze_of: None, gaze_seen: HashMap::new(), annots: vec![], readout: gaze::Readout::default(), hovered: None, pointer_of: None, scripted: false, ticked: None, warm: None, warmed: None, owed: false, unused_key: None, shortcut: None, scrolled_of: None, released: None, input: None,
             dirty: true, look_of: None, locale_of: None, timing: Timing::default(), wake_of: None, latest_birth: f32::NEG_INFINITY, gaze_until: f32::NEG_INFINITY,
             marks_moving: false, caret: None, caret_on: true, static_loose: false, mclock: 0.0, moving: false, gclock: 0.0, ground_moving: false,
-            perf: crate::perf::Perf { quality: 1.0, ..Default::default() }, span: 0, painting: false, overlay: 0, overlay_at: 0.0, shape_seen: 0.0, hud_idle: false, rebuilt: 0,
+            perf: crate::perf::Perf { quality: 1.0, ..Default::default() }, span: 0, painting: false, overlay: 0, overlay_at: 0.0, overlay_box: None, shape_seen: 0.0, hud_idle: false, rebuilt: 0,
             text_capture: None, sel: None, sel_drag: false, clicks: (f32::NEG_INFINITY, 0.0, 0.0, 0), a11y_sent: HashMap::new(), a11y_focus: None,
             tree: TaffyTree::new(), tids: HashMap::new(), mkeys: HashMap::new(), virt_views: HashMap::new(), virt_made: HashMap::new(),
             scrolling: Scrolling::default(), touch: None, touches: HashSet::new(), touching: false, fling: None, over: HashMap::new(), motion: HashMap::new(), scroll_paint: false, event_t: None,
@@ -3593,6 +3595,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// after the last frame to say the page is idle; it never keeps frames coming.
     fn paint_overlay(&mut self) {
         self.overlay = self.timing.overlay;
+        self.overlay_box = None;
         if self.overlay == 0 { return; }
         self.overlay_at = self.clock;
         let p = &self.perf;
@@ -3645,9 +3648,25 @@ impl<S, M: Clone> Ui<S, M> {
         let s = self.scale;
         let width = lines.iter().map(|l| self.text.measure(l, MONO, SIZE, LINE, None).0).fold(0.0, f32::max).max(if self.overlay == 2 { 240.0 } else { 0.0 });
         let h = LINE * lines.len() as f32 + spark_h + if spark_h > 0.0 { 8.0 } else { 0.0 };
-        let (x, y) = ((self.size.0 - width - 18.0).max(4.0).round(), (self.size.1 - h - 16.0).max(4.0).round());
+        // The box in the look's corner, `overlay_inset` from the edges; where it would cover text to read
+        // it moves on clockwise to the next corner that is clear (the asked one when none is).
+        let (pw, ph) = (width + 16.0, h + 12.0);
+        let [ix, iy] = look.overlay_inset;
+        let at = |c: crate::style::Corner| {
+            use crate::style::Corner::*;
+            let x = match c { TopLeft | BottomLeft => ix, TopRight | BottomRight => self.size.0 - ix - pw };
+            let y = match c { TopLeft | TopRight => iy, BottomLeft | BottomRight => self.size.1 - iy - ph };
+            Rect::new(x.round(), y.round(), pw, ph)
+        };
+        let read = self.legible_ink();
+        let clear = |r: Rect| !read.iter().any(|b| b[0] < (r.right()) * s && b[2] > r.x * s && b[1] < r.bottom() * s && b[3] > r.y * s);
+        let mut corner = look.overlay_at;
+        for _ in 0..4 { if clear(at(corner)) { break; } corner = corner.clockwise(); }
+        if !clear(at(corner)) { corner = look.overlay_at; }
+        let plate = at(corner);
+        self.overlay_box = Some(plate);
+        let (x, y) = (plate.x + 8.0, plate.y + 6.0);
         let clip = [0.0, 0.0, self.size.0 * s, self.size.1 * s];
-        let plate = Rect::new(x - 8.0, y - 6.0, width + 16.0, h + 12.0);
         let r = |r: Rect| [(r.x * s).round(), (r.y * s).round(), (r.w * s).round().max(1.0), (r.h * s).round().max(1.0)];
         // The plate: the ground nearly opaque, a hairline round it.
         self.scene.annot.push(Instance { rect: r(plate), paint: [0.0, 0.0, 0.94, SHAPE], clip, look: [look.theme.ground[0], look.theme.ground[1], look.theme.ground[2], 0.0], ..Default::default() });
@@ -3680,6 +3699,28 @@ impl<S, M: Clone> Ui<S, M> {
             }
         }
     }
+
+    /// The ink of each element of text to read and each control on the page (its instances' boxes, a
+    /// glyph's without the spread round it, within its clip), device px `[x0, y0, x1, y1]`.
+    fn legible_ink(&self) -> Vec<[f32; 4]> {
+        let (s, spread) = (self.scale, crate::text::SPREAD as f32);
+        let mut ink: HashMap<usize, [f32; 4]> = HashMap::new();
+        for (i, inst) in self.scene.instances[..self.page_len.min(self.owners.len())].iter().enumerate() {
+            let ni = self.owners[i].0;
+            let n = &self.nodes[ni];
+            if !n.legible || n.hidden || inst.paint[2] <= 0.0 { continue; }
+            let r = inst.rect;
+            let p = if inst.paint[3] == GLYPH { spread } else { 0.0 };
+            let c = n.clip;
+            let b = [(r[0] + p).max(c.x * s), (r[1] + p).max(c.y * s), (r[0] + r[2] - p).min(c.right() * s), (r[1] + r[3] - p).min(c.bottom() * s)];
+            if b[2] <= b[0] || b[3] <= b[1] { continue; }
+            let e = ink.entry(ni).or_insert(b);
+            *e = [e[0].min(b[0]), e[1].min(b[1]), e[2].max(b[2]), e[3].max(b[3])];
+        }
+        ink.into_values().collect()
+    }
+    /// Where the performance readout (`Look::overlay`) was drawn in the last frame, logical px.
+    pub fn overlay_box(&self) -> Option<Rect> { self.overlay_box }
 
     fn animate(&mut self) {
         self.scene.truncate(self.page_len);

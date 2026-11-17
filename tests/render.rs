@@ -102,3 +102,58 @@ fn near_keeps_a_label_on_a_solid_button_whole() {
         assert!(near as f32 >= 0.9 * plain as f32, "theme {theme}: near draws {near} of plain's {plain} ink px");
     }
 }
+
+/// A page with a line of text to read in the middle and, when `block`, a status line along the bottom
+/// right; the readout on, in `at`, `inset` from the edges.
+mod readout {
+    use amenui::el::{El, Paint, col, space, text};
+    use amenui::style::{Corner, Look, Material};
+    pub struct S { pub at: Corner, pub inset: [f32; 2], pub block: bool }
+    pub fn view(s: &S) -> El<()> {
+        let mut page = col().key("page").pad(160.0, 150.0).fill_width().fill_height()
+            .child(text("A line to read in the middle", 15.0, Paint::TEXT).key("middle"));
+        if s.block { page = page.child(space(0.0, 0.0).key("gap").fill_height()).child(text("status: 3 notes saved, last at 12:04", 13.0, Paint::DIM).key("status").absolute(None, None, Some(10.0), Some(20.0))); }
+        page
+    }
+    pub fn look(s: &S) -> Look { Look { material: Material::Plain, overlay: 1, overlay_at: s.at, overlay_inset: s.inset, ..Look::default() } }
+}
+
+#[test]
+fn the_readout_sits_in_its_corner_at_its_inset_and_never_covers_text_to_read() {
+    use amenui::style::Corner;
+    let (w, h) = (640u32, 400u32);
+    let Ok(mut o) = Offscreen::try_new(w, h) else { eprintln!("no GPU adapter here: skipped"); return };
+    let ink = |ui: &amenui::ui::Ui<readout::S, ()>, key: &str| {
+        let sp = amenui::text::SPREAD as f32;
+        let r = ui.instances_of(key).iter().fold([f32::MAX, f32::MAX, f32::MIN, f32::MIN], |m, i| { let p = if i.paint[3] == amenui::scene::GLYPH { sp } else { 0.0 }; [m[0].min(i.rect[0] + p), m[1].min(i.rect[1] + p), m[2].max(i.rect[0] + i.rect[2] - p), m[3].max(i.rect[1] + i.rect[3] - p)] });
+        amenui::ui::Rect::new(r[0], r[1], r[2] - r[0], r[3] - r[1])
+    };
+    let shot = |o: &mut Offscreen, at: Corner, inset: [f32; 2], block: bool| {
+        let mut ui = amenui::ui::Ui::new(readout::S { at, inset, block }, readout::view, |_, _| {}, fonts(), w, h, 1.0).on_look(readout::look);
+        ui.tick(1.0);
+        let look = ui.look();
+        let _ = o.render(&mut ui, &look);
+        ui
+    };
+    for (at, inset) in [(Corner::TopLeft, [12.0, 12.0]), (Corner::TopRight, [20.0, 8.0]), (Corner::BottomRight, [12.0, 12.0]), (Corner::BottomLeft, [30.0, 16.0])] {
+        let ui = shot(&mut o, at, inset, false);
+        let b = ui.overlay_box().expect("the readout is drawn");
+        let (dx, dy) = match at {
+            Corner::TopLeft => (b.x, b.y),
+            Corner::TopRight => (w as f32 - b.right(), b.y),
+            Corner::BottomRight => (w as f32 - b.right(), h as f32 - b.bottom()),
+            Corner::BottomLeft => (b.x, h as f32 - b.bottom()),
+        };
+        assert!((dx - inset[0]).abs() <= 1.0 && (dy - inset[1]).abs() <= 1.0, "{at:?}: {dx}, {dy} from the edges, asked {inset:?}");
+        assert!(b.intersect(&ink(&ui, "middle")).w <= 0.0 || b.intersect(&ink(&ui, "middle")).h <= 0.0, "{at:?}: it covers the text");
+    }
+    // A status line in the bottom right: the readout asked there moves on clockwise. The bottom left
+    // would cover it too (the readout is wider than half the window), so it goes on to the top left.
+    let ui = shot(&mut o, Corner::BottomRight, [12.0, 12.0], true);
+    let b = ui.overlay_box().expect("drawn");
+    let status = ink(&ui, "status");
+    let r = b.intersect(&status);
+    assert!(r.w <= 0.0 || r.h <= 0.0, "the readout {b:?} covers the status line {status:?}");
+    assert!(b.x - 12.0 > -1.0 && (b.x - 12.0).abs() <= 1.0 && (b.y - 12.0).abs() <= 1.0, "it went to the top left: {b:?}");
+}
+
