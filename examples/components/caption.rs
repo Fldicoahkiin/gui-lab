@@ -1,7 +1,7 @@
 //! caption: its examples, as the documentation page shows them (each `ex_*` function is a preview
 //! and its code).
-use lab::el::{El, Paint, space};
-use lab::widgets::*;
+use amenui::el::{El, Paint, space};
+use amenui::widgets::*;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Msg { Nothing, Num(usize, Edit) }

@@ -291,7 +291,7 @@ impl Renderer {
             multiview_mask: None, cache: None,
         });
         #[cfg(not(target_arch = "wasm32"))]
-        let timing = std::env::var_os("LAB_TIMING").is_some();
+        let timing = std::env::var_os("AMENUI_TIMING").is_some();
         #[cfg(not(target_arch = "wasm32"))]
         let pipe = |vs: &str, fs: &str, format, blend: Option<wgpu::BlendState>, inst: bool| {
             let t0 = std::time::Instant::now();

@@ -44,6 +44,32 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
+name = "amenui"
+version = "0.0.1"
+dependencies = [
+ "arboard",
+ "bytemuck",
+ "console_error_panic_hook",
+ "hyphenation",
+ "intl_pluralrules",
+ "parley",
+ "png",
+ "pollster",
+ "serde",
+ "serde_json",
+ "swash",
+ "taffy",
+ "thiserror 2.0.21",
+ "unic-langid",
+ "unicode-segmentation",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "wgpu",
+ "winit",
+]
+
+[[package]]
 name = "android-activity"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -976,32 +1002,6 @@ name = "khronos_api"
 version = "3.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
-
-[[package]]
-name = "lab"
-version = "0.0.1"
-dependencies = [
- "arboard",
- "bytemuck",
- "console_error_panic_hook",
- "hyphenation",
- "intl_pluralrules",
- "parley",
- "png",
- "pollster",
- "serde",
- "serde_json",
- "swash",
- "taffy",
- "thiserror 2.0.21",
- "unic-langid",
- "unicode-segmentation",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
- "wgpu",
- "winit",
-]
 
 [[package]]
 name = "libc"

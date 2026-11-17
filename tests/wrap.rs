@@ -1,13 +1,13 @@
 //! Text flowing around the true outline of other things (`wrap`), without a GPU: the free pieces of a
 //! band, and every inked texel of every glyph at least `gap - 1` px from the obstacle's ink: across
 //! its line's band from the obstacle's widest extent over that band, or straight to it above and below.
-use lab::el::{El, Paint, col, space, text_lh};
-use lab::scene::GLYPH;
-use lab::text::{ATLAS, SPREAD};
-use lab::ui::Ui;
-use lab::wrap::{Around, Silhouette};
+use amenui::el::{El, Paint, col, space, text_lh};
+use amenui::scene::GLYPH;
+use amenui::text::{ATLAS, SPREAD};
+use amenui::ui::Ui;
+use amenui::wrap::{Around, Silhouette};
 
-fn font() -> Vec<lab::text::Face> { lab::text::load_bundled(concat!(env!("CARGO_MANIFEST_DIR"), "/assets")).expect("fonts") }
+fn font() -> Vec<amenui::text::Face> { amenui::text::load_bundled(concat!(env!("CARGO_MANIFEST_DIR"), "/assets")).expect("fonts") }
 
 const TEXT: &str = "文字绕着东西的真实轮廓走，而不是绕着它的方框。每一行只拿到这一条带子里没有被挡住的部分；被挡成两段时，左右各排一行。Text keeps its distance from the ink of whatever is in its way, whatever shape that ink has, line by line, as the obstacle moves. 拖动它，文字就重新排。";
 

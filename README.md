@@ -1,4 +1,4 @@
-# gui-lab（工作名）
+# amenui（工作名）
 
 一个自绘界面框架。Rust + wgpu，同一份代码跑原生和网页（WebGPU，没有时用 WebGL2）。设计见 `docs/DESIGN.md`。
 
@@ -149,7 +149,7 @@ cargo build --release --lib --target wasm32-unknown-unknown
 ```
 
 ```bash
-wasm-bindgen --target no-modules --no-typescript --remove-name-section --out-dir dist/pkg target/wasm32-unknown-unknown/release/lab.wasm
+wasm-bindgen --target no-modules --no-typescript --remove-name-section --out-dir dist/pkg target/wasm32-unknown-unknown/release/amenui.wasm
 ```
 
 ```bash

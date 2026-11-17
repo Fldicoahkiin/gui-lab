@@ -3,12 +3,12 @@
 //! the nudged text, what ignores the field, what is far from the path, or the box itself); the map is
 //! all zero again soon after it is let go and asks for no frames; Normcore writes nothing; a press
 //! without a drag stirs nothing; with reduced motion there is never any flow.
-use lab::el::{El, Paint, Response, col, layers, row, space, text};
-use lab::style::Look;
-use lab::ui::Ui;
-use lab::widgets::{FloatMsg, Floating, floating};
+use amenui::el::{El, Paint, Response, col, layers, row, space, text};
+use amenui::style::Look;
+use amenui::ui::Ui;
+use amenui::widgets::{FloatMsg, Floating, floating};
 
-fn fonts() -> Vec<lab::text::Face> { lab::text::load_bundled(concat!(env!("CARGO_MANIFEST_DIR"), "/assets")).expect("fonts") }
+fn fonts() -> Vec<amenui::text::Face> { amenui::text::load_bundled(concat!(env!("CARGO_MANIFEST_DIR"), "/assets")).expect("fonts") }
 
 #[derive(Clone)] enum M { F(FloatMsg) }
 struct S { f: Floating, t: f32, look: Look }
@@ -63,7 +63,7 @@ fn drag(ui: &mut Ui<S, M>, keys: &[&str]) -> Vec<f32> {
     }
     most
 }
-fn plain() -> Look { Look { material: lab::style::Material::Plain, ..Look::default() } }
+fn plain() -> Look { Look { material: amenui::style::Material::Plain, ..Look::default() } }
 
 #[test]
 fn a_dragged_box_loosens_what_its_trail_reaches_and_nothing_else() {
@@ -92,7 +92,7 @@ fn a_dragged_box_loosens_what_its_trail_reaches_and_nothing_else() {
 
 #[test]
 fn normcore_writes_nothing_and_a_press_alone_stirs_nothing() {
-    let presets = lab::preset::presets();
+    let presets = amenui::preset::presets();
     let normcore = presets.iter().find(|p| p.hash == "normcore").expect("normcore").apply(&Look::default());
     let mut ui = open(normcore);
     drag(&mut ui, &["near-shape"]);
@@ -130,19 +130,19 @@ fn reduced_motion_keeps_the_energy_and_puts_no_flow() {
 
 #[test]
 fn a_stir_command_reaches_its_scope() {
-    #[derive(Default)] struct P { cmds: Vec<lab::morph::Cmd> }
+    #[derive(Default)] struct P { cmds: Vec<amenui::morph::Cmd> }
     fn v(_: &P) -> El<()> { col().key("p").child(space(200.0, 200.0).key("deco").fill(Paint::hue(0)).respond(Response::Loosen)) }
     let mut ui = Ui::new(P::default(), v, |_, _| {}, fonts(), 640, 400, 1.0).on_look(|_| plain()).on_commands(|s| std::mem::take(&mut s.cmds));
     ui.tick(1.0);
     assert_eq!(ui.looseness("deco", 1.0), 0.0);
-    ui.state.cmds.push(lab::morph::Cmd::Stir { at: lab::morph::StirAt::Key("deco".into()), v: [1.0, 0.0], energy: 1.0, radius: 60.0, scope: lab::el::Scope::Global });
+    ui.state.cmds.push(amenui::morph::Cmd::Stir { at: amenui::morph::StirAt::Key("deco".into()), v: [1.0, 0.0], energy: 1.0, radius: 60.0, scope: amenui::el::Scope::Global });
     ui.relayout();
     assert!(ui.looseness("deco", 1.0) > 0.9, "a stir at its centre: {}", ui.looseness("deco", 1.0));
     // Along a path: only the part between `from` and `to` is stirred.
     let mut ui = Ui::new(P::default(), v, |_, _| {}, fonts(), 640, 400, 1.0).on_look(|_| plain()).on_commands(|s| std::mem::take(&mut s.cmds));
     ui.tick(1.0);
     let path = std::rc::Rc::new(vec![[0.0, 300.0], [600.0, 300.0]]);
-    ui.state.cmds.push(lab::morph::Cmd::Stir { at: lab::morph::StirAt::Path { points: path, from: 0.0, to: 0.5 }, v: [1.0, 0.0], energy: 1.0, radius: 20.0, scope: lab::el::Scope::Global });
+    ui.state.cmds.push(amenui::morph::Cmd::Stir { at: amenui::morph::StirAt::Path { points: path, from: 0.0, to: 0.5 }, v: [1.0, 0.0], energy: 1.0, radius: 20.0, scope: amenui::el::Scope::Global });
     ui.relayout();
     let m = ui.fieldmap();
     assert!(m.energy_at(150.0, 300.0) > 0.5 && m.energy_at(580.0, 300.0) == 0.0, "{} {}", m.energy_at(150.0, 300.0), m.energy_at(580.0, 300.0));

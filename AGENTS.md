@@ -1,6 +1,6 @@
-# AGENTS.md — writing interfaces with gui-lab
+# AGENTS.md — writing interfaces with amenui
 
-gui-lab is a self-drawn interface framework in Rust (wgpu; the same code runs natively and on the web).
+amenui is a self-drawn interface framework in Rust (wgpu; the same code runs natively and on the web).
 Everything on screen — glyphs, shapes, pictures — is an instance with a true outline that can loosen,
 morph and condense again; how it looks is a swappable material. You write a view (state → tree) and an
 update (state, message → state); the runtime does layout, input, animation and drawing.
@@ -18,12 +18,12 @@ and commands ask the runtime (`Cmd::Morph`, `Cmd::Flow`). Widgets never animate 
 
 ## The ten things you will actually write
 
-Every block below is compiled by `cargo test` (this file is a doc-test of `lab::agents`).
+Every block below is compiled by `cargo test` (this file is a doc-test of `amenui::agents`).
 
 1. A view and an update (Elm style; messages are plain values):
 ```rust
-use lab::el::{El, Paint, col, text};
-use lab::widgets::button;
+use amenui::el::{El, Paint, col, text};
+use amenui::widgets::button;
 #[derive(Clone)] enum Msg { Inc }
 struct S { n: u32 }
 fn view(s: &S) -> El<Msg> {
@@ -37,12 +37,12 @@ let _ = (view(&S { n: 0 }), update as fn(&mut S, Msg));
 
 2. A runtime, headless (tests, tools); press by position, read the tree:
 ```rust
-# use lab::el::{El, Paint, col, text}; use lab::widgets::button;
+# use amenui::el::{El, Paint, col, text}; use amenui::widgets::button;
 # #[derive(Clone)] enum Msg { Inc } struct S { n: u32 }
 # fn view(s: &S) -> El<Msg> { col().child(text(s.n.to_string(), 20.0, Paint::INK).key("count")).child(button("inc", "+", Msg::Inc)) }
 # fn update(s: &mut S, _: Msg) { s.n += 1 }
-let faces = lab::text::load_bundled(concat!(env!("CARGO_MANIFEST_DIR"), "/assets")).expect("fonts");
-let mut ui = lab::ui::Ui::new(S { n: 0 }, view, update, faces, 400, 300, 1.0);
+let faces = amenui::text::load_bundled(concat!(env!("CARGO_MANIFEST_DIR"), "/assets")).expect("fonts");
+let mut ui = amenui::ui::Ui::new(S { n: 0 }, view, update, faces, 400, 300, 1.0);
 let (x, y) = ui.node("inc").unwrap().rect.center();
 ui.press(x, y);
 ui.release(x, y);
@@ -51,7 +51,7 @@ assert_eq!(ui.export_tree().find("count").unwrap().text.as_deref(), Some("1"));
 
 3. Layout: rows, columns, sizes, gaps, padding (logical px; nothing shrinks unless asked):
 ```rust
-use lab::el::{El, Paint, row, col, space, text};
+use amenui::el::{El, Paint, row, col, space, text};
 let bar: El<()> = row().fill_width().pad(16.0, 8.0).gap(12.0)
     .child(text("标题", 18.0, Paint::INK).grow(1.0))
     .child(space(80.0, 30.0).radius(4.0).fill(Paint::ACCENT));
@@ -61,15 +61,15 @@ let _ = page;
 
 4. Keys: give every element you will look up, animate, or that holds state a stable key:
 ```rust
-use lab::el::{El, Paint, col, text};
+use amenui::el::{El, Paint, col, text};
 let rows: El<()> = (0..3).fold(col(), |c, i| c.child(text(format!("第 {i} 行"), 14.0, Paint::TEXT).key(format!("row/{i}"))));
 let _ = rows;
 ```
 
 5. Numbers are number controls, never sliders as the main way (Draft while typing, Set on commit):
 ```rust
-use lab::el::El;
-use lab::widgets::{Edit, Spec, number};
+use amenui::el::El;
+use amenui::widgets::{Edit, Spec, number};
 #[derive(Clone)] enum Msg { Width(Edit) }
 const W: Spec = Spec { min: 0.0, max: 64.0, step: 1.0, decimals: 0, unit: "px" };
 let draft: Option<String> = None;
@@ -79,8 +79,8 @@ let _ = n;
 
 6. Text fields keep a `TextEdit` in the state:
 ```rust
-use lab::el::El;
-use lab::widgets::{TextEdit, input};
+use amenui::el::El;
+use amenui::widgets::{TextEdit, input};
 #[derive(Clone)] enum Msg { Name(TextEdit) }
 let name = TextEdit::new("林");
 let field: El<Msg> = input("name", &name, "名称", 280.0, 40, Msg::Name);
@@ -89,8 +89,8 @@ let _ = field;
 
 7. Ripples: a press reaches only its own control unless you say more; decide what loosens:
 ```rust
-use lab::el::{El, Paint, Response, Scope, row, space};
-use lab::widgets::button;
+use amenui::el::{El, Paint, Response, Scope, row, space};
+use amenui::widgets::button;
 let area: El<()> = row().key("area").ripple_scope().gap(16.0)
     .child(button("go", "按下", ()).ripple(Scope::Container(None)))
     .child(space(60.0, 40.0).fill(Paint::ACCENT).respond(Response::Loosen))
@@ -100,7 +100,7 @@ let _ = area;
 
 8. Commands for what moves: keep them in the state, hand them over with `on_commands`:
 ```rust
-use lab::morph::{Cmd, FlowSpec, MorphSpec};
+use amenui::morph::{Cmd, FlowSpec, MorphSpec};
 let mut cmds: Vec<Cmd> = vec![];
 cmds.push(Cmd::Morph { from: "a".into(), to: "b".into(), spec: MorphSpec::default() });
 cmds.push(Cmd::Flow(FlowSpec::default()));     // before a page change: shared `.flow(id)` parts move
@@ -113,8 +113,8 @@ assert_eq!(cmds.len(), 6);
 
 9. Materials and the look: one global material, overrides per subtree:
 ```rust
-use lab::el::{El, Paint, text};
-use lab::style::{Look, Material, LIGHT};
+use amenui::el::{El, Paint, text};
+use amenui::style::{Look, Material, LIGHT};
 let look = Look { theme: LIGHT, material: Material::Dot, legible_cap: 0.15, ..Look::default() };
 let card: El<()> = text("半色调", 20.0, Paint::INK).material(Material::Halftone.id());
 let _ = (look, card);
@@ -122,7 +122,7 @@ let _ = (look, card);
 
 10. Content that changes recomposes when it is keyed; turn it off where it must be immediate:
 ```rust
-use lab::el::{El, Paint, text};
+use amenui::el::{El, Paint, text};
 let count: El<()> = text("12", 28.0, Paint::INK).key("count");            // recomposes 12 → 13
 let clock: El<()> = text("09:41", 14.0, Paint::DIM).key("clock").recompose(false);
 let _ = (count, clock);
@@ -143,11 +143,11 @@ A style preset is data: `preset::presets()`, change a number (`Preset::set_numbe
 or read JSON (`Preset::from_json`), then `preset.apply(&look)`; a commit (`El::commit`) that applies it
 plays its transition (`docs/recipes/preset.md`).
 A preset's `post` is the finishing pass (bloom, chromatic offset, scanlines, grain, vignette, curvature, then a
-dither and a palette — `lab::post`, all off by default, DESIGN.md §1.21) and its `marks` make marks on 3D elements
+dither and a palette — `amenui::post`, all off by default, DESIGN.md §1.21) and its `marks` make marks on 3D elements
 follow depth. `El::shed(Shed)` makes a moving element drop marks, `El::flow_field(FlowField)` carries marks along a
 noise field over a box (speed 0: still), and `El::shift(dx, dy)` moves a subtree after layout (pointer parallax
 without a layout).
-Gestures are state (`lab::gesture`: `Spring`, `Animated`, `RubberBand`, `project`): `widgets::bottom_sheet` and `widgets::floating`
+Gestures are state (`amenui::gesture`: `Spring`, `Animated`, `RubberBand`, `project`): `widgets::bottom_sheet` and `widgets::floating`
 report drags, `Sheet::update` / `Floating::update` take them with the time, `step` runs on the tick while `moving()`; put them
 after the page in `el::layers([...])` (docs/recipes/gesture.md). Under a live demo, `El::caption_params` prints the numbers that
 drive it and lets them be edited (DESIGN.md §5.2). `widgets::nested_menu` steers submenus by a safe-zone triangle
@@ -155,7 +155,7 @@ drive it and lets them be edited (DESIGN.md §5.2). `widgets::nested_menu` steer
 loads, draw the real rows with `.skeleton()` as `widgets::Loading::show` says (docs/recipes/loading.md).
 Fields and drawings (DESIGN.md §1.26): `el::canvas(Drawing)` draws dots and strokes in its own space (each a shape with
 a true outline; its pointer handlers get points in that space; `El::on_point` hears move, press-drag and leave in one handler);
-`lab::field` samples noise, bumps and metaballs on a `Grid`, traces iso-contours, advects a `Swarm` along `curl` or a stirred `Flow`,
+`amenui::field` samples noise, bumps and metaballs on a `Grid`, traces iso-contours, advects a `Swarm` along `curl` or a stirred `Flow`,
 and grows `GrayScott` inside a mask. A text element's glyphs can be posed one by one (`El::pose(|GlyphAt| Pose)`: move, turn,
 scale, tone, alpha; no layout). `El::on_visible` says when an element can be seen (step a demo only then), `El::on_outline` sends a
 subtree's true outline as a coverage grid (a mask). Every small mark draws from one frame budget (`budget::grant(n)`). `El::decode(Decode)`
@@ -167,11 +167,11 @@ fill (a ground-toned panel too), `ink_at` only ink that shows. The lens touches 
 no handler operates. The landing page and first scene, Body (`examples/body.rs`, `#body`), is written the same way: one posed text element (the
 skin, its glyph count conserved), drawings for its volume, reflection, dust and the instrument markings, springs for `gather`
 and the opening, a signed-distance form sampled to a spiral of surface points (DESIGN.md §6.2). `Pose::hue` picks a glyph's accent.
-The field map (DESIGN.md §1.29, `lab::fieldmap`) is a coarse grid of energy and flow over the window that settles to exactly zero:
+The field map (DESIGN.md §1.29, `amenui::fieldmap`) is a coarse grid of energy and flow over the window that settles to exactly zero:
 an element with `.stirr(Stirr::default())` stirs it behind itself as it moves (floating, bottom sheet and card stack do by default;
 `Look::map` / a preset's `interaction.map` set how strong), `Cmd::Stir { at: StirAt::Point | Key | Path, .. }` stirs it from the state,
 and it loosens and drifts what may loosen as fronts do (caps and responses unchanged; `Ui::looseness` reads it too). The `scribblr`
-material (DESIGN.md §1.30, `lab::strand`) is plain at rest; loosened, an element's ink becomes one thread of constant width that knots
+material (DESIGN.md §1.30, `amenui::strand`) is plain at rest; loosened, an element's ink becomes one thread of constant width that knots
 where the map has energy and trails off along its flow, then writes itself back (`Ui::strands()` lists the threads drawn; `Look::hold_ms`
 holds its pose for a beat). `El::trace(Trace { points, progress, weight, dash, gap, pull, stir, paint })` draws a long path by progress
 under any material, solid or dashed by arc length, pushed by the map and stirring it at its head.
@@ -221,7 +221,7 @@ cargo run --release --bin check              # pixel acceptance on the GPU (lava
 cargo run --release --bin render -- --help   # one frame + tree
 cargo run --release --bin film -- out ripple # filmstrips of ripples and recomposition
 cargo run --release --bin window -- button   # a native window
-cargo run --release --bin lab -- add dialog --to ../my-app   # copy a component (and what it needs) into a project
+cargo run --release --bin amenui -- add dialog --to ../my-app   # copy a component (and what it needs) into a project
 ```
 
 ## Where things live

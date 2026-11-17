@@ -1,10 +1,10 @@
 //! Recipe: morph A into B (docs/recipes/morph.md). Both elements are in the tree, in the same place; the
 //! one not shown is `hidden_until_morphed`. `Cmd::Morph` loosens A, flies its tiles and tightens B.
-use lab::el::{El, Font, Paint, col, space, stack, text};
-use lab::morph::{Cmd, MorphSpec};
-use lab::text::Face;
-use lab::ui::Ui;
-use lab::widgets::{Variant, button_as};
+use amenui::el::{El, Font, Paint, col, space, stack, text};
+use amenui::morph::{Cmd, MorphSpec};
+use amenui::text::Face;
+use amenui::ui::Ui;
+use amenui::widgets::{Variant, button_as};
 
 pub struct Shapes { pub showing_b: bool, pub cmds: Vec<Cmd> }
 

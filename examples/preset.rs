@@ -1,12 +1,12 @@
 //! Recipe: a custom preset (docs/recipes/preset.md). A preset is data: start from one of the twelve, change
 //! its numbers (or read it from JSON), and give the runtime the look it makes. Its transition plays when
 //! a commit applies it — here a button that switches between the plain look and the custom one.
-use lab::el::{El, Paint, col, text};
-use lab::preset::{Preset, Step, StepKind, Transition, presets};
-use lab::style::Look;
-use lab::text::Face;
-use lab::ui::Ui;
-use lab::widgets::{Variant, button_as};
+use amenui::el::{El, Paint, col, text};
+use amenui::preset::{Preset, Step, StepKind, Transition, presets};
+use amenui::style::Look;
+use amenui::text::Face;
+use amenui::ui::Ui;
+use amenui::widgets::{Variant, button_as};
 
 pub struct App { pub custom: Preset, pub on: bool }
 

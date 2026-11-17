@@ -1,10 +1,10 @@
 //! The `render` tool's core (DESIGN.md §1.17): deterministic frames, scripted events, and errors that say
 //! what to write instead.
-use lab::drive::{Input, RenderSpec, parse_events, render};
-use lab::error::{DriveError, LookError};
-use lab::offscreen::Offscreen;
+use amenui::drive::{Input, RenderSpec, parse_events, render};
+use amenui::error::{DriveError, LookError};
+use amenui::offscreen::Offscreen;
 
-fn fonts() -> Vec<lab::text::Face> { lab::text::load_bundled(concat!(env!("CARGO_MANIFEST_DIR"), "/assets")).expect("fonts") }
+fn fonts() -> Vec<amenui::text::Face> { amenui::text::load_bundled(concat!(env!("CARGO_MANIFEST_DIR"), "/assets")).expect("fonts") }
 fn spec(page: &str) -> RenderSpec { RenderSpec { page: page.into(), w: 480, h: 360, scale: 1.0, material: Some("dot".into()), theme: Some("light".into()), at_ms: 700.0, events: vec![], locale: None } }
 
 #[test]
@@ -33,15 +33,15 @@ fn events_parse_and_errors_say_what_to_write() {
     assert!(matches!(ev[2].input, Input::Wheel { dy, .. } if dy == 40.0));
     let bad = parse_events(r#"[{"at_ms": 0, "kind": "poke"}]"#, "s.json").unwrap_err();
     assert!(bad.to_string().contains("s.json") && bad.to_string().contains("press, release"), "{bad}");
-    assert!(matches!(lab::drive::material("dott"), Err(LookError::UnknownMaterial { .. })));
-    let m = lab::drive::material("dott").unwrap_err().to_string();
+    assert!(matches!(amenui::drive::material("dott"), Err(LookError::UnknownMaterial { .. })));
+    let m = amenui::drive::material("dott").unwrap_err().to_string();
     assert!(m.contains("dot") && m.contains("halftone"), "{m}");
-    assert!(lab::drive::theme("sepia").unwrap_err().to_string().contains("light"));
-    assert_eq!(lab::drive::theme("light"), Ok(1));
-    let e = match lab::drive::open("buton", fonts(), 100, 100, 1.0, None, None) { Err(e) => e, Ok(_) => panic!("opened") };
+    assert!(amenui::drive::theme("sepia").unwrap_err().to_string().contains("light"));
+    assert_eq!(amenui::drive::theme("light"), Ok(1));
+    let e = match amenui::drive::open("buton", fonts(), 100, 100, 1.0, None, None) { Err(e) => e, Ok(_) => panic!("opened") };
     assert!(e.to_string().contains("recipe-form"), "{e}");
     // A target that is not there names keys that are.
-    let mut d = lab::drive::open("recipe-counter", fonts(), 400, 300, 1.0, None, None).expect("open");
+    let mut d = amenui::drive::open("recipe-counter", fonts(), 400, 300, 1.0, None, None).expect("open");
     let err = d.apply(&Input::Press { x: None, y: None, target: Some("incc".into()), shift: false }).unwrap_err();
     assert!(matches!(err, DriveError::UnknownTarget { .. }) && err.to_string().contains("inc"), "{err}");
     assert!(d.apply(&Input::Key { key: "Entr".into(), shift: false, cmd: false, alt: false }).unwrap_err().to_string().contains("Enter"));
@@ -51,7 +51,7 @@ fn events_parse_and_errors_say_what_to_write() {
     assert!(render(&z, fonts(), None).err().expect("an error").to_string().contains("--size"));
     assert!(Offscreen::try_new(0, 10).is_err());
     // A missing font directory.
-    assert!(lab::text::load_bundled("/nowhere").err().expect("an error").to_string().contains("assets"));
+    assert!(amenui::text::load_bundled("/nowhere").err().expect("an error").to_string().contains("assets"));
 }
 
 #[test]

@@ -2,12 +2,12 @@
 //! glow, parallax and the compare wipe, each over the three detailed demo pictures, fully loosened.
 //! Also writes the mark atlas itself and the raw pictures.
 //! usage: sheet <out_dir>
-use lab::demo::{self, BUST, PICTURE_SIZES, SKY, TERRAIN};
-use lab::el::{El, col, picture, row};
-use lab::marks::{self, Atlas};
-use lab::offscreen::{Offscreen, save_png};
-use lab::style::{DARK, Look, Material, PicFx, colour, set};
-use lab::ui::Ui;
+use amenui::demo::{self, BUST, PICTURE_SIZES, SKY, TERRAIN};
+use amenui::el::{El, col, picture, row};
+use amenui::marks::{self, Atlas};
+use amenui::offscreen::{Offscreen, save_png};
+use amenui::style::{DARK, Look, Material, PicFx, colour, set};
+use amenui::ui::Ui;
 
 const W: u32 = 1500;
 const H: u32 = 620;
@@ -38,12 +38,12 @@ fn main() {
     let out = std::env::args().nth(1).unwrap_or_else(|| "sheets".into());
     std::fs::create_dir_all(&out).expect("out dir");
     let mut o = Offscreen::new(W, H);
-    let faces = lab::text::load_bundled("assets").expect("fonts");
+    let faces = amenui::text::load_bundled("assets").expect("fonts");
     let mut ui = Ui::new(Sheet { wipe: None }, view, |_, _| {}, faces, W, H, 1.0);
     ui.tick(100.0);
 
     // The atlas, enlarged 2×, mark in white and height in the second half.
-    let atlas = Atlas::build(ui.text_mut(), lab::text::MONO);
+    let atlas = Atlas::build(ui.text_mut(), amenui::text::MONO);
     let (aw, ah) = (marks::WIDTH as u32, marks::HEIGHT as u32);
     let mut img = vec![0u8; (aw * 2 * ah * 2 * 4) as usize * 2];
     for y in 0..ah * 2 { for x in 0..aw * 2 { for half in 0..2u32 {

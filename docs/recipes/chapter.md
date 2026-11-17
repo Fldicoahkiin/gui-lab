@@ -2,20 +2,20 @@
 
 A film is scenes that share a few actors. Give each actor a key of its scene and a flow id of the film; to cut, push `Cmd::Commit` (keep the frame as it is, then play the target look's transition — here a preset applied in `on_look`) and `Cmd::Flow` (the actors travel from where they are to where the new scene puts them), then change the scene. Everything else changes by the transition. A second cut during the first goes on from the frame on screen and from where the actors are: no queue. `src/gallery/film.rs` is the same thing at twelve scenes, with a 2.39:1 stage, a grid and a scripted autoplay.
 
-The code is `examples/chapter.rs`, compiled into the library as `lab::recipes::chapter`; `tests/recipes.rs` renders it, plays its interaction, and fails if this block differs from the file.
+The code is `examples/chapter.rs`, compiled into the library as `amenui::recipes::chapter`; `tests/recipes.rs` renders it, plays its interaction, and fails if this block differs from the file.
 
 ```rust
 //! Recipe: a chapter — one scene with actors that flow in (docs/recipes/chapter.md). Two scenes share
 //! two actors (the sentence and the number) by flow id; going to the other scene is a commit (the target
 //! preset's transition plays from the press) and a flow (the actors travel to their new places), so the
 //! cut is a match cut. Keys differ per scene, flow ids do not.
-use lab::el::{El, Font, Paint, col, row, text};
-use lab::morph::{Cmd, FlowSpec};
-use lab::preset::{Preset, presets};
-use lab::style::Look;
-use lab::text::Face;
-use lab::ui::Ui;
-use lab::widgets::{Variant, button_as};
+use amenui::el::{El, Font, Paint, col, row, text};
+use amenui::morph::{Cmd, FlowSpec};
+use amenui::preset::{Preset, presets};
+use amenui::style::Look;
+use amenui::text::Face;
+use amenui::ui::Ui;
+use amenui::widgets::{Variant, button_as};
 
 pub struct Film { pub scene: usize, pub n: u32, pub presets: Vec<Preset>, pub cmds: Vec<Cmd> }
 

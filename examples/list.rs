@@ -1,9 +1,9 @@
 //! Recipe: a list with selection (docs/recipes/list.md). The list is one focus stop; Up / Down move the
 //! selection, a press picks a row, and the state says which row is selected.
-use lab::el::{El, Paint, col, text};
-use lab::text::Face;
-use lab::ui::Ui;
-use lab::widgets::list;
+use amenui::el::{El, Paint, col, text};
+use amenui::text::Face;
+use amenui::ui::Ui;
+use amenui::widgets::list;
 
 pub struct Files { pub picked: Option<usize> }
 

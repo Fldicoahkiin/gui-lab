@@ -1,7 +1,7 @@
 //! avatar: its examples, as the documentation page shows them (each `ex_*` function is a preview
 //! and its code).
-use lab::el::{El, row};
-use lab::widgets::*;
+use amenui::el::{El, row};
+use amenui::widgets::*;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Msg { Nothing, Pick(usize), Edit(TextEdit), Num(Edit), Value(f32) }

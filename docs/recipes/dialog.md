@@ -2,15 +2,15 @@
 
 Declare the dialog next to the button that opens it; when `open` is true the runtime lifts it over the window, moves focus into it, keeps Tab inside, holds the page beneath at 0.35 looseness and sends the close message on Esc.
 
-The code is `examples/dialog.rs`, compiled into the library as `lab::recipes::dialog`; `tests/recipes.rs` renders it, plays its interaction, and fails if this block differs from the file.
+The code is `examples/dialog.rs`, compiled into the library as `amenui::recipes::dialog`; `tests/recipes.rs` renders it, plays its interaction, and fails if this block differs from the file.
 
 ```rust
 //! Recipe: a dialog (docs/recipes/dialog.md). Declared next to the button that opens it; the runtime lays
 //! it over the window, keeps focus inside, and Esc or 关闭 send the close message.
-use lab::el::{El, Paint, col, text};
-use lab::text::Face;
-use lab::ui::Ui;
-use lab::widgets::{TextEdit, Variant, button_as, dialog, input};
+use amenui::el::{El, Paint, col, text};
+use amenui::text::Face;
+use amenui::ui::Ui;
+use amenui::widgets::{TextEdit, Variant, button_as, dialog, input};
 
 pub struct Rename { pub open: bool, pub name: TextEdit, pub saved: String }
 

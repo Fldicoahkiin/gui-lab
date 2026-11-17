@@ -1,10 +1,10 @@
 //! Recipe: a counter whose digits recompose and whose presses ripple only its row (docs/recipes/counter.md).
 //! The count is keyed text, so a new value recomposes the changed digits; the row is a ripple scope and
 //! the button sends its fronts there; the picture beside it loosens, the label only nudges.
-use lab::el::{El, Font, Paint, Scope, col, row, space, text};
-use lab::text::Face;
-use lab::ui::Ui;
-use lab::widgets::{Variant, button_as};
+use amenui::el::{El, Font, Paint, Scope, col, row, space, text};
+use amenui::text::Face;
+use amenui::ui::Ui;
+use amenui::widgets::{Variant, button_as};
 
 pub struct Counter { pub n: u32 }
 

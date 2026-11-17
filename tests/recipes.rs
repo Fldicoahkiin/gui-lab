@@ -1,9 +1,9 @@
 //! The recipes (docs/recipes/) cannot rot: every one compiles (it is part of the library), lays out,
 //! answers its own interaction, and the code block in its page is exactly its file in `examples/`.
-use lab::drive::{Input, open, play, Event};
-use lab::recipes::{NAMES, RECIPES};
+use amenui::drive::{Input, open, play, Event};
+use amenui::recipes::{NAMES, RECIPES};
 
-fn fonts() -> Vec<lab::text::Face> { lab::text::load_bundled(concat!(env!("CARGO_MANIFEST_DIR"), "/assets")).expect("fonts") }
+fn fonts() -> Vec<amenui::text::Face> { amenui::text::load_bundled(concat!(env!("CARGO_MANIFEST_DIR"), "/assets")).expect("fonts") }
 fn root() -> String { env!("CARGO_MANIFEST_DIR").to_owned() }
 
 #[test]
@@ -30,7 +30,7 @@ fn every_recipe_lays_out_and_answers() {
         assert!(t.walk().len() > 3, "{name}: an empty tree");
         assert!(d.problems().is_empty(), "{name}: {:?}", d.problems());
         // Its own interaction.
-        type Check = Box<dyn Fn(&lab::tree::TreeNode) -> bool>;
+        type Check = Box<dyn Fn(&amenui::tree::TreeNode) -> bool>;
         let (key, check): (&str, Check) = match name {
             "form" => ("form/send", Box::new(|t| t.find("form/sent").and_then(|n| n.text.as_deref()) == Some("已提交 1 次"))),
             "list" => ("files/list:3", Box::new(|t| t.find("files/picked").and_then(|n| n.text.as_deref()) == Some("选中：封面.jpg"))),
@@ -56,10 +56,10 @@ fn every_recipe_lays_out_and_answers() {
 
 #[test]
 fn every_recipe_renders() {
-    let Ok(mut o) = lab::offscreen::Offscreen::try_new(640, 480) else { eprintln!("no GPU adapter here: skipped"); return };
+    let Ok(mut o) = amenui::offscreen::Offscreen::try_new(640, 480) else { eprintln!("no GPU adapter here: skipped"); return };
     for name in NAMES {
-        let s = lab::drive::RenderSpec { page: format!("recipe-{name}"), w: 640, h: 480, scale: 1.0, material: None, theme: None, at_ms: 800.0, events: vec![], locale: None };
-        let r = lab::drive::render(&s, fonts(), Some(&mut o)).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let s = amenui::drive::RenderSpec { page: format!("recipe-{name}"), w: 640, h: 480, scale: 1.0, material: None, theme: None, at_ms: 800.0, events: vec![], locale: None };
+        let r = amenui::drive::render(&s, fonts(), Some(&mut o)).unwrap_or_else(|e| panic!("{name}: {e}"));
         assert!(r.png.len() > 2000, "{name}: an empty picture");
     }
 }

@@ -2,15 +2,15 @@
 
 `on_gaze` turns the third pass on; `gaze_scope()` limits it to one subtree; `annotate(..)` gives an element a callout and, with `only_marked`, only those are framed.
 
-The code is `examples/annotate.rs`, compiled into the library as `lab::recipes::annotate`; `tests/recipes.rs` renders it, plays its interaction, and fails if this block differs from the file.
+The code is `examples/annotate.rs`, compiled into the library as `amenui::recipes::annotate`; `tests/recipes.rs` renders it, plays its interaction, and fails if this block differs from the file.
 
 ```rust
 //! Recipe: the annotation layer on one subtree (docs/recipes/annotate.md). `on_gaze` turns the layer on;
 //! `gaze_scope` limits it to the panel; `annotate` gives an element its own callout.
-use lab::el::{El, Paint, col, row, space, text};
-use lab::style::{Gaze, GazeMode, gaze};
-use lab::text::Face;
-use lab::ui::Ui;
+use amenui::el::{El, Paint, col, row, space, text};
+use amenui::style::{Gaze, GazeMode, gaze};
+use amenui::text::Face;
+use amenui::ui::Ui;
 
 pub struct Panel;
 

@@ -2,13 +2,13 @@
 //! two actors (the sentence and the number) by flow id; going to the other scene is a commit (the target
 //! preset's transition plays from the press) and a flow (the actors travel to their new places), so the
 //! cut is a match cut. Keys differ per scene, flow ids do not.
-use lab::el::{El, Font, Paint, col, row, text};
-use lab::morph::{Cmd, FlowSpec};
-use lab::preset::{Preset, presets};
-use lab::style::Look;
-use lab::text::Face;
-use lab::ui::Ui;
-use lab::widgets::{Variant, button_as};
+use amenui::el::{El, Font, Paint, col, row, text};
+use amenui::morph::{Cmd, FlowSpec};
+use amenui::preset::{Preset, presets};
+use amenui::style::Look;
+use amenui::text::Face;
+use amenui::ui::Ui;
+use amenui::widgets::{Variant, button_as};
 
 pub struct Film { pub scene: usize, pub n: u32, pub presets: Vec<Preset>, pub cmds: Vec<Cmd> }
 

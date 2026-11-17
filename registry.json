@@ -1,5 +1,5 @@
 {
-  "name": "gui-lab",
+  "name": "amenui",
   "description": "组件以源码分发：把 files 里的文件和 dependencies 里各项的文件拷进自己的项目，再按需要改。组件只依赖框架的 el 模块（界面树）和 taffy 的对齐类型。",
   "requires": [
     "src/el.rs"

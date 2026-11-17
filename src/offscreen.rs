@@ -16,7 +16,7 @@ impl Offscreen {
         if w == 0 || h == 0 { return Err(SurfaceError::ZeroSize { w, h }); }
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions { force_fallback_adapter: true, ..Default::default() })).map_err(|_| SurfaceError::NoAdapter)?;
-        if std::env::var_os("LAB_QUIET").is_none() { eprintln!("adapter: {:?}", adapter.get_info().name); }
+        if std::env::var_os("AMENUI_QUIET").is_none() { eprintln!("adapter: {:?}", adapter.get_info().name); }
         let (device, queue) = pollster::block_on(adapter.request_device(&Default::default())).map_err(|e| SurfaceError::Device(e.to_string()))?;
         let format = wgpu::TextureFormat::Rgba8Unorm;
         let target = device.create_texture(&wgpu::TextureDescriptor {
@@ -96,7 +96,7 @@ pub fn png_bytes(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
 }
 
 /// The same with text chunks (`tEXt`, Latin-1 keywords): the render tool puts the look's recipe in
-/// `lab-recipe`, so any image it wrote reproduces itself.
+/// `amenui-recipe`, so any image it wrote reproduces itself.
 pub fn png_bytes_with(w: u32, h: u32, rgba: &[u8], texts: &[(&str, &str)]) -> Vec<u8> {
     let mut out = Vec::new();
     {

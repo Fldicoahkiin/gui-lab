@@ -1,10 +1,10 @@
 //! Recipe: a menu with submenus and a safe zone (docs/recipes/submenu.md). The menu's open path and its
 //! pending switch are state; the pointer's moves over it are messages (`El::on_move`), and the tick only
 //! runs while a switch waits for its time (`Menu::due`).
-use lab::el::{El, Paint, col, text};
-use lab::text::Face;
-use lab::ui::Ui;
-use lab::widgets::{Menu, MenuItem, MenuMsg, nested_menu};
+use amenui::el::{El, Paint, col, text};
+use amenui::text::Face;
+use amenui::ui::Ui;
+use amenui::widgets::{Menu, MenuItem, MenuMsg, nested_menu};
 
 pub struct App { pub menu: Menu, pub chosen: String, pub now: f32 }
 

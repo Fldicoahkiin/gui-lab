@@ -2,10 +2,10 @@
 //! at once and the rows not at all for `skeleton_after_ms`; then each row is its own skeleton — bars as
 //! wide as its measured lines, a block for its picture — in exactly the boxes the content then takes
 //! (zero layout shift); the rows swap in `swap_stagger_ms` apart; at rest nothing asks for frames.
-use lab::recipes::loading::{App, Msg, ROWS, ui};
-use lab::ui::Ui;
+use amenui::recipes::loading::{App, Msg, ROWS, ui};
+use amenui::ui::Ui;
 
-fn fonts() -> Vec<lab::text::Face> { lab::text::load_bundled(concat!(env!("CARGO_MANIFEST_DIR"), "/assets")).expect("fonts") }
+fn fonts() -> Vec<amenui::text::Face> { amenui::text::load_bundled(concat!(env!("CARGO_MANIFEST_DIR"), "/assets")).expect("fonts") }
 fn boxes(ui: &Ui<App, Msg>) -> Vec<(String, [f32; 4])> {
     ui.nodes().iter().filter(|n| n.key.starts_with("row")).map(|n| (n.key.clone(), [n.rect.x, n.rect.y, n.rect.w, n.rect.h])).collect()
 }

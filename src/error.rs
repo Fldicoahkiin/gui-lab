@@ -94,7 +94,7 @@ pub enum PresetError {
     Json(String),
     #[error("the preset has no number at `{0}`. Paths are the JSON keys joined by dots, array places by their index: `transition.steps.0.a`, `interaction.press_ms`.")]
     NoSuchNumber(String),
-    #[error("not a look recipe ({0}). A recipe is `look:v1:` and then base64url of a small JSON object: `base` (a preset's hash, such as \"normcore\") and `set` (paths as `numbers` names them, with their values). Copy one from the 风格 page, or from a PNG the render tool wrote (its `lab-recipe` text chunk).")]
+    #[error("not a look recipe ({0}). A recipe is `look:v1:` and then base64url of a small JSON object: `base` (a preset's hash, such as \"normcore\") and `set` (paths as `numbers` names them, with their values). Copy one from the 风格 page, or from a PNG the render tool wrote (its `amenui-recipe` text chunk).")]
     Recipe(String),
 }
 
@@ -109,7 +109,7 @@ pub enum I18nError {
     Duplicate { line: usize, key: String },
 }
 
-/// `lab add` could not do what it was asked.
+/// `amenui add` could not do what it was asked.
 #[derive(Debug, Error, PartialEq)]
 pub enum AddError {
     #[error("`{name}` is not a component in registry.json. Did you mean `{near}`? The components are: {known}.")]

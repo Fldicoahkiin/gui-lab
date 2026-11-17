@@ -1,4 +1,4 @@
-# gui-lab
+# amenui
 
 > A self-drawn interface framework in Rust (wgpu, native and web). Views are plain trees of values; every glyph, shape and picture has a true outline that can loosen, morph and condense; looks are swappable materials. Built to be written and checked by models: a deterministic `render` tool gives a PNG and the laid-out tree as JSON.
 
@@ -27,7 +27,7 @@ Start with AGENTS.md (the mental model, the ten things you write, the rules, how
 
 ## Lab
 
-The Lab (`#lab`) is a grid of small live experiments, one file each in `examples/lab/`, written against the public API (`lab::experiment::Experiment`); each has a page `#lab-<name>` with its formula and parameters (registry.json `experiments`). Each piece fills a 4:3 stage; the numbers open under `[ params ]`; seen cells run every frame (reduced motion: they rest).
+The Lab (`#lab`) is a grid of small live experiments, one file each in `examples/lab/`, written against the public API (`amenui::experiment::Experiment`); each has a page `#lab-<name>` with its formula and parameters (registry.json `experiments`). Each piece fills a 4:3 stage; the numbers open under `[ params ]`; seen cells run every frame (reduced motion: they rest).
 
 - [Lumen](docs/site/en/lab-lumen.md): light on text, tone by distance, outlines untouched (`El::pose`)
 - [Contours](docs/site/en/lab-contours.md): iso-lines of noise plus a pointer bump (`field::Grid::contours`)
@@ -49,7 +49,7 @@ The Lab (`#lab`) is a grid of small live experiments, one file each in `examples
 
 Every documentation page as Markdown, at `md/en/<page>.md` and `md/zh-Hans/<page>.md` next to the web build (`cargo run --release --bin md -- dist/md`).
 
-- [Introduction](md/en/docs-introduction.md): gui-lab is an interface framework that draws every pixel itself, written in Rust on wgpu; the same code runs in a native window and on the web.
+- [Introduction](md/en/docs-introduction.md): amenui is an interface framework that draws every pixel itself, written in Rust on wgpu; the same code runs in a native window and on the web.
 - [Installation](md/en/docs-installation.md): Pick the host your interface lives in.
 - [Command line](md/en/docs-cli.md): Components are distributed as source, the way shadcn/ui does it: you copy a component's file into your project and change it there.
 - [Your first view](md/en/docs-first-view.md): A view is a function from state to an element tree; an update is a function from state and a message to a new state.
@@ -111,7 +111,7 @@ Every documentation page as Markdown, at `md/en/<page>.md` and `md/zh-Hans/<page
 - [nested menu](md/en/nested-menu.md): A menu whose rows open submenus, steered by where the pointer heads: moving toward an open submenu inside the triangle from its previous position to the subm…
 - [card stack](md/en/card-stack.md): A stack of cards: hover or press one and the cards beneath fan out about their bottom-left corners, card n turning angle0 × falloff^n (42° × 0.
 - [dot chart](md/en/dot-chart.md): A series as a field of dots: each column filled from the axis up to the curve, a dot's size and brightness saying how much of it lies under the curve (the ar…
-- [AGENTS.md](md/en/ai-agents.md): gui-lab is a self-drawn interface framework in Rust (wgpu; the same code runs natively and on the web).
+- [AGENTS.md](md/en/ai-agents.md): amenui is a self-drawn interface framework in Rust (wgpu; the same code runs natively and on the web).
 - [llms.txt](md/en/ai-llms.md): Start with AGENTS.
 - [Registry](md/en/ai-registry.md): {
 - [Changelog](md/en/changelog.md): 按 DESIGN.

@@ -1,17 +1,17 @@
 # Gestures: a bottom sheet and a floating box
 
-Both widgets keep their physics in the state (`lab::gesture`): a drag is reported as `SheetMsg::Drag` / `FloatMsg::Drag`, the update hands it to `Sheet::update` / `Floating::update` with the time, and the tick steps the springs while `moving()` — so a still page draws nothing. Letting go hands the finger's velocity to the spring; where it comes to rest is decided by where that velocity would carry it (`gesture::project`), not by where the finger let go. Past a limit the drag is rubber-banded (`gesture::RubberBand`, 0.55).
+Both widgets keep their physics in the state (`amenui::gesture`): a drag is reported as `SheetMsg::Drag` / `FloatMsg::Drag`, the update hands it to `Sheet::update` / `Floating::update` with the time, and the tick steps the springs while `moving()` — so a still page draws nothing. Letting go hands the finger's velocity to the spring; where it comes to rest is decided by where that velocity would carry it (`gesture::project`), not by where the finger let go. Past a limit the drag is rubber-banded (`gesture::RubberBand`, 0.55).
 
-The code is `examples/gesture.rs`, compiled into the library as `lab::recipes::gesture`; `tests/recipes.rs` renders it, plays its interaction, and fails if this block differs from the file.
+The code is `examples/gesture.rs`, compiled into the library as `amenui::recipes::gesture`; `tests/recipes.rs` renders it, plays its interaction, and fails if this block differs from the file.
 
 ```rust
 //! Recipe: a bottom sheet and a floating box driven by springs (docs/recipes/gesture.md). The physics is
 //! state: the widgets report drags, the update hands them to `Sheet` / `Floating` with the time, and the
 //! tick steps their springs only while they move, so a still page asks for no frames.
-use lab::el::{El, Paint, col, layers, text};
-use lab::text::Face;
-use lab::ui::Ui;
-use lab::widgets::{FloatMsg, Floating, Sheet, SheetMsg, Variant, bottom_sheet, button_as, floating};
+use amenui::el::{El, Paint, col, layers, text};
+use amenui::text::Face;
+use amenui::ui::Ui;
+use amenui::widgets::{FloatMsg, Floating, Sheet, SheetMsg, Variant, bottom_sheet, button_as, floating};
 
 pub struct App { pub sheet: Sheet, pub pip: Floating, pub now: f32 }
 

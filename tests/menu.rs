@@ -2,10 +2,10 @@
 //! submenu recipe. A diagonal path across sibling rows toward the open submenu keeps it open; a path
 //! outside the triangle switches rows after `submenu_delay_ms`; nothing asks for frames while nothing
 //! waits; the overlay draws the triangle in the annotation layer.
-use lab::recipes::submenu::{App, Msg, ui};
-use lab::ui::Ui;
+use amenui::recipes::submenu::{App, Msg, ui};
+use amenui::ui::Ui;
 
-fn fonts() -> Vec<lab::text::Face> { lab::text::load_bundled(concat!(env!("CARGO_MANIFEST_DIR"), "/assets")).expect("fonts") }
+fn fonts() -> Vec<amenui::text::Face> { amenui::text::load_bundled(concat!(env!("CARGO_MANIFEST_DIR"), "/assets")).expect("fonts") }
 struct Run { ui: Ui<App, Msg>, t: f32 }
 impl Run {
     fn new() -> Self { let mut ui = ui(fonts(), 800, 600, 1.0); ui.tick(0.0); Run { ui, t: 0.0 } }

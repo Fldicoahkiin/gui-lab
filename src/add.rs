@@ -1,4 +1,4 @@
-//! `lab add`: copy a component's source into a project, shadcn-style (DESIGN.md §3). The registry
+//! `amenui add`: copy a component's source into a project, shadcn-style (DESIGN.md §3). The registry
 //! (`registry.json`) names each component's files and the components it depends on; `add` resolves
 //! the dependencies, then copies every file, keeping its path under the destination (so
 //! `src/widgets/button.rs` lands at `<to>/src/widgets/button.rs`), and says what it wrote. A file that

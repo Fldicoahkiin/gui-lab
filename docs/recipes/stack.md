@@ -2,16 +2,16 @@
 
 `widgets::card_stack` draws a `Stack` as a 3D element, one card each. Hovering or pressing a card (the element's `Pick`) fans the cards beneath it about their bottom-left corners: card n below turns `angle(n) = angle0 × falloff^n` (42° × 0.7^n) and starts `delay(n) = delay_ms × n` (28 ms) later, each on its own spring. The look follows the material (`StackLook::of`): flat cards, thick cards with visible edges, or cards drawn in marks.
 
-The code is `examples/stack.rs`, compiled into the library as `lab::recipes::stack`; `tests/recipes.rs` renders it, plays its interaction, and fails if this block differs from the file.
+The code is `examples/stack.rs`, compiled into the library as `amenui::recipes::stack`; `tests/recipes.rs` renders it, plays its interaction, and fails if this block differs from the file.
 
 ```rust
 //! Recipe: a stack of cards that fans under the pointer (docs/recipes/stack.md). The angles are state:
 //! the 3D element reports which card the pointer is on (`Pick`), `Stack::update` schedules each card
 //! beneath with its own delay, and the tick steps their springs only while one moves.
-use lab::el::{El, Font, Paint, col, text};
-use lab::text::Face;
-use lab::ui::Ui;
-use lab::widgets::{Stack, StackMsg, card_stack};
+use amenui::el::{El, Font, Paint, col, text};
+use amenui::text::Face;
+use amenui::ui::Ui;
+use amenui::widgets::{Stack, StackMsg, card_stack};
 
 pub struct App { pub stack: Stack, pub now: f32 }
 

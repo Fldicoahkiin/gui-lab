@@ -2,16 +2,16 @@
 
 `widgets::nested_menu` keeps its open path in a `Menu` in the state. The pointer's moves over it arrive as `MenuMsg::Move` (`El::on_move`); moving toward the open submenu inside the triangle from the pointer's previous position to the submenu's two near corners does not switch rows — each such move waits `close_delay_ms` (200) again — while outside it the row under the pointer takes over after `submenu_delay_ms` (120). `show_safe_zone` draws the triangle through the annotation layer (`El::guide`). Up / Down / Right / Left / Enter / Esc work when the menu has focus.
 
-The code is `examples/submenu.rs`, compiled into the library as `lab::recipes::submenu`; `tests/recipes.rs` renders it, plays its interaction, and fails if this block differs from the file.
+The code is `examples/submenu.rs`, compiled into the library as `amenui::recipes::submenu`; `tests/recipes.rs` renders it, plays its interaction, and fails if this block differs from the file.
 
 ```rust
 //! Recipe: a menu with submenus and a safe zone (docs/recipes/submenu.md). The menu's open path and its
 //! pending switch are state; the pointer's moves over it are messages (`El::on_move`), and the tick only
 //! runs while a switch waits for its time (`Menu::due`).
-use lab::el::{El, Paint, col, text};
-use lab::text::Face;
-use lab::ui::Ui;
-use lab::widgets::{Menu, MenuItem, MenuMsg, nested_menu};
+use amenui::el::{El, Paint, col, text};
+use amenui::text::Face;
+use amenui::ui::Ui;
+use amenui::widgets::{Menu, MenuItem, MenuMsg, nested_menu};
 
 pub struct App { pub menu: Menu, pub chosen: String, pub now: f32 }
 

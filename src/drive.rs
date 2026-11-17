@@ -202,6 +202,6 @@ pub fn render(spec: &RenderSpec, faces: Vec<crate::text::Face>, o: Option<&mut O
     if (o.w, o.h) != (spec.w, spec.h) { return Err(SurfaceError::SizeMismatch { w: spec.w, h: spec.h, have_w: o.w, have_h: o.h }.into()); }
     let px = d.draw(o, &look);
     let recipe = d.recipe();
-    let texts: Vec<(&str, &str)> = recipe.as_deref().map(|r| ("lab-recipe", r)).into_iter().collect();
+    let texts: Vec<(&str, &str)> = recipe.as_deref().map(|r| ("amenui-recipe", r)).into_iter().collect();
     Ok(Rendered { png: png_bytes_with(spec.w, spec.h, &px, &texts), tree: d.tree(), problems: d.problems() })
 }

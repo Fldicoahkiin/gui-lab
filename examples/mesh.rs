@@ -1,11 +1,11 @@
 //! Recipe: a 3D object in a card (docs/recipes/mesh.md). The object is an element like any other: it
 //! takes the card's width, the global material draws it, fronts loosen it, and the camera is state that
 //! the orbit widget reports drags, the wheel and arrow keys to.
-use lab::el::{El, Paint, col, row, text};
-use lab::mesh::{Mat4, MeshId, Scene3d};
-use lab::text::Face;
-use lab::ui::Ui;
-use lab::widgets::{Orbit, OrbitMsg, Variant, button_as, card, orbit};
+use amenui::el::{El, Paint, col, row, text};
+use amenui::mesh::{Mat4, MeshId, Scene3d};
+use amenui::text::Face;
+use amenui::ui::Ui;
+use amenui::widgets::{Orbit, OrbitMsg, Variant, button_as, card, orbit};
 
 pub struct Shop { pub orbit: Orbit, pub turns: u32, pub clock: f32 }
 

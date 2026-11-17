@@ -1,11 +1,11 @@
 //! Recipe: another material on one element (docs/recipes/material.md). The page draws with the look's
 //! material; the card says `.material(..)` and draws with halftone. Its button sends fronts over the
 //! card only, and the card is decoration (`Loosen`, not legible), so the front shows the material.
-use lab::el::{El, Paint, Response, Scope, col, text};
-use lab::style::Material;
-use lab::text::Face;
-use lab::ui::Ui;
-use lab::widgets::{Variant, button_as, card};
+use amenui::el::{El, Paint, Response, Scope, col, text};
+use amenui::style::Material;
+use amenui::text::Face;
+use amenui::ui::Ui;
+use amenui::widgets::{Variant, button_as, card};
 
 pub struct Page { pub pressed: u32 }
 

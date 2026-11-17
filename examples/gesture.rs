@@ -1,10 +1,10 @@
 //! Recipe: a bottom sheet and a floating box driven by springs (docs/recipes/gesture.md). The physics is
 //! state: the widgets report drags, the update hands them to `Sheet` / `Floating` with the time, and the
 //! tick steps their springs only while they move, so a still page asks for no frames.
-use lab::el::{El, Paint, col, layers, text};
-use lab::text::Face;
-use lab::ui::Ui;
-use lab::widgets::{FloatMsg, Floating, Sheet, SheetMsg, Variant, bottom_sheet, button_as, floating};
+use amenui::el::{El, Paint, col, layers, text};
+use amenui::text::Face;
+use amenui::ui::Ui;
+use amenui::widgets::{FloatMsg, Floating, Sheet, SheetMsg, Variant, bottom_sheet, button_as, floating};
 
 pub struct App { pub sheet: Sheet, pub pip: Floating, pub now: f32 }
 

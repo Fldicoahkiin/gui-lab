@@ -3,10 +3,10 @@
 //! below the threshold returns; a fast flick dismisses; a pull past the top is rubber-banded and never
 //! exceeds its bound; the corner is chosen by the projection, not the release point; a finger pulling
 //! the sheet's list down at its top drags the sheet (the hand-off); at rest nothing asks for a frame.
-use lab::recipes::gesture::{App, Msg, ui};
-use lab::ui::{PointerKind, Ui};
+use amenui::recipes::gesture::{App, Msg, ui};
+use amenui::ui::{PointerKind, Ui};
 
-fn fonts() -> Vec<lab::text::Face> { lab::text::load_bundled(concat!(env!("CARGO_MANIFEST_DIR"), "/assets")).expect("fonts") }
+fn fonts() -> Vec<amenui::text::Face> { amenui::text::load_bundled(concat!(env!("CARGO_MANIFEST_DIR"), "/assets")).expect("fonts") }
 
 struct Run { ui: Ui<App, Msg>, t: f32 }
 impl Run {

@@ -1,9 +1,9 @@
 //! Recipe: a dot chart (docs/recipes/chart.md). The series is a few control points in the state; the
 //! chart draws the area under the curve as dots, scrubs a marker under the pointer and drags the points.
-use lab::el::{El, Font, Paint, col, text};
-use lab::text::Face;
-use lab::ui::Ui;
-use lab::widgets::{ChartMsg, DotChart, dot_chart};
+use amenui::el::{El, Font, Paint, col, text};
+use amenui::text::Face;
+use amenui::ui::Ui;
+use amenui::widgets::{ChartMsg, DotChart, dot_chart};
 
 pub struct App { pub chart: DotChart }
 

@@ -2,15 +2,15 @@
 
 `widgets::dot_chart` draws a `DotChart` (a few control points, a Catmull-Rom curve through them) as a field of dots: in column c, dot r covers the band [r, r + 1) of the rows, and how much of that band lies under the curve sets its diameter (`pitch × (0.25 + 0.65 k)`) and tone (`0.25 + 0.75 k`), so the field is the area under the curve. The range is drawn in the accent colour; the pointer scrubs a marker with the value (`El::on_move`); the control points on the axis drag the curve up and down live.
 
-The code is `examples/chart.rs`, compiled into the library as `lab::recipes::chart`; `tests/recipes.rs` renders it, plays its interaction, and fails if this block differs from the file.
+The code is `examples/chart.rs`, compiled into the library as `amenui::recipes::chart`; `tests/recipes.rs` renders it, plays its interaction, and fails if this block differs from the file.
 
 ```rust
 //! Recipe: a dot chart (docs/recipes/chart.md). The series is a few control points in the state; the
 //! chart draws the area under the curve as dots, scrubs a marker under the pointer and drags the points.
-use lab::el::{El, Font, Paint, col, text};
-use lab::text::Face;
-use lab::ui::Ui;
-use lab::widgets::{ChartMsg, DotChart, dot_chart};
+use amenui::el::{El, Font, Paint, col, text};
+use amenui::text::Face;
+use amenui::ui::Ui;
+use amenui::widgets::{ChartMsg, DotChart, dot_chart};
 
 pub struct App { pub chart: DotChart }
 

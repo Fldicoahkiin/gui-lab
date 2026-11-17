@@ -2,17 +2,17 @@
 
 A `scene3d` element (here through the `orbit` widget) is laid out like a picture: it takes the width it is given and the height you set. The meshes are generated in code (`MeshId::TORUS`); the global material draws it, because the renderer turns the mesh into the same ink and nearness images that text and shapes make (DESIGN.md §1.18). Drag it, turn the wheel over it, or focus it and use the arrow keys; after a fast drag it coasts to a stop, which is why the runtime steps the orbit on every tick.
 
-The code is `examples/mesh.rs`, compiled into the library as `lab::recipes::mesh`; `tests/recipes.rs` renders it, plays its interaction, and fails if this block differs from the file.
+The code is `examples/mesh.rs`, compiled into the library as `amenui::recipes::mesh`; `tests/recipes.rs` renders it, plays its interaction, and fails if this block differs from the file.
 
 ```rust
 //! Recipe: a 3D object in a card (docs/recipes/mesh.md). The object is an element like any other: it
 //! takes the card's width, the global material draws it, fronts loosen it, and the camera is state that
 //! the orbit widget reports drags, the wheel and arrow keys to.
-use lab::el::{El, Paint, col, row, text};
-use lab::mesh::{Mat4, MeshId, Scene3d};
-use lab::text::Face;
-use lab::ui::Ui;
-use lab::widgets::{Orbit, OrbitMsg, Variant, button_as, card, orbit};
+use amenui::el::{El, Paint, col, row, text};
+use amenui::mesh::{Mat4, MeshId, Scene3d};
+use amenui::text::Face;
+use amenui::ui::Ui;
+use amenui::widgets::{Orbit, OrbitMsg, Variant, button_as, card, orbit};
 
 pub struct Shop { pub orbit: Orbit, pub turns: u32, pub clock: f32 }
 

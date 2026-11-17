@@ -1,10 +1,10 @@
 //! Recipe: a stack of cards that fans under the pointer (docs/recipes/stack.md). The angles are state:
 //! the 3D element reports which card the pointer is on (`Pick`), `Stack::update` schedules each card
 //! beneath with its own delay, and the tick steps their springs only while one moves.
-use lab::el::{El, Font, Paint, col, text};
-use lab::text::Face;
-use lab::ui::Ui;
-use lab::widgets::{Stack, StackMsg, card_stack};
+use amenui::el::{El, Font, Paint, col, text};
+use amenui::text::Face;
+use amenui::ui::Ui;
+use amenui::widgets::{Stack, StackMsg, card_stack};
 
 pub struct App { pub stack: Stack, pub now: f32 }
 

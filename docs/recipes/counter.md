@@ -2,16 +2,16 @@
 
 The count is keyed text, so a new value recomposes only the changed digits (the old glyph's pixels fly to the new glyph's shape). The row is a `ripple_scope()` and the button sends its fronts to `Scope::Container(None)`: the shape beside it loosens, the label and digits only nudge (they are legible).
 
-The code is `examples/counter.rs`, compiled into the library as `lab::recipes::counter`; `tests/recipes.rs` renders it, plays its interaction, and fails if this block differs from the file.
+The code is `examples/counter.rs`, compiled into the library as `amenui::recipes::counter`; `tests/recipes.rs` renders it, plays its interaction, and fails if this block differs from the file.
 
 ```rust
 //! Recipe: a counter whose digits recompose and whose presses ripple only its row (docs/recipes/counter.md).
 //! The count is keyed text, so a new value recomposes the changed digits; the row is a ripple scope and
 //! the button sends its fronts there; the picture beside it loosens, the label only nudges.
-use lab::el::{El, Font, Paint, Scope, col, row, space, text};
-use lab::text::Face;
-use lab::ui::Ui;
-use lab::widgets::{Variant, button_as};
+use amenui::el::{El, Font, Paint, Scope, col, row, space, text};
+use amenui::text::Face;
+use amenui::ui::Ui;
+use amenui::widgets::{Variant, button_as};
 
 pub struct Counter { pub n: u32 }
 

@@ -1,11 +1,11 @@
 //! The components added in step 10, through the runtime: roles in the accessibility mirror, keyboard
 //! behaviour per the WAI-ARIA authoring practices (checkbox, radio group, select, table, toggle group,
 //! context menu, command palette, accordion, pagination), and what they draw.
-use lab::el::{El, Key, col, text, Paint};
-use lab::ui::Ui;
-use lab::widgets::*;
+use amenui::el::{El, Key, col, text, Paint};
+use amenui::ui::Ui;
+use amenui::widgets::*;
 
-fn fonts() -> Vec<lab::text::Face> { lab::text::load_bundled(concat!(env!("CARGO_MANIFEST_DIR"), "/assets")).expect("fonts") }
+fn fonts() -> Vec<amenui::text::Face> { amenui::text::load_bundled(concat!(env!("CARGO_MANIFEST_DIR"), "/assets")).expect("fonts") }
 
 #[derive(Default)]
 struct S { on: bool, radio: usize, open: bool, active: usize, city: Option<usize>, sel: Option<usize>, tg: [bool; 3], acc: [bool; 2], page: usize, menu: Option<(f32, f32)>, picked: Option<usize>, q: TextEdit, ran: Option<usize> }

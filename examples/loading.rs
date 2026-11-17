@@ -2,10 +2,10 @@
 //! are the real rows all along — hidden for the first `skeleton_after_ms`, then their own skeleton
 //! (`El::skeleton`), then, when the data comes, the content row by row `swap_stagger_ms` apart, in the
 //! same boxes. The tick runs only at the times something changes (`Loading::next_change`).
-use lab::el::{El, Font, Paint, col, row, space, text};
-use lab::text::Face;
-use lab::ui::Ui;
-use lab::widgets::{Loading, Show, Variant, button_as};
+use amenui::el::{El, Font, Paint, col, row, space, text};
+use amenui::text::Face;
+use amenui::ui::Ui;
+use amenui::widgets::{Loading, Show, Variant, button_as};
 
 pub struct App { pub loading: Loading, pub latency_ms: f32, pub now: f32 }
 

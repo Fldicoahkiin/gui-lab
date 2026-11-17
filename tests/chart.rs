@@ -1,10 +1,10 @@
 //! The dot chart through the runtime (DESIGN.md §1.25): the field's dots are as big as their coverage
 //! says, the pointer scrubs a marker whose label is the value there, a control point dragged on the
 //! axis raises the curve and the dots grow under it, live.
-use lab::recipes::chart::{App, Msg, ui};
-use lab::ui::Ui;
+use amenui::recipes::chart::{App, Msg, ui};
+use amenui::ui::Ui;
 
-fn fonts() -> Vec<lab::text::Face> { lab::text::load_bundled(concat!(env!("CARGO_MANIFEST_DIR"), "/assets")).expect("fonts") }
+fn fonts() -> Vec<amenui::text::Face> { amenui::text::load_bundled(concat!(env!("CARGO_MANIFEST_DIR"), "/assets")).expect("fonts") }
 
 #[test]
 fn scrub_and_drag() {

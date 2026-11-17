@@ -2,17 +2,17 @@
 
 Give the part both pages share the same `flow` id, and push `Cmd::Flow` in `update` when the page changes. The runtime takes the commands before the next layout, pairs the instances by flow id and moves them; the rest of the old page loosens and fades.
 
-The code is `examples/flow.rs`, compiled into the library as `lab::recipes::flow`; `tests/recipes.rs` renders it, plays its interaction, and fails if this block differs from the file.
+The code is `examples/flow.rs`, compiled into the library as `amenui::recipes::flow`; `tests/recipes.rs` renders it, plays its interaction, and fails if this block differs from the file.
 
 ```rust
 //! Recipe: a page change with a shared part (docs/recipes/flow.md). The card's title carries a flow id
 //! on both pages; `update` asks for `Cmd::Flow`, and the title moves to its new place instead of being
 //! replaced, while the rest of the old page dissolves.
-use lab::el::{El, Font, Paint, col, row, text};
-use lab::morph::{Cmd, FlowSpec};
-use lab::text::Face;
-use lab::ui::Ui;
-use lab::widgets::{Variant, button_as, card};
+use amenui::el::{El, Font, Paint, col, row, text};
+use amenui::morph::{Cmd, FlowSpec};
+use amenui::text::Face;
+use amenui::ui::Ui;
+use amenui::widgets::{Variant, button_as, card};
 
 pub struct Pages { pub open: Option<usize>, pub cmds: Vec<Cmd> }
 

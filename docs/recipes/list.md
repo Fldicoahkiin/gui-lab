@@ -2,15 +2,15 @@
 
 `list` is one focus stop: Up / Down / Home / End move the selection, a press picks a row. Rows are keyed `key:i`, so a script can press `files/list:3`.
 
-The code is `examples/list.rs`, compiled into the library as `lab::recipes::list`; `tests/recipes.rs` renders it, plays its interaction, and fails if this block differs from the file.
+The code is `examples/list.rs`, compiled into the library as `amenui::recipes::list`; `tests/recipes.rs` renders it, plays its interaction, and fails if this block differs from the file.
 
 ```rust
 //! Recipe: a list with selection (docs/recipes/list.md). The list is one focus stop; Up / Down move the
 //! selection, a press picks a row, and the state says which row is selected.
-use lab::el::{El, Paint, col, text};
-use lab::text::Face;
-use lab::ui::Ui;
-use lab::widgets::list;
+use amenui::el::{El, Paint, col, text};
+use amenui::text::Face;
+use amenui::ui::Ui;
+use amenui::widgets::list;
 
 pub struct Files { pub picked: Option<usize> }
 

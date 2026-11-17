@@ -1,4 +1,4 @@
-extern crate self as lab;
+extern crate self as amenui;
 
 pub mod add;
 pub mod budget;
@@ -140,7 +140,7 @@ mod web {
         with(|s| { let ok = s.ui.state.route(hash); if ok { s.ui.relayout(); } ok }).unwrap_or(false)
     }
     /// Theme and material by name (as the render tool takes them; empty leaves one as it is), from a
-    /// host such as `<lab-view theme="dark" material="dot">`.
+    /// host such as `<amenui-view theme="dark" material="dot">`.
     #[wasm_bindgen] pub fn set_look(theme: &str, material: &str) {
         with(|s| {
             if let Ok(t) = crate::style::theme_named(theme) { gallery::update(&mut s.ui.state, gallery::Msg::Theme(t)); }

@@ -1,8 +1,8 @@
 //! The tree export (DESIGN.md §1.17) on the card at two widths, and the view problems.
-use lab::el::{El, Paint, col, row, space, text, text_lh};
-use lab::ui::Ui;
+use amenui::el::{El, Paint, col, row, space, text, text_lh};
+use amenui::ui::Ui;
 
-fn font() -> Vec<lab::text::Face> { lab::text::load_bundled(concat!(env!("CARGO_MANIFEST_DIR"), "/assets")).expect("fonts") }
+fn font() -> Vec<amenui::text::Face> { amenui::text::load_bundled(concat!(env!("CARGO_MANIFEST_DIR"), "/assets")).expect("fonts") }
 const PARA: &str = "一段用来测量的文字，中文和 Latin words 混排，宽度变窄时会多出几行。";
 fn card(_: &()) -> El<()> {
     col().key("root")

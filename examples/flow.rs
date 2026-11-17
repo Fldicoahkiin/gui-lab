@@ -1,11 +1,11 @@
 //! Recipe: a page change with a shared part (docs/recipes/flow.md). The card's title carries a flow id
 //! on both pages; `update` asks for `Cmd::Flow`, and the title moves to its new place instead of being
 //! replaced, while the rest of the old page dissolves.
-use lab::el::{El, Font, Paint, col, row, text};
-use lab::morph::{Cmd, FlowSpec};
-use lab::text::Face;
-use lab::ui::Ui;
-use lab::widgets::{Variant, button_as, card};
+use amenui::el::{El, Font, Paint, col, row, text};
+use amenui::morph::{Cmd, FlowSpec};
+use amenui::text::Face;
+use amenui::ui::Ui;
+use amenui::widgets::{Variant, button_as, card};
 
 pub struct Pages { pub open: Option<usize>, pub cmds: Vec<Cmd> }
 

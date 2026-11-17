@@ -2,11 +2,11 @@
 //! text sheds marks only while it moves, they fall and are gone after their life, none comes within
 //! `clear` of a line of text, and nothing is asked of the frame loop when it is still; a flow field
 //! moves while its speed is above 0 and stands still (no frames) at 0.
-use lab::el::{El, Paint, col, layers, space, text};
-use lab::motes::{FlowField, Shed};
-use lab::ui::Ui;
+use amenui::el::{El, Paint, col, layers, space, text};
+use amenui::motes::{FlowField, Shed};
+use amenui::ui::Ui;
 
-fn fonts() -> Vec<lab::text::Face> { lab::text::load_bundled(concat!(env!("CARGO_MANIFEST_DIR"), "/assets")).expect("fonts") }
+fn fonts() -> Vec<amenui::text::Face> { amenui::text::load_bundled(concat!(env!("CARGO_MANIFEST_DIR"), "/assets")).expect("fonts") }
 
 #[derive(Clone)] enum M { Move(f32, f32) }
 struct Page { at: (f32, f32), speed: f32 }
@@ -72,7 +72,7 @@ fn shed_marks_keep_clear_of_the_text() {
         for m in ui.motes() {
             seen += 1;
             for l in &lines {
-                let d = lab::motes::distance(m.x, m.y, [l.x, l.y, l.right(), l.bottom()]);
+                let d = amenui::motes::distance(m.x, m.y, [l.x, l.y, l.right(), l.bottom()]);
                 assert!(d > m.size, "a mark at ({:.1}, {:.1}) is {d:.1} px from a line of text", m.x, m.y);
             }
         }

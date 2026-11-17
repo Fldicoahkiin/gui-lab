@@ -1,9 +1,9 @@
 //! Recipe: the annotation layer on one subtree (docs/recipes/annotate.md). `on_gaze` turns the layer on;
 //! `gaze_scope` limits it to the panel; `annotate` gives an element its own callout.
-use lab::el::{El, Paint, col, row, space, text};
-use lab::style::{Gaze, GazeMode, gaze};
-use lab::text::Face;
-use lab::ui::Ui;
+use amenui::el::{El, Paint, col, row, space, text};
+use amenui::style::{Gaze, GazeMode, gaze};
+use amenui::text::Face;
+use amenui::ui::Ui;
 
 pub struct Panel;
 
