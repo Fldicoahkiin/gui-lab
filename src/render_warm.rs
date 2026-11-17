@@ -26,7 +26,7 @@ impl Progress {
 pub enum Stage { Plain, Pipelines, Ready }
 
 /// What a renderer still has to make.
-pub(super) struct Pending { jobs: Vec<Job>, done: u32, total: u32, atlas: Option<marks::AtlasBuild>, chars: Option<marks::CharTiles> }
+pub(super) struct Pending { jobs: Vec<Job>, done: u32, total: u32, atlas: Option<marks::AtlasBuild>, chars: Option<marks::CharTiles>, cost: [f32; 7] }
 impl Pending {
     fn new() -> Self {
         let mut jobs = vec![Job::MarksBegin];
@@ -34,7 +34,7 @@ impl Pending {
         jobs.extend([Job::MarksUpload, Job::Post, Job::Up, Job::Tiles, Job::Mesh]);
         jobs.reverse();
         let total = jobs.len() as u32;
-        Self { jobs, done: 0, total, atlas: None, chars: None }
+        Self { jobs, done: 0, total, atlas: None, chars: None, cost: [f32::INFINITY; 7] }
     }
     /// Frames are still drawn as plain.
     pub(super) fn cold(&self) -> bool { self.jobs.iter().any(|j| matches!(j, Job::MarksBegin | Job::MarksSet | Job::MarksUpload | Job::Post)) }
@@ -62,12 +62,21 @@ impl Renderer {
 
 impl Renderer {
     /// Make the next pieces of a warm-up for up to `budget_ms` (at least one piece a call); see
-    /// `Warmup::step`. A renderer that is not warming up says `Stage::Ready` at once.
+    /// `Warmup::step`. After the first piece a call goes on only while the next one, as long as the
+    /// longest of its kind so far took, still ends within 1.5 × `budget_ms` (a kind not seen yet waits
+    /// for the next call). A renderer that is not warming up says `Stage::Ready` at once.
     pub fn warm_step(&mut self, budget_ms: f32, text: &mut Text) -> Progress {
         let t0 = crate::perf::now_ms();
+        let mut did = 0;
         loop {
             let Some(p) = self.warm.as_mut() else { return self.warm_progress() };
-            let Some(job) = p.jobs.pop() else { self.warm = None; return self.warm_progress() };
+            let Some(&job) = p.jobs.last() else { self.warm = None; return self.warm_progress() };
+            if did > 0 {
+                let spent = (crate::perf::now_ms() - t0) as f32;
+                if spent >= budget_ms || spent + p.cost[job as usize] > 1.5 * budget_ms { return self.warm_progress(); }
+            }
+            p.jobs.pop();
+            let tj = crate::perf::now_ms();
             let was_cold = p.cold() || matches!(job, Job::MarksBegin | Job::MarksSet | Job::MarksUpload | Job::Post);
             match job {
                 Job::MarksBegin => {
@@ -86,9 +95,16 @@ impl Renderer {
             }
             let p = self.warm.as_mut().expect("still warming");
             p.done += 1;
+            did += 1;
+            let took = (crate::perf::now_ms() - tj) as f32;
+            let c = &mut p.cost[job as usize];
+            *c = if c.is_finite() { c.max(took) } else { took };
             if was_cold && !p.cold() { self.condense = true; }
-            if p.jobs.is_empty() { self.warm = None; }
-            if self.warm.is_none() || (crate::perf::now_ms() - t0) as f32 >= budget_ms { return self.warm_progress(); }
+            if p.jobs.is_empty() {
+                let end = Progress { done: p.done, total: p.total, stage: Stage::Ready };
+                self.warm = None;
+                return end;
+            }
         }
     }
     /// How far its warm-up has come (`Stage::Ready` when it is not warming up).
@@ -96,6 +112,22 @@ impl Renderer {
         self.warm.as_ref().map_or(Progress { done: 1, total: 1, stage: Stage::Ready }, Pending::progress)
     }
 }
+
+impl Renderer {
+    /// A host's warm-up for one frame (DESIGN.md §1.9): after the frame is drawn, make the next pieces
+    /// within `budget_ms` ([`WARM_MS`] by default) and tell the runtime how far it is
+    /// (`Ui::warm`). Nothing to do, and nothing told, once the renderer is warm and the runtime knows.
+    /// Returns what the step made it to (`Stage::Ready`, done = total, on the last one).
+    pub fn warm_frame<S, M: Clone>(&mut self, ui: &mut crate::ui::Ui<S, M>, budget_ms: f32) -> Progress {
+        if self.warm.is_none() { if ui.warm().is_some() { ui.set_warm(None); } return self.warm_progress(); }
+        let p = self.warm_step(budget_ms, ui.text_mut());
+        ui.set_warm(Some(p));
+        p
+    }
+}
+
+/// How long a host gives the warm-up of each frame, ms.
+pub const WARM_MS: f32 = 6.0;
 
 impl Warmup {
     /// Make the next pieces for up to `budget_ms` (at least one piece a call). The mark atlas needs the

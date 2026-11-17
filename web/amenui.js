@@ -10,6 +10,7 @@
 // opts: { module, fonts: [sans, pixel, mono] (URLs, ArrayBuffers or Uint8Arrays), hash, ownsHash,
 //         onRoute(hash), keys (the element that takes keys; window by default), shortcuts (extra
 //         Ctrl/⌘ letters the application handles), after(module) (after every handled event),
+//         onWarm(done, total) (the renderer's warm-up, each step; (1, 1) when it is done),
 //         failed (the text shown when graphics cannot start) }
 
 const bytes = async f => f instanceof Uint8Array ? f : f instanceof ArrayBuffer ? new Uint8Array(f) : new Uint8Array(await (await fetch(f)).arrayBuffer());
@@ -60,11 +61,22 @@ export async function mount(stage, opts) {
     sync();
     // Frames on demand: the animation-frame loop runs only while the framework needs frames; when it
     // does not, the loop stops, and input or a timed wake (the caret's blink, a clock) starts it again.
+    // The renderer warms up over the first frames (`Ui::warm`): the stage is busy until it is done, and
+    // `opts.onWarm(done, total)` hears each step (and `(1, 1)` once at the end).
+    let warming = true;
+    const warmUpdate = () => {
+      if (!warming || !w.warm) return;
+      const p = w.warm();
+      if (opts.onWarm) { if (p.length) opts.onWarm(p[0], p[1]); else opts.onWarm(1, 1); }
+      if (!p.length) { warming = false; stage.removeAttribute('aria-busy'); }
+    };
+    stage.setAttribute('aria-busy', 'true');
     let raf = 0, timer = 0;
     const loop = () => {
       raf = 0; if (timer) { clearTimeout(timer); timer = 0; }
       const d = w.frame(now());
       axUpdate();
+      warmUpdate();
       if (d === 0) raf = requestAnimationFrame(loop);
       else if (d > 0) timer = setTimeout(kick, d * 1000);
     };

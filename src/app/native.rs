@@ -159,7 +159,9 @@ fn gpu(instance: &wgpu::Instance, surface: &wgpu::Surface<'static>, size: winit:
     let mut config = surface.get_default_config(&adapter, size.width.max(1), size.height.max(1)).ok_or_else(|| WindowError::Surface("not supported by the adapter".into()))?;
     config.format = format;
     surface.configure(&device, &config);
-    let mut r = Renderer::new(device, queue, format, config.width, config.height);
+    // Made a piece at a time (DESIGN.md §1.9): the first frame is plain and comes at once; each frame
+    // after it makes the next pieces within `WARM_MS`.
+    let mut r = Renderer::begin(device, queue, format, config.width, config.height).into_renderer();
     r.set_particle_tier(crate::render::particle_tier(&adapter));
     Ok((r, config, info))
 }
@@ -348,6 +350,7 @@ impl<S: App, M: Clone> ApplicationHandler<accesskit_winit::Event> for Shell<S, M
                 drop(view);
                 s.r.queue().present(frame);
                 s.frames += 1;
+                s.r.warm_frame(&mut s.ui, crate::render::WARM_MS);
                 // Screen readers follow what was drawn (only built while one is listening).
                 let (scale, title) = (s.window.scale_factor() as f32, &self.opts.title);
                 let ui = &s.ui;
