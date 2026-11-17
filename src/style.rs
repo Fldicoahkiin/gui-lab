@@ -99,7 +99,17 @@ pub const GLITCH: Theme = Theme {
     second: [0.10, 0.92, 1.0], sizes: TypeScale { display: 56.0, title: 22.0, body: 15.0, small: 12.0 },
     ..theme("故障", [0.02, 0.02, 0.03], [0.93, 0.93, 0.95], [1.0, 0.16, 0.46])
 };
-pub const THEMES: [Theme; 13] = [DARK, LIGHT, PIXEL_THEME, PAPER, CREAM, COOL, MANUAL, NORMCORE, CYBER, BAUHAUS, LED, GAZE, GLITCH];
+/// Pure black, white ink and one hot accent; the other two hues are the ink (Loose Thread, DESIGN.md §4.4).
+pub const THREAD: Theme = Theme {
+    second: [1.0, 1.0, 1.0], third: [1.0, 1.0, 1.0], sizes: TypeScale { display: 40.0, title: 18.0, body: 14.0, small: 11.0 },
+    ..theme("线", [0.0, 0.0, 0.0], [1.0, 1.0, 1.0], [1.0, 0.33, 0.20])
+};
+/// The same on paper white, near-black ink.
+pub const THREAD_PAPER: Theme = Theme {
+    second: [0.06, 0.06, 0.06], third: [0.06, 0.06, 0.06], sizes: TypeScale { display: 40.0, title: 18.0, body: 14.0, small: 11.0 },
+    ..theme("线·纸", [0.965, 0.961, 0.949], [0.06, 0.06, 0.06], [0.90, 0.26, 0.14])
+};
+pub const THEMES: [Theme; 15] = [DARK, LIGHT, PIXEL_THEME, PAPER, CREAM, COOL, MANUAL, NORMCORE, CYBER, BAUHAUS, LED, GAZE, GLITCH, THREAD, THREAD_PAPER];
 pub fn theme_index(name: &str) -> usize { THEMES.iter().position(|t| t.name == name).unwrap_or(0) }
 
 /// How stage 2 draws text, shapes and the ground (DESIGN.md §1.6). Pictures always follow their own
@@ -207,8 +217,16 @@ pub mod gaze {
     pub const RULER: u16 = 64;
     pub const CROSS: u16 = 128;
     pub const GRID: u16 = 256;
-    pub const COUNT: usize = 9;
-    pub const NAMES: [&str; COUNT] = ["角标", "边框", "编号", "尺寸", "类型", "引线", "标尺", "十字线", "网格"];
+    /// Edge notes (DESIGN.md §4.2): a line of small serif type up the scope's right edge with what is
+    /// true now (size, pointer, material and theme, the loosest element, the field map), a hairline on
+    /// the edge with ticks, the pointer marked on it.
+    pub const EDGE: u16 = 512;
+    /// The field map's readouts (DESIGN.md §4.3): a waveform across the scope (`OSC`, the energy along
+    /// one row of nodes) and a level bar up its left edge (`LEVEL`, the mean energy).
+    pub const OSC: u16 = 1024;
+    pub const LEVEL: u16 = 2048;
+    pub const COUNT: usize = 12;
+    pub const NAMES: [&str; COUNT] = ["角标", "边框", "编号", "尺寸", "类型", "引线", "标尺", "十字线", "网格", "边注", "波形", "电平"];
 }
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Gaze {
@@ -221,9 +239,17 @@ pub struct Gaze {
     pub colour: [f32; 3],
     /// Only elements with an explicit callout (`El::annotate`) are candidates.
     pub only_marked: bool,
+    /// `OSC`: how tall the waveform is where the energy is 1 (px), and where its baseline sits in the
+    /// scope (0 top, 1 bottom). `LEVEL`: the mean energy that fills the bar (DESIGN.md §4.3).
+    #[serde(default = "osc_amp")] pub osc_amp: f32,
+    #[serde(default = "osc_y")] pub osc_y: f32,
+    #[serde(default = "level_full")] pub level_full: f32,
 }
+fn osc_amp() -> f32 { 40.0 }
+fn osc_y() -> f32 { 0.5 }
+fn level_full() -> f32 { 0.08 }
 impl Default for Gaze {
-    fn default() -> Self { Self { mode: GazeMode::Off, kinds: gaze::FRAME | gaze::INDEX | gaze::SIZE, density: 24.0, draw_ms: 260.0, colour: [0.30, 1.0, 0.50], only_marked: false } }
+    fn default() -> Self { Self { mode: GazeMode::Off, kinds: gaze::FRAME | gaze::INDEX | gaze::SIZE, density: 24.0, draw_ms: 260.0, colour: [0.30, 1.0, 0.50], only_marked: false, osc_amp: osc_amp(), osc_y: osc_y(), level_full: level_full() } }
 }
 impl Gaze {
     pub fn has(&self, k: u16) -> bool { self.kinds & k != 0 }
@@ -448,8 +474,8 @@ fn with(m: Material, vals: &[(usize, f32)]) -> MaterialParams {
     p
 }
 
-/// The twelve presets, in the order of DESIGN.md §4.
-pub fn styles() -> [Style; 9] {
+/// The ten presets, in the order of DESIGN.md §4.
+pub fn styles() -> [Style; 10] {
     use gaze::*;
     let off = Gaze::default();
     let base = |name, hash, th: Theme, material: Material| Style {
@@ -457,7 +483,7 @@ pub fn styles() -> [Style; 9] {
         pic: PicFx { pitch: 7.0, levels: 8.0, ground: 0.15, ..PicFx::with_set(set::DOTS) },
     };
     [
-        Style { gaze: Gaze { mode: GazeMode::All, kinds: FRAME | INDEX | SIZE | CROSS | KIND, density: 14.0, draw_ms: 320.0, colour: GAZE.accent, only_marked: false },
+        Style { gaze: Gaze { mode: GazeMode::All, kinds: FRAME | INDEX | SIZE | CROSS | KIND, density: 14.0, draw_ms: 320.0, colour: GAZE.accent, only_marked: false, ..Gaze::default() },
             pic: PicFx { pitch: 4.0, levels: 6.0, colour: colour::GIVEN as f32, tint_a: GAZE.accent, ground: 0.05, ..PicFx::with_set(set::DITHER) },
             ..base("Algorithmic Gaze", "gaze", GAZE, Material::Plain) },
         Style { pitch: 7.0, pic: PicFx { pitch: 7.0, levels: 6.0, colour: colour::GIVEN as f32, tint_a: LED.accent, ground: 0.0, glow: 1.0, gamma: 0.8, ..PicFx::with_set(set::GLOW) },
@@ -469,16 +495,21 @@ pub fn styles() -> [Style; 9] {
             ..base("Glitch", "glitch", GLITCH, Material::Glitch) },
         Style { pic: PicFx { pitch: 7.0, levels: 6.0, colour: colour::TWO as f32, tint_a: [0.085, 0.075, 0.07], tint_b: [0.925, 0.886, 0.792], ground: 0.0, follow: 1.0, gamma: 0.55, ..PicFx::with_set(set::STROKE) },
             ..base("Metamorphosis Linocut", "linocut", CREAM, Material::Lino) },
-        Style { gaze: Gaze { mode: GazeMode::All, kinds: LEADER | INDEX | RULER, density: 12.0, draw_ms: 380.0, colour: MANUAL.ink, only_marked: true },
+        Style { gaze: Gaze { mode: GazeMode::All, kinds: LEADER | INDEX | RULER, density: 12.0, draw_ms: 380.0, colour: MANUAL.ink, only_marked: true, ..Gaze::default() },
             pic: PicFx { pitch: 4.0, levels: 6.0, colour: colour::THEME_INK as f32, ground: 1.0, ..PicFx::with_set(set::DIAGONAL) },
             ..base("Tech-Manual", "tech-manual", MANUAL, Material::Plain) },
         Style { loose_scale: 0.3, pic: PicFx { pitch: 3.0, ..PicFx::with_set(set::PIXEL) }, ..base("Normcore", "normcore", NORMCORE, Material::Plain) },
-        Style { gaze: Gaze { mode: GazeMode::Hover, kinds: BOX | SIZE | KIND, density: 4.0, draw_ms: 200.0, colour: CYBER.accent, only_marked: false },
+        Style { gaze: Gaze { mode: GazeMode::Hover, kinds: BOX | SIZE | KIND, density: 4.0, draw_ms: 200.0, colour: CYBER.accent, only_marked: false, ..Gaze::default() },
             pic: PicFx { pitch: 6.0, levels: 10.0, colour: colour::GIVEN as f32, tint_a: CYBER.accent, ground: 0.0, gamma: 1.1, ..PicFx::with_set(set::CHARS) },
             ..base("Cyberminimalism", "cyberminimal", CYBER, Material::Plain) },
         Style { params: with(Material::Halftone, &[(0, 9.0), (2, 0.0), (1, 15.0)]),
             pic: PicFx { pitch: 8.0, levels: 8.0, palette: 6.0, colours: 5.0, spread: 0.4, ..PicFx::with_set(set::DOTS) },
             ..base("Bauhaus", "bauhaus", BAUHAUS, Material::Halftone) },
+        // Loose Thread (DESIGN.md §4.4): black, white and one accent; plain at rest, threads where the
+        // field is stirred; edge notes and a frame under the pointer.
+        Style { gaze: Gaze { mode: GazeMode::Hover, kinds: EDGE | FRAME, density: 4.0, draw_ms: 240.0, colour: THREAD.accent, only_marked: false, ..Gaze::default() },
+            pic: PicFx { pitch: 4.0, levels: 2.0, colour: colour::THEME_INK as f32, ground: 0.0, ..PicFx::with_set(set::DITHER) },
+            ..base("Loose Thread", "loose-thread", THREAD, Material::Scribblr) },
     ]
 }
 
@@ -488,7 +519,7 @@ pub fn material_named(id: &str) -> Result<Material, crate::error::LookError> {
     found.map(|i| MATERIALS[i].0).ok_or_else(|| crate::error::LookError::UnknownMaterial { given: id.to_owned(), known: MATERIALS.iter().map(|m| m.1).collect::<Vec<_>>().join(", "), last: MATERIALS.len() - 1 })
 }
 /// Short ASCII ids of the themes, in `style::THEMES` order.
-pub const THEME_IDS: [&str; 15] = ["dark", "light", "pixel", "paper", "cream", "cool", "manual", "normcore", "cyber", "bauhaus", "y2k", "led", "gaze", "glitch", "kraft"];
+pub const THEME_IDS: [&str; 15] = ["dark", "light", "pixel", "paper", "cream", "cool", "manual", "normcore", "cyber", "bauhaus", "led", "gaze", "glitch", "thread", "thread-paper"];
 /// The theme index with this id, name or number.
 pub fn theme_named(id: &str) -> Result<usize, crate::error::LookError> {
     THEME_IDS.iter().position(|t| *t == id).or_else(|| THEMES.iter().position(|t| t.name == id)).or_else(|| id.parse::<usize>().ok().filter(|&i| i < THEMES.len()))

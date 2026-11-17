@@ -38,15 +38,21 @@ pub struct TreeNode {
     pub scroll: Option<[f32; 2]>,
     /// The most loosened of its instances right now (0 at rest; see `Ui::looseness`).
     pub loose: f32,
+    /// On the root only: the field map now (DESIGN.md §4.3).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub field: Option<FieldReadout>,
     pub children: Vec<TreeNode>,
 }
+/// The field map as the readouts read it: the mean energy (`LEVEL`) and how many nodes are not zero.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub struct FieldReadout { pub level: f32, pub nonzero: usize }
 
 impl TreeNode {
     /// A node with nothing in it (the tree of an empty view).
     pub fn empty() -> Self {
         TreeNode { key: String::new(), keyed: false, kind: "box", role: None, label: None, rect: [0.0; 4], visible: [0.0; 4], text: None, material: "global",
                    response: "loosen", legible: false, ripple: None, recompose: false, focusable: false, focused: false, hovered: false, pressed: false,
-                   disabled: false, scroll: None, loose: 0.0, children: vec![] }
+                   disabled: false, scroll: None, loose: 0.0, field: None, children: vec![] }
     }
     /// This node without its children.
     pub fn clone_shallow(&self) -> Self { TreeNode { children: vec![], ..self.clone() } }

@@ -271,7 +271,7 @@ fn walk(v: &serde_json::Value, path: String, out: &mut Vec<(String, f32)>) {
     }
 }
 
-/// The twelve presets, in the order of `style::styles()`, each with its own interaction and transition.
+/// The ten presets, in the order of `style::styles()`, each with its own interaction and transition.
 pub fn presets() -> Vec<Preset> {
     use StepKind::*;
     styles().iter().map(|st| {
@@ -295,6 +295,9 @@ pub fn presets() -> Vec<Preset> {
             "normcore" => (Interaction { press_ms: 200.0, ..base }, Transition::of(0.0, &[])),
             // A short fade and a small move.
             "cyberminimal" => (Interaction { press_ms: 160.0, front_width: 12.0, ..base }, Transition::of(120.0, &[step(Fade, 0.0, 1.0, [6.0, 90.0, 0.0, 0.0, 0.0])])),
+            // Everything loosens into thread, then the outlines draw and the content fills.
+            "loose-thread" => (Interaction { press_ms: 320.0, front_speed: 600.0, front_width: 30.0, hold_ms: 83.0, text: Response::Loosen, ..base },
+                Transition::of(700.0, &[step(Loosen, 0.0, 0.55, [1.0, 0.0, 0.0, 0.0, 0.0]), step(Outline, 0.45, 1.0, [1.0, 0.6, 0.0, 0.0, 0.0])])),
             // Flat colour planes slide across and uncover the new page.
             _ => (Interaction { press_ms: 380.0, front_speed: 680.0, front_width: 40.0, ..base }, Transition::of(860.0, &[step(Planes, 0.0, 1.0, [5.0, 3.0, 0.0, 0.0, 0.0])])),
         };
@@ -322,6 +325,8 @@ pub fn presets() -> Vec<Preset> {
             "lofi-print" | "linocut" => map.stirr = 0.5,
             "glitch" => { map.stirr = 0.7; map.energy_life = 0.25; }
             "dotmatrix" => { map.stirr = 0.8; map.energy_life = 0.7; }
+            // The thread wanders and creeps; no breathing, so it rests plain.
+            "loose-thread" => { map.stirr = 0.8; map.meander = 0.5; map.creep = 0.4; map.energy_life = 0.7; map.breath = 0.0; }
             _ => {}
         }
         Preset {
