@@ -29,9 +29,13 @@ fn a_sheet_that_shows_nothing_fails() {
 }
 
 /// One cell of the sample page, drawn: the page itself (for its elements' boxes) and its pixels.
-fn cell(o: &mut Offscreen, material: Material, theme: usize, k: f32) -> (amenui::ui::Ui<amenui::sample::Sample, ()>, Vec<u8>) {
+fn cell(o: &mut Offscreen, material: Material, theme: usize, k: f32) -> (amenui::ui::Ui<amenui::sample::Sample, ()>, Vec<u8>) { cell_stirred(o, material, theme, k, false) }
+/// `cell`, and with `stir` a stir through the title as the sheet's loose cells have, so the looseness
+/// (and `charr`'s cell size) varies along the page.
+fn cell_stirred(o: &mut Offscreen, material: Material, theme: usize, k: f32, stir: bool) -> (amenui::ui::Ui<amenui::sample::Sample, ()>, Vec<u8>) {
     let look = amenui::style::Look { material, theme: amenui::style::THEMES[theme], ..amenui::style::Look::default() };
-    let mut ui = amenui::ui::Ui::new(amenui::sample::Sample { k, label: format!("{} · loose {k:.2}", material.name()), look, cmds: vec![] }, amenui::sample::view, |_, _| {}, fonts(), CELL.0, CELL.1, 1.0).on_look(|s| s.look);
+    let cmds = if k > 0.0 && stir { vec![amenui::morph::Cmd::Stir { at: amenui::morph::StirAt::Key("title".into()), v: [1.0, 0.15], energy: 1.0, radius: 200.0, scope: amenui::el::Scope::Global }] } else { vec![] };
+    let mut ui = amenui::ui::Ui::new(amenui::sample::Sample { k, label: format!("{} · loose {k:.2}", material.name()), look, cmds }, amenui::sample::view, |_, _| {}, fonts(), CELL.0, CELL.1, 1.0).on_look(|s| s.look).on_commands(|s| std::mem::take(&mut s.cmds));
     ui.relayout();
     let mut t = 0.0;
     while t < 0.5 { t += 1.0 / 60.0; ui.tick(t); }
@@ -175,6 +179,32 @@ fn charr_keeps_the_rule_whole_and_the_picture_s_edge() {
                 assert!(found, "theme {theme}, loose {k}: the rule has no accent between x {x0} and {}", x0 + p);
                 x0 += p;
             }
+            // One row of characters: every accent pixel near the rule within one cell's height.
+            let cell_h = if k < 0.3 { (pitch * 0.5).round() } else if k >= 0.7 { (pitch * 1.5).round() } else { pitch } as i32;
+            let (mut top, mut bottom) = (i32::MAX, i32::MIN);
+            for y in (rule[1] - 3 * p).max(0)..(rule[3] + 3 * p).min(CELL.1 as i32) { for x in (rule[0] - p).max(0)..(rule[2] + p).min(CELL.0 as i32) {
+                if hue_of(rgb_at(&px, x, y)).is_some_and(|h| hue_gap(h, accent) <= 20.0) { top = top.min(y); bottom = bottom.max(y); }
+            } }
+            assert!(bottom - top < cell_h, "theme {theme}, loose {k}: the rule's accent spans rows {top}..={bottom}, more than one cell ({cell_h} px)");
+            // Stirred, the cell size changes along the rule; its row stays at one height: the middle of
+            // its accent in each cell's stretch is within 3 px of every other's, and it spans no more
+            // than the largest cell.
+            let (_, spx) = cell_stirred(&mut o, Material::Charr, theme, k, true);
+            let big = (pitch * 1.5).round() as i32;
+            let (mut top, mut bottom) = (i32::MAX, i32::MIN);
+            for y in (rule[1] - 3 * big).max(0)..(rule[3] + 3 * big).min(CELL.1 as i32) { for x in rule[0]..rule[2] {
+                if hue_of(rgb_at(&spx, x, y)).is_some_and(|h| hue_gap(h, accent) <= 20.0) { top = top.min(y); bottom = bottom.max(y); }
+            } }
+            assert!(bottom - top < big, "theme {theme}, loose {k}, stirred: the rule's accent spans rows {top}..={bottom}");
+            let mut mids = vec![];
+            let mut x0 = rule[0];
+            while x0 + p <= rule[2] {
+                let ys: Vec<i32> = (top..=bottom).filter(|&y| (x0..x0 + p).any(|x| hue_of(rgb_at(&spx, x, y)).is_some_and(|h| hue_gap(h, accent) <= 20.0))).collect();
+                if let (Some(a), Some(b)) = (ys.first(), ys.last()) { mids.push((a + b) as f32 * 0.5); }
+                x0 += p;
+            }
+            let (lo, hi) = mids.iter().fold((f32::MAX, f32::MIN), |m, v| (m.0.min(*v), m.1.max(*v)));
+            assert!(hi - lo <= 3.0, "theme {theme}, loose {k}, stirred: the rule's row steps from {lo} to {hi} ({mids:?})");
             // Around the picture, within a cell of its box, nothing is drawn that was not there at rest.
             for y in (pic[1] - p).max(0)..(pic[3] + p).min(CELL.1 as i32) { for x in (pic[0] - p).max(0)..(pic[2] + p).min(CELL.0 as i32) {
                 if x >= pic[0] && x < pic[2] && y >= pic[1] && y < pic[3] { continue; }
