@@ -6,6 +6,7 @@
 //! Several font faces can be registered; each text element picks one. A face can be marked as a pixel
 //! face: it is then drawn only at whole multiples of its native size, on whole device pixels, with
 //! coverage cut at one half, so its edges are ink or ground and nothing in between.
+#![warn(missing_docs)]
 use crate::scene::{GLYPH, Instance};
 use crate::wrap::Around;
 use parley::fontique::{Blob, Collection, CollectionOptions};
@@ -19,36 +20,56 @@ use unicode_segmentation::UnicodeSegmentation;
 use swash::scale::{Render, ScaleContext, Source};
 use swash::zeno::{Format, Vector};
 
+/// How far the glyph atlas's nearness-to-ink reaches beyond the outline, px (the padding every
+/// glyph slot carries).
 pub const SPREAD: i32 = 12;
+/// The glyph atlas's side, px.
 pub const ATLAS: u32 = 2048;
 /// Paragraph layouts kept per generation of the layout cache (DESIGN.md §1.13). A page's source listing is
 /// a paragraph per line, so this is well above the longest page.
 pub const LAYOUT_CACHE: usize = 8192;
 
-/// The faces that ship in `assets/`, in the order `bundled` registers them.
+/// The faces that ship in `assets/`, in the order `bundled` registers them: Noto Sans SC (outline).
 pub const SANS: u8 = 0;
+/// Fusion Pixel 12 px (pixel; Latin and Chinese).
 pub const PIXEL: u8 = 1;
+/// Departure Mono 11 px (pixel, monospaced).
 pub const MONO: u8 = 2;
+/// `SANS`'s file in `assets/`.
 pub const SANS_FILE: &str = "NotoSansSC-Regular.otf";
+/// `PIXEL`'s file in `assets/`.
 pub const PIXEL_FILE: &str = "FusionPixel-12px-Proportional-zh_hans.otf";
+/// `MONO`'s file in `assets/`.
 pub const MONO_FILE: &str = "DepartureMono-Regular.otf";
 
 /// Geist Pixel's five shapes (Latin only, outline faces): Square, Grid, Circle, Triangle, Line, after
 /// the three above. Selectable as `Font::Face(GEIST_PIXEL[i])`.
 pub const GEIST_PIXEL: [u8; 5] = [3, 4, 5, 6, 7];
+/// Geist Pixel's shapes by name, in `GEIST_PIXEL` order.
 pub const GEIST_NAMES: [&str; 5] = ["Square", "Grid", "Circle", "Triangle", "Line"];
+/// Geist Pixel's files in `assets/`, in `GEIST_PIXEL` order.
 pub const GEIST_FILES: [&str; 5] = ["GeistPixel-Square.otf", "GeistPixel-Grid.otf", "GeistPixel-Circle.otf", "GeistPixel-Triangle.otf", "GeistPixel-Line.otf"];
 /// Source Serif 4 at its 8 pt optical size and weight 400, Latin only (OFL; `assets/licenses/source-serif`),
 /// after Geist Pixel: `Font::Whisper`, tracked small lowercase type and edge notes (DESIGN.md §4.2).
 pub const SERIF: u8 = 8;
+/// `SERIF`'s file in `assets/`.
 pub const SERIF_FILE: &str = "SourceSerif4-8pt-subset.ttf";
 
 /// A font file to register. `pixel` is the native size (px) of a pixel face. A `fallback` face is
 /// tried, after the face asked for and the first face, for characters they lack (Arabic, Hebrew,
 /// Thai, Devanagari, emoji…), in the order given.
-pub struct Face { pub data: Vec<u8>, pub pixel: Option<f32>, pub fallback: bool }
+pub struct Face {
+    /// The font file's bytes (empty for `Face::system`).
+    pub data: Vec<u8>,
+    /// The native size of a pixel face, px; `None` for an outline face.
+    pub pixel: Option<f32>,
+    /// Used only for characters the other faces lack.
+    pub fallback: bool,
+}
 impl Face {
+    /// An outline face, drawn at any size.
     pub fn outline(data: Vec<u8>) -> Self { Self { data, pixel: None, fallback: false } }
+    /// A pixel face whose glyphs are drawn at whole multiples of `size` px.
     pub fn pixel(data: Vec<u8>, size: f32) -> Self { Self { data, pixel: Some(size), fallback: false } }
     /// A face used only for characters the others lack.
     pub fn fallback(data: Vec<u8>) -> Self { Self { data, pixel: None, fallback: true } }
@@ -105,14 +126,36 @@ pub fn geist_bytes() -> [Vec<u8>; 5] {
 /// (logical px; infinite for text kept on one line). `track` is extra letter spacing in em
 /// (`El::tracking`), laid out by parley so measuring, drawing, carets and selections all see it.
 #[derive(Clone, Copy)]
-pub struct Para<'a> { pub s: &'a str, pub face: u8, pub size: f32, pub line: f32, pub width: f32, pub print: f32, pub around: Option<&'a Around>, pub track: f32 }
+pub struct Para<'a> {
+    /// The text.
+    pub s: &'a str,
+    /// The face's number.
+    pub face: u8,
+    /// Font size.
+    pub size: f32,
+    /// Line height.
+    pub line: f32,
+    /// The width it is broken at.
+    pub width: f32,
+    /// The pitch of the lattice the glyphs are printed through (`El::print`; 0: none).
+    pub print: f32,
+    /// A shape the lines flow around (`El::around`).
+    pub around: Option<&'a Around>,
+    /// Extra letter spacing, em.
+    pub track: f32,
+}
 impl<'a> Para<'a> {
     /// How it is set beyond its size and width.
     pub fn setting(&self) -> Setting<'a> { Setting { around: self.around, track: self.track } }
 }
 /// How a paragraph is set beyond its size and width: what it flows around and its tracking (em).
 #[derive(Clone, Copy, Default)]
-pub struct Setting<'a> { pub around: Option<&'a Around>, pub track: f32 }
+pub struct Setting<'a> {
+    /// A shape the lines flow around.
+    pub around: Option<&'a Around>,
+    /// Extra letter spacing, em.
+    pub track: f32,
+}
 
 #[derive(Clone, Copy)]
 struct Slot { x: u32, y: u32, w: u32, h: u32, left: i32, top: i32 }
@@ -124,8 +167,27 @@ struct Family { name: String, pixel: Option<f32>, data: Arc<Vec<u8>>, blob: u64,
 
 /// One glyph rasterised on its own (for the mark atlas): coverage rows, placement, and the face's
 /// advance and line box at that size, px.
-pub struct Raster { pub data: Vec<u8>, pub w: u32, pub h: u32, pub left: i32, pub top: i32, pub advance: f32, pub ascent: f32, pub descent: f32 }
+pub struct Raster {
+    /// Coverage, one byte a pixel, `w` × `h`, row by row.
+    pub data: Vec<u8>,
+    /// Width, px.
+    pub w: u32,
+    /// Height, px.
+    pub h: u32,
+    /// From the pen position to the bitmap's left edge, px.
+    pub left: i32,
+    /// From the baseline up to the bitmap's top edge, px.
+    pub top: i32,
+    /// How far the pen moves after the glyph, px.
+    pub advance: f32,
+    /// The face's ascent at this size, px.
+    pub ascent: f32,
+    /// The face's descent at this size, px (positive, below the baseline).
+    pub descent: f32,
+}
 
+/// The text system: the registered faces, shaping and line breaking (parley), the layout cache, and
+/// the glyph atlas the renderer uploads.
 pub struct Text {
     shape_ms: f64,
     fonts: FontContext,
@@ -145,16 +207,20 @@ pub struct Text {
     cache: [HashMap<MeasureKey, Rc<Layout<()>>>; 2],
     /// RG8: coverage, nearness-to-ink.
     pub pixels: Vec<u8>,
+    /// The atlas changed since the renderer last uploaded it.
     pub dirty: bool,
     pen: (u32, u32, u32),
     /// Paragraphs shaped and broken by parley so far (cache misses), for the work counters; with
     /// `log_shapes`, which texts they were (for tests).
     shaped: u64,
+    /// Record each shaped text in `shape_log`.
     pub log_shapes: bool,
+    /// The texts shaped while `log_shapes` was on.
     pub shape_log: Vec<String>,
 }
 
 impl Text {
+    /// Register `faces`, numbered in order (`Face::system` takes no number).
     pub fn new(faces: Vec<Face>) -> Self {
         let system = cfg!(all(feature = "system-fonts", not(target_arch = "wasm32"))) && faces.iter().any(Face::is_system);
         let mut collection = Collection::new(CollectionOptions { shared: false, system_fonts: system });
@@ -173,6 +239,7 @@ impl Text {
         }
     }
 
+    /// How many faces are registered.
     pub fn faces(&self) -> usize { self.families.len() }
     /// Whether a glyph found the atlas full since the last `refill`.
     pub fn is_full(&self) -> bool { self.full }
@@ -190,11 +257,13 @@ impl Text {
     pub fn shaped(&self) -> u64 { self.shaped }
     /// How much of the glyph atlas is used, 0..1 (by rows).
     pub fn atlas_use(&self) -> f32 { ((self.pen.1 + self.pen.2) as f32 / ATLAS as f32).min(1.0) }
+    /// Whether `face` is a pixel face.
     pub fn is_pixel(&self, face: u8) -> bool { self.family(face).pixel.is_some() }
     /// Native size of a pixel face, px.
     pub fn native(&self, face: u8) -> Option<f32> { self.family(face).pixel }
     fn family(&self, face: u8) -> &Family { &self.families[(face as usize).min(self.families.len() - 1)] }
 
+    /// Device px per logical px (pixel faces snap in device px); a change empties the layout cache.
     pub fn set_scale(&mut self, scale: f32) {
         if scale != self.scale { self.scale = scale; self.measured.clear(); self.cache = [HashMap::new(), HashMap::new()]; }
     }
@@ -457,7 +526,16 @@ impl Text {
 
 /// Where `Text::nav` moves the caret.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Nav { Up, Down, LineStart, LineEnd }
+pub enum Nav {
+    /// To the line above, at the same x.
+    Up,
+    /// To the line below, at the same x.
+    Down,
+    /// To the start of the line.
+    LineStart,
+    /// To the end of the line.
+    LineEnd,
+}
 
 /// The grapheme boundary before byte `at` (0 at the start).
 pub fn prev_grapheme(s: &str, at: usize) -> usize { s.grapheme_indices(true).rev().map(|(i, _)| i).find(|&i| i < at).unwrap_or(0) }

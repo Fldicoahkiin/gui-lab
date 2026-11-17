@@ -22,7 +22,9 @@ pub mod __rt {
 
 /// The running application on a canvas.
 pub struct Host<S, M> {
+    /// The runtime.
     pub ui: Ui<S, M>,
+    /// The renderer (for the application's own pictures and meshes).
     pub r: Renderer,
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
@@ -69,7 +71,7 @@ impl<S: App, M: Clone> Host<S, M> {
         Ok(Self { ui, r, surface, config, started: false, dropping: vec![] })
     }
 
-    /// `w`, `h` device px.
+    /// The canvas changed size: `w`, `h` device px, `scale` device px per CSS px.
     pub fn resize(&mut self, w: u32, h: u32, scale: f32) {
         self.config.width = w.max(1);
         self.config.height = h.max(1);
@@ -80,15 +82,21 @@ impl<S: App, M: Clone> Host<S, M> {
     // Every input first brings the clock to its time: frames are drawn on demand, so the last tick may
     // be long ago, and what the input starts (a burst, a front) starts now. `te` is when the event
     // happened (its timestamp), `t` when it is handled.
+    /// The pointer moved.
     pub fn pointer_move(&mut self, id: u32, kind: u32, (x, y): (f32, f32), t: f32, te: f32) {
         self.ui.tick(t); self.ui.event_time(te.min(t)); self.ui.pointer_moved(id as u64, pointer_kind(kind), x, y);
     }
+    /// The pointer left the canvas.
     pub fn pointer_leave(&mut self, t: f32) { self.ui.tick(t); self.ui.pointer_leave(); }
+    /// A button or finger went down.
     pub fn pointer_down(&mut self, id: u32, kind: u32, (x, y): (f32, f32), shift: bool, t: f32, te: f32) {
         self.ui.tick(t); self.ui.event_time(te.min(t)); self.ui.pointer_down(id as u64, pointer_kind(kind), x, y, shift);
     }
+    /// It came up.
     pub fn pointer_up(&mut self, id: u32, kind: u32, x: f32, y: f32, t: f32) { self.ui.tick(t); self.ui.pointer_up(id as u64, pointer_kind(kind), x, y); }
+    /// The browser took the pointer (a scroll gesture, a system dialog).
     pub fn pointer_cancel(&mut self, id: u32, t: f32) { self.ui.tick(t); self.ui.pointer_cancel(id as u64); }
+    /// The wheel or a trackpad scrolled by `dx`, `dy` CSS px.
     pub fn wheel(&mut self, x: f32, y: f32, dx: f32, dy: f32, t: f32) { self.ui.tick(t); self.ui.wheel_xy(x, y, dx, dy); }
     /// A DOM key name with its modifiers (`cmd` is Ctrl or ⌘). Returns whether the page should not act on it.
     pub fn key(&mut self, name: &str, shift: bool, cmd: bool, alt: bool, t: f32) -> bool {
@@ -96,22 +104,31 @@ impl<S: App, M: Clone> Host<S, M> {
         self.ui.tick(t);
         self.ui.key_mods(k, Mods { shift, cmd, alt })
     }
+    /// A key came up.
     pub fn key_up(&mut self, name: &str, t: f32) {
         let Some(k) = Key::from_name(name) else { return };
         self.ui.tick(t);
         self.ui.key_up(k);
     }
+    /// Text typed into the text agent. Returns whether a field took it.
     pub fn text_input(&mut self, text: &str, t: f32) -> bool { self.ui.tick(t); self.ui.text_input(text) }
+    /// The input method's composition so far.
     pub fn ime_preedit(&mut self, text: &str, t: f32) -> bool { self.ui.tick(t); self.ui.ime_preedit(text, None) }
+    /// The input method committed its text.
     pub fn ime_commit(&mut self, text: &str, t: f32) -> bool { self.ui.tick(t); self.ui.ime_commit(text) }
+    /// Text pasted from the clipboard. Returns whether a field took it.
     pub fn paste(&mut self, text: &str, t: f32) -> bool { self.ui.tick(t); self.ui.paste(text) }
+    /// Cut the selection; returns its text for the clipboard.
     pub fn cut(&mut self, t: f32) -> Option<String> { self.ui.tick(t); self.ui.cut() }
     /// The page's hash changed (a link, Back). Returns whether it names something.
     pub fn route(&mut self, hash: &str) -> bool { let ok = self.ui.state.route(hash); if ok { self.ui.relayout(); } ok }
+    /// `theme` and `material` by name ([`App::set_look`]).
     pub fn set_look(&mut self, theme: &str, material: &str) { if self.ui.state.set_look(theme, material) { self.ui.relayout(); } }
+    /// The language by BCP 47 tag ([`App::set_locale`]).
     pub fn set_locale(&mut self, tag: &str) {
         if let Some(l) = crate::i18n::Locale::from_tag(tag) && self.ui.state.set_locale(l) { self.ui.relayout(); }
     }
+    /// `prefers-reduced-motion: reduce`, at start and when it changes.
     pub fn set_reduced_motion(&mut self, on: bool) { self.ui.state.set_reduced_motion(on); self.ui.set_reduced_motion(on); }
     /// `prefers-color-scheme: dark` and `prefers-contrast: more`, at start and when they change.
     pub fn set_appearance(&mut self, dark: bool, high_contrast: bool) {
@@ -128,8 +145,9 @@ impl<S: App, M: Clone> Host<S, M> {
         let changed = self.ui.state.files_hovering(false) | (!files.is_empty() && self.ui.state.files_dropped(files));
         if changed { self.ui.relayout(); }
     }
-    /// Assistive technology focused or activated a mirrored element.
+    /// Assistive technology focused a mirrored element.
     pub fn a11y_focus(&mut self, key: &str, t: f32) { self.ui.tick(t); self.ui.focus_key(key); }
+    /// Assistive technology activated a mirrored element.
     pub fn a11y_activate(&mut self, key: &str, t: f32) -> bool { self.ui.tick(t); self.ui.activate(key) }
     /// What changed in the accessibility mirror since the last call ([`super::a11y_json`]).
     pub fn a11y_update(&mut self) -> String { super::a11y_json(&self.ui.a11y_diff()) }
