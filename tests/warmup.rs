@@ -1,8 +1,9 @@
 //! The warm-up and the application's own preparation (DESIGN.md §1.23). A renderer made a piece at a
 //! time (`Renderer::begin`) draws its first frames as plain, the same bytes as the plain look; once
 //! warm and settled it draws the same bytes as one made at once (`Renderer::new`); it takes a bounded
-//! number of steps, none of them doing most of the work. `Ui::prepare` runs a job a piece a frame and
-//! `Ui::ready` reads how far it is. The GPU tests need an adapter (lavapipe will do).
+//! number of steps, none of them doing most of the work; the material arrives on the page at rest, then
+//! the page loosens to its caps over `RAMP` and condenses, a little each frame. `Ui::prepare` runs a job
+//! a piece a frame and `Ui::ready` reads how far it is. The GPU tests need an adapter (lavapipe will do).
 use amenui::offscreen::Offscreen;
 use amenui::render::Stage;
 use amenui::style::{Look, Material};
@@ -86,4 +87,44 @@ fn a_prepared_job_runs_a_piece_a_frame_and_reports_how_far_it_is() {
     assert!(!ui.needs_frame(t + 1.0 / 60.0) || ui.ongoing());
     assert_eq!(ui.ready("other"), 1.0);
     assert_eq!(ui.readiness(), 1.0);
+}
+
+#[test]
+fn the_material_arrives_without_a_jump() {
+    let Ok(mut cold) = Offscreen::try_warming(W, H) else { eprintln!("no GPU adapter here: skipped"); return };
+    let mut a = page();
+    a.tick(0.5);
+    let look = Look { material: Material::Dottr, ..a.look() };
+    let mut t = 0.5;
+    let mut prev = cold.render(&mut a, &look);
+    // Warm up a step a frame; the first frame drawn warm is the one the material arrives in.
+    let arrived = loop {
+        cold.r.warm_step(0.0, a.text_mut());
+        t += 1.0 / 60.0;
+        a.tick(t);
+        let warm = !cold.r.warming();
+        let px = cold.render(&mut a, &look);
+        if warm { break px; }
+        prev = px;
+    };
+    let differ = prev.chunks(4).zip(arrived.chunks(4)).filter(|(x, y)| x != y).count();
+    let share = differ as f32 / (W * H) as f32;
+    assert!(share < 0.02, "the frame the material arrives in differs from plain's in {:.1} % of the pixels", share * 100.0);
+    // Then at 60 Hz: the page loosens toward its caps and condenses, no element by more than 0.2 a frame.
+    let keys: Vec<String> = a.nodes().iter().map(|n| n.key.clone()).filter(|k| !k.is_empty()).collect();
+    let mut last: Vec<f32> = keys.iter().map(|k| a.looseness(k, t)).collect();
+    let mut most = 0.0f32;
+    let mut peak = 0.0f32;
+    for _ in 0..90 {
+        cold.r.warm_step(0.0, a.text_mut());
+        t += 1.0 / 60.0;
+        a.tick(t);
+        cold.render(&mut a, &look);
+        let now: Vec<f32> = keys.iter().map(|k| a.looseness(k, t)).collect();
+        for (x, y) in last.iter().zip(&now) { most = most.max((x - y).abs()); }
+        peak = peak.max(now.iter().copied().fold(0.0, f32::max));
+        last = now;
+    }
+    assert!(most <= 0.2, "an element's looseness changed by {most:.2} in one frame");
+    assert!(peak > 0.3, "the page comes apart a little as the material arrives ({peak:.2})");
 }
