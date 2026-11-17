@@ -911,12 +911,15 @@ impl<S, M: Clone> Ui<S, M> {
     pub fn set_prepare_budget(&mut self, ms: f32) { self.prep.budget_ms = ms.max(0.0); }
     /// The renderer says how far its warm-up is (`render::Warmup`).
     pub fn set_render_ready(&mut self, f: f32) { if (self.prep.render - f).abs() > 1e-6 { self.prep.render = f; self.dirty = true; } }
-    /// Everything on the page condenses again from now, as when it first appeared (the frame the look's
-    /// material is ready after the warm-up, DESIGN.md §1.23).
+    /// Everything on the page condenses again from now, each element from no looser than its cap (the
+    /// frame the look's material is ready after the warm-up, DESIGN.md §1.23): text to read and
+    /// controls only nudge, decoration and pictures condense from loose.
     pub fn condense_all(&mut self) {
-        let now = self.now;
-        for v in self.births.values_mut() { *v = now; }
-        for v in self.text_births.values_mut() { *v = now; }
+        let enter = self.timing.enter;
+        for &(owner, id) in &self.owners {
+            let (_, cap, _) = response_caps(&self.nodes[owner], self.timing.legible_cap);
+            self.births.insert(id, self.now - enter * (1.0 - cap));
+        }
         self.paint();
     }
     /// Ask for a frame even though nothing changed (the host lost what it showed).
