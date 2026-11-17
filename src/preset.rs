@@ -149,7 +149,7 @@ impl Preset {
         l.theme = self.theme();
         l.material = self.material;
         l.params = MaterialParams::all();
-        l.params[self.material as usize] = MaterialParams(self.params);
+        if let Some(p) = l.params.get_mut(self.material.id() as usize) { *p = MaterialParams(self.params); }
         l.gaze = self.gaze;
         l.loose_scale = self.loose_scale;
         l.fx.pitch = self.pitch;

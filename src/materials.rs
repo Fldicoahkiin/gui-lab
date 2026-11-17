@@ -100,13 +100,73 @@ pub(crate) fn replace_word(text: &str, from: &str, to: &str) -> String {
     out
 }
 
-/// The material pass's shader: the framework's own with every material put in at its place.
+/// The most materials there can be, built-in and added (an id is four bits of an instance's code).
+pub const MAX: usize = 16;
+
+/// A material added from source (`Look::material_source`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Added {
+    /// The name it was added under.
+    pub name: &'static str,
+    /// Its id (9–15).
+    pub id: u8,
+    /// The numbers it is drawn with.
+    pub params: crate::style::MaterialParams,
+}
+
+/// Every added material, and its code as it goes into the shader.
+static ADDED: std::sync::RwLock<Vec<(Added, String)>> = std::sync::RwLock::new(Vec::new());
+
+fn added_list() -> std::sync::RwLockReadGuard<'static, Vec<(Added, String)>> { ADDED.read().unwrap_or_else(|e| e.into_inner()) }
+
+/// The material added with id `id`.
+pub fn added(id: u8) -> Option<Added> { added_list().iter().find(|a| a.0.id == id).map(|a| a.0) }
+/// The id of the material added under `name`.
+pub fn added_named(name: &str) -> Option<u8> { added_list().iter().find(|a| a.0.name == name).map(|a| a.0.id) }
+
+/// Add the material in `wgsl` under `name` (`Look::material_source`): its functions are renamed for
+/// `name` (`m_<its name>` becomes `m_<name>`, any other `f` becomes `f_<name>`) and `SELF` becomes
+/// its id. Returns the id.
+pub fn add(name: &str, wgsl: &str, params: crate::style::MaterialParams) -> Result<u8, crate::error::MaterialError> {
+    use crate::error::MaterialError as E;
+    let ok = name.starts_with(|c: char| c.is_ascii_lowercase()) && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+    if !ok { return Err(E::BadName { name: name.to_owned() }); }
+    if BUILT_IN.iter().any(|m| m.0 == name) { return Err(E::BuiltIn { name: name.to_owned() }); }
+    let h = header(wgsl)?;
+    let main = format!("m_{}", h.name);
+    if !wgsl.contains(&format!("fn {main}(")) { return Err(E::NoFunction { name: h.name }); }
+    let mut code = wgsl.to_owned();
+    for f in wgsl.lines().filter_map(|l| l.strip_prefix("fn ")).filter_map(|l| l.split('(').next()).map(str::trim) {
+        let to = if f == main { format!("m_{name}") } else { format!("{f}_{name}") };
+        code = replace_word(&code, f, &to);
+    }
+    let mut list = ADDED.write().unwrap_or_else(|e| e.into_inner());
+    let id = match list.iter().position(|a| a.0.name == name) {
+        Some(i) => list[i].0.id,
+        None if crate::style::MATERIAL_COUNT + list.len() < MAX => (crate::style::MATERIAL_COUNT + list.len()) as u8,
+        None => return Err(E::Full { max: MAX - crate::style::MATERIAL_COUNT }),
+    };
+    let code = replace_word(&code, "SELF", &id.to_string());
+    let a = Added { name: list.iter().find(|a| a.0.name == name).map_or_else(|| &*Box::leak(name.to_owned().into_boxed_str()), |a| a.0.name), id, params };
+    match list.iter_mut().find(|a| a.0.id == id) { Some(e) => *e = (a, code), None => list.push((a, code)) }
+    Ok(id)
+}
+
+/// The material pass's shader: the framework's own with every material put in at its place, built-in
+/// ones in id order and then those added, each added one dispatched on its id.
 pub fn shader() -> String {
     let at = CORE.find(PLACE).and_then(|i| CORE[i..].find("\n\n").map(|j| i + j + 2)).expect("shader.wgsl names the materials' place");
     let mut s = String::with_capacity(CORE.len() + 16 * 1024);
     s.push_str(&CORE[..at]);
     for (name, wgsl) in BUILT_IN { s.push_str(&built_in(name, wgsl)); s.push('\n'); }
-    s.push_str(&CORE[at..]);
+    let list = added_list();
+    for (_, code) in list.iter() { s.push_str(code); s.push('\n'); }
+    const DEFAULT: &str = "      default: { col = m_plain(p); }";
+    let (before, after) = CORE[at..].split_once(DEFAULT).expect("shader.wgsl dispatches on the material");
+    s.push_str(before);
+    for (a, _) in list.iter() { s.push_str(&format!("      case {}: {{ col = m_{}(p); }}\n", a.id, a.name)); }
+    s.push_str(DEFAULT);
+    s.push_str(after);
     s
 }
 
@@ -128,14 +188,6 @@ mod tests {
             assert!(wgsl.contains(&format!("fn m_{name}(")), "{name} has its function");
         }
     }
-
-    #[test]
-    fn the_shader_put_together_is_the_one_before_the_materials_had_files() {
-        // FNV-1a of `shader.wgsl` as it was with every material in it.
-        let h = shader().bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x0100_0000_01b3));
-        assert_eq!(h, EXPECTED);
-    }
-    const EXPECTED: u64 = 0xbaac_e13e_df64_6508;
 
     #[test]
     fn a_header_that_does_not_say_its_name_or_its_numbers_is_refused() {

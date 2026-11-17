@@ -58,7 +58,7 @@ pub enum Region { All, Boxes { stage1: Bx, stage2: Bx } }
 
 /// How far stage 2 reads around a pixel under material `m` (device px).
 pub fn reach(m: Material, look: &Look, s: f32) -> f32 {
-    let p = |i: usize| look.params[m as usize].0[i];
+    let p = |i: usize| look.numbers(m).0[i];
     let base = 2.0 + 10.0 * s; // the dot ground's cells read the nearness at their centre
     base + match m {
         Material::Plain | Material::Near | Material::Scribblr => 4.0 * s,
@@ -68,6 +68,8 @@ pub fn reach(m: Material, look: &Look, s: f32) -> f32 {
         Material::Print => (p(1) + p(3)) * s + 6.0 * s,
         Material::Lino => (p(1) + p(2)) * s,
         Material::Glitch => p(1) * s + 3.0 * p(4) * s + p(2) * s,
+        // What an added material reads around a pixel is not known: everything is redrawn.
+        Material::Custom(_) => 1e6,
     }
 }
 
