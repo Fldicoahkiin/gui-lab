@@ -4,6 +4,7 @@
 //! that is "a field drawn some way": the flow field of motes, the lab's contours, metaballs, silk and
 //! grown patterns all sample, step and draw through this module. Deterministic: the same seed, steps
 //! and inputs give the same numbers. No GPU here.
+#![warn(missing_docs)]
 
 /// A hash in 0..1 of an integer.
 pub fn hash(n: u32) -> f32 {
@@ -32,12 +33,24 @@ pub fn noise_t(x: f32, y: f32, t: f32) -> f32 {
 }
 
 /// A number at every point (x, y) of a box: a formula or a sampled grid.
-pub trait Scalar { fn at(&self, x: f32, y: f32) -> f32; }
+pub trait Scalar {
+    /// The value at (x, y).
+    fn at(&self, x: f32, y: f32) -> f32;
+}
 impl<F: Fn(f32, f32) -> f32> Scalar for F { fn at(&self, x: f32, y: f32) -> f32 { self(x, y) } }
 
 /// Drifting noise: features `scale` apart, a new pattern every `1 / speed` s, at time `t`, `seed`.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Noise { pub scale: f32, pub speed: f32, pub t: f32, pub seed: u32 }
+pub struct Noise {
+    /// How far apart its features are.
+    pub scale: f32,
+    /// How many new patterns a second.
+    pub speed: f32,
+    /// The time.
+    pub t: f32,
+    /// Which pattern.
+    pub seed: u32,
+}
 impl Scalar for Noise {
     fn at(&self, x: f32, y: f32) -> f32 {
         let o = hash(self.seed) * 97.0;
@@ -46,7 +59,16 @@ impl Scalar for Noise {
 }
 /// A bump: `a × exp(−d² / r²)` about (x, y).
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Bump { pub x: f32, pub y: f32, pub r: f32, pub a: f32 }
+pub struct Bump {
+    /// Its centre, across.
+    pub x: f32,
+    /// Its centre, down.
+    pub y: f32,
+    /// How wide it is.
+    pub r: f32,
+    /// How high it is.
+    pub a: f32,
+}
 impl Scalar for Bump {
     fn at(&self, x: f32, y: f32) -> f32 { let d2 = (x - self.x).powi(2) + (y - self.y).powi(2); self.a * (-d2 / (self.r * self.r).max(1e-6)).exp() }
 }
@@ -71,8 +93,20 @@ pub fn curl(f: &impl Scalar, x: f32, y: f32, e: f32) -> (f32, f32) {
 /// A field sampled at the nodes of a `cols × rows` grid spanning a `w × h` box (node (i, j) is at
 /// `(i·w/(cols−1), j·h/(rows−1))`); read between nodes bilinearly.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Grid { pub cols: usize, pub rows: usize, pub w: f32, pub h: f32, pub v: Vec<f32> }
+pub struct Grid {
+    /// Nodes across.
+    pub cols: usize,
+    /// Nodes down.
+    pub rows: usize,
+    /// The box's width.
+    pub w: f32,
+    /// The box's height.
+    pub h: f32,
+    /// The values, row by row.
+    pub v: Vec<f32>,
+}
 impl Grid {
+    /// A grid of zeros (at least 2 × 2 nodes).
     pub fn new(cols: usize, rows: usize, w: f32, h: f32) -> Self { let (cols, rows) = (cols.max(2), rows.max(2)); Self { cols, rows, w, h, v: vec![0.0; cols * rows] } }
     /// Where node (i, j) is.
     pub fn node(&self, i: usize, j: usize) -> (f32, f32) { (i as f32 * self.w / (self.cols - 1) as f32, j as f32 * self.h / (self.rows - 1) as f32) }
@@ -82,6 +116,7 @@ impl Grid {
         for j in 0..g.rows { for i in 0..g.cols { let (x, y) = g.node(i, j); g.v[j * g.cols + i] = f.at(x, y); } }
         g
     }
+    /// The value at node (i, j), clamped to the grid.
     pub fn get(&self, i: usize, j: usize) -> f32 { self.v[j.min(self.rows - 1) * self.cols + i.min(self.cols - 1)] }
     /// Add `f` at every node.
     pub fn add(&mut self, f: &impl Scalar) {
@@ -146,9 +181,16 @@ impl Grid {
 /// A direction at every node of a grid (two grids), with what stirs it: the pointer's velocity is
 /// put in as a bump of momentum and the whole field fades back to still.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Flow { pub u: Grid, pub v: Grid }
+pub struct Flow {
+    /// The direction's across part at each node.
+    pub u: Grid,
+    /// Its down part.
+    pub v: Grid,
+}
 impl Flow {
+    /// A still flow on a `cols × rows` grid over a `w × h` box.
     pub fn new(cols: usize, rows: usize, w: f32, h: f32) -> Self { Self { u: Grid::new(cols, rows, w, h), v: Grid::new(cols, rows, w, h) } }
+    /// The direction at (x, y), read between nodes bilinearly.
     pub fn at(&self, x: f32, y: f32) -> (f32, f32) { (self.u.at(x, y), self.v.at(x, y)) }
     /// Put velocity (vx, vy) in about (x, y), falling off over `r`.
     pub fn stir(&mut self, x: f32, y: f32, vx: f32, vy: f32, r: f32) {
@@ -177,7 +219,16 @@ impl Scalar for Grid {
 
 /// Marks carried along a flow inside a `w × h` box: positions and the step each moved last.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct Swarm { pub p: Vec<(f32, f32)>, pub d: Vec<(f32, f32)>, pub w: f32, pub h: f32 }
+pub struct Swarm {
+    /// Where each mark is.
+    pub p: Vec<(f32, f32)>,
+    /// The step each moved last.
+    pub d: Vec<(f32, f32)>,
+    /// The box's width.
+    pub w: f32,
+    /// The box's height.
+    pub h: f32,
+}
 impl Swarm {
     /// `n` marks placed by hash from `seed`.
     pub fn new(n: usize, w: f32, h: f32, seed: u32) -> Self {
@@ -198,7 +249,26 @@ impl Swarm {
 /// `v′ = Dv∇²v + uv² − (f+k)v`. Outside the mask (below one half) `u` is held at 1 and `v` at 0, and
 /// nothing flows across the outline, so the pattern grows inside it and stops at it.
 #[derive(Clone, Debug, PartialEq)]
-pub struct GrayScott { pub cols: usize, pub rows: usize, pub u: Vec<f32>, pub v: Vec<f32>, pub mask: Vec<f32>, pub f: f32, pub k: f32, pub du: f32, pub dv: f32 }
+pub struct GrayScott {
+    /// Nodes across.
+    pub cols: usize,
+    /// Nodes down.
+    pub rows: usize,
+    /// The first chemical, row by row (1 where nothing has grown).
+    pub u: Vec<f32>,
+    /// The second (the pattern), row by row.
+    pub v: Vec<f32>,
+    /// Inside (≥ 0.5) or outside each node.
+    pub mask: Vec<f32>,
+    /// The feed rate.
+    pub f: f32,
+    /// The kill rate.
+    pub k: f32,
+    /// How fast `u` spreads.
+    pub du: f32,
+    /// How fast `v` spreads.
+    pub dv: f32,
+}
 impl GrayScott {
     /// Maze-forming numbers (f 0.037, k 0.060, Du 1, Dv 0.5), everywhere open.
     pub fn new(cols: usize, rows: usize) -> Self { Self { cols, rows, u: vec![1.0; cols * rows], v: vec![0.0; cols * rows], mask: vec![1.0; cols * rows], f: 0.037, k: 0.060, du: 1.0, dv: 0.5 } }

@@ -22,6 +22,7 @@
 //!  6. corners cut by `1 − angular`.
 //!
 //! At `k = 0` there is nothing: no segment exists, so rest is plain's by construction.
+#![warn(missing_docs)]
 use crate::field::hash;
 use crate::scene::Instance;
 
@@ -101,17 +102,46 @@ impl ThreadShape {
 /// What a piece of the thread is: along the line (an outline or a chord across it), a bridge between
 /// outlines, a knot, or a tail.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Kind { Line, Bridge, Knot, Tail }
+pub enum Kind {
+    /// Along the line: an outline, or a chord across it.
+    Line,
+    /// A bridge between two outlines.
+    Bridge,
+    /// A knot.
+    Knot,
+    /// A tail.
+    Tail,
+}
 /// One straight piece, device px.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Seg { pub a: [f32; 2], pub b: [f32; 2], pub kind: Kind }
+pub struct Seg {
+    /// Where it starts.
+    pub a: [f32; 2],
+    /// Where it ends.
+    pub b: [f32; 2],
+    /// What it is.
+    pub kind: Kind,
+}
 
 /// The rest path: one polyline through every outline; `bridge[i]` says the piece arriving at `pts[i]` is
 /// a bridge. `loops` is how many outlines it went round. `keep[i]` is the tolerance (device px) up to
 /// which vertex `i` stays, `chord[i]` the two vertices whose chord it is dropped onto, and `order` the
 /// vertices from the most to the least kept (a vertex after both ends of its chord).
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct Rest { pub pts: Vec<[f32; 2]>, pub bridge: Vec<bool>, pub loops: usize, pub keep: Vec<f32>, pub chord: Vec<(usize, usize)>, pub order: Vec<usize> }
+pub struct Rest {
+    /// The vertices.
+    pub pts: Vec<[f32; 2]>,
+    /// Whether the piece arriving at each vertex is a bridge.
+    pub bridge: Vec<bool>,
+    /// How many outlines it went round.
+    pub loops: usize,
+    /// The tolerance (device px) up to which each vertex stays.
+    pub keep: Vec<f32>,
+    /// The two vertices whose chord each one is dropped onto.
+    pub chord: Vec<(usize, usize)>,
+    /// The vertices from the most to the least kept.
+    pub order: Vec<usize>,
+}
 
 /// A glyph's or shape's outlines (closed, the last point equal to the first), device px, sampled on a
 /// `grain` lattice over its bounds and simplified to half a pixel.
@@ -242,7 +272,24 @@ fn lerp2(a: [f32; 2], b: [f32; 2], t: f32) -> [f32; 2] { [a[0] + (b[0] - a[0]) *
 /// Where and when a thread is worked out: its looseness, the (held) time, the element's seed, logical →
 /// device scale, the map's `drift` (logical px), the scope box and the boxes the tails keep out of (device
 /// px), and the element's line height (device px: a text's line, a shape's short side).
-pub struct Ctx<'a> { pub k: f32, pub t: f32, pub seed: u32, pub scale: f32, pub drift: f32, pub scope: [f32; 4], pub calm: &'a [[f32; 4]], pub lh: f32 }
+pub struct Ctx<'a> {
+    /// Its looseness.
+    pub k: f32,
+    /// The (held) time.
+    pub t: f32,
+    /// The element's seed.
+    pub seed: u32,
+    /// Logical px to device px.
+    pub scale: f32,
+    /// The map's `drift`, logical px.
+    pub drift: f32,
+    /// The scope box, device px.
+    pub scope: [f32; 4],
+    /// The boxes the tails keep out of, device px.
+    pub calm: &'a [[f32; 4]],
+    /// The element's line height, device px (a text's line, a shape's short side).
+    pub lh: f32,
+}
 
 /// Value noise and its gradient (the same lattice as `field::noise`), so the curl needs no differences.
 fn noise_grad(x: f32, y: f32) -> (f32, f32, f32) {
@@ -389,7 +436,16 @@ pub fn star(centre: [f32; 2], r: f32, n: usize, escape: usize, seed: u32, t: f32
 /// One knot of a thread: the rest vertex it hangs from, its radius (device px, before looseness), how many
 /// points it has, and how far its centre sits off the line (device px, before looseness).
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct KnotAt { pub at: usize, pub r: f32, pub n: usize, pub off: [f32; 2] }
+pub struct KnotAt {
+    /// The rest vertex it hangs from.
+    pub at: usize,
+    /// Its radius, device px, before looseness.
+    pub r: f32,
+    /// How many points it has.
+    pub n: usize,
+    /// How far its centre sits off the line, device px, before looseness.
+    pub off: [f32; 2],
+}
 /// The knots of a rest path (`thread` draws them): up to `knot_count` vertices of the line where the
 /// map's energy is highest (kept to the end, 80 px apart), the most energetic first and largest
 /// (`knot_r`), each next one smaller by `knot_fall` (1, `knot_fall`, `knot_fall^1.75`), with 64–100 % of
