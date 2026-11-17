@@ -175,6 +175,12 @@ material (DESIGN.md §1.30, `amenui::strand`) is plain at rest; loosened, an ele
 where the map has energy and trails off along its flow, then writes itself back (`Ui::strands()` lists the threads drawn; `Look::hold_ms`
 holds its pose for a beat). `El::trace(Trace { points, progress, weight, dash, gap, pull, stir, paint })` draws a long path by progress
 under any material, solid or dashed by arc length, pushed by the map and stirring it at its head.
+Materials are named for what they do (`dottr`, `halftonr`, `charr`, `smudgr`, `carvr`, `glitchr`, `scribblr`, plus
+`plain` and `near`); an old name such as `halftone` is refused and the error names the new one. Each is one WGSL file
+(`src/materials/<name>.wgsl`, its numbers in a header, its own numbers read as `mp(SELF, i)`): `amenui add material
+<name>` copies one, and `Look::material_source(name, wgsl, params)` adds a changed copy under a name of its own before
+the first window or `Offscreen` is made. `page.effect(Effect { material, response, scope })` puts a material, a response
+and a scope on any subtree in one line, and `el::wrap_text(src)` makes a page to read from plain text or Markdown.
 Small type: `.tracking(em)` spaces letters (laid out by parley); `.whisper()` is lowercase, 0.6 em, in the bundled Latin serif
 (`Font::Whisper`, `text::SERIF`). The annotation layer's scope-wide readouts (DESIGN.md §4.2–§4.3): `gaze::EDGE` edge notes (true values
 only: scope size, pointer, material and theme, loosest element, non-zero map nodes), `gaze::OSC` a waveform of the map's energy along one
@@ -218,7 +224,7 @@ cargo run --release --bin render -- --page recipe-form --audit --strict   # what
 wheel — `dx`, `dy`; text — `text`). The clock is fixed at 60 Hz from 0, so the same arguments give the
 same bytes. The tree (`--tree`, or `Ui::export_tree()`) has each element's key, kind, role and label,
 rect, text, material, response, legibility, focus / hover / press, scroll offset and looseness.
-`--material` takes `plain`, `dot`, `halftone`… (or a number), `--theme` takes `dark`, `light`, `paper`…
+`--material` takes `plain`, `dottr`, `halftonr`… (or a number), `--theme` takes `dark`, `light`, `paper`…
 `--audit` measures the frame (`amenui::audit`, DESIGN.md §1.31): text cut off, contrast by WCAG, glyphs over each other, text
 under 9 device px, a page that never settles; each finding names the element, the number and what to do.
 
@@ -230,6 +236,8 @@ cargo clippy --all-targets -- -D warnings    # no warnings allowed
 cargo run --release --bin render -- --help   # one frame + tree
 cargo run --release --bin sheet -- sheets    # contact sheets of the picture marks
 cargo run --release --bin amenui -- add dialog --to ../my-app   # copy a component (and what it needs) into a project
+cargo run --release --bin amenui -- add material smudgr        # copy a material's WGSL file (src/materials/smudgr.wgsl)
+cargo run --release --bin sheet -- --material scribblr --loose 1,0.5,0 --arrival --out s.png   # a material's sample sheet, checked
 ```
 
 The native window (`window`), the GPU pixel acceptance (`check`, lavapipe works), filmstrips (`film`) and

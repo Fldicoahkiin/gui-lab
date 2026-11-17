@@ -53,8 +53,10 @@ The Lab (`#lab`) is a grid of small live experiments, one file each in the websi
 - [scribblr](src/strand.rs): the thread material, plain at rest, loose ink as one line that knots and trails off and writes itself back; `El::trace` long paths, solid or dashed (`#material-scribblr`, `#stirr`)
 - [Edge notes and readouts](src/gaze.rs): `El::tracking`, `El::whisper()` in a small serif; `gaze::EDGE`, `OSC`, `LEVEL` read the runtime and the field map (`Ui::readout()`); the Loose Thread preset with `post.binary` and `post.invert` (`#style-loose-thread`)
 - [Text on a form](src/form.rs): `Pose::z` and `Pose::facing`, `El::form(FormFx)`, `form::Form` and `Form::hit`; `Ui::glyph_at` and `El::turn` hit what is drawn (`src/hit.rs`)
-- [Warm-up](src/render_warm.rs): `Renderer::begin`, `Warmup::step`, plain first and condensing into the look; `Ui::prepare` / `Ui::ready` (`src/warmup.rs`)
-- [Audit](src/audit.rs): `render --audit [--strict]`, `drive::audit`: text cut off, contrast, overlap, size, restlessness, each with a fix; `gaze::INK`
+- [Warm-up](src/render_warm.rs): `Renderer::begin`, `Warmup::step`, plain first, then the look arriving at rest and coming apart a little over 120 ms; `Ui::prepare` / `Ui::ready` (`src/warmup.rs`)
+- [Audit](src/audit.rs): `render --audit [--strict]`, `drive::audit`: text cut off, contrast, overlap, size, restlessness, text a material wears away, each with a fix; `gaze::INK`
+- [Materials as source](src/materials.rs): one WGSL file per material (`src/materials/<name>.wgsl`); `amenui add material <name>`, `Look::material_source`; `El::effect(Effect)` and `el::wrap_text` put one on existing text
+- [Sample sheets](src/sample.rs): `sheet --material <name> --loose 1,0.5,0 --arrival`, a material at several loosenesses and as it arrives, checked
 
 ## Pages
 
@@ -69,7 +71,7 @@ Every documentation page as Markdown, at `md/en/<page>.md` and `md/zh-Hans/<page
 - [The tree and messages](md/en/docs-tree-and-messages.md): After every message the runtime calls view(&state) once, gets a new El tree, compares it with the last by key and lays out again only what changed.
 - [Layout](md/en/docs-layout.md): Layout is taffy's flexbox and grid, in logical pixels; elements do not shrink unless asked.
 - [Text](md/en/docs-text.md): Text is set by parley and rasterised by swash; every atlas pixel holds coverage and the signed distance to the stroke, so every material draws a glyph by its…
-- [Materials and looseness](md/en/docs-materials.md): A material is how the second pass draws: plain, dot, halftone, ascii, print, lino, glitch, near, scribblr.
+- [Materials and looseness](md/en/docs-materials.md): A material is how the second pass draws: plain, dottr, halftonr, charr, smudgr, carvr, glitchr, near, scribblr.
 - [Ripple rules](md/en/docs-ripples.md): A press sends a front that by default reaches only the control pressed (Scope::Own); Scope::Container and Scope::Global reach further.
 - [Transforms](md/en/docs-transforms.md): Two kinds: a morph (Cmd::Morph: one element breaks into cells that fly onto another's shape) and a flow (Cmd::Flow: what two pages share moves to its new pla…
 - [Presets](md/en/docs-presets.md): A style preset is data: theme, material and its numbers, annotation, interaction character, how scrolling looks, and a transition program.

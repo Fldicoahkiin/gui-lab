@@ -42,7 +42,7 @@ A press or the pointer lens puts energy into the wave field; commands in the sta
 | Module | Responsibility |
 | --- | --- |
 | [`scene`](../../src/scene.rs) | Instances and the wave field: what the renderer draws |
-| [`render`](../../src/render.rs), [`shader.wgsl`](../../src/shader.wgsl) | wgpu: the G-buffer stage, the material stage, the annotation layer |
+| [`render`](../../src/render.rs), [`shader.wgsl`](../../src/shader.wgsl), [`materials`](../../src/materials.rs) | wgpu: the G-buffer stage, the material stage (each material a file in `src/materials/`), the annotation layer |
 | [`style`](../../src/style.rs) | Themes, materials, their parameters, `Look` |
 | [`preset`](../../src/preset.rs) | Style presets as serializable data, with their transitions |
 | [`post`](../../src/post.rs) | The finishing pass: bloom, chromatic offset, scanlines, grain, dither, palette |

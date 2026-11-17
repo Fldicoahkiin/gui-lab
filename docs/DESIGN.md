@@ -56,7 +56,7 @@ state, scroll it into view, such as the selected row), `fonts` (which face each 
 display, body and mono, uses in this subtree), `loose` (looseness at rest), `wipe` (the compare wipe
 line), and children. Text content carries its face (a role or a face directly), the pitch it is printed
 as pixels at, and the caret (drawn only while its control has focus); picture content carries the
-`PicFx` slot it uses. `El::map` turns a tree's messages into another type, so one application can be
+`Markr` slot it uses. `El::map` turns a tree's messages into another type, so one application can be
 embedded in another's view. A view is `fn(&S) -> El<M>` and an update is `fn(&mut S, M)` (Elm style;
 messages are plain values). A node without a key uses its path as its key. Also: `on_text`, `multiline`,
 `selectable` (§1.8.1), `cursor` (§1.8.2), `virtual_rows` (§1.13), `role`, `label` and the rest (§1.14).
@@ -129,7 +129,7 @@ first registered face (Noto Sans SC), so even the monospace face can show Chines
 ### 1.3 The scene (`scene.rs`)
 
 Three kinds of instance share one record (112 bytes): `rect`, `uv`, `paint` (tone, accent, opacity,
-kind; for a picture the accent bits hold its `PicFx` slot), `clip`, `extra` (border width, picture index
+kind; for a picture the accent bits hold its `Markr` slot), `clip`, `extra` (border width, picture index
 or a glyph's print pitch; looseness at rest; birth time), `look` (material override code; the accent's hue
 0/1/2; the box a height material measures height in, the top and height of the text line or the shape
 itself, in device pixels) and `resp` (how far the field may loosen it and how it pushes it, §1.15).
@@ -207,12 +207,25 @@ composite). A material is chosen as global plus per-instance override. Every par
 `Fx`, each with a name, a range and a step.
 
 There are nine (§1.6.2; `scribblr` was added later, §1.30). Under any material a picture turns into marks
-by its own `PicFx` slot, the slot being its instance override (`glitch` is the exception: it displaces the
+by its own `Markr` slot, the slot being its instance override (`glitchr` is the exception: it displaces the
 whole frame, but sampling inside a picture never leaves it). In `plain`, looseness `b` fades text and
 shapes to `mix(1, 0.3, √b)`: the square root makes the 0.35 looseness under a dialog visible.
 
 `El::material(id)` gives a subtree another material (the inner one wins when nested); it works under any
-global material.
+global material. `El::effect(Effect { material, response, scope })` puts a material, a response (§1.15) and a
+scope on a subtree in one line, leaving what is `None` as it is; a scope of `Scope::Container(None)` also makes the
+element the container, so the effect's fronts stay inside it. `el::wrap_text(src)` turns plain text or Markdown
+(the subset `markdown.rs` reads; a link shows as its text) into a page to read, 600 px wide and keyed `wrap/…`, so
+existing text takes an effect without being rewritten. Text to read under an effect stays legible (§1.15); a
+showcase marks it `legible(false)`.
+
+**Names.** A material that prints the page is named for what it does, the verb with an `r`: `dottr`, `halftonr`,
+`charr`, `smudgr` (ink that spreads, specks and falls out of register), `carvr`, `glitchr`, `scribblr`. `plain`
+(nobody's hand) and `near` (the mechanism laid open) are not printings and keep their names. The same rule names
+`Markr` (the picture marks, §1.6.1), `Dithr` (the finishing pass's dither, `post.dithr`), `Cmd::Ripplr` and
+`El::ripplr` (a front) and `El::wipr` (the compare wipe). There are no aliases: an old material name is refused,
+and the error names the new one (`style::RENAMED`); for any other unknown name the error gives the closest. Look recipes start with
+`look:v2:`; a `look:v1:` recipe, from before the names changed, is refused with the renames listed.
 
 ### 1.6.1 How a picture turns into marks
 
@@ -270,7 +283,7 @@ start-up with 6 mip levels and uploaded once):
   neighbouring tile at the edge, so strokes join into hatching.
 - Light points: a disc with radial falloff, radius and brightness growing with the level, soft-edged.
 
-**Parameters** (`PicFx`, one uniform struct; up to 8 sets, an instance picks one by the slot in `extra`):
+**Parameters** (`Markr`, one uniform struct; up to 8 sets, an instance picks one by the slot in `extra`):
 
 | Name | Meaning | Range |
 |---|---|---|
@@ -352,7 +365,7 @@ marks.
 | Strokes | Short lines following the gradient | orientation |
 | Mixed | A different mark set per region | regions |
 
-Three additional capabilities, all parameters in `PicFx`:
+Three additional capabilities, all parameters in `Markr`:
 
 1. **Palette limiting** (`palette`, `colours`). The cell's colour becomes the nearest colour of a palette.
    A palette is a 16×1 row; all palettes stack into one small texture and `palette` is the row; `colours`
@@ -371,7 +384,7 @@ Three additional capabilities, all parameters in `PicFx`:
 **The compare wipe** is an interaction, not a material: a draggable vertical line, `k = 0` on one side and
 `k = 1` on the other. It is a still, straight front expressed by the same field (the field gains a
 half-plane source, max-combined with fronts and limited to the picture's visible rect). A picture element
-gets it with `.wipe(position)`; dragging the picture (`on_drag`) moves it, and the position can be set
+gets it with `.wipr(position)`; dragging the picture (`on_drag`) moves it, and the position can be set
 exactly with a number control. The line itself is drawn one pixel wide in the accent colour.
 
 ### 1.6.2 The materials
@@ -389,20 +402,28 @@ sampled); value noise.
 | Material | At rest | Loose | Parameters |
 |---|---|---|---|
 | `plain` | As it is | Fades | — |
-| `dot` | Small dots on the ground that rise and fall with the field | Text breaks into dots by cell, dot size = the ink in the cell | (`Fx::pitch`) |
-| `halftone` | As it is | Rotated screen: each cell averages 4 points at its center, dot radius ∝ √(coverage × gain); cells switch one by one where `k(center) > 0.12 + 0.5 × hash`; with `split > 0`, three screens (15°/75°/0° plus `angle − 45°`) each take one colour channel, each offset by `split` | pitch, angle, separation offset, gain |
-| `ascii` | As it is | Each cell picks a character from the character mark set (the per-pitch set of §1.6.1) by the ink in the cell; at `k < 0.6` half the pitch, coarser as it loosens | pitch, levels, colouring (0 ink / 1 mono) |
-| `print` | Paper grain (two layers of noise, amplitude `grain × 2.75%`); accent ink is sampled separately at `(misreg, 0.6 misreg)` and overprinted with multiply on light grounds | Ink spreads outward along the outline by `spread × k × noise`, thresholded by noise into photocopy edges; specks on the paper, dropouts in the ink | grain, misregistration, specks, bleed |
-| `lino` | As it is | Ink and ground only: the outline moves by two layers of noise (the slow sway and chips of a knife); in a band of `band × k` on both sides of the outline, white wedge-shaped cuts of varying length tapering inward are carved inside, and broken ink lines along the outline are left outside | cuts, band, cut length, cut spacing, jitter |
-| `glitch` | As it is | Rows of height `slice`, hashed per beat of `hold` ms: some rows shift sideways, a few blocks repeat the block to their left, the RGB channels separate by `split × k`, a few rows invert; a `burst` (a rect the runtime puts in the field while a control is hovered or pressed, `Field::burst`) loosens it there too | row height, displacement, channel separation, hold, blocks |
+| `dottr` | Small dots on the ground that rise and fall with the field | Text breaks into dots by cell, dot size = the ink in the cell | (`Fx::pitch`) |
+| `halftonr` | As it is | Rotated screen: each cell averages 4 points at its center, dot radius ∝ √(coverage × gain); cells switch one by one where `k(center) > 0.12 + 0.5 × hash`; with `split > 0`, three screens (15°/75°/0° plus `angle − 45°`) each take one colour channel, each offset by `split` | pitch, angle, separation offset, gain |
+| `charr` | As it is | Each cell picks a character from the character mark set (the per-pitch set of §1.6.1) by the ink in the cell; at `k < 0.6` half the pitch, coarser as it loosens | pitch, levels, colouring (0 ink / 1 mono) |
+| `smudgr` | Paper grain (two layers of noise, amplitude `grain × 2.75%`); accent ink is sampled separately at `(misreg, 0.6 misreg)` and overprinted with multiply on light grounds | Ink spreads outward along the outline by `spread × k × noise`, thresholded by noise into photocopy edges; specks on the paper, dropouts in the ink | grain, misregistration, specks, bleed |
+| `carvr` | As it is | Ink and ground only: the outline moves by two layers of noise (the slow sway and chips of a knife); in a band of `band × k` on both sides of the outline, white wedge-shaped cuts of varying length tapering inward are carved inside, and broken ink lines along the outline are left outside | cuts, band, cut length, cut spacing, jitter |
+| `glitchr` | As it is | Rows of height `slice`, hashed per beat of `hold` ms: some rows shift sideways, a few blocks repeat the block to their left, the RGB channels separate by `split × k`, a few rows invert; a `burst` (a rect the runtime puts in the field while a control is hovered or pressed, `Field::burst`) loosens it there too | row height, displacement, channel separation, hold, blocks |
 | `near` | The G-buffer itself: iso-distance lines of the SDF (warm inside ink, cool outside), the outline, faint ink | A colour overlay where loose | spacing, fill |
 | `scribblr` | As it is (the shading stage is exact) | The fill fades and the ink becomes one thin line of constant width: along the outline → bridged into one stroke → wandering, knotting, throwing out tails; the thread is shape instances drawn in the G-buffer stage (§1.30) | line width, sampling, wander, knot, knot radius, tail, follow the map, angularity |
 
 Acceptance (`check` items 5 and 6): except `near`, every material at looseness 0 matches `plain` pixel for
-pixel in body text (`print` within its grain amplitude, ≤ 4/255 by default; `dot` compares only the glyphs'
+pixel in body text (`smudgr` within its grain amplitude, ≤ 4/255 by default; `dottr` compares only the glyphs'
 own pixels, since its ground has dots anyway), with a control showing the comparison sees a difference once
 loosened; in the light theme, no fully loosened picture under any material (including while a front passes)
 contains a page-background pixel.
+
+**Sample sheets that check themselves** (`amenui::sample`, `sheet --material <name> --loose 1,0.7,0.4,0.2,0
+[--theme <id>] [--arrival]`): one small page (a label, a large title, a rule and a picture loosened by `k`, a
+paragraph and a solid button) drawn at each looseness side by side, and with `--arrival` how the material arrives
+after the warm-up (plain, then 120 ms and 300 ms after it is ready). The sheet asserts what it should show and the
+tool fails otherwise: neighbouring cells differ, the fully loose cell of `scribblr` has a thread, the cell at rest
+is plain's frame byte for byte for a material whose rest is plain, and 120 ms after it is ready the material is on
+the page. `tests/sample.rs` draws every material's sheet, dark and light.
 
 **Weight** (`El::weight(px)`): a text instance carries an offset in device pixels in `extra.x`, and the
 G-buffer stage recomputes coverage from the signed distance in the glyph atlas (moving the outline out by
@@ -434,6 +455,34 @@ Both routes are needed:
 
 Acceptance: in screenshots of pixel fonts at 1× and 2×, stroke edges hold only two colours (ink and ground),
 with no grey fringe.
+
+### 1.6.4 Materials as source
+
+Each material is one WGSL file, `src/materials/<name>.wgsl`, and the material pass's shader is the framework's own
+(`shader.wgsl`) with every material's file put in at its place in id order (`materials::shader()`). A file begins
+with its name and its numbers, then its function:
+
+```text
+// @material smudgr
+// @param 纸纹 0.0 1.0 0.05 2 - 0.6        label, min, max, step, decimals, unit (- for none), default
+...
+fn m_smudgr(p: vec2f) -> vec3f { … mp(SELF, 0) … }
+```
+
+The header matches `style::MAT_PARAMS` (a unit test holds them equal), and a material reads its own two `vec4f`s
+of numbers as `mp(SELF, 0)` and `mp(SELF, 1)`. `registry.json` lists the materials under `materials`, and
+`amenui add material <name>` copies a file into a project. `Look::material_source(name, wgsl, params)` adds a
+material from source under a name of its own: it takes the next free id (9–15, `Material::Custom(id)`), its
+functions are renamed for the name (`m_<its header name>` becomes `m_<name>`, any other function `f` becomes
+`f_<name>`), `SELF` becomes its id, and the shader dispatches it on that id with `params` as its numbers. Materials
+are added before the first window or `Offscreen` is made (a renderer puts its shader together once; a material
+added later draws as plain there); adding a name again replaces its source and keeps its id. An added material's
+scroll trace is plain's, and its redraw region is the whole window (what it reads around a pixel is not known).
+
+Acceptance: the shader put together from the files was the shader of before, byte for byte, when the files were
+split out; `tests/add.rs` copies `smudgr` out with `amenui add material`, adds it back with `material_source` and
+draws the same frame as the built-in one, byte for byte; `tests/registry.rs` reads every material back by its name,
+refuses each old name with the new one in the error, and refuses a `look:v1:` recipe with `v2` in the error.
 
 ### 1.7 The annotation layer
 
@@ -639,7 +688,7 @@ drag is captured until release, and there is hover. A finger:
   `max_over` 140 px); a fling that reaches the end turns its remaining velocity into a little overscroll.
   Overscroll does not move the content out (there is no bouncing box); **what is at that edge loosens**:
   every element in the scrolling node has a looseness of at least
-  `0.85 × √(|over| / max_over) × (1 − distance from that edge / 160)`, so under `dot` the text at the bottom
+  `0.85 × √(|over| / max_over) × (1 − distance from that edge / 160)`, so under `dottr` the text at the bottom
   breaks into dots and under `plain` it fades. Pushing back first pays off the overscroll; on release it
   returns to 0 exponentially by `spring` (9 /s) and is removed below 0.5 px.
 - **A second finger** (a pinch): whatever the first finger was doing is abandoned (a held control is let
@@ -694,8 +743,8 @@ doesn't scroll, and the console has no errors.
 Text "aliasing and shimmering" while scrolling had five sources (the `scroll` tool's sample
 `scroll-before.png`: an article, ten thousand rows and the button page at 120 / 800 / 3000 px/s in six
 materials). Rows scrolling into view were treated as new instances and condensed from loose (in fast
-scrolling the whole screen was condensing: grey in `plain`, dots in `dot`, three-colour halftone in
-`halftone`, characters in `ascii`); this was the largest. The scroll offset was fractional, so a shape's two
+scrolling the whole screen was condensing: grey in `plain`, dots in `dottr`, three-colour halftone in
+`halftonr`, characters in `charr`); this was the largest. The scroll offset was fractional, so a shape's two
 edges rounded separately and its height jumped between n and n + 1, and glyph baselines rounded separately,
 putting rows a pixel out of line. The materials' lattices and noise (the dot ground, the paper grain, the
 halftone screen) were fixed to the screen, and text slid over them. Shapes' and glyphs' local and atlas
@@ -727,16 +776,16 @@ list page has number controls):
   are drawn only outside the ink, behind the direction of motion, a whole row at a time; the text itself
   stays as it is, so body text never passes the legibility cap:
   - `plain`: a soft trail (within half of `trail`, at most 0.14 opacity);
-  - `dot`: content lands on the lattice row by row (the content offset is rounded to the pitch before
+  - `dottr`: content lands on the lattice row by row (the content offset is rounded to the pitch before
     drawing, `latch`), leaving a few rows of phosphor dots behind (dot size by ink coverage, tinted toward
     the accent);
-  - `halftone`: the second colour (the accent) offset behind on a fine screen, by `misreg × strength`;
-    `print`: the accent offset behind with multiply, like misregistered two-colour printing;
-  - `ascii`: lands on the character cells (`latch` with the cell pitch), leaving a few faint characters
+  - `halftonr`: the second colour (the accent) offset behind on a fine screen, by `misreg × strength`;
+    `smudgr`: the accent offset behind with multiply, like misregistered two-colour printing;
+  - `charr`: lands on the character cells (`latch` with the cell pitch), leaving a few faint characters
     behind;
-  - `glitch`: an occasional whole band offset: band height `band`, at most once every `slip_ms`, one band
+  - `glitchr`: an occasional whole band offset: band height `band`, at most once every `slip_ms`, one band
     only, offset by `slip × strength`, with a chance equal to the strength;
-  - `lino`: a carved echo: a few broken ink-and-ground-only lines behind the direction of motion;
+  - `carvr`: a carved echo: a few broken ink-and-ground-only lines behind the direction of motion;
 - The numbers in presets: Normcore has no trail, Cyberminimalism a very short one, Dotmatrix and Linocut
   longer, Lo-Fi Print offsets by 4 px, and Glitch slips bands further and more often.
 - Drawing only what changed (§1.19): while a scrolling node's offset changes or its trace shows, its
@@ -849,7 +898,7 @@ drawn, takes no input and can't be hit until a morph reveals it; after the morph
 #### Particles
 
 **A particle is a cell.** A particle is one cell of the material lattice (device pitch
-`P = max(1.5, lattice × scale)`, the same grid as the `dot` material's), and has no colour of its own: it
+`P = max(1.5, lattice × scale)`, the same grid as `dottr`'s), and has no colour of its own: it
 shows what the source element drew in its cell, and on landing what the target draws in its cell. Both are
 read pixel by pixel from images: when a morph starts, the renderer runs the G-buffer stage once on its own
 for the source's and the target's instances (looseness 1, already born), giving four images (source
@@ -859,7 +908,7 @@ the cell it replaces and at progress 1 exactly the target's cell, whatever the m
 
 **Sampling (CPU, once per morph).** An element's instances, within their ink grown by `SPREAD` (the SDF's
 range), are cut into cells on the screen grid; each cell's coverage is the average of four points at the
-cell center ±P/4 (the way the `dot` material reads coverage): glyphs read the CPU copy of the atlas, shapes
+cell center ±P/4 (the way `dottr` reads coverage): glyphs read the CPU copy of the atlas, shapes
 compute distance on the CPU, pictures are 1; ink in the page background colour (tone and accent both 0) does
 not count as visible. Cells with coverage ≥ `threshold` fly; the rest are "dust" and stay in place, the
 source's dust fading out over the first 20% of its progress and the target's fading in over the last 20%.
@@ -968,7 +1017,7 @@ the hand-off, the target appears at looseness 1 without condensing, the end), re
 loosening; flow rects at t = 0 / ½ / 1, kept birth times, unpaired instances dissolving, a straight swap
 without a flow command; the commands of two website pages. `check`: the hand-off frame (source at looseness 1
 against particles at t = 0) and the landing frame (particles at t = 1 against the target at looseness 1),
-under `plain` and `dot`, differ by ≤ 2/255 per pixel within the elements' bounds (in fact 0); in the light
+under `plain` and `dottr`, differ by ≤ 2/255 per pixel within the elements' bounds (in fact 0); in the light
 theme mid-flight there are particles outside both elements (with a control). `film` gives samples for every
 pair × every material × seven moments, and the page change there and back at five moments each. The web
 version under WebGL2 captures three mid-flight frames on a virtual clock, all different, with no console
@@ -998,7 +1047,7 @@ window read back a frame for saving without presenting it).
 | A morph, a flow, an old page dissolving | `run`, `flows` or `ghosts` non-empty, or the one more pass due after the last animation ended (`animating`) |
 | Corner marks sliding or fading | Their position or opacity changed in the last `tick`; within 0.1 px of the target counts as arrived, and opacity above 0.995 counts as 1 and below 0.02 as 0, so slides end |
 | Annotations drawing in | `now < latest appearance time + draw_ms` |
-| Something loose under a time-varying material | `Material::time_varying()` (glitch) and some drawn instance has static looseness (by its own override material or the global one) |
+| Something loose under a time-varying material | `Material::time_varying()` (glitchr) and some drawn instance has static looseness (by its own override material or the global one) |
 | A timed wake is due | The caret's next blink phase (every `BLINK = 0.53` s from the caret's last move), or a time the state asks for through `Ui::on_wake(fn(&S, now) -> Option<f32>)` |
 
 Timing comes from the state: `Ui::on_look(fn(&S) -> Look)` lets the runtime read `wave_life`,
@@ -1007,10 +1056,10 @@ Timing comes from the state: `Ui::on_look(fn(&S) -> Look)` lets the runtime read
 frame while it runs and the sound plays; the morph scene in a loop wants the moment its current shape has
 been held long enough; otherwise `None`.
 
-**The material clock.** Glitch's row slips on a beat of `hold` ms and the drifting dots on dot's ground used
+**The material clock.** Glitchr's row slips on a beat of `hold` ms and the drifting dots on dottr's ground used
 to read real time, so a still page kept changing. Now they read the material clock in `fa.y`,
 `Ui::material_clock()`, which advances at a `tick` only if something was moving the moment before
-(`moving_at`). So a still page is an unchanging picture; when a front passes, dot's ground drifts as before
+(`moving_at`). So a still page is an unchanging picture; when a front passes, dottr's ground drifts as before
 and then stops where it is. Real time is still used for births, fronts and bursts, which end by themselves.
 
 **Web** (the website's `web/page.html`): `frame(t)` first `tick`s, draws only if needed, and returns when the
@@ -1079,8 +1128,8 @@ Then the full-resolution `fs_material_up` decides per pixel:
 
 - **Pixels at rest** (`rest_at(p)`: on a picture `pic_k(p) = 0`; elsewhere `kt(p) < 0.02`, no burst, lens
   < 0.02) are recomputed by the material at full resolution (`shade(p)`). For materials that equal `plain` at
-  rest, that just reads the coverage buffer; for materials with a look of their own at rest (dot's ground,
-  print's grain, `near`), their resting look is at full resolution too. So a still page is identical pixel
+  rest, that just reads the coverage buffer; for materials with a look of their own at rest (dottr's ground,
+  smudgr's grain, `near`), their resting look is at full resolution too. So a still page is identical pixel
   for pixel to `q = 1`, and text is always sharp.
 - **Loose pixels** take `lo`'s bilinearly filtered colour. Loose things (marks, scattered dots, carved cuts)
   are changing anyway, and half resolution doesn't show, so the cost drops to `q²`.
@@ -1235,20 +1284,20 @@ every glyph it passed into dots; with repeated presses the text stayed scattered
 **scope**, each element has its own **response**, text and controls have a **legibility cap**, and fronts from
 the same element **don't stack**.
 
-**Scope** (`el::Scope`, `El::ripple(Scope)`, inherited by the subtree):
+**Scope** (`el::Scope`, `El::ripplr(Scope)`, inherited by the subtree):
 
 | Scope | Reaches | When |
 |---|---|---|
 | `Own` | The pressed element's own subtree | The default for a pressed control |
-| `Container(None)` / `Container(Some(key))` | The nearest ancestor marked `El::ripple_scope()` / the element with that key | An area whose contents should respond together (the styles page, the ripple section of the button page) |
-| `Global` | The whole window | Theme and material switches (commits), page changes (side rail items), `Cmd::Front` |
+| `Container(None)` / `Container(Some(key))` | The nearest ancestor marked `El::ripplr_scope()` / the element with that key | An area whose contents should respond together (the styles page, the ripple section of the button page) |
+| `Global` | The whole window | Theme and material switches (commits), page changes (side rail items), `Cmd::Ripplr` |
 | `Off` | No front | |
 
 A press on the page's empty space (no control beneath) sends nothing by default; only when an ancestor of
 the empty space sets a scope. In the runtime a scope becomes **one box per front** (`Field::scopes`, device
 pixels, the element's rect intersected with its clip): in the G-buffer stage an instance is pushed and
-loosened only by fronts whose box contains its center (`in_scope`); grounds without instances (dot's ground
-dots, glitch's row slips) test per pixel whether they are in the box. Boxes are used rather than a scope index
+loosened only by fronts whose box contains its center (`in_scope`); grounds without instances (dottr's ground
+dots, glitchr's row slips) test per pixel whether they are in the box. Boxes are used rather than a scope index
 per instance because an instance is in several scopes at once (the button's subtree, its area, the window) and
 one index can't express that; testing by center is exact for "own" and "an area" (children's centers are
 inside their ancestors' boxes), at the cost of 8 more vec4s in the uniforms.
@@ -1283,7 +1332,7 @@ that are not a single legible block (`resp.y` < 1.5), and that neither they nor 
 the pointer (no press, drag, `on_pick` or `on_move` handler): a pointer there is there to use it, not to look at
 its material. Eligible instances get `resp.w = 1`, and the G-buffer stage's `own_loose` adds the lens to their
 looseness up to their cap; text, shapes, drawings (`canvas`) and controls are never touched; the page's ground
-(dot's ground cells) follows the lens as before. Previously, pictures added the lens in the shading stage no
+(dottr's ground cells) follows the lens as before. Previously, pictures added the lens in the shading stage no
 matter what, and 3D elements in the G-buffer stage, so decoration such as the card stack's cards and charts
 darkened under the pointer. Acceptance: `check` item 15 (partial redraw stays byte-identical with the lens on
 pictures and meshes). Dot's row slips act only where `near.b > 0`, so text that is only nudged doesn't slip.
@@ -1368,7 +1417,7 @@ text.
 time and position, the cells are in the scene and frames are wanted; changing to "Count 21" halfway still
 recomposes only those two characters; after the flight no glyph is hidden, there are no cells, nothing
 condenses and `needs_frame` is false; text without a key is replaced directly; "9" → "10" recomposes both
-characters. `check` item 13: under `plain` and `dot`, for three pairs of strings ("19" → "20", a Chinese label
+characters. `check` item 13: under `plain` and `dottr`, for three pairs of strings ("19" → "20", a Chinese label
 with "9" → "10", "3.5 px" → "3.6 px"), the first frame is compared with an ordinary rendering of the old text
 and the last frame (after every cell has landed, before the end) with the new, over the whole window, pixel for
 pixel, with a difference of 0; halfway and both ends differ (control). `film <dir> ripple` produces three
@@ -1382,7 +1431,7 @@ readable structure and errors that say what is wrong.
 **`render`** (`src/bin/render.rs`, its core in `drive::render`, which the tests call directly):
 `render --page <page or recipe-name> --size 1280x800 --scale 1 --material <id> --theme <id> --at <ms>
 --events <file.json> --out out.png [--tree out.json] [--strict]`. In this repository the pages are the recipes
-(`recipe-form`); the website's `render` also opens its own pages (`button`, `material-dot`, `scene-morph`).
+(`recipe-form`); the website's `render` also opens its own pages (`button`, `material-dottr`, `scene-morph`).
 The clock is fixed: from 0 in steps of 1/60 s up to `--at`, each event put in at its time or the first step
 after it (in the order given), ending exactly at `--at`; there are no random numbers (every hash has a fixed
 seed). So the same arguments give a byte-identical PNG (`tests/render.rs`: the same renderer twice and a new
@@ -1464,20 +1513,20 @@ and colour by nearest: coverage comes from the silhouette distance (so the outli
 silhouette-plus-creases distance, the coverage buffer uses the shape encoding (`r = shade × tone × (1 −
 accent)`, `g = shade × accent`, the b code `hue × 0.15 + 0.07`: a shape, recognisable as a mesh), and `near.g`
 holds the normal code (1–9 / 255, below every picture marking). So every material draws 3D without extra code:
-creases are outlines in the SDF, `lino` carves along them, `near` draws their iso-lines. `ambient` keeps the
+creases are outlines in the SDF, `carvr` carves along them, `near` draws their iso-lines. `ambient` keeps the
 darkest face off the page background. With `Scene3d.picture = Some(slot)` it is drawn as a picture (the marks of
 §1.6.1, with its own ground).
 
-**ASCII by normal**: in a mesh's cells, the `ascii` material sets character density by shading; on creases
+**ASCII by normal**: in a mesh's cells, the `charr` material sets character density by shading; on creases
 (`|sd| < 0.75 P`) it draws strokes along the crease, and on faces turned sideways strokes across the slope
 (`| / - \`, the nearest of four families, one stroke `max(1, 0.14P)` wide), in the proportion
-`ascii_normal_weight` (ascii's 4th parameter, 1 by default).
+`ascii_normal_weight` (charr's 4th parameter, 1 by default).
 
 **Marks by depth** (`Look::marks: Marks { depth_scale, depth_dim }`, both 0 by default, also in presets): the
 mesh pass multiplies shading by `1 − depth_dim × far` and tone by `1 − depth_scale × far`, `far` being where this
 instance's view-space depth lies between the scene's nearest and farthest (`Scene3d::depth_range`: each
-instance's center plus and minus its bounding radius); materials that size and space marks by ink (`dot`,
-`halftone`, `ascii`, picture marks) therefore draw smaller and fainter far away. This is not a second route that
+instance's center plus and minus its bounding radius); materials that size and space marks by ink (`dottr`,
+`halftonr`, `charr`, picture marks) therefore draw smaller and fainter far away. This is not a second route that
 changes cell size by depth: the cells are still the one screen-wide grid (§1.6.1); what changes is the ink in
 them. The 3D page's mechanism can use 0.45 and 0.35. `check` item 17 (formerly item 19): with both at 0 it is
 byte-identical to off; turned on, more than 500 pixels far away darken and fewer than a tenth of that many
@@ -1527,17 +1576,17 @@ copied whole to the target each frame (the web swap chain gives a new image ever
   new pointer), bursts, the wipe line's rect and changed instances of the annotation layer.
 - The whole screen: the look changed (theme, material, parameters…), the window changed, a commit is showing,
   particles are flying, the low-resolution pass is being drawn, or a material that reads the material clock
-  (`dot`, `glitch`) is in use and the clock moved.
+  (`dottr`, `glitchr`) is in use and the clock moved.
 
 **The material clock** now follows only the field (fronts, commits, condensing, morphs, flows, recomposition,
 flings and overscroll, something loose under a time-varying material); hover bursts, sliding corner marks and
-annotations drawing in no longer advance it, since otherwise one hover would set dot's ground drifting across the
+annotations drawing in no longer advance it, since otherwise one hover would set dottr's ground drifting across the
 whole window and force a full redraw.
 
 **What pointer movement costs**: moving the pointer neither lays out nor shapes text. Parallax uses
 `El::shift(dx, dy)` (the whole subtree moves after layout, outside taffy's styles); the lens is counted in the
 boxes only where it can reach: beyond `dirty::LENS_REACH` (2.2) radii from the pointer its bell is below 0.01,
-picture pitch and dot ground dots don't change, and only on pictures, 3D elements and under `dot` (other
+picture pitch and dot ground dots don't change, and only on pictures, 3D elements and under `dottr` (other
 materials' grounds don't read the lens); picture marks' read range is added only when a picture changed; the
 annotation layer is compared as a set (those that appeared and disappeared), so one more character in a label
 doesn't make everything after it count as changed. `Ui::dirty_inputs` gives, without a GPU, the inputs the
@@ -1551,7 +1600,7 @@ whole scope and don't fit in one box, so such pages aren't measured for area.
 **Acceptance**: `check` item 15: on the button page, hover, press (with a front and the count recomposing) and
 move away, 48 frames per material; the picture page and the 3D page (the lens on a picture and a mesh) in
 several materials; the floating box dragged, thrown and settling into a corner, 90 frames per material, with
-`plain` and `dot` again at 2× scale; every frame drawn by boxes is byte-identical to the full frame, with a
+`plain` and `dottr` again at 2× scale; every frame drawn by boxes is byte-identical to the full frame, with a
 control: most frames' boxes are less than half the window. The dirty section of `bench` (§9).
 
 ### 1.20 Languages
@@ -1607,14 +1656,14 @@ starts from the right.
 
 ### 1.21 The finishing pass: post effects, dithering and palettes
 
-**Data** (`src/post.rs`, serde, in a preset's `post`, and therefore in `look:v1:` recipes; old presets without
+**Data** (`src/post.rs`, serde, in a preset's `post`, and therefore in `look:v2:` recipes; old presets without
 the field have everything off): `PostSpec { bloom, chroma, scanlines, grain, vignette, curvature, dither,
 palette }`, each a number with a default, all off by default: `Bloom { strength 0, threshold 0.7, radius 8 }`,
 `Chroma { offset 0 }` (logical px; red and blue each offset that much outward from the center),
 `Scanlines { strength 0, period 3 }`, `Grain { amount 0, size 1 }` (fixed grain that doesn't crawl over time: a
 still page is an unchanging picture), `Vignette { strength 0, radius 0.55 }` (a fraction of the half diagonal),
 `Curvature { amount 0 }` (a point at distance d from the center shows what is at `d × (1 + amount × d²)`, black
-outside the frame), `Dither { kind, levels 4, strength 1 }` and `Palette { kind, colors }`. `Look::post` is its
+outside the frame), `Dithr { kind, levels 4, strength 1 }` and `Palette { kind, colors }`. `Look::post` is its
 fixed-size form (palettes of at most 16 colours).
 
 **The order is fixed**: bloom → chromatic offset → scanlines → grain → vignette → curvature, then quantization:
@@ -1622,7 +1671,7 @@ dither and palette. Curvature is the last thing done to the image, so the shader
 every earlier step reads at the mapped position; dithering uses the screen's own pixels. Quantization happens in
 sRGB (with an sRGB swap chain the colour is converted there and back).
 
-**Dithering** (`DitherKind`): `bayer2`, `bayer4`, `bayer8` (recursive Bayer matrices); `blue_noise`: not a real
+**Dithering** (`DithrKind`): `bayer2`, `bayer4`, `bayer8` (recursive Bayer matrices); `blue_noise`: not a real
 blue-noise mask (that would need a texture or void-and-cluster at start-up) but the R2 low-discrepancy sequence
 `fract(0.7549 x + 0.5698 y)`, as even and textureless; `atkinson_like`: real error diffusion runs pixel after
 pixel and doesn't fit one fragment pass, so this is an ordered stand-in: 4×4 Bayer thresholds squeezed into
@@ -1657,7 +1706,7 @@ grain and vignette; the Loose Thread style page has black-and-white-only and inv
 
 **Acceptance**: unit tests in `post.rs` (Bayer thresholds are a permutation, 2×2 is the classic 0 2 / 3 1,
 Atkinson-style thresholds lie in 1/8–7/8, palettes, JSON round trips, all off by default); `preset.rs` (recipes
-round-trip `post.dither.levels`; old presets without the field read as all off); `check` item 17 (formerly item
+round-trip `post.dithr.levels`; old presets without the field read as all off); `check` item 17 (formerly item
 19): at strength 0 byte-identical to off; each effect turned on alone changes the picture, and the same frame
 drawn twice is byte-identical; after two-level dithering every channel is only 0 or 255; for every fixed palette
 and one user palette under four dithers, every pixel is a palette colour (±1/255; control: most pixels are not
@@ -1724,8 +1773,12 @@ the morph tiles' and the mesh pass's pipelines; `Progress { done, total, stage }
 (`Stage::Plain`, `Pipelines`, `Ready`). Until the atlas and the finishing pass are made, frames are drawn in the
 plain look (`render::plain`: material plain, no finishing pass, no material overrides). Rule 3 of §0 says a page at
 rest is plain, so this is the same page arriving early, not a lesser one; on the frame the look is ready, the page
-condenses into it (`Ui::condense_all`) with the preset's own timing, each element from no looser than its cap: text
-to read and controls only nudge, decoration and pictures condense from loose. `Renderer::new` is the same thing
+arrives at rest and then comes apart a little and condenses (`Ui::condense_all`): over `ui::RAMP` (120 ms) each
+element loosens from 0 to its cap, then condenses from there with the preset's own timing. Text to read and
+controls only nudge; decoration and pictures come apart and condense. The frame the material arrives in is the
+page at rest, so it differs from the plain frame before it only where the material has a look of its own at rest
+(`tests/warmup.rs`: under 2 % of the pixels for `dottr`, whose ground has dots), and no element's looseness changes
+by more than 0.2 from one frame to the next at 60 Hz. `Renderer::new` is the same thing
 done in one go, for offline rendering and tests, with the same bytes; `Offscreen::try_warming` is an offscreen
 target that warms up. On the web the shell calls `step` once a frame.
 
@@ -1752,9 +1805,9 @@ Hovering or pressing a card (a 3D element's `Pick`) turns the n-th card beneath 
 `angle0 × falloff^n` degrees, starting after `delay_ms × n` ms, each with its own spring with velocity hand-off
 (§1.8.4), about its own bottom-left corner; the cards above stay. A press keeps it fanned, Esc closes it, and the
 arrow keys change card. The cards are one `scene3d` (a cube each), so their look follows the material
-(`StackLook::of`): under `plain` they are flat cards seen face on (an orthographic camera); under `print` and the
-like they have thickness, seen from above at an angle, outlined, in two tones, with visible edges; under `dot`,
-`ascii` and `halftone` they are flat cards handed to the mark material and held at looseness 1, so they are marks
+(`StackLook::of`): under `plain` they are flat cards seen face on (an orthographic camera); under `smudgr` and the
+like they have thickness, seen from above at an angle, outlined, in two tones, with visible edges; under `dottr`,
+`charr` and `halftonr` they are flat cards handed to the mark material and held at looseness 1, so they are marks
 even at rest. The formula caption under the page prints this moment's `angle(n)` and `delay(n)`. Acceptance: unit
 tests in `card_stack.rs` (the formula, the order of delays, holding, Esc, the look by material); `tests/stack.rs`
 (the pointer picks the top card, at 40 ms cards 1 and 2 have started and card 3 hasn't, after stopping each card
@@ -1943,7 +1996,7 @@ backwards and leaves nothing at the end).
 
 Where something has moved, a short trail follows it: dragging, throwing and settling the floating box, the bottom
 sheet rising, the card stack fanning; the decoration it passes loosens a little and drifts a few pixels along the
-direction of motion, then returns; ground dots (`dot`) lean that way and grow a little. A second or so after
+direction of motion, then returns; ground dots (`dottr`) lean that way and grow a little. A second or so after
 release, the page is identical pixel for pixel to how it was before and wants no more frames. This is part of rule
 2 (one way to move: the field), not a new animation.
 
@@ -1979,8 +2032,8 @@ release, the page is identical pixel for pixel to how it was before and wants no
   `Nudge`, up to 0.15 for legible text, up to 1 for decoration. The vertex stage translates by the flow at the
   center, `flow × drift × scale`, only for instances that fronts push; pictures and 3D elements are not translated
   (they loosen in place, so the page ground never shows inside a picture's box as a trail passes, `check` 19.5).
-  The shading stage: dot's ground dots add `fmap_e` to their swell and the lattice leans along the flow by at most
-  half a pitch; glitch's row slips take `fmap_e` as looseness on the ground (not on ink). Other materials' grounds
+  The shading stage: dottr's ground dots add `fmap_e` to their swell and the lattice leans along the flow by at most
+  half a pitch; glitchr's row slips take `fmap_e` as looseness on the ground (not on ink). Other materials' grounds
   hold nothing at rest and add nothing. The CPU model `Ui::looseness` adds the same bilinear value (reading the
   quantized bytes) into the same rule.
 - **What doesn't read it**: the subtree of the element leaving the trail, recomposition cells in flight, morph
@@ -2018,7 +2071,7 @@ the box itself 0; after release and settling into a corner, the map is all 0 wit
 under Normcore the map is never written and two seconds draw 0 frames; a press without a drag doesn't stir; with
 reduced motion the flow stays 0; `Cmd::Stir` in its element and path forms); `tests/render.rs` (the same arguments
 with a drag rendered three times are byte-identical); `check` item 19; `bench … map` (one step plus upload at
-1280 × 800 within 0.2 ms); `craft <dir> stirr` (eight frames each in `plain`, `dot`, `print` and `glitch`).
+1280 × 800 within 0.2 ms); `craft <dir> stirr` (eight frames each in `plain`, `dottr`, `smudgr` and `glitchr`).
 
 ### 1.30 The thread material `scribblr` and long paths
 
@@ -2055,19 +2108,27 @@ glyphs fill in. Text to read and controls never become thread and always stay as
   (patches of about 60 px, differentiated analytically, length at most 1, so a whole word drifts together), and `J`
   is a hashed direction per half line height along the path (length 0.3–1), eased between cells and seconds, so
   vertices a chord apart go their own ways and those between them follow. (4) Knots: `clamp(round(path length / 200),
-  1, 3)` per element, at the vertices kept to the end where the map's energy is highest, at least 80 px apart; each
-  knot has `round(40·knot·e·k)` points, point j at `center + knot_r·k·(0.35–1)·(cos a_j, sin a_j)`, with `a_j`
-  advancing 2.2–2.9 radians each time, so every segment is a chord through the center, tangling into a star, and the
-  line returns to the center and goes on. (5) Two tails: the one at the end follows the flow there (or, when the
+  1, 3)` per element, at the vertices kept to the end where the map's energy is highest, at least 80 px apart
+  (`strand::knot_plan`). They are a primary and its seconds: the most energetic is the largest (`knot_r`), each next
+  one smaller by `knot_fall` (1, `knot_fall`, `knot_fall^1.75`); each centre sits off the line by 0.5–0.9 of the
+  largest radius, above and below in turn. The largest has `round(36.7·knot·e·k)` points (22 at the defaults, fully
+  loose), the others 64–100 % of that; point j turns 2.2–2.9 radians about the centre from the last, so every
+  segment is a chord through it; most points are at `r × (0.3–1)`, `escape` of them at `r × (1.5–2)`, and the whole
+  knot is stretched along a hashed way (1.15 against 0.87), so it is lopsided. The line returns to the centre and
+  goes on. (5) Two tails: the one at the end follows the flow there (or, when the
   flow's way reaches less than six tenths as far as the farthest way, the farthest way); the one at the start takes
   whichever of 8 directions reaches farthest without running the same way as the end tail, joined backwards to the
   line's start. Their length is at least `max(tail, 0.6 × the scope's long side)` and enough to reach the scope's
-  edge; they are mostly straight, bending alternately by about `0.12 × length` at a quarter, a half and three
-  quarters, so there are three or four clear turns; directions are read at the rest points, and every point draws
-  back in proportion to `k`. Leaving the scope box, the last segment is cut at the edge, and a tail stops before the
+  edge; they are long and flat: straight pieces with `tail_turns` gentle bends (each 12–25°, at about even places,
+  one way then the other, so a tail never strays more than 25° from its way); every point draws back in proportion
+  to `k`. Tails, and the long line once drawn, are at `tail_tone` (0.5) of the line's opacity, and knots are whole:
+  bright knots on quiet lines, so the density reads. Leaving the scope box, the last segment is cut at the edge, and a tail stops before the
   box of text to read or a control (and before calm boxes). (6) With `angular` below 1, corners are cut once
   (`q = 0.25·(1 − angular)`). The line's opacity is `smoothstep(0, 0.12, k)`, bridges, knots and tails
-  `smoothstep(0.1, 0.3, k)`, and its width is `weight` throughout. At `k = 0` there are no thread instances (rule 3
+  `smoothstep(0.1, 0.3, k)`, and its width is `weight` throughout. The looseness the thread shows is `strand::shown(k)`:
+  the same at the ends, but it hurries through 0.15–0.4 (crossed while `k` goes from 0.22 to 0.30), where a
+  half-drawn letter and a few loose lines look neither like text nor like a thread, and a held pose (`hold_ms`) is
+  never worked out inside that band (`strand::held`): drawing back from 1 to 0 spends at most 8 frames there. At `k = 0` there are no thread instances (rule 3
   holds by construction).
 - **Text to read and controls** (`legible`) don't become thread, their fill doesn't fade, and the map's flow
   doesn't push them (under `scribblr` their instances loosen in place in the G-buffer stage, `look.w` = 1). Rule 3 in
@@ -2094,7 +2155,8 @@ glyphs fill in. Text to read and controls never become thread and always stay as
   The `#stirr` page's "Draw a line" button draws a looping dashed line through the area.
 - **Numbers** (row 9 of `MAT_PARAMS`): `weight` 0.5–3 (1), `grain` 1–6 (2), `reach` 0–64 (40), `knot` 0–1 (0.6),
   `knot_r` 4–120 (48), `tail` 0–1200 (480), `pull` 0–2 (1), `angular` 0–1 (0.9); `Look::hold_ms` 0–500 (0, a
-  preset's `interaction.hold_ms`).
+  preset's `interaction.hold_ms`). The thread's shape (`strand::ThreadShape`, in `StrandFx`): `knot_fall` 0.3–1
+  (0.55), `escape` 0–4 (2), `tail_turns` 1–6 (3), `tail_tone` 0.2–1 (0.5). `strand::figure` uses the same.
 - **A drawn tangle** `strand::figure(seed, r, above, below)`: the same knots and tails generated once from a fixed
   seed (one knot of radius `r` and one line passing through it top to bottom, `above` long above the knot and
   `below` long below), not reading the map, for use as page content (`El::trace`, §4.4).
@@ -2111,16 +2173,19 @@ Acceptance: unit tests in `strand.rs` (no segments at `k = 0`; at `k` up to 0.3 
 of the outline, even with the map moving; the ends join; the vertex ranking is nested, with a chord's ends ranked
 before the vertices that slide onto it; fully loose, segments are at most 15% of the vertex count with a median
 segment length of at least 24 px, and over 30 frames from 1 back to 0 no vertex moves more than `reach / 6` per
-frame; 1–3 knots, each with at least 20 segments, a median segment length of at least `0.8 × knot_r` and at least
-40 crossings, with a knot radius of at least `0.5 × knot_r` at looseness 0.5; two tails: the end tail's ends at
-least 300 px apart, stopping within 8 px of the scope's edge, with 2–5 turns, the start tail at least half as long,
+frame; 1–3 knots, the largest at least 1.6 times the radius of the next, the longest chord of each at least 1.8
+times its median, the centres not all the same distance from the line, with a knot radius of at least
+`0.5 × knot_r` at looseness 0.5; every tail turning by more than 10° at no more than `tail_turns` places, each turn
+at most 25°; two tails: the end tail's ends at
+least 300 px apart, stopping within 8 px of the scope's edge, the start tail at least half as long,
 neither entering the box of text to read, and the end tail at least 100 px long at looseness 0.33; nothing outside
 the scope box; within budget; the same input gives the same bytes; `figure` twice is the same, its height is
 `above + below`, and its knot has 24–60 segments; a segment cut at several boxes keeps the parts outside them;
 dashes are `dash` long each, earlier segments don't change as more is drawn, and `dash = 0` is solid);
 `tests/strand.rs` (no thread and no frames at rest; dragging the box past a large heading makes thread, one line,
 with tails running with the flow; text to read has no thread, its instances' opacity and position unchanged and not
-pushed by the flow; once stopped the thread is gone and no frames are wanted; at budget scale 0.25 it is still one
+pushed by the flow; drawing a title back from 1 to 0 at 60 Hz, at most 8 frames show a looseness in 0.15–0.4;
+once stopped the thread is gone and no frames are wanted; at budget scale 0.25 it is still one
 line; recomposing text has no thread; with `hold_ms` 83 the same beat is identical and different beats differ, with
 0 every frame differs; "回" is four rings (two boxes with inner and outer edges each) with three bridges; neither
 end of a morph has thread; "Loose thread" at 64 px fully loose without knots or tails: segments at most 15% of the
@@ -2154,15 +2219,21 @@ Everything is measured; each `fix` is one sentence to act on, naming the element
 | `Contrast` | per line of text, the strongest ink pixel against what is drawn under it (WCAG 2) | text to read below 3:1 P0, below 4.5:1 P1; a lone mark (no letter or digit, such as › or −) below 3:1 P1; text not to read below 3:1 P3 |
 | `Overlap` | the share of a glyph's ink covered by another drawn glyph, in one element or between two to read | text to read over 10 %: P1; posed text over its `overlap` + 0.05: P2 |
 | `Small` | the drawn height of text to read (size × scale × the pose's vertical scale) | under 9 device px: P1 |
+| `Eroded` | at looseness 0, the ink pixels (differing from the ground by at least 24 and by at least half the line's contrast) inside each text-to-read ink box, against the same page drawn in `plain` | under 85 % of plain's: P1 |
 | `Restless` | after the last input, the clock run on at 60 Hz: still asking for frame after frame 2 s later with nothing visible marked `El::ongoing()` (a timed wake now and then, such as a caret's blink, is not restless) | P1 |
 
 Posed text dimmed by depth on purpose is read by its nearer half; the smallest size of posed text is its 10th
-percentile among the glyphs drawn at half opacity or more. A clipped finding suggests `reveal_by(Reveal::Word)`
-when a reveal cuts a word.
+percentile among the glyphs drawn at half opacity or more. A clipped finding says which side is cut, how far
+the ink reaches past it (px) and what cuts it (the clipping element's key, or the window), and suggests
+`reveal_by(Reveal::Word)` when a reveal cuts a word. The eroded check guards materials with a look of their own at
+rest (`near`, `charr`, and materials added from source); one whose rest is plain passes by construction.
 
 The annotation layer shows what the audit measures: `gaze::INK` draws the true ink's bounding box of an element
 (after transforms and poses) dashed, with a dotted leader from its layout corner to the nearest point of the drawn
-outline and an `INK w×h` label (`hit::ink_of`), from the same measure the clipping and overlap checks use.
+outline and an `INK w×h` label (`hit::ink_of`), from the same measure the clipping and overlap checks use. Tags
+and `INK` readouts never cover text to read or each other: each tries outside the ink box above at the left, then
+below, then to the right (`gaze::place_tag`), takes the first place that meets no text-to-read ink box and no other
+label, and when none is free only the box is drawn.
 
 What the audit found on the recipes, and what changed for it: `Paint::DIM` was 0.5 of the way from ground to ink,
 under 4.5:1 on the light theme (3.2:1); it is 0.66 (5.2:1 light, 6.9:1 dark). The light theme's accent was under
@@ -2175,7 +2246,8 @@ tick asked for a new view every frame forever; it asks only when a row changes.
 
 Acceptance: `tests/audit.rs` (five pages broken on purpose, each reporting its finding at its level: text past the
 window `Clipped` P0, grey on grey `Contrast` P0, two lines over each other `Overlap` P1, 6 px text `Small` P1, an
-element that never stops moving `Restless` P1, and not when it is marked `ongoing`; a calm page has no findings;
+element that never stops moving `Restless` P1, and not when it is marked `ongoing`; text a material wears away at
+rest `Eroded` P1; a calm page has no findings;
 the seventeen recipes in every material, dark and light, have no P0 or P1); `render --page recipe-form --audit
 --strict` exits 0.
 
@@ -2190,7 +2262,7 @@ Sliders are not the main means. The number control (`number`):
 
 Every parameter of `Fx` is exposed through it: the text pitch, irregularity, misregistration, wave speed, wave
 lifetime, wave width, trail length, push, lens radius and condensing time. The picture pitch and the other picture
-parameters are in `PicFx`, each with a number control as well.
+parameters are in `Markr`, each with a number control as well.
 
 ## 3. Components
 
@@ -2219,17 +2291,17 @@ background colour); unavailable is `.disabled(true)`.
 - **Annotation** is whether the third pass is on and what it draws.
 
 A style preset (`style::Style`, plain data; `style::styles()` gives ten) is: a theme, a material, that material's
-parameters, annotation settings, a looseness scale (Normcore's is 0.3), the text lattice pitch, and the `PicFx` for
+parameters, annotation settings, a looseness scale (Normcore's is 0.3), the text lattice pitch, and the `Markr` for
 pictures on the style page. The top bar's Style menu sets all of them at once, after which the theme and material
 menus work as usual; switching is a commit that spreads from the press. Opening a style page applies it too (its
 side rail item is a commit). The table is the design intent; the actual presets are in `styles()`:
 
 | Preset | Theme | Material | Annotation | How |
 |---|---|---|---|---|
-| Neo-Dotmatrix | Black, monochrome | `dot` | off | A global dot lattice; loosened, each dot's size is the ink beneath it |
-| Lo-Fi Print | Paper, two inks | `print` | off | Halftone dots, misregistration, paper grain, ink bleed (thresholding the SDF) |
-| Glitch | Black | `glitch` | off | Band slips, channel separation, block displacement, holding the last frame |
-| Metamorphosis Linocut | Paper, monochrome | `lino` | off | Ink = a threshold of `SDF + noise`, edges like knife cuts; white cut along iso-lines; interpolating two states' SDFs is the morph |
+| Neo-Dotmatrix | Black, monochrome | `dottr` | off | A global dot lattice; loosened, each dot's size is the ink beneath it |
+| Lo-Fi Print | Paper, two inks | `smudgr` | off | Halftone dots, misregistration, paper grain, ink bleed (thresholding the SDF) |
+| Glitch | Black | `glitchr` | off | Band slips, channel separation, block displacement, holding the last frame |
+| Metamorphosis Linocut | Paper, monochrome | `carvr` | off | Ink = a threshold of `SDF + noise`, edges like knife cuts; white cut along iso-lines; interpolating two states' SDFs is the morph |
 | Algorithmic / Digital Gaze | Black, monospace | any | on: boxes, numbers, confidence-style labels, tracking lines | The annotation layer |
 | Tech-Manual | Grid paper, black + one signal colour | `plain` + hatched fills | on: leaders, numbers, dimension lines | Another way of drawing the annotation layer |
 | Normcore | System grey, default sizes | `plain` | off | Only a theme |
@@ -2243,7 +2315,7 @@ are still there.
 ### 4.1 Presets are data, with their own transitions
 
 `preset::Preset` (serde, `to_json` / `from_json`): a name, the theme (by name) and its three faces, the material and
-its 8 numbers, annotation, the looseness scale, the lattice pitch, the pictures' `PicFx`, an **interaction
+its 8 numbers, annotation, the looseness scale, the lattice pitch, the pictures' `Markr`, an **interaction
 character** (`Interaction`: press feedback duration, front speed / width / lifetime, the default responses of text
 and controls and of everything else, recomposition parameters) and a **transition**
 (`Transition { duration_ms, steps: [Step; 4] }`). `Preset::apply(&Look)` gives the look (`Look::press_ms`,
@@ -2310,7 +2382,7 @@ are integers, so after turning glyphs still land on whole pixels and are not res
 
 Acceptance: `edge_notes_say_what_is_true_now` in `tests/gaze.rs`: every line equals the runtime's current value
 (scope, pointer, material and theme, `looseness("root")`, `fieldmap().nonzero()`), the hairline is at the scope's right
-edge, and every line is inside the scope without overlapping. `check` item 7.2 (`dot` and `plain` at 1×, `plain` at
+edge, and every line is inside the scope without overlapping. `check` item 7.2 (`dottr` and `plain` at 1×, `plain` at
 2×): the hairline is every row of the scope's last column, not the column outside, one device pixel wide between ticks;
 every pixel of the type is a mix between ground and annotation colour (within 2/255 under `plain`), each line has
 full-colour pixels, and over 30% of its ink is solid (coverage > 0.6). Item 7.3: at 1920 × 1080 and scale 1, over 30%
@@ -2413,7 +2485,7 @@ Written with the framework itself, it is an application and the web version's ma
   variant and state, wrapping, with a faint caption under each); parameters (the component's own numbers, changed with
   number controls); and the source (the component's file via `include_str!`, in the mono face with faint line numbers, in
   a scroll area, long lines wrapping under their own line number).
-- Mark pages: a picture in this mark set with a compare line, every number of `PicFx` editable, and a choice of picture.
+- Mark pages: a picture in this mark set with a compare line, every number of `Markr` editable, and a choice of picture.
 - One page per style preset, each a small composition of its own rather than the same sample in other colours: Gaze is a
   stream of boxed, measured pictures (filterable); Dotmatrix a departure board ticking every second; Lo-Fi Print a zine
   page; Glitch a title card that slips as you pass and a row of controls; Linocut a carved headline, a sun and a picture
@@ -2536,15 +2608,15 @@ style and two others, and in a 420 × 800 narrow window.
 |---|---|---|---|---|---|
 | 1 | `scene-opening` Opening | Neo-Dotmatrix | A screen full of dots (a passage made of ●) and a Start button. Pressed, the dots scatter into particles and gather into the title "The same mechanism", pause, then scatter again and assemble a page (title, search field, three picture cards, a switch, a number, a button, tabs). Then a "machine" operates the page on a beat: its mark is a pointer-like thing of about 34 px (a crosshair, four corner brackets, a center dot), framed by the annotation layer with its coordinates written beside it (`{xy}`), which also frames the control it is on and writes what it is doing. Each step the mark flies from the last control to the next (a §1.10 morph with a large stagger, so it is a short string of particles), acting only after landing, with a front where it acts; it types into the text field (each glyph condensing), flips the switch, adds 4 to the number, changes tab and presses Publish. A line at the bottom says what it is doing ("02 / 09  typing"). Any press, scroll or key hands control to you: the machine stops, the mark disappears, and the bottom line becomes "You took over" and "Continue the demo". When the demo ends the page is an ordinary page. | Start (button, Enter); any action takes over; continue; every control on the page | beat, flight, arc, pitch |
 | 2 | `scene-reading` Reading an article | Lo-Fi Print | An article of about 900 words, the body set with `.around` around obstacles: a plaster bust silhouette (a picture with alpha), a circle, or both. Where an obstacle splits a line into two pieces, each piece takes a line. | Drag the bust and the circle (the arrow keys move them too, Shift × 4), the body breaks again at every step; a segmented choice changes obstacles | gap, picture width, font size, line height |
-| 3 | `scene-printing` How a picture prints | Cyberminimalism | A picture filling the whole stage (cropped to fit, centered), cut by four dividers into five windows, each the same picture in the same place with its own `PicFx` slot (characters, palette-limited pixel art, strokes following form, light points, brick relief); above each window its number, mark set and pitch. The character window reads clearly even on a dark ground: pitch at least 9, 16 characters, original colour brightened. Dividers sit in the gaps between windows and labels above the picture, so every pixel on the picture is the picture's own. At rest it is the original; the pointer's lens is hard-edged (`Fx::lens_hard`): fully loose within its radius, which is this window's real marks, and untouched outside, with no half-loosened blocks. A second mode, "One mark set": the whole picture is one window, with mark set, pitch, levels and palette set by number in the parameter bar, and a compare line (`El::wipe`) with the original on the left and the marks on the right, moved by dragging the picture or the dot under it. | Move the pointer; drag the dividers or move them with the arrow keys; five / one; change picture; drag the compare line | five: pitch, levels, lens, looseness; one: pitch, levels, mark set, palette |
+| 3 | `scene-printing` How a picture prints | Cyberminimalism | A picture filling the whole stage (cropped to fit, centered), cut by four dividers into five windows, each the same picture in the same place with its own `Markr` slot (characters, palette-limited pixel art, strokes following form, light points, brick relief); above each window its number, mark set and pitch. The character window reads clearly even on a dark ground: pitch at least 9, 16 characters, original colour brightened. Dividers sit in the gaps between windows and labels above the picture, so every pixel on the picture is the picture's own. At rest it is the original; the pointer's lens is hard-edged (`Fx::lens_hard`): fully loose within its radius, which is this window's real marks, and untouched outside, with no half-loosened blocks. A second mode, "One mark set": the whole picture is one window, with mark set, pitch, levels and palette set by number in the parameter bar, and a compare line (`El::wipr`) with the original on the left and the marks on the right, moved by dragging the picture or the dot under it. | Move the pointer; drag the dividers or move them with the arrow keys; five / one; change picture; drag the compare line | five: pitch, levels, lens, looseness; one: pitch, levels, mark set, palette |
 | 4 | `scene-morph` Morph | Neo-Dotmatrix | Four forms in the same place, the stage filling almost the whole window: a very large heavy word (`El::weight`), a picture, the same picture's marks (held at looseness 1) and a complete small interface (a card with a title, a picture, a sentence, a Favourite switch, a Copies number and a Go button). Every change of form is a §1.10 morph: the source loosens, particles fly, the target closes. Once the small interface lands it can be used; pressing Go turns it back into the word. A row of steps under the stage (01 word — 02 picture — 03 marks — 04 interface) jumps to the step pressed; a Loop switch makes it hold each form for 2.6 s and go on by itself. | Press the stage, Next, → / Space / Enter, ← to go back; jump by step; the Loop switch; the small interface's controls | flight, arc, stagger, pitch |
 | 5 | `scene-xray` Taking it apart | Tech-Manual | A small application (a title, a picture, a list, a button). While Space (or the "Hold to take apart" button) is held, the top layer flows away to the right, and in its place its outline layer (borders only) and the G-buffer layer (the `near` material, panels unfilled, since a filled panel would cover the SDF of everything above it) condense, each labelled with its name; the annotation layer frames the title, picture, list and button with numbers, names and sizes. On release the top layer flies back and the other two loosen and fade. In narrow windows the three layers stack vertically. | Hold Space or the button; a "Keep apart" switch | layer spacing, annotation count, iso-line spacing |
-| 6 | `scene-sound` Sound | Glitch | A generated signal (no audio input): a kick on every beat (a low band decaying exponentially), a snare on even beats, hats on the offbeat (a high band) and a chord in the mids, with a little grain by seed. The heights of 32 spectrum bars are the bands' levels, and loud bars loosen by level (scattering into dots under `dot`, slipping under `glitch`). Every beat sends a front from the bottom center of the page with strength = intensity × low band (no front at intensity 0, so the page doesn't move), and the field's push grows with it, so the whole page swells with the low end; fronts land only on the title, lyrics, spectrum and ground: the parameter bar, the play button and the top bar are `El::calm`, so fronts pass beside them without pushing or tearing. The title and four lines of lyrics (the current one larger) stay readable. | Play / pause (button, Space) | tempo BPM, intensity, low band, seed |
+| 6 | `scene-sound` Sound | Glitch | A generated signal (no audio input): a kick on every beat (a low band decaying exponentially), a snare on even beats, hats on the offbeat (a high band) and a chord in the mids, with a little grain by seed. The heights of 32 spectrum bars are the bands' levels, and loud bars loosen by level (scattering into dots under `dottr`, slipping under `glitchr`). Every beat sends a front from the bottom center of the page with strength = intensity × low band (no front at intensity 0, so the page doesn't move), and the field's push grows with it, so the whole page swells with the low end; fronts land only on the title, lyrics, spectrum and ground: the parameter bar, the play button and the top bar are `El::calm`, so fronts pass beside them without pushing or tearing. The title and four lines of lyrics (the current one larger) stay readable. | Play / pause (button, Space) | tempo BPM, intensity, low band, seed |
 | 7 | `scene-styles` Ten styles | Normcore | One interface (a weather card: a title, a picture, a paragraph, a button, a switch, a four-day forecast) and twelve style buttons. The buttons are commits: the new style spreads from where it was pressed. | Press a style button; ← → switch in turn | wave speed, wave width, trail length |
 
 Runtime interfaces added for the scenes: `Ui::on_unused_key` (keys nothing used go to the state: Esc, Space, arrows),
 `Ui::on_key_up` and `Ui::key_up` (the web page and the native window both forward key releases; the take-apart scene uses
-them), `Cmd::Front` (the state sends a front; the sound scene's beat), `Cmd::FrontAt` (a front from an element's center,
+them), `Cmd::Ripplr` (the state sends a front; the sound scene's beat), `Cmd::RipplrAt` (a front from an element's center,
 where the opening's machine acts), `Ui::on_input` (tells the state before every press, scroll and key from a person; the
 opening uses it to hand over), `El::calm` (up to four boxes that fronts pass beside without pushing or loosening; the
 scenes' parameter bars and the top bar), `Fx::lens_hard` (the lens's edge: 0 is the original bell, 1 fully loose within
@@ -2623,7 +2695,7 @@ language marking names the current language); `labsheet <dir> body` gives `body.
 |---|---|
 | The vertical slice: two-stage drawing, waves that follow outlines, one codebase for native and web | Done |
 | The skeleton: the element tree, taffy, parley, scrolling, clicks, focus, the number control | Done |
-| Picture marks (all of §1.6.1), pixel type (§1.6.3), themes and the `plain` / `dot` materials as data | Done: `cargo test`; `check` reads pixels back for §1.6.1 and §1.6.3; `sheet` samples every mark set |
+| Picture marks (all of §1.6.1), pixel type (§1.6.3), themes and the `plain` / `dottr` materials as data | Done: `cargo test`; `check` reads pixels back for §1.6.1 and §1.6.3; `sheet` samples every mark set |
 | Components and the gallery | Done: `cargo test` covers drag capture, text editing, the dialog's focus containment and closing, selection in tabs and lists, dragging sliders and number controls, disabled controls not responding, horizontal scrolling, commits, and page names matching pages; `pages` screenshots every page × theme × material and a few states (dialog, mid theme switch, page change, typing, narrow window); `check` still passes; the web version under WebGL2 opens pages by hash, opens and closes a dialog and types into a field |
 | Transforms: particles, shared parts flowing on page change | Done: see §1.10's acceptance |
 | The annotation layer and every material, twelve presets, showcase scenes | Done. Materials, annotation, presets, gallery pages: `cargo test` (with `tests/gaze.rs`), no `clippy` warnings, `check` items 5–7; `pages … materials` samples every material at looseness 0 / 0.5 / 1, the annotation page's four modes, every style page at rest and with a front passing, and two contact sheets; the web version under WebGL2 opens three style pages and two material pages without errors. Showcase scenes (§6): `cargo test` (with `tests/wrap.rs`, `tests/scenes.rs`), no `clippy` warnings, `check` items 8 and 9; `scenes` samples seven scenes × three styles, a narrow window and contact sheets; the web version under WebGL2 opens the list and the seven scenes and operates each once without errors |
@@ -2644,7 +2716,7 @@ src/el.rs        the description
 src/text.rs      shaping, multiple fonts, pixel fonts, the glyph atlas
 src/scene.rs     instance records, the field, Fx
 src/morph.rs     morphs and flows: parameters, sampling, pairing, particle records (no GPU)
-src/style.rs     themes, materials, PicFx, Look
+src/style.rs     themes, materials, Markr, Look
 src/marks.rs     the mark atlas and palettes (generated on the CPU)
 src/ui.rs        the runtime: layout, hit testing, focus, scrolling, birth times (no GPU)
 src/render.rs    wgpu: the intermediate buffers, the two passes

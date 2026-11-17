@@ -25,9 +25,11 @@ need to read stays legible.
   [taffy](https://github.com/DioxusLabs/taffy) (flexbox and grid), text is shaped by
   [parley](https://github.com/linebender/parley) at any size, and the layout is kept between updates so
   only what changed is laid out again.
-- **Materials.** `plain`, `dot`, `halftone`, `ascii`, `print`, `lino`, `glitch`, `scribblr` and a
+- **Materials.** `plain`, `dottr`, `halftonr`, `charr`, `smudgr`, `carvr`, `glitchr`, `scribblr` and a
   debugging view of the distance field. At rest, body text in every material is identical to `plain`;
-  a material shows when something loosens. Any subtree can use its own.
+  a material shows when something loosens. Any subtree can use its own, and `El::effect` puts a
+  material, a response and a scope on existing text (`el::wrap_text` reads plain text or Markdown).
+  Each material is one WGSL file you can copy, change and add back under a name of your own.
 - **Themes and style presets as data.** A theme is colors, three type roles, a type scale and line
   widths. A preset bundles a theme, a material and its numbers, the annotation layer, interaction
   character and a transition, and exports to JSON.
@@ -102,6 +104,7 @@ Copy components into your own project:
 
 ```sh
 cargo run --release --bin amenui -- add button dialog --to src/widgets
+cargo run --release --bin amenui -- add material smudgr   # src/materials/smudgr.wgsl; add it back with Look::material_source
 ```
 
 Run it in a native window (the `window` feature, on by default):
