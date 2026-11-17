@@ -46,8 +46,8 @@ fn every_material_reads_back_by_its_name_and_old_names_say_the_new_ones() {
     assert!(material_named("halftone").unwrap_err().to_string().contains("halftonr"));
     // A recipe from before the names changed is refused, and says which prefix recipes have now.
     let e = amenui::preset::Preset::from_recipe("look:v1:eyJiYXNlIjoibm9ybWNvcmUiLCJzZXQiOnt9fQ").expect_err("v1").to_string();
-    assert!(e.contains("v2") && e.contains("print → smudgr"), "{e}");
+    assert!(e.contains("v3") && e.contains("print → smudgr"), "{e}");
     let p = &amenui::preset::presets()[0];
-    assert!(p.recipe().starts_with("look:v2:"));
+    assert!(p.recipe().starts_with("look:v3:"));
     assert_eq!(amenui::preset::Preset::from_recipe(&p.recipe()).map(|q| q.hash), Ok(p.hash.clone()));
 }

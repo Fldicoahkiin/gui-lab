@@ -1,4 +1,4 @@
-//! Look recipes (DESIGN.md §1.11): a preset as the difference from the built-in one, `look:v2:` and
+//! Look recipes (DESIGN.md §1.11): a preset as the difference from the built-in one, `look:v3:` and
 //! base64url; every preset and an edited one go there and back unchanged; a wrong string says why;
 //! the gallery takes one from its address; the render tool's PNG carries one.
 use amenui::preset::{Preset, RECIPE_PREFIX, b64url, presets, un_b64url};
@@ -35,6 +35,9 @@ fn every_preset_round_trips() {
     assert_eq!(Preset::from_recipe(&back.recipe()).unwrap(), p, "stable");
     // Wrong strings.
     assert!(Preset::from_recipe("look:v2:abc").is_err());
+    // A recipe from before the beat is refused with the beat its held pose becomes.
+    let e = Preset::from_recipe(&format!("look:v2:{}", b64url(br#"{"base":"loose-thread","set":{"interaction.hold_ms":83}}"#))).unwrap_err().to_string();
+    assert!(e.contains("look:v3:") && e.contains("bpm: 240.96, steps: 3"), "{e}");
     assert!(Preset::from_recipe(&format!("{RECIPE_PREFIX}!!")).is_err());
     let e = Preset::from_recipe(&format!("{RECIPE_PREFIX}{}", b64url(br#"{"base":"nope","set":{}}"#))).unwrap_err().to_string();
     assert!(e.contains("nope"), "{e}");

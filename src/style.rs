@@ -579,9 +579,9 @@ pub struct Look {
     pub marks: Marks,
     /// The field map: trails of moving things, how they spread and settle (DESIGN.md §1.29).
     pub map: MapFx,
-    /// How long `scribblr`'s line holds a pose before it takes the next (ms; 0: every frame). Its width,
-    /// opacity and the fill's fade are not held (DESIGN.md §1.30).
-    pub hold_ms: f32,
+    /// The tempo (DESIGN.md §1.32): fronts, glitchr's held rows, scribblr's held pose and a transition's
+    /// steps fall on its steps. `bpm` 0 (the default) is off.
+    pub beat: crate::beat::Beat,
 }
 pub use crate::fieldmap::MapFx;
 /// How marks on a 3D element follow its depth: nearer parts get larger marks (`depth_scale`: the
@@ -609,9 +609,52 @@ impl Look {
     pub fn material_source(name: &str, wgsl: &str, params: MaterialParams) -> Result<Material, crate::error::MaterialError> {
         crate::materials::add(name, wgsl, params).map(Material::Custom)
     }
+    /// Set one number of the look by its name (DESIGN.md §1.32, `Cmd::Set`): `loose_scale`,
+    /// `legible_cap`, `loose_max`, `press_ms`, a field number (`fx.pitch`, `fx.wave_speed`, …), the beat
+    /// (`beat.bpm`, `beat.steps`, `beat.swing`), a material's number (`<material>.<name>` as
+    /// `MAT_PARAMS` names it, clamped to its range), or a switch of the finishing pass (`post.invert`,
+    /// `post.binary`), which `value` 1 turns over and 0 leaves as it is.
+    pub fn set(&mut self, name: &str, value: f32) -> Result<(), crate::error::LookError> {
+        let flip = |b: &mut bool| if value >= 0.5 { *b = !*b };
+        match name {
+            "loose_scale" => self.loose_scale = value.clamp(0.0, 4.0),
+            "legible_cap" => self.legible_cap = value.clamp(0.0, 1.0),
+            "loose_max" => self.loose_max = value.clamp(0.0, 1.0),
+            "press_ms" => self.press_ms = value.max(0.0),
+            "fx.pitch" => self.fx.pitch = value.max(1.0),
+            "fx.jitter" => self.fx.jitter = value.clamp(0.0, 1.0),
+            "fx.glitch" => self.fx.glitch = value.clamp(0.0, 1.0),
+            "fx.wave_speed" => self.fx.wave_speed = value.max(0.0),
+            "fx.wave_life" => self.fx.wave_life = value.max(0.0),
+            "fx.wave_width" => self.fx.wave_width = value.max(0.0),
+            "fx.wave_tail" => self.fx.wave_tail = value.max(0.0),
+            "fx.push" => self.fx.push = value,
+            "fx.lens" => self.fx.lens = value.max(0.0),
+            "fx.enter" => self.fx.enter = value.max(0.0),
+            "beat.bpm" => self.beat = crate::beat::Beat { bpm: value, ..self.beat }.clamped(),
+            "beat.steps" => self.beat = crate::beat::Beat { steps: value.round().clamp(1.0, 8.0) as u8, ..self.beat }.clamped(),
+            "beat.swing" => self.beat = crate::beat::Beat { swing: value, ..self.beat }.clamped(),
+            "post.invert" => flip(&mut self.post.invert),
+            "post.binary" => flip(&mut self.post.binary),
+            _ => {
+                let unknown = || crate::error::LookError::UnknownSetting { given: name.to_owned(), known: SETTINGS.join(", ") };
+                let (m, p) = name.split_once('.').ok_or_else(unknown)?;
+                let m = material_named(m).map_err(|_| unknown())?;
+                let id = m.id() as usize;
+                let table = MAT_PARAMS.get(id).copied().unwrap_or(&[]);
+                let k = table.iter().position(|q| q.name == p).or_else(|| p.parse::<usize>().ok().filter(|k| *k < table.len())).ok_or_else(unknown)?;
+                self.params[id].0[k] = value.clamp(table[k].min, table[k].max);
+            }
+        }
+        Ok(())
+    }
 }
+
+/// The names `Look::set` knows besides a material's numbers.
+pub const SETTINGS: [&str; 19] = ["loose_scale", "legible_cap", "loose_max", "press_ms", "fx.pitch", "fx.jitter", "fx.glitch", "fx.wave_speed", "fx.wave_life",
+    "fx.wave_width", "fx.wave_tail", "fx.push", "fx.lens", "fx.enter", "beat.bpm", "beat.steps", "beat.swing", "post.invert", "post.binary"];
 impl Default for Look {
-    fn default() -> Self { Self { fx: Fx::default(), theme: DARK, material: Material::Dottr, pics: [Markr::default(); 8], params: MaterialParams::all(), gaze: Gaze::default(), loose_scale: 1.0, quality: 1.0, overlay: 0, legible_cap: LEGIBLE_CAP, loose_max: 1.0, recompose: crate::morph::Recompose::default(), particles: crate::morph::Particles::default(), press_ms: 350.0, roles: [crate::el::Response::Nudge, crate::el::Response::Loosen], transition: crate::preset::Transition { duration_ms: 0.0, steps: [crate::preset::Step { kind: crate::preset::StepKind::None, from: 0.0, to: 0.0, a: 0.0, b: 0.0, c: 0.0, d: 0.0, e: 0.0 }; 4] }, scroll: Scroll::default(), post: crate::post::Post::default(), marks: Marks::default(), map: MapFx::default(), hold_ms: 0.0 } }
+    fn default() -> Self { Self { fx: Fx::default(), theme: DARK, material: Material::Dottr, pics: [Markr::default(); 8], params: MaterialParams::all(), gaze: Gaze::default(), loose_scale: 1.0, quality: 1.0, overlay: 0, legible_cap: LEGIBLE_CAP, loose_max: 1.0, recompose: crate::morph::Recompose::default(), particles: crate::morph::Particles::default(), press_ms: 350.0, roles: [crate::el::Response::Nudge, crate::el::Response::Loosen], transition: crate::preset::Transition { duration_ms: 0.0, steps: [crate::preset::Step { kind: crate::preset::StepKind::None, from: 0.0, to: 0.0, a: 0.0, b: 0.0, c: 0.0, d: 0.0, e: 0.0 }; 4] }, scroll: Scroll::default(), post: crate::post::Post::default(), marks: Marks::default(), map: MapFx::default(), beat: crate::beat::Beat { bpm: 0.0, steps: 4, swing: 0.0 } } }
 }
 /// The default `Look::legible_cap`.
 pub const LEGIBLE_CAP: f32 = 0.15;

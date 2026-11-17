@@ -206,6 +206,17 @@ pub enum Cmd {
     /// Hold the morph in progress at this point of its flight (0 = the source's tiles, 1 = the target's),
     /// or let it run on from where it is held (`None`).
     Scrub(Option<f32>),
+    /// Stop the beat clock (DESIGN.md §1.32) for this many steps: what falls on the beat stands still,
+    /// the frame byte for byte. Nothing when the look has no beat.
+    Hold(u8),
+    /// Play the beat clock's current step again from its start.
+    Retrigger,
+    /// Take the beat clock back this many beats (never before its start): what the beat carries
+    /// (fronts, held rows and poses, a transition's steps) goes back; the application's state does not.
+    Rewind(f32),
+    /// Set one number of the look by its name (`Look::set`) from now on, over what the application's
+    /// look says; a switch (`post.invert`) given 1 turns over, given 0 goes back to the look's own.
+    Set { name: String, value: f32 },
 }
 
 /// Where a `Cmd::Stir` stirs: a point (logical px), the centre of an element, or a polyline (logical

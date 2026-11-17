@@ -376,7 +376,7 @@ pub fn shown(k: f32) -> f32 {
     let k = k.clamp(0.0, 1.0);
     if k <= 0.22 { k * (0.15 / 0.22) } else if k <= 0.30 { 0.15 + (k - 0.22) * (0.25 / 0.08) } else { 0.4 + (k - 0.30) * (0.6 / 0.7) }
 }
-/// The looseness a held pose (`Look::hold_ms`) is worked out at: as shown, but never inside 0.15–0.4 (the
+/// The looseness a held pose (a step of `Look::beat`) is worked out at: as shown, but never inside 0.15–0.4 (the
 /// nearer end of it), so no beat holds the in-between look.
 pub fn held(k: f32) -> f32 { if k > 0.15 && k < 0.4 { if k < 0.275 { 0.15 } else { 0.4 } } else { k } }
 /// How many knots a line `len` logical px long has.

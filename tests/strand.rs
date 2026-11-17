@@ -2,7 +2,7 @@
 //! floating window dragged past a decorative title writes it out as a thread whose tail runs with the
 //! map's flow; text to read has no thread and holds (its fill, its place); it all goes back to nothing
 //! when the map settles; the budget keeps it one line; recomposing and morphing elements have no
-//! thread; `hold_ms` holds the pose for a beat; 回 is four outlines (two rings, each an outer and an inner
+//! thread; a beat holds the pose for a step; 回 is four outlines (two rings, each an outer and an inner
 //! edge) and three bridges; a 64 px title loosened is a few long chords well off its outline; the Loose
 //! Thread page loosens its title all the way, holds it, and lets it go, with its tangle at rest.
 use amenui::el::{El, Paint, Response, col, layers, row, space, text};
@@ -24,7 +24,7 @@ fn view(s: &S) -> El<M> {
     layers([page, box_]).width(1000.0).height(600.0)
 }
 fn update(s: &mut S, m: M) { let M::F(f) = m; let t = s.t; s.f.update(f, t); }
-fn look(s: &S) -> Look { Look { material: Material::Scribblr, hold_ms: s.hold, ..Look::default() } }
+fn look(s: &S) -> Look { Look { material: Material::Scribblr, beat: amenui::beat::Beat::of_hold(s.hold), ..Look::default() } }
 fn open(hold: f32) -> Ui<S, M> {
     let mut f = Floating::default();
     (f.size, f.area) = ((140.0, 80.0), (1000.0, 600.0));
@@ -134,7 +134,7 @@ fn morphing_elements_have_no_thread() {
 }
 
 #[test]
-fn hold_ms_holds_the_pose_for_a_beat() {
+fn the_beat_holds_the_pose_for_a_step() {
     // Frames 1/120 s apart while the map moves; the pose follows the material clock.
     for hold in [83.0f32, 0.0] {
         let mut ui = open(hold);
@@ -144,7 +144,8 @@ fn hold_ms_holds_the_pose_for_a_beat() {
         for _ in 0..30 {
             t += 1.0 / 120.0;
             ui.tick(t);
-            let beat = if hold > 0.0 { (ui.material_clock() * 1000.0 / hold).floor() as i64 } else { (ui.material_clock() * 1e6) as i64 };
+            let step = amenui::beat::Beat::of_hold(hold).step_s() * 1000.0;
+            let beat = if hold > 0.0 { (ui.material_clock() * 1000.0 / step).floor() as i64 } else { (ui.material_clock() * 1e6) as i64 };
             seen.push((beat, thread_of(&ui, "title").expect("a thread").2.clone()));
         }
         let (mut same, mut across) = (0, 0);

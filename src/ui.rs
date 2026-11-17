@@ -335,7 +335,17 @@ pub struct Ui<S, M> {
     /// Logical size and device px per logical px.
     size: (f32, f32),
     scale: f32,
-    now: f32,
+    /// The beat clock (DESIGN.md §1.32), s: what moves on its own runs on it; the runtime's own while the
+    /// look has no beat.
+    clock: f32,
+    /// The runtime's own clock (what `tick` was given).
+    wall: f32,
+    /// Where the beat clock is against the runtime's.
+    bclock: crate::beat::Clock,
+    /// Commands sent from outside the application (`Ui::command`), taken with the next update's.
+    sent: Vec<Cmd>,
+    /// The look's numbers set by `Cmd::Set`, in order, over the application's look.
+    sets: Vec<(String, f32)>,
     nodes: Vec<Node<M>>,
     scene: Scene,
     /// Which node and identity each instance of the page (not the marks) belongs to.
@@ -536,7 +546,7 @@ pub struct Ui<S, M> {
     fmap_ink: u64,
     /// scribblr (DESIGN.md §1.30): page instances whose fill is faded this frame (their own alpha), each
     /// glyph's outlines by its atlas place, size and transform (relative to its rect), the threads held
-    /// for `hold_ms` (by element: the beat and the pieces), the threads drawn last (for tests and the
+    /// for a step of the beat (by element: the beat and the pieces), the threads drawn last (for tests and the
     /// tree), and where each trace's head was.
     strand_faded: HashMap<usize, f32>,
     strand_cache: HashMap<u64, Vec<Vec<[f32; 2]>>>,
@@ -690,8 +700,8 @@ pub struct Timing {
     pub map: crate::fieldmap::MapFx,
     /// scribblr's numbers and how long its line holds a pose (DESIGN.md §1.30).
     pub strand: crate::strand::StrandFx,
-    /// How long scribblr's line holds a pose, ms.
-    pub hold_ms: f32,
+    /// The look's beat (DESIGN.md §1.32): scribblr's line holds a pose for a step of it.
+    pub beat: crate::beat::Beat,
     /// The finishing pass is one-bit (`post::Post::binary`).
     pub binary: bool,
 }
@@ -703,7 +713,7 @@ impl Timing {
     pub fn of(l: &Look) -> Self {
         Self { wave_life: l.fx.wave_life, wave_speed: l.fx.wave_speed, enter: l.fx.enter, material: l.material.id(), overlay: l.overlay,
                fx: l.fx, legible_cap: l.legible_cap, loose_max: l.loose_max, recompose: l.recompose,
-               press: l.press_ms / 1000.0, roles: l.roles, transition: l.transition.duration_ms / 1000.0, scroll: l.scroll, map: l.map, strand: crate::strand::StrandFx::of(l.numbers(crate::style::Material::Scribblr).0), hold_ms: l.hold_ms, binary: l.post.binary }
+               press: l.press_ms / 1000.0, roles: l.roles, transition: l.transition.duration_ms / 1000.0, scroll: l.scroll, map: l.map, strand: crate::strand::StrandFx::of(l.numbers(crate::style::Material::Scribblr).0), beat: l.beat.clamped(), binary: l.post.binary }
     }
 }
 
@@ -782,7 +792,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// `w`, `h` are device px; `scale` is device px per logical px.
     pub fn new(state: S, view: fn(&S) -> El<M>, update: fn(&mut S, M), faces: Vec<Face>, w: u32, h: u32, scale: f32) -> Self {
         let mut ui = Self {
-            state, view, update, text: Text::new(faces), size: (0.0, 0.0), scale, now: 0.0, nodes: vec![], scene: Scene::default(),
+            state, view, update, text: Text::new(faces), size: (0.0, 0.0), scale, clock: 0.0, wall: 0.0, bclock: crate::beat::Clock::default(), sent: vec![], sets: vec![], nodes: vec![], scene: Scene::default(),
             owners: vec![], page_len: 0, field: Field::default(), scroll: HashMap::new(), births: HashMap::new(), ramp: None, text_births: HashMap::new(),
             hover: None, focus: None, pressed: None, capture: None, modal_at: None, modal_key: None, return_focus: None, split: None, splits: 0,
             keyboard: false, marks: Marks::default(), sized: None, commands: None, unseen: vec![], base: vec![], tags: vec![], roles: vec![],
@@ -831,7 +841,23 @@ impl<S, M: Clone> Ui<S, M> {
     /// Device px per logical px.
     pub fn scale(&self) -> f32 { self.scale }
     /// The runtime's clock at the last tick, seconds.
-    pub fn now(&self) -> f32 { self.now }
+    pub fn now(&self) -> f32 { self.wall }
+    /// The beat clock (DESIGN.md §1.32), s: the runtime's clock less what `Cmd::Hold`, `Cmd::Retrigger`
+    /// and `Cmd::Rewind` took from it; the runtime's own while the look has no beat. Continuous:
+    /// `beat_grid` is it on a step.
+    pub fn beat_time(&self) -> f32 { self.clock }
+    /// The beat clock put on the start of its step: the time what falls on the beat is drawn at
+    /// (fronts, glitchr's held rows, a transition's steps). Without a beat, `beat_time`.
+    pub fn beat_grid(&self) -> f32 { self.timing.beat.grid(self.clock) }
+    /// Where the beat clock is: bar, beat and step (each from 1) and how far into the step.
+    pub fn beat(&self) -> crate::beat::BeatNow { self.timing.beat.now(self.clock) }
+    /// The beat clock at the runtime's time `t`.
+    fn beat_of(&self, t: f32) -> f32 { if self.timing.beat.on() { self.bclock.at(t) } else { t } }
+    /// Send a command as the application's `on_commands` would (`Cmd`): it is taken now, with an update.
+    pub fn command(&mut self, cmd: Cmd) {
+        self.sent.push(cmd);
+        self.relayout();
+    }
     /// The window's size, logical px.
     pub fn logical_size(&self) -> (f32, f32) { self.size }
     /// Device px.
@@ -866,8 +892,8 @@ impl<S, M: Clone> Ui<S, M> {
         crate::dirty::Inputs {
             instances: sc.instances.clone(), annot: sc.annot.clone(),
             meshes: sc.meshes.iter().map(|m| m.scene.fingerprint() ^ (m.rect[2].to_bits() as u64) << 32 ^ m.rect[3].to_bits() as u64).collect(),
-            field: *self.field(), look: *look, now: self.now, mclock: self.mclock, gclock: self.gclock, size: self.device_size(), map: self.fmap.snapshot().clone(),
-            global: self.split.as_ref().is_some_and(|sp| self.split_alive(sp, self.now)) || self.run.as_ref().is_some_and(|r| r.clock(self.now).is_some()),
+            field: *self.field(), look: *look, now: self.beat_grid(), mclock: self.mclock, gclock: self.gclock, size: self.device_size(), map: self.fmap.snapshot().clone(),
+            global: self.split.as_ref().is_some_and(|sp| self.split_alive(sp, self.clock)) || self.run.as_ref().is_some_and(|r| r.clock(self.clock).is_some()),
         }
     }
     /// The line boxes of a text element, window coordinates (logical px): `Text::line_boxes`.
@@ -920,14 +946,19 @@ impl<S, M: Clone> Ui<S, M> {
         }
     }
     /// The look the state asks for (`on_look`), or the default one.
-    pub fn look(&self) -> Look { self.look_of.map_or_else(Look::default, |f| f(&self.state)) }
+    pub fn look(&self) -> Look {
+        let mut l = self.look_of.map_or_else(Look::default, |f| f(&self.state));
+        // Names were checked when they were set.
+        for (n, v) in &self.sets { let _ = l.set(n, *v); }
+        l
+    }
 
     /// The laid-out tree as data (DESIGN.md §1.17): every element's key, kind, role and name, rect, text,
     /// material, response, input state, scroll offset and looseness. What a model reads instead of a
     /// screenshot; `serde_json::to_string_pretty(&ui.export_tree())` for JSON.
     pub fn export_tree(&self) -> crate::tree::TreeNode {
         let mirror: HashMap<String, (Role, String)> = self.a11y().into_iter().map(|n| (n.key, (n.role, n.name))).collect();
-        let now = self.now;
+        let now = self.clock;
         let mut made: Vec<crate::tree::TreeNode> = self.nodes.iter().map(|n| {
             let m = mirror.get(&n.key);
             let mat = if n.mat >= 127.5 { crate::style::Material::from_id((n.mat.round() as u32 % 16) as u8).name() } else { "global" };
@@ -1022,12 +1053,19 @@ impl<S, M: Clone> Ui<S, M> {
     /// still on screen, a time-varying material with something loose), or a timed wake is due (the
     /// caret's blink, a clock the state keeps). When it is false the host draws nothing and waits for
     /// input or `next_wake`.
-    pub fn needs_frame(&self, now: f32) -> bool { self.dirty || self.prep.pending() || self.moving_at(now) || self.wake_at(now).is_some_and(|w| w <= now) }
+    pub fn needs_frame(&self, now: f32) -> bool {
+        let b = self.beat_of(now);
+        self.dirty || self.prep.pending() || self.held(now) || self.moving_at(b) || self.wake_at(b).is_some_and(|w| w <= b)
+    }
+    /// A `Cmd::Hold` is going on: frames go on (the same) until it ends.
+    fn held(&self, now: f32) -> bool { self.timing.beat.on() && self.bclock.hold.is_some_and(|(_, until)| now < until) }
     /// When the next frame is needed: `now` if one is needed now, a later time for a timed wake, `None`
     /// when only input can change anything.
     pub fn next_wake(&self, now: f32) -> Option<f32> {
-        if self.dirty || self.prep.pending() || self.moving_at(now) { return Some(now); }
-        self.wake_at(now).map(|w| w.max(now))
+        let b = self.beat_of(now);
+        if self.dirty || self.prep.pending() || self.held(now) || self.moving_at(b) { return Some(now); }
+        // A wake on the beat clock is that much later on the runtime's.
+        self.wake_at(b).map(|w| (w + now - b).max(now))
     }
     /// Prepare something over the next frames (DESIGN.md §1.23): `job` is called with the state in the
     /// time the frames leave (at least once a frame) until it says 1; each call does a small piece and
@@ -1063,17 +1101,17 @@ impl<S, M: Clone> Ui<S, M> {
     /// pictures come apart and condense. The frame the material arrives is the page at rest, so nothing
     /// jumps.
     pub fn condense_all(&mut self) {
-        self.ramp = Some(self.now);
+        self.ramp = Some(self.clock);
         self.ramp_births();
     }
     /// The births that hold each element at its place on the ramp `condense_all` began.
     fn ramp_births(&mut self) {
         let Some(t0) = self.ramp else { return };
         let enter = self.timing.enter;
-        let x = ((self.now - t0) / RAMP).clamp(0.0, 1.0);
+        let x = ((self.clock - t0) / RAMP).clamp(0.0, 1.0);
         // On the ramp, each frame's birth gives the looseness reached; past it, the birth from which
         // the element condenses from its cap.
-        let at = if x < 1.0 { self.now } else { t0 + RAMP };
+        let at = if x < 1.0 { self.clock } else { t0 + RAMP };
         for &(owner, id) in &self.owners {
             // Text to read and controls do not move as the material arrives: they are born condensed.
             let n = &self.nodes[owner];
@@ -1135,7 +1173,7 @@ impl<S, M: Clone> Ui<S, M> {
         let Some(m) = self.motion.get(key) else { return (0.0, 0.0) };
         let sc = &self.timing.scroll;
         let settle = sc.settle_ms.max(1.0) / 1000.0;
-        let since = (self.now - m.last).max(0.0);
+        let since = (self.clock - m.last).max(0.0);
         if since > settle { return (0.0, 0.0); }
         let x = since / settle;
         (m.v, sc.strength(m.v) * (1.0 - x * x * (3.0 - 2.0 * x)))
@@ -1143,7 +1181,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// Follow every scroll node's motion over `dt` seconds (its speed from how far its offset went).
     fn track_motion(&mut self, dt: f32) {
         if dt <= 0.0 { return; }
-        let now = self.now;
+        let now = self.clock;
         let a = 1.0 - (-dt / SPEED_TAU).exp();
         let settle = self.timing.scroll.settle_ms.max(0.0) / 1000.0;
         for n in self.nodes.iter().filter(|n| n.scroll) {
@@ -1252,14 +1290,19 @@ impl<S, M: Clone> Ui<S, M> {
     /// Advance the clock to `t` seconds; the marks glide toward their target.
     pub fn tick(&mut self, t: f32) {
         crate::budget::begin_frame();
-        let dt = (t - self.now).clamp(0.0, 0.1);
+        let wall = t;
+        self.wall = t;
+        self.bclock.step(t);
+        // Everything that moves on its own runs on the beat clock (the runtime's own without a beat).
+        let t = self.beat_of(t);
+        let dt = (t - self.clock).clamp(0.0, 0.1);
         // The material clock runs only while something was moving.
         if self.moving { self.mclock += dt; }
         if self.ground_moving { self.gclock += dt; }
-        self.now = t;
-        if let Some(f) = self.look_of { self.timing = Timing::of(&f(&self.state)); }
+        self.clock = t;
+        if self.look_of.is_some() { self.timing = Timing::of(&self.look()); }
         self.ramp_births();
-        if let Some(f) = self.ticked && f(&mut self.state, t) { self.relayout(); }
+        if let Some(f) = self.ticked && f(&mut self.state, wall) { self.relayout(); }
         // Preparation in the spare time (`Ui::prepare`): what it changed is shown.
         if self.prep.run(&mut self.state) { self.relayout(); }
         let before = (self.marks.at, self.marks.alpha);
@@ -1359,16 +1402,16 @@ impl<S, M: Clone> Ui<S, M> {
             self.paint();
             TouchMode::Pending
         };
-        let at = self.event_t.take().unwrap_or(self.now);
+        let at = self.event_t.take().unwrap_or(self.clock);
         self.touch = Some(Touch { id, start: (x, y), last: (x, y), samples: [(at, x, y)].into(), mode });
     }
     /// The time (on the runtime's clock) the next pointer event happened, when the host knows it; a
     /// finger's speed is measured from these.
-    pub fn event_time(&mut self, t: f32) { self.event_t = Some(t); }
+    pub fn event_time(&mut self, t: f32) { self.event_t = Some(self.beat_of(t)); }
     /// A pointer moved (a mouse or pen also hovers).
     pub fn pointer_moved(&mut self, id: u64, kind: PointerKind, x: f32, y: f32) {
         if kind != PointerKind::Touch { self.touching = false; self.pointer_move(x, y); return; }
-        let now = self.event_t.take().unwrap_or(self.now);
+        let now = self.event_t.take().unwrap_or(self.clock);
         let Some(t) = &mut self.touch else { return };
         if t.id != id || t.mode == TouchMode::Cancelled { return; }
         t.samples.push_back((now, x, y));
@@ -1476,7 +1519,9 @@ impl<S, M: Clone> Ui<S, M> {
 
     /// Start again at `t`: everything on the page condenses in from loose.
     pub fn restart(&mut self, t: f32) {
-        self.now = t;
+        self.wall = t;
+        self.bclock = crate::beat::Clock::default();
+        self.clock = t;
         for b in self.births.values_mut() { *b = t; }
         self.paint();
     }
@@ -1585,7 +1630,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// A burst over a rect (logical px) from now: `strength` 0..1 for `secs`.
     pub fn burst(&mut self, r: Rect, strength: f32, secs: f32) {
         let s = self.scale;
-        self.field.burst(Some([r.x * s, r.y * s, r.right() * s, r.bottom() * s]), self.now, strength, secs);
+        self.field.burst(Some([r.x * s, r.y * s, r.right() * s, r.bottom() * s]), self.clock, strength, secs);
     }
 
     /// A mouse press at (`x`, `y`), logical px.
@@ -1599,8 +1644,8 @@ impl<S, M: Clone> Ui<S, M> {
         self.heard();
         self.pointer_move(x, y);
         let (t0, x0, y0, n0) = self.clicks;
-        let clicks = if self.now - t0 < CLICK_GAP.0 && (x - x0).abs() < CLICK_GAP.1 && (y - y0).abs() < CLICK_GAP.1 { n0.saturating_add(1) } else { 1 };
-        self.clicks = (self.now, x, y, clicks);
+        let clicks = if self.clock - t0 < CLICK_GAP.0 && (x - x0).abs() < CLICK_GAP.1 && (y - y0).abs() < CLICK_GAP.1 { n0.saturating_add(1) } else { 1 };
+        self.clicks = (self.clock, x, y, clicks);
         let h = self.hit_target(x, y);
         let ctl = h.and_then(|i| self.up(i, Node::active));
         self.front_from(ctl.or(h), x, y, ctl.is_some(), 1.0);
@@ -2051,7 +2096,7 @@ impl<S, M: Clone> Ui<S, M> {
         self.splits = next_run();
         let s = self.scale;
         let look = self.look();
-        self.split = Some(Split { id: self.splits, scene: self.scene.clone(), field: self.field, at: [x * s, y * s], t: self.now, look });
+        self.split = Some(Split { id: self.splits, scene: self.scene.clone(), field: self.field, at: [x * s, y * s], t: self.beat_grid(), look });
     }
 
     /// The node itself or its nearest ancestor that satisfies `f`.
@@ -2176,7 +2221,7 @@ impl<S, M: Clone> Ui<S, M> {
         for &(owner, id) in &self.owners {
             if self.within(owner, root) {
                 let (_, cap, _) = response_caps(&self.nodes[owner], self.timing.legible_cap);
-                self.births.insert(id, self.now - enter * (1.0 - cap));
+                self.births.insert(id, self.clock - enter * (1.0 - cap));
             }
         }
         self.paint();
@@ -2205,7 +2250,7 @@ impl<S, M: Clone> Ui<S, M> {
         let mut h = DefaultHasher::new();
         self.nodes[i].key.hash(&mut h);
         let source = h.finish() | 1;
-        self.field.front_in([x * s, y * s], self.now, strength, rect, source, self.timing.wave_life);
+        self.field.front_in([x * s, y * s], self.beat_grid(), strength, rect, source, self.timing.wave_life);
     }
 
     /// View → taffy tree → absolute rects → scene.
@@ -2216,7 +2261,8 @@ impl<S, M: Clone> Ui<S, M> {
     }
     fn relayout_inner(&mut self) {
         // Commands are taken first: a flow needs the frame as it is before the new layout.
-        let cmds = self.commands.map(|f| f(&mut self.state)).unwrap_or_default();
+        let mut cmds = std::mem::take(&mut self.sent);
+        cmds.extend(self.commands.map(|f| f(&mut self.state)).unwrap_or_default());
         let flow = cmds.iter().find_map(|c| if let Cmd::Flow(f) = c { Some(*f) } else { None });
         // A commit keeps the frame as it is before the new view.
         if let Some((x, y)) = cmds.iter().find_map(|c| if let Cmd::Commit { x, y } = c { Some((*x, *y)) } else { None }) { self.snapshot(x, y); }
@@ -2228,7 +2274,7 @@ impl<S, M: Clone> Ui<S, M> {
         for c in cmds {
             match c {
                 Cmd::Morph { from, to, spec } => self.morph(&from, &to, spec),
-                Cmd::Ripplr { x, y, strength } => { let s = self.scale; self.field.front(x * s, y * s, self.now, strength); }
+                Cmd::Ripplr { x, y, strength } => { let s = self.scale; let t = self.beat_grid(); self.field.front(x * s, y * s, t, strength); }
                 // From an element's centre, reaching what that element's own press would reach.
                 Cmd::RipplrAt { key, strength } => if let Some(i) = self.nodes.iter().position(|n| n.key == key) {
                     let (x, y) = self.nodes[i].rect.center();
@@ -2240,6 +2286,17 @@ impl<S, M: Clone> Ui<S, M> {
                 Cmd::Focus { key } => self.focus_key(&key),
                 Cmd::ScrollTo { key } => self.scroll_to(&key),
                 Cmd::Scrub(at) => self.scrub(at),
+                Cmd::Hold(n) => { let b = self.timing.beat; self.bclock.hold(&b, self.wall, n); self.dirty = true; }
+                Cmd::Retrigger => { let b = self.timing.beat; self.bclock.retrigger(&b, self.wall); self.clock = self.beat_of(self.wall); self.dirty = true; }
+                Cmd::Rewind(n) => { let b = self.timing.beat; self.bclock.rewind(&b, self.wall, n); self.clock = self.beat_of(self.wall); self.dirty = true; }
+                Cmd::Set { name, value } => {
+                    if self.look().set(&name, value).is_ok() {
+                        // A switch given 0 goes back to the look's own: its turns are dropped.
+                        if value < 0.5 && name.starts_with("post.") { self.sets.retain(|(n, _)| *n != name); } else { self.sets.push((name, value)); }
+                        self.timing = Timing::of(&self.look());
+                        self.dirty = true;
+                    }
+                }
                 Cmd::Flow(_) | Cmd::Commit { .. } => {}
             }
         }
@@ -2252,7 +2309,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// Hold the morph in progress at a point of its flight, or let it go on from there. While held, the
     /// source and the target are not drawn and the tiles stay where the point puts them.
     pub fn scrub(&mut self, at: Option<f32>) {
-        let now = self.now;
+        let now = self.clock;
         let tighten = self.run.as_ref().map_or(0.0, |r| r.spec.tighten_ms / 1000.0);
         let Some(r) = &mut self.run else { return };
         match at {
@@ -2286,7 +2343,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// View → nodes → the taffy tree, kept from the last layout and changed only where the new view
     /// differs (DESIGN.md §1.13) → absolute rects → scene.
     fn layout(&mut self) {
-        if let Some(f) = self.look_of { self.timing = Timing::of(&f(&self.state)); }
+        if self.look_of.is_some() { self.timing = Timing::of(&self.look()); }
         self.perf.counters.views += 1;
         if let Some(f) = self.locale_of { crate::i18n::set_current(f(&self.state)); }
         let el = (self.view)(&self.state);
@@ -2609,7 +2666,7 @@ impl<S, M: Clone> Ui<S, M> {
         self.owners.clear();
         self.tags.clear();
         self.unseen.clear();
-        let (s, now) = (self.scale, self.now);
+        let (s, now) = (self.scale, self.clock);
         let dev = |r: Rect| {
             let (x0, y0, x1, y1) = ((r.x * s).round(), (r.y * s).round(), (r.right() * s).round(), (r.bottom() * s).round());
             [x0, y0, x1 - x0, y1 - y0]
@@ -2957,7 +3014,7 @@ impl<S, M: Clone> Ui<S, M> {
     }
     /// Start what appears and what went (DESIGN.md §1.28), and keep each decoding element's instances.
     fn decode_pass(&mut self) {
-        let (now, s) = (self.now, self.scale);
+        let (now, s) = (self.clock, self.scale);
         let mut present: HashMap<String, Vec<Instance>> = HashMap::new();
         for i in 0..self.nodes.len() {
             let Some(spec) = &self.nodes[i].decode else { continue };
@@ -2991,7 +3048,7 @@ impl<S, M: Clone> Ui<S, M> {
     }
     /// Draw the decode transitions running now: hide what is not shown yet, the blocks over the rest.
     fn paint_decodes(&mut self) {
-        let now = self.now;
+        let now = self.clock;
         self.decodes.retain(|_, r| r.spec.hold.is_some() || now - r.start < r.spec.duration_ms / 1000.0);
         if self.decodes.is_empty() { return; }
         let screen = [0.0, 0.0, self.size.0 * self.scale, self.size.1 * self.scale];
@@ -3154,7 +3211,7 @@ impl<S, M: Clone> Ui<S, M> {
     fn step_motes(&mut self, dt: f32) -> bool {
         use crate::motes::{FlowField, Mote};
         use crate::field::hash;
-        let now = self.now;
+        let now = self.clock;
         let mut changed = false;
         // Shedding: an element that moved since the last tick leaves marks along the way it went.
         let mut seen: Vec<String> = vec![];
@@ -3231,7 +3288,7 @@ impl<S, M: Clone> Ui<S, M> {
         self.strand_faded.clear();
         self.strand_drawn.clear();
         let s = self.scale;
-        let now = self.now;
+        let now = self.clock;
         let screen = [0.0, 0.0, self.size.0 * s, self.size.1 * s];
         let bar = |a: [f32; 2], b: [f32; 2], w: f32, paint: [f32; 4], look: [f32; 2], resp: [f32; 4], clip: [f32; 4]| -> Instance {
             let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
@@ -3285,7 +3342,7 @@ impl<S, M: Clone> Ui<S, M> {
             return;
         }
         let fx = self.timing.strand;
-        let hold = self.timing.hold_ms;
+        let hold = self.timing.beat.step_s() * 1000.0;
         // The thread's pose follows the material clock, which runs only while something moves: an element
         // held loose at rest keeps its pose and asks for no frames.
         let clock = self.mclock;
@@ -3334,7 +3391,7 @@ impl<S, M: Clone> Ui<S, M> {
             if k <= 0.0 { continue; }
             let f = strand::fill(k);
             for &i in idx { fades.push((i, self.scene.instances[i].paint[2], f)); }
-            // The thread: held for `hold_ms` (the pose; its opacity follows `k` every frame).
+            // The thread: held for a step of the beat (the pose; its opacity follows `k` every frame).
             let segs: Vec<Seg> = match self.strand_hold.get(&n.key) {
                 Some((b, _, segs)) if hold > 0.0 && *b == beat => segs.clone(),
                 _ => {
@@ -3415,7 +3472,7 @@ impl<S, M: Clone> Ui<S, M> {
         if self.motes.is_empty() && self.field_marks.is_empty() { return; }
         let s = self.scale;
         let screen = [0.0, 0.0, self.size.0 * s, self.size.1 * s];
-        let now = self.now;
+        let now = self.clock;
         let mote = |x: f32, y: f32, size: f32, p: crate::el::Paint, alpha: f32, clip: [f32; 4]| Instance {
             rect: [((x - size * 0.5) * s).round(), ((y - size * 0.5) * s).round(), (size * s).round().max(1.0), (size * s).round().max(1.0)],
             uv: [size * s * 0.5, 0.0, 0.0, 0.0], paint: [p.tone, p.accent, alpha, SHAPE], clip, extra: [0.0, 0.0, 0.0, -1e4], look: [0.0, p.hue as f32, 0.0, 0.0], resp: IGNORE, xf: [0.0; 4],
@@ -3453,7 +3510,7 @@ impl<S, M: Clone> Ui<S, M> {
     fn paint_overlay(&mut self) {
         self.overlay = self.timing.overlay;
         if self.overlay == 0 { return; }
-        self.overlay_at = self.now;
+        self.overlay_at = self.clock;
         let p = &self.perf;
         let now_ms = crate::perf::now_ms();
         let sm = p.summary(now_ms);
@@ -3466,7 +3523,7 @@ impl<S, M: Clone> Ui<S, M> {
         // Instances by kind.
         let mut kinds = [0usize; 4];
         for i in &self.scene.instances { let k = i.paint[3]; let k = if k < 0.5 { 0 } else if k < 1.5 { 1 } else if k < 2.5 { 2 } else { 3 }; kinds[k] += 1; }
-        let fronts = self.field.fronts.iter().filter(|f| f[3] > 0.0 && self.now - f[2] < self.timing.wave_life).count();
+        let fronts = self.field.fronts.iter().filter(|f| f[3] > 0.0 && self.clock - f[2] < self.timing.wave_life).count();
         let mat = crate::style::Material::from_id(self.timing.material).name();
         let backend = if p.backend.is_empty() { "?" } else { &p.backend };
         let last = p.frames.back().map(|f| f.1).unwrap_or_default();
@@ -3542,7 +3599,7 @@ impl<S, M: Clone> Ui<S, M> {
 
     fn animate(&mut self) {
         self.scene.truncate(self.page_len);
-        let now = self.now;
+        let now = self.clock;
         let active = self.run.is_some() || !self.flows.is_empty() || !self.recomps.is_empty() || !self.slides.is_empty() || self.decodes.values().any(|d| d.spec.hold.is_none());
         let hidden: HashSet<u64> = self.recomps.values().flat_map(|r| r.hide.iter().copied()).collect();
         // One more pass after the last animation ends puts every instance back as painted.
@@ -3621,7 +3678,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// the morph in progress turns it around: in flight, every tile goes back from where it is; while
     /// the source is still loosening, it tightens again. Any other morph in progress is cut short.
     pub fn morph(&mut self, from: &str, to: &str, spec: MorphSpec) {
-        let now = self.now;
+        let now = self.clock;
         let tighten = spec.tighten_ms / 1000.0;
         let mut k0 = 0.0;
         if let Some(r) = &mut self.run {
@@ -3770,7 +3827,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// After a relayout for a new page: instances of a flow subtree that left one place and appeared in
     /// another fly between them and keep their birth time; what is gone dissolves.
     fn flow_from(&mut self, old: Vec<Old>, spec: FlowSpec) {
-        let now = self.now;
+        let now = self.clock;
         let new_ids: HashSet<u64> = self.owners.iter().map(|o| o.1).collect();
         let old_ids: HashSet<u64> = old.iter().map(|o| o.id).collect();
         let by_tag: HashMap<&Tag, usize> = old.iter().enumerate().filter(|(_, o)| !new_ids.contains(&o.id)).filter_map(|(k, o)| o.tag.as_ref().map(|t| (t, k))).collect();
@@ -3800,7 +3857,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// glyphs, which stay hidden until the tiles land.
     fn recompose_jobs(&mut self, jobs: Vec<RecJob>, births: &mut HashMap<u64, f32>) {
         use unicode_segmentation::UnicodeSegmentation;
-        let now = self.now;
+        let now = self.clock;
         let spec = self.timing.recompose;
         for job in jobs {
             let key = self.nodes[job.node].key.clone();
@@ -3916,7 +3973,7 @@ impl<S, M: Clone> Ui<S, M> {
         // While something is dragged the marks stand aside; on hover they skip what is `unframed`.
         let target = if self.capture.is_some() { None } else if self.keyboard { self.focus.clone() } else { self.hover.clone().or_else(|| self.focus.clone()) };
         let target = target.and_then(|k| self.node(&k).filter(|n| self.keyboard || !n.unframed).map(|n| (k.clone(), n.rect, n.clip)));
-        let now = self.now;
+        let now = self.clock;
         let m = &mut self.marks;
         match target {
             Some((k, r, clip)) => {
@@ -3937,7 +3994,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// settle's opening) and how opaque they are; `None` when they are not drawn.
     pub fn marks_frame(&self) -> Option<(Rect, f32)> { self.marks.at.filter(|_| self.marks.alpha >= 0.02).map(|r| (r, self.marks.alpha)) }
     /// The marks are still closing onto their target or fading.
-    fn marks_settling(&self) -> bool { self.marks.alpha > 0.0 && (self.now - self.marks.since) < MARKS_SETTLE }
+    fn marks_settling(&self) -> bool { self.marks.alpha > 0.0 && (self.clock - self.marks.since) < MARKS_SETTLE }
 
     fn paint_marks(&mut self) {
         self.scene.truncate(self.body_len);
@@ -3945,7 +4002,7 @@ impl<S, M: Clone> Ui<S, M> {
         let Some(r) = self.marks.at else { return };
         let s = self.scale;
         // The cosmetic close: a few pixels out at the change, on the target `MARKS_SETTLE` later.
-        let e = if self.marks.key.is_some() { 1.0 - ((self.now - self.marks.since) / MARKS_SETTLE).clamp(0.0, 1.0) } else { 0.0 };
+        let e = if self.marks.key.is_some() { 1.0 - ((self.clock - self.marks.since) / MARKS_SETTLE).clamp(0.0, 1.0) } else { 0.0 };
         let open = 4.0 + MARKS_OPEN * e * e;
         let r = r.inset(-open, -open, -open, -open);
         let (len, th) = (8.0f32.min(r.w * 0.4).min(r.h * 0.4), 1.5);
@@ -3997,7 +4054,7 @@ impl<S, M: Clone> Ui<S, M> {
         let g = match self.gaze_of { Some(f) => f(&self.state), None => { self.annots.clear(); return; } };
         if g.mode == GazeMode::Off { self.annots.clear(); self.gaze_seen.clear(); self.gaze_until = f32::NEG_INFINITY; return; }
         let s = self.scale;
-        let now = self.now;
+        let now = self.clock;
         let window = Rect::new(0.0, 0.0, self.size.0, self.size.1);
         let pointer = (self.field.pointer[2] > 0.0).then(|| (self.field.pointer[0] / s, self.field.pointer[1] / s));
         let focus = self.focus.as_deref().and_then(|f| self.nodes.iter().position(|n| n.key == f));
