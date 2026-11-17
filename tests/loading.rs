@@ -40,5 +40,9 @@ fn skeleton_then_content_in_the_same_boxes() {
     assert_eq!(ui.instances_of("row4/title").len(), ui.line_boxes("row4/title").len(), "row 4 is still a skeleton");
     step(&mut ui, &mut t, 1.5);
     assert_eq!(skel, boxes(&ui), "zero layout shift between skeleton and content");
+    // The frame that shows it settled (owed by the last moving one), then nothing asks for frames.
+    t += 0.5;
+    ui.tick(t);
+    ui.frame_drawn();
     assert!(!ui.needs_frame(t + 0.5), "at rest nothing asks for frames");
 }

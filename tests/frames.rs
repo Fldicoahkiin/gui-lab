@@ -51,3 +51,31 @@ fn half_the_rate_is_every_other_frame_and_other_rates_are_refused() {
     for f in FPS { assert!(m.contains(&f.to_string()), "{m}"); }
     assert!(matches!(frames(&spec(), 5..5, 60, fonts(), Some(&mut o), &open_in, &mut |_, _| {}), Err(DriveError::NoFrames { .. })));
 }
+
+#[test]
+fn a_motion_that_ends_between_two_frames_still_gets_its_settled_frame() {
+    // A host draws only when `needs_frame` says so. A frame drawn while something moves owes one more:
+    // if the motion ends before the next frame comes, that frame is still drawn, and it is the page
+    // at rest, not the last frame of the motion left on the screen.
+    let Ok(mut o) = Offscreen::try_new(320, 200) else { eprintln!("no GPU adapter here: skipped"); return };
+    let mut ui = amenui::recipes::counter::ui(fonts(), 320, 200, 1.0);
+    let mut t = 0.0;
+    let frame = |ui: &mut amenui::ui::Ui<amenui::recipes::counter::Counter, amenui::recipes::counter::Msg>, o: &mut Offscreen, t: f32| { ui.tick(t); let look = amenui::style::Look { material: amenui::style::Material::Plain, ..ui.look() }; o.render(ui, &look) };
+    for _ in 0..240 { t += 1.0 / 60.0; frame(&mut ui, &mut o, t); }
+    assert!(ui.activate("inc"));
+    t += 1.0 / 60.0;
+    ui.tick(t);
+    assert!(ui.needs_frame(t), "the press moves something");
+    let mid = frame(&mut ui, &mut o, t);
+    // The next frame comes long after the motion has ended.
+    t += 4.0;
+    ui.tick(t);
+    assert!(ui.needs_frame(t), "the frame after a motion ended is drawn");
+    let settled = frame(&mut ui, &mut o, t);
+    assert!(mid != settled, "the settled frame is not the mid-motion one");
+    t += 1.0 / 60.0;
+    ui.tick(t);
+    assert!(!ui.needs_frame(t) || ui.ongoing(), "then the page rests");
+    let again = frame(&mut ui, &mut o, t);
+    assert!(settled == again, "the frame drawn is the page at rest");
+}
