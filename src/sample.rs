@@ -137,13 +137,18 @@ pub fn sheet(o: &mut Offscreen, faces: &dyn Fn() -> Vec<crate::text::Face>, mate
         frames.push((CELL.0, CELL.1, o.render(&mut ui, &plain)));
         let plain_px = frames.last().map(|f| f.2.clone()).unwrap_or_default();
         cells.push(None);
-        let ready: f32 = 3.0;
+        // The label says the first stage before the material arrives, so its own change of text has
+        // settled by the first frame.
+        ui.state.label = format!("{name} · ready +120 ms");
+        ui.relayout();
+        ui.tick(3.5);
+        let ready: f32 = 3.5;
         ui.condense_all();
         for (ms, stage) in [(120.0, "+120 ms"), (300.0, "+300 ms")] {
             // Frame by frame at 60 Hz up to the moment, as a host would.
             let end = ready + ms / 1000.0;
-            ui.state.label = format!("{name} · ready {stage}");
-            ui.relayout();
+            let label = format!("{name} · ready {stage}");
+            if ui.state.label != label { ui.state.label = label; ui.relayout(); }
             let mut t = ui.now();
             while t < end - 1e-6 { t = (t + 1.0 / 60.0).min(end); ui.tick(t); o.render(&mut ui, &look); }
             let px = o.render(&mut ui, &look);
