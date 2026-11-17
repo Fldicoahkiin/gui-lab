@@ -210,6 +210,13 @@ pub struct Renderer {
     prev: Option<crate::dirty::Inputs>,
     zero: [wgpu::RenderPipeline; 2],
     blit: wgpu::RenderPipeline,
+    /// A see-through group (`El::opacity`): its own ink image, and the pass that lays it on the ink.
+    group: Option<(wgpu::TextureView, wgpu::BindGroup)>,
+    group_pipe: wgpu::RenderPipeline,
+    /// The last frame had see-through groups (the next is drawn whole).
+    had_groups: bool,
+    /// The viewer asked for less motion (`Ui::reduced_motion`): new instances fade in, not condense.
+    reduced: bool,
     /// The finishing pass in place of the blit when the look has one (DESIGN.md §1.21).
     /// Made by the warm-up (or the first frame that needs it).
     post: Option<wgpu::RenderPipeline>,
@@ -342,6 +349,7 @@ impl Renderer {
         let mesh = Self::mesh_gpu(&device);
         let zero = [pipe("vs_full", "fs_zero", INK, None, false), pipe("vs_full", "fs_zero", out_format, None, false)];
         let blit = pipe("vs_full", "fs_blit", out_format, None, false);
+        let group_pipe = pipe("vs_group", "fs_group", INK, Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING), false);
         let ubuf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: std::mem::size_of::<Uniforms>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         // Only the mark atlas has mip levels; for every other texture the mipmap filter does nothing.
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor { mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, mipmap_filter: wgpu::MipmapFilterMode::Linear, ..Default::default() });
@@ -382,7 +390,7 @@ impl Renderer {
             pictures: HashMap::new(), instances, capacity, pipes, annots, annot_capacity: 256, up_pipe: None, shader, pl,
             ink: blank.clone(), lo: blank.clone(), lo_key: (0, 0, 0), material_up: material.clone(), auto: Default::default(), always_lo: false, no_map: false,
             near: blank, material_first: material.clone(), material, size: (0, 0), tiles, mesh, sim_rows: 0,
-            region: crate::dirty::Region::All, partial: true, frame_view: blank_view.clone(), prev: None, zero, blit, post: None, blit_group: blank_group, warm: None, condense: false, last_region: None, tr: [[0.0; 4]; 9], boxes: [[0.0; 4]; 16], tr_loose: 0.0, t_cont: 0.0,
+            region: crate::dirty::Region::All, partial: true, frame_view: blank_view.clone(), prev: None, zero, blit, group: None, group_pipe, had_groups: false, reduced: false, post: None, blit_group: blank_group, warm: None, condense: false, last_region: None, tr: [[0.0; 4]; 9], boxes: [[0.0; 4]; 16], tr_loose: 0.0, t_cont: 0.0,
         };
         r.set_picture(u32::MAX, 1, 1, &[0, 0, 0, 255]);
         r.resize(w, h);
@@ -641,6 +649,7 @@ impl Renderer {
         if (w, h) == self.size { return; }
         self.size = (w, h);
         self.ink = Self::target(&self.device, w, h, INK);
+        self.group = None;
         self.near = Self::target_with(&self.device, w, h, NEAR, wgpu::TextureUsages::COPY_SRC);
         self.before = Self::target(&self.device, w, h, self.out_format);
         self.material = Self::bind(&self.device, &self.layout, &self.ubuf, &self.sampler, [&self.ink, &self.near, &self.marks_view, &self.palette_view, &self.chars_view, &self.before, &self.blank, &self.fmap_view]);
@@ -896,6 +905,7 @@ impl Renderer {
 
     pub fn draw<S, M: Clone>(&mut self, target: &wgpu::TextureView, ui: &mut Ui<S, M>, look: &Look) {
         let started = crate::perf::now_ms();
+        self.reduced = ui.reduced_motion();
         self.resize(ui.device_size().0, ui.device_size().1);
         // Still warming up (`Renderer::begin`): drawn as plain, which is the same page at rest (§1.23);
         // the frame after the last step condenses into the look.
@@ -1044,8 +1054,9 @@ impl Renderer {
         let inputs = crate::dirty::Inputs {
             instances: ui.scene().instances.clone(), annot: ui.scene().annot.clone(), meshes: ui.scene().meshes.iter().map(|m| m.scene.fingerprint() ^ (m.rect[2].to_bits() as u64) << 32 ^ m.rect[3].to_bits() as u64).collect(),
             field: *ui.field(), look: *look, now, mclock: mt[0], gclock: mt[1], size: self.size, map: snap,
-            global: split[3] > 0.0 || tiles.is_some() || lo.is_some() || self.hide_glyphs,
+            global: split[3] > 0.0 || tiles.is_some() || lo.is_some() || self.hide_glyphs || !ui.scene().groups.is_empty() || self.had_groups,
         };
+        self.had_groups = !ui.scene().groups.is_empty();
         let region = match (&self.prev, self.partial) { (Some(p), true) => crate::dirty::region(p, &inputs, scale), _ => crate::dirty::Region::All };
         self.prev = Some(inputs);
         self.region = region;
@@ -1130,12 +1141,52 @@ impl Renderer {
                 pass.set_vertex_buffer(0, self.instances.slice(..));
             };
             pass.set_vertex_buffer(0, self.instances.slice(..));
-            for b in &scene.batches {
-                if pending && b.start >= layer { draw_tiles(&mut pass); pending = false; }
-                pass.set_pipeline(if b.start >= layer { top } else { pipe });
-                let Some(group) = self.batch_group(b.picture) else { continue };
-                pass.set_bind_group(0, group, &[]);
-                pass.draw(0..4, b.start..b.end);
+            // In the ink, a see-through group is drawn into an image of its own and laid on as one
+            // (`El::opacity`); the near image takes its instances as they are.
+            let groups: &[crate::scene::Group] = if k == 0 && self.group.is_some() { &scene.groups } else { &[] };
+            let draw = |pass: &mut wgpu::RenderPass<'_>, from: u32, to: u32| {
+                for b in &scene.batches {
+                    let (s0, s1) = (b.start.max(from), b.end.min(to));
+                    if s0 >= s1 { continue; }
+                    pass.set_pipeline(if b.start >= layer { top } else { pipe });
+                    let Some(group) = self.batch_group(b.picture) else { continue };
+                    pass.set_bind_group(0, group, &[]);
+                    pass.draw(0..4, s0..s1);
+                }
+            };
+            let end = scene.instances.len() as u32;
+            // The tiles of a morph go in where the layer starts.
+            let mut at = 0u32;
+            let mut stops: Vec<u32> = groups.iter().flat_map(|g| [g.start, g.end]).collect();
+            if pending && layer < end { stops.push(layer); }
+            stops.push(end);
+            stops.sort_unstable();
+            for stop in stops {
+                if stop <= at { if pending && stop == layer && at == layer { draw_tiles(&mut pass); pending = false; } continue; }
+                match groups.iter().find(|g| g.start == at) {
+                    Some(g) => {
+                        let (gview, gbind) = self.group.as_ref().expect("made before the frame");
+                        drop(pass);
+                        {
+                            let mut gp = clear(enc, gview, wgpu::Color::TRANSPARENT);
+                            if let Some([x, y, w, h]) = scissor { gp.set_scissor_rect(x, y, w, h); }
+                            gp.set_vertex_buffer(0, self.instances.slice(..));
+                            draw(&mut gp, g.start, g.end.min(stop));
+                        }
+                        pass = load(enc, view);
+                        if let Some([x, y, w, h]) = scissor { pass.set_scissor_rect(x, y, w, h); }
+                        // The group's pixels times its opacity (passed in the vertex numbers, in thousandths:
+                        // WebGL2 has no first instance).
+                        pass.set_pipeline(&self.group_pipe);
+                        pass.set_bind_group(0, gbind, &[]);
+                        let o = (g.opacity.clamp(0.0, 1.0) * 1000.0).round() as u32;
+                        pass.draw(o * 3..o * 3 + 3, 0..1);
+                        pass.set_vertex_buffer(0, self.instances.slice(..));
+                    }
+                    None => draw(&mut pass, at, stop),
+                }
+                at = stop;
+                if pending && at == layer { draw_tiles(&mut pass); pending = false; }
             }
             if pending { draw_tiles(&mut pass); }
         }
@@ -1176,6 +1227,11 @@ impl Renderer {
         }
         let mut enc = self.device.create_command_encoder(&Default::default());
         self.prepare_meshes(&mut enc, scene, f.lib, f.look.marks);
+        if !scene.groups.is_empty() && self.group.is_none() {
+            let view = Self::target(&self.device, self.size.0, self.size.1, INK);
+            let bind = Self::bind(&self.device, &self.layout, &self.ubuf, &self.sampler, [&view, &self.blank, &self.marks_view, &self.palette_view, &self.chars_view, &self.blank, &self.blank, &self.fmap_view]);
+            self.group = Some((view, bind));
+        }
         let (ink, near) = (self.ink.clone(), self.near.clone());
         // The main frame is drawn into the kept frame, only within what changed, then copied out.
         let (w, h) = self.size;
@@ -1255,7 +1311,7 @@ impl Renderer {
             tr: if split[3] > 0.0 { self.tr } else { [[0.0; 4]; 9] }, boxes: self.boxes,
             scrolls: field.scrolls, scrollo: field.scrollo,
             scrp: [look.scroll.trail * scale, look.scroll.misreg * scale, look.scroll.slip * scale, look.scroll.band.max(4.0) * scale],
-            scrq: [look.scroll.slip_ms.max(16.0) / 1000.0, if look.beat.on() { self.t_cont } else { t }, th.press_keep(look.legible_cap), 0.0],
+            scrq: [look.scroll.slip_ms.max(16.0) / 1000.0, if look.beat.on() { self.t_cont } else { t }, th.press_keep(look.legible_cap), if self.reduced { 1.0 } else { 0.0 }],
             post: post.0, pal: post.1, fmap: self.fmap_u,
         };
         self.queue.write_buffer(&self.ubuf, 0, bytemuck::bytes_of(&u));

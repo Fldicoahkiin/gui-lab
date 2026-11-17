@@ -157,3 +157,47 @@ fn the_readout_sits_in_its_corner_at_its_inset_and_never_covers_text_to_read() {
     assert!(b.x - 12.0 > -1.0 && (b.x - 12.0).abs() <= 1.0 && (b.y - 12.0).abs() <= 1.0, "it went to the top left: {b:?}");
 }
 
+/// Two overlapping squares (ink below, accent on top) in a box set see-through as one, and a text
+/// beside them; `op` None writes no opacity at all, `gone` leaves the box out.
+mod seethrough {
+    use amenui::el::{El, Paint, col, space, text};
+    use amenui::style::{Look, Material};
+    pub struct S { pub op: Option<f32>, pub gone: bool }
+    pub fn view(s: &S) -> El<()> {
+        let pair = col().key("pair").width(140.0).height(100.0).absolute(Some(60.0), Some(60.0), None, None)
+            .child(space(80.0, 60.0).fill(Paint::INK).key("under").absolute(Some(0.0), Some(0.0), None, None))
+            .child(space(80.0, 60.0).fill(Paint::ACCENT).key("over").absolute(Some(40.0), Some(30.0), None, None));
+        let pair = match s.op { Some(k) => pair.opacity(k), None => pair };
+        let page = col().key("page").fill_width().fill_height().child(text("beside it", 16.0, Paint::TEXT).key("note").absolute(Some(260.0), Some(80.0), None, None));
+        if s.gone { page } else { page.child(pair) }
+    }
+    pub fn look(_: &S) -> Look { Look { material: Material::Plain, ..Look::default() } }
+}
+
+#[test]
+fn opacity_composites_the_subtree_as_one() {
+    let (w, h) = (360u32, 240u32);
+    let Ok(mut o) = Offscreen::try_new(w, h) else { eprintln!("no GPU adapter here: skipped"); return };
+    let shot = |o: &mut Offscreen, op: Option<f32>, gone: bool| {
+        let mut ui = amenui::ui::Ui::new(seethrough::S { op, gone }, seethrough::view, |_, _| {}, fonts(), w, h, 1.0).on_look(seethrough::look);
+        ui.tick(3.0);
+        let look = ui.look();
+        (o.render(&mut ui, &look), look)
+    };
+    let (none, look) = shot(&mut o, None, false);
+    assert!(shot(&mut o, Some(1.0), false).0 == none, "opacity(1) is the same as none written");
+    assert!(shot(&mut o, Some(0.0), false).0 == shot(&mut o, None, true).0, "opacity(0) is the same as the element left out");
+    // At 0.5 the overlap is the top square at half over the ground, not both layered.
+    let (half, _) = shot(&mut o, Some(0.5), false);
+    let px = |f: &[u8], x: u32, y: u32| { let i = ((y * w + x) * 4) as usize; [f[i] as f32, f[i + 1] as f32, f[i + 2] as f32] };
+    let ground = px(&none, 20, 20);
+    let (top, under) = (px(&none, 130, 110), px(&none, 70, 70));
+    assert!(top != under, "the two squares differ");
+    let want: Vec<f32> = (0..3).map(|k| ground[k] * 0.5 + top[k] * 0.5).collect();
+    let got = px(&half, 130, 110);
+    for k in 0..3 { assert!((got[k] - want[k]).abs() <= 3.0, "the overlap is {got:?}, the top at half is {want:?} (top {top:?}, under {under:?}, ground {ground:?})"); }
+    // Where only the lower one is, it is the lower one at half.
+    let (got, want) = (px(&half, 70, 70), (0..3).map(|k| ground[k] * 0.5 + under[k] * 0.5).collect::<Vec<_>>());
+    for k in 0..3 { assert!((got[k] - want[k]).abs() <= 3.0, "{got:?} vs {want:?}"); }
+    let _ = look;
+}

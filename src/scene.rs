@@ -66,6 +66,11 @@ pub struct MeshDraw { pub scene: std::rc::Rc<crate::mesh::Scene3d>, pub rect: [f
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Batch { pub start: u32, pub end: u32, pub picture: u32 }
 
+/// Instances drawn as one group and then made see-through as one (`El::opacity`): `start..end`, each
+/// at its own alpha within the group, the group's pixels then multiplied by `opacity`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Group { pub start: u32, pub end: u32, pub opacity: f32 }
+
 #[derive(Clone, Default)]
 pub struct Scene {
     pub instances: Vec<Instance>,
@@ -77,10 +82,12 @@ pub struct Scene {
     pub annot: Vec<Instance>,
     /// The `scene3d` elements whose mesh instances are in this scene.
     pub meshes: Vec<MeshDraw>,
+    /// The see-through groups, in order, never overlapping.
+    pub groups: Vec<Group>,
 }
 
 impl Scene {
-    pub fn clear(&mut self) { self.instances.clear(); self.batches.clear(); self.layer = None; self.annot.clear(); self.meshes.clear(); }
+    pub fn clear(&mut self) { self.instances.clear(); self.batches.clear(); self.layer = None; self.annot.clear(); self.meshes.clear(); self.groups.clear(); }
     /// Everything pushed from now on is in the modal layer.
     pub fn begin_layer(&mut self) { self.layer = Some(self.instances.len() as u32); }
     pub fn push(&mut self, i: Instance) {
@@ -100,6 +107,8 @@ impl Scene {
         if self.layer.is_some_and(|l| l as usize >= n) { self.layer = None; }
         self.batches.retain(|b| (b.start as usize) < n);
         if let Some(b) = self.batches.last_mut() { b.end = b.end.min(n as u32); }
+        self.groups.retain(|g| (g.start as usize) < n);
+        if let Some(g) = self.groups.last_mut() { g.end = g.end.min(n as u32); }
     }
 }
 
