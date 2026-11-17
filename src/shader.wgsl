@@ -1107,7 +1107,13 @@ fn tr_step(p: vec2f, x: f32, k: i32, s: ptr<function, TS>) {
     // the step; they stay thin (0.6 px to 0.06 a). Then each piece leaves whole at its own time, sooner
     // nearer the press and a little by its hash: between `t` and `t + 0.15` its own crack widens until
     // it covers the piece, so at any moment most pieces are whole or gone.
-    let cs = clamp(a, 16.0, 400.0) * sc;
+    // Inside a commit's scope (El::commit_scope) everything is measured against the scope's box: its
+    // pieces fit three and a half on its short side, and the run and the farthest corner are its own.
+    let scoped = u.sbox.z > u.sbox.x;
+    let bx0 = select(vec2f(0.0), u.sbox.xy, scoped);
+    let bx1 = select(u.res.xy, u.sbox.zw, scoped);
+    let ae = select(a, clamp(min(bx1.x - bx0.x, bx1.y - bx0.y) / sc / 3.5, 16.0, max(a, 16.0)), scoped);
+    let cs = clamp(ae, 16.0, 400.0) * sc;
     let ang = radians(b);
     let sq = vec2f(mix(1.0, 0.25, clamp(c, 0.0, 1.0)), 1.0);
     let q = rot(p, -ang) / cs * sq;
@@ -1132,17 +1138,17 @@ fn tr_step(p: vec2f, x: f32, k: i32, s: ptr<function, TS>) {
     } }
     var o = u.tr[0].yz;
     if (o.x <= 0.0 && o.y <= 0.0) { o = u.res.xy * 0.5; }
-    let dg = diag();
-    let rag = (vnoise(p / (max(a / 5.0, 2.0) * sc)) - 0.5) * 2.0 * d * sc;
+    let dg = select(diag(), distance(bx0, bx1), scoped);
+    let rag = (vnoise(p / (max(ae / 5.0, 2.0) * sc)) - 0.5) * 2.0 * d * sc;
     let dist = max(edge + rag, 0.0);
     // The cracks' run and width: both done at 0.4.
     let run = clamp(e / 0.4, 0.0, 1.0);
-    let hair = select(0.0, mix(0.6 * sc, max(0.06 * a * sc, 0.6 * sc), run), distance(p, o) < run * dg && e > 0.0);
+    let hair = select(0.0, mix(0.6 * sc, max(0.06 * ae * sc, select(0.6, 1.0, scoped) * sc), run), distance(p, o) < run * dg && e > 0.0);
     // The piece this pixel is in: its centre on the page, and when it leaves.
     let cell = ip + mg;
     let centre = rot((cell + h2(cell + 0.71) * 0.6 + 0.2) / sq * cs, ang);
     // Measured against the farthest corner from the press, so the last pieces leave at the step's end.
-    let far = max(max(length(o), length(o - vec2f(u.res.x, 0.0))), max(length(o - vec2f(0.0, u.res.y)), length(o - u.res.xy)));
+    let far = max(max(distance(o, bx0), distance(o, vec2f(bx1.x, bx0.y))), max(distance(o, vec2f(bx0.x, bx1.y)), distance(o, bx1)));
     let leave = 0.28 + 0.6 * (0.6 * clamp(distance(centre, o) / max(far, 1.0), 0.0, 1.0) + 0.4 * h1(cell + 3.17));
     let own = clamp((e - leave) / 0.15, 0.0, 1.0);
     // Slow at first and fast at the end, so a piece is seldom half gone.

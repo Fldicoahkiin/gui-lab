@@ -967,12 +967,14 @@ impl Renderer {
         }
         // The front has left the screen: the old frame is not needed any more.
         let (w, h) = (self.size.0 as f32, self.size.1 as f32);
-        let dur = look.transition.duration_ms / 1000.0;
+        // Within a scope the transition takes the scope's share of the time (`Split::span`).
+        let span = if self.sbox[2] > self.sbox[0] { ((self.sbox[2] - self.sbox[0]).hypot(self.sbox[3] - self.sbox[1]) / w.hypot(h).max(1.0)).clamp(0.5, 1.0) } else { 1.0 };
+        let dur = look.transition.duration_ms / 1000.0 * span;
         let over = if dur > 0.0 { now - self.split[2] >= dur } else { (now - self.split[2]) * look.fx.wave_speed * scale > (w * w + h * h).sqrt() };
         if self.split[3] > 0.0 && over { self.split = [0.0; 4]; }
         // The transition's program and, for its boxes, the largest elements on the page (device px).
         (self.tr, self.tr_loose) = if self.split[3] > 0.0 && dur > 0.0 {
-            (look.transition.pack([self.split[0], self.split[1]], self.split[2]), look.transition.loosen(((now - self.split[2]) / dur).clamp(0.0, 1.0)))
+            ({ let mut tr = look.transition.pack([self.split[0], self.split[1]], self.split[2]); tr[0][0] = dur; tr }, look.transition.loosen(((now - self.split[2]) / dur).clamp(0.0, 1.0)))
         } else { ([[0.0; 4]; 9], 0.0) };
         if self.split[3] > 0.0 && dur > 0.0 {
             let mut found: Vec<[f32; 4]> = ui.nodes().iter().skip(1).filter(|n| n.kind() != "box" && n.rect.w >= 12.0 && n.rect.h >= 12.0)
