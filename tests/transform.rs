@@ -263,6 +263,7 @@ mod pages {
         }
     }
     pub fn look(_: &S) -> Look { Look { material: Material::Plain, ..Look::default() } }
+    pub fn dotted(_: &S) -> Look { Look { material: Material::Dottr, ..Look::default() } }
 }
 
 /// The box of what is not the ground in the top part of the frame (where the titles are).
@@ -275,58 +276,138 @@ fn ink_box(px: &[u8], ground: &[u8], w: u32) -> Option<[f32; 4]> {
     }
     (b[2] > b[0]).then_some(b)
 }
+/// The ink in the top part of the frame: how much of it there is (each pixel by how far it is from the
+/// ground, 0–255 in its most different channel) and its centroid.
+fn ink_mass(px: &[u8], ground: &[u8], w: u32) -> (f32, [f32; 2]) {
+    let (mut m, mut x, mut y) = (0.0f32, 0.0f32, 0.0f32);
+    for (i, (p, g)) in px.chunks_exact(4).zip(ground.chunks_exact(4)).enumerate() {
+        let (px_, py) = ((i as u32 % w) as f32 + 0.5, (i as u32 / w) as f32 + 0.5);
+        if py >= 260.0 { continue; }
+        let d = p.iter().zip(g).take(3).map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap_or(0) as f32;
+        if d <= 8.0 { continue; }
+        m += d; x += d * px_; y += d * py;
+    }
+    (m, if m > 0.0 { [x / m, y / m] } else { [0.0; 2] })
+}
 
-#[test]
-fn a_morph_from_the_last_frame_flies_the_old_title_to_the_new_one() {
+/// Two pages' titles, the old drawn, then a morph from the last frame and the new view: the frame
+/// before, every frame after at 60 Hz for 1.5 s, the glyph instances drawn in the titles' part of the
+/// window in each, and the time of the last frame.
+type FromLast = (Vec<u8>, Vec<Vec<u8>>, Vec<usize>, f32);
+fn from_last(o: &mut amenui::offscreen::Offscreen, look: fn(&pages::S) -> amenui::style::Look, reduced: bool) -> FromLast {
+    let (w, h) = (560u32, 380u32);
+    amenui::budget::set(amenui::budget::MAX_MARKS, 1.0);
+    let spec = MorphSpec { duration_ms: 600.0, tighten_ms: 200.0, ..Default::default() };
+    o.r.partial = false;
+    let mut ui = Ui::new(pages::S { second: false }, pages::view, |_, _| {}, fonts(), w, h, 1.0).on_look(look);
+    ui.set_reduced_motion(reduced);
+    let mut t = 0.0;
+    while t < 1.5 { t += 1.0 / 60.0; ui.tick(t); let look = ui.look(); let _ = o.render(&mut ui, &look); }
+    let look = ui.look();
+    let old = o.render(&mut ui, &look);
+    ui.morph_from_last("title", spec);
+    ui.state.second = true;
+    ui.relayout();
+    let (mut frames, mut glyphs) = (vec![], vec![]);
+    for _ in 0..90 {
+        t += 1.0 / 60.0;
+        ui.tick(t);
+        let look = ui.look();
+        frames.push(o.render(&mut ui, &look));
+        glyphs.push(ui.scene().instances.iter().filter(|i| i.paint[3] == amenui::scene::GLYPH && i.paint[2] > 0.0 && i.rect[2] > 0.0 && i.rect[1] < 260.0).count());
+    }
+    (old, frames, glyphs, t)
+}
+/// The second page drawn directly, at time `t`.
+fn direct_at(look: fn(&pages::S) -> amenui::style::Look, t: f32) -> Vec<u8> {
+    let (w, h) = (560u32, 380u32);
+    let mut o = amenui::offscreen::Offscreen::new(w, h);
+    let mut ui = Ui::new(pages::S { second: true }, pages::view, |_, _| {}, fonts(), w, h, 1.0).on_look(look);
+    let mut tf = 0.0;
+    while tf < t - 1e-4 { tf += 1.0 / 60.0; ui.tick(tf); }
+    let look = ui.look();
+    o.render(&mut ui, &look)
+}
+
+/// A morph from the last frame, plain or dotted: the title flies, whole, from the old place to the new.
+fn the_title_flies(look: fn(&pages::S) -> amenui::style::Look, name: &str) {
     let (w, h) = (560u32, 380u32);
     let Ok(mut o) = amenui::offscreen::Offscreen::try_new(w, h) else { eprintln!("no GPU adapter here: skipped"); return };
-    amenui::budget::set(amenui::budget::MAX_MARKS, 1.0);
-    let spec = amenui::morph::MorphSpec { duration_ms: 600.0, tighten_ms: 200.0, ..Default::default() };
-    let run = |o: &mut amenui::offscreen::Offscreen| {
-        let mut ui = Ui::new(pages::S { second: false }, pages::view, |_, _| {}, fonts(), w, h, 1.0).on_look(pages::look);
-        let mut t = 0.0;
-        while t < 1.5 { t += 1.0 / 60.0; ui.tick(t); let look = ui.look(); let _ = o.render(&mut ui, &look); }
-        let look = ui.look();
-        let old = o.render(&mut ui, &look);
-        ui.morph_from_last("title", spec.clone());
-        ui.state.second = true;
-        ui.relayout();
-        let mut frames = vec![];
-        for _ in 0..90 { t += 1.0 / 60.0; ui.tick(t); let look = ui.look(); frames.push(o.render(&mut ui, &look)); }
-        (old, frames, t)
-    };
-    let (old, frames, t) = run(&mut o);
-    // The ground alone, and the new page drawn directly at the same time.
-    let mut o2 = amenui::offscreen::Offscreen::new(w, h);
-    let mut fresh = Ui::new(pages::S { second: true }, pages::view, |_, _| {}, fonts(), w, h, 1.0).on_look(pages::look);
-    let mut tf = 0.0;
-    while tf < t - 1e-4 { tf += 1.0 / 60.0; fresh.tick(tf); }
-    let look = fresh.look();
-    let direct = o2.render(&mut fresh, &look);
+    let (old, frames, glyphs, t) = from_last(&mut o, look, false);
+    // The frame at 600 ms is the 36th: it and every one after are the new page drawn directly.
+    let at = 35;
+    let t_at = t - (frames.len() - 1 - at) as f32 / 60.0;
+    let direct = direct_at(look, t_at);
     let ground: Vec<u8> = { let g = &direct[..4]; g.iter().copied().cycle().take(direct.len()).collect() };
     let (a, b) = (ink_box(&old, &ground, w).expect("old title"), ink_box(&direct, &ground, w).expect("new title"));
     let first = ink_box(&frames[0], &ground, w).expect("first frame");
     let near = |p: [f32; 4], q: [f32; 4], tol: f32| (0..4).all(|k| (p[k] - q[k]).abs() <= tol);
-    assert!(near(first, a, 3.0), "the first frame's title {first:?} is the old one {a:?}");
-    // Each frame's ink centre stays near the line between the two centres.
-    let c = |r: [f32; 4]| [(r[0] + r[2]) * 0.5, (r[1] + r[3]) * 0.5];
-    let (ca, cb) = (c(a), c(b));
-    let len = ((cb[0] - ca[0]).powi(2) + (cb[1] - ca[1]).powi(2)).sqrt();
-    for (k, f) in frames.iter().enumerate() {
-        let Some(r) = ink_box(f, &ground, w) else { continue };
-        let p = c(r);
-        let d = ((cb[0] - ca[0]) * (ca[1] - p[1]) - (ca[0] - p[0]) * (cb[1] - ca[1])).abs() / len;
-        assert!(d <= 0.1 * len, "frame {k}: the centre {p:?} is {d:.1} px off the line ({len:.0} px long)");
+    assert!(near(first, a, 3.0), "{name}: the first frame's title {first:?} is the old one {a:?}");
+    // The centroid of the ink goes along the line between the two titles' centroids, forward in every
+    // frame, and in the middle of the time it is out of both ends' 15 %. (Eased in and out by a cubic,
+    // 30 ms a glyph apart, and weighed by ink, which grows with the glyphs, it is 0.04 of the way at a
+    // quarter of the time and 0.95 at three quarters in plain; from 45 % to 60 % of the time it is out
+    // of both ends in plain and dottr.)
+    let ((ma, ca), (mb, cb)) = (ink_mass(&old, &ground, w), ink_mass(&direct, &ground, w));
+    let (dx, dy) = (cb[0] - ca[0], cb[1] - ca[1]);
+    let len = (dx * dx + dy * dy).sqrt();
+    let mut last = -1.0f32;
+    for (k, f) in frames.iter().enumerate().take(at + 1) {
+        let (m, c) = ink_mass(f, &ground, w);
+        // Ink all the way: never under 60 % of the smaller title's.
+        assert!(m >= 0.6 * ma.min(mb), "{name} frame {k}: ink {m:.0}, the titles have {ma:.0} and {mb:.0}");
+        let along = ((c[0] - ca[0]) * dx + (c[1] - ca[1]) * dy) / (len * len);
+        let off = (dx * (ca[1] - c[1]) - (ca[0] - c[0]) * dy).abs() / len;
+        assert!(off <= 0.1 * len, "{name} frame {k}: the centroid {c:?} is {off:.1} px off the line ({len:.0} px long)");
+        assert!(along >= last - 0.005, "{name} frame {k}: the centroid goes back, from {last:.3} to {along:.3} of the way");
+        let time = (k + 1) as f32 / 36.0;
+        if (0.45..=0.6).contains(&time) { assert!(along > 0.15 && along < 0.85, "{name} at {:.0} %: the centroid is {along:.2} of the way", time * 100.0); }
+        last = along;
     }
-    let last = frames.last().expect("frames");
-    assert!(near(ink_box(last, &ground, w).expect("last"), b, 3.0), "the last frame's title is the new one");
-    assert!(*last == direct, "done, it is the new page drawn directly");
-    // The old page's body is not drawn after the first frame.
-    let body = |px: &[u8]| px.chunks_exact(4).zip(direct.chunks_exact(4)).enumerate().filter(|(i, (p, d))| { let (x, y) = (*i as u32 % w, *i as u32 / w); x < 280 && (290..330).contains(&y) && p != d }).count();
-    for (k, f) in frames.iter().enumerate().skip(1) { assert_eq!(body(f), 0, "frame {k} still shows the old body"); }
-    // The same input three times: the same bytes.
-    let mut o3 = amenui::offscreen::Offscreen::new(w, h);
-    assert!(run(&mut o3).1 == frames, "the same frames again");
-    let mut o4 = amenui::offscreen::Offscreen::new(w, h);
-    assert!(run(&mut o4).1 == frames, "and a third time");
+    // Plain: each glyph is drawn once, whole; never an old and a new copy at the same time.
+    assert!(glyphs.iter().all(|&n| n <= 5), "{name}: glyphs drawn in the titles' part: {glyphs:?}");
+    // At the duration, and after: the new page drawn directly, byte for byte.
+    assert!(frames[at] == direct, "{name}: the frame at 600 ms is the new page drawn directly");
+    assert!(frames[at - 1] != direct, "{name}: the frame before it is not");
+    let end = direct_at(look, t);
+    assert!(frames[frames.len() - 1] == end, "{name}: so is the last");
+    assert!(near(ink_box(&frames[frames.len() - 1], &ground, w).expect("last"), b, 3.0), "{name}: the last frame's title is the new one");
+    // The new page's body is there, as it is drawn directly, from the first frame; the old one is not.
+    let region = |px: &[u8], x0: u32, x1: u32| px.chunks_exact(4).enumerate().filter(|(i, _)| { let (x, y) = (*i as u32 % w, *i as u32 / w); (x0..x1).contains(&x) && (290..345).contains(&y) }).flat_map(|(_, p)| p.to_vec()).collect::<Vec<u8>>();
+    for (k, f) in frames.iter().enumerate() {
+        assert!(region(f, 280, w) == region(&direct, 280, w), "{name} frame {k}: the new body is not as drawn directly");
+        assert!(region(f, 0, 280) == region(&direct, 0, 280), "{name} frame {k}: the old body is still drawn");
+    }
+    // The same input again: the same bytes.
+    let mut o2 = amenui::offscreen::Offscreen::new(w, h);
+    assert!(from_last(&mut o2, look, false).1 == frames, "{name}: the same frames again");
 }
+
+#[test]
+fn a_morph_from_the_last_frame_flies_the_old_title_to_the_new_one() { the_title_flies(pages::look, "plain"); }
+
+#[test]
+fn in_dottr_the_title_flies_too() { the_title_flies(pages::dotted, "dottr"); }
+
+#[test]
+fn with_less_motion_the_title_fades_out_and_in_where_each_is() {
+    // Nothing flies: the old title fades where it was and the new one where it is, both over 150 ms;
+    // from then on, the new page drawn directly.
+    let (w, h) = (560u32, 380u32);
+    let Ok(mut o) = amenui::offscreen::Offscreen::try_new(w, h) else { eprintln!("no GPU adapter here: skipped"); return };
+    let (old, frames, _, t) = from_last(&mut o, pages::look, true);
+    let direct = direct_at(pages::look, t);
+    let ground: Vec<u8> = { let g = &direct[..4]; g.iter().copied().cycle().take(direct.len()).collect() };
+    let (a, b) = (ink_box(&old, &ground, w).expect("old title"), ink_box(&direct, &ground, w).expect("new title"));
+    let inside = |p: [f32; 2], r: [f32; 4]| p[0] >= r[0] - 1.0 && p[1] >= r[1] - 1.0 && p[0] <= r[2] + 1.0 && p[1] <= r[3] + 1.0;
+    for (k, f) in frames.iter().enumerate().take(9) {
+        // Every pixel of ink is in one title's box or the other's: nothing between.
+        for (i, (p, g)) in f.chunks_exact(4).zip(ground.chunks_exact(4)).enumerate() {
+            let q = [(i as u32 % w) as f32, (i as u32 / w) as f32];
+            if q[1] >= 260.0 || p.iter().zip(g).all(|(x, y)| (*x as i32 - *y as i32).abs() <= 24) { continue; }
+            assert!(inside(q, a) || inside(q, b), "frame {k}: ink at {q:?}, in neither title");
+        }
+    }
+    assert!(frames[8] == direct, "at 150 ms, the new page drawn directly");
+}
+

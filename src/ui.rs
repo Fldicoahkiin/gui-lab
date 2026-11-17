@@ -248,9 +248,17 @@ const MARKS_OPEN: f32 = 3.0;
 struct Tag { flow: Rc<str>, glyph: bool, n: u32, gid: u32 }
 
 /// A shared part on its way from its old rect (device px) to the one layout gives it now.
-struct FlowRec { from: [f32; 4], clip: [f32; 4], start: f32, dur: f32, loose: f32 }
-/// An instance of the old page that has no place on the new one: it loosens and fades.
-struct Ghost { inst: Instance, start: f32, dur: f32 }
+struct FlowRec {
+    from: [f32; 4], clip: [f32; 4], start: f32, dur: f32, loose: f32,
+    /// A glyph flying from the last frame (`Ui::morph_from_last`): the old glyph it starts as. Its box
+    /// and colour go to the new one's; it is drawn as the old glyph for the first half of its way, as
+    /// the new one after, each at the size of the box it has then.
+    src: Option<Instance>,
+    /// Comes in over these times (s) where it is, its alpha from 0.
+    fade_in: Option<[f32; 2]>,
+}
+/// An instance of the old page that has no place on the new one: it loosens (`loosen`) and fades.
+struct Ghost { inst: Instance, start: f32, dur: f32, loosen: bool }
 /// A page instance as it was drawn, kept across a relayout for `Cmd::Flow`.
 struct Old { id: u64, tag: Option<Tag>, inst: Instance }
 
@@ -1207,7 +1215,8 @@ impl<S, M: Clone> Ui<S, M> {
     /// The clock that materials' time terms read: it runs only while something moves.
     pub fn material_clock(&self) -> f32 { self.mclock }
     /// The ground clock (the dottr ground's drift): it runs only while something moves the whole window
-    /// (a commit, a front that reaches everywhere, a morph, a flow, a fling or a pull).
+    /// (a commit, a front that reaches everywhere, a morph, a flow, a fling or a pull; not a title flying
+    /// from the last frame).
     pub fn ground_clock(&self) -> f32 { self.gclock }
     /// Set the ground clock (a check that needs one exact frame).
     pub fn set_ground_clock(&mut self, t: f32) { self.gclock = t; self.dirty = true; }
@@ -1306,7 +1315,9 @@ impl<S, M: Clone> Ui<S, M> {
         let tm = &self.timing;
         let everywhere = self.field.fronts.iter().zip(&self.field.scopes).any(|(f, sc)| f[3] > 0.0 && now - f[2] < tm.wave_life && *sc == EVERYWHERE);
         let split = self.split.as_ref().is_some_and(|sp| self.split_alive(sp, now));
-        everywhere || split || self.run.is_some() || !self.flows.is_empty() || !self.ghosts.is_empty() || self.fling.is_some() || !self.over.is_empty()
+        // A title flying from the last frame moves only itself.
+        let flows = self.flows.values().any(|f| f.src.is_none() && f.fade_in.is_none()) || self.ghosts.iter().any(|g| g.loosen);
+        everywhere || split || self.run.is_some() || flows || self.fling.is_some() || !self.over.is_empty()
     }
     /// About how much of the window (0..1) can be loose at `now`: all of it while a front lives, things
     /// condense, a morph or flow runs; otherwise the area of instances held loose, a burst, the lens over
@@ -1385,7 +1396,8 @@ impl<S, M: Clone> Ui<S, M> {
             Some(r) => r.phase(t) != self.painted_phase,
             None => false,
         };
-        self.flows.retain(|_, f| t < f.start + f.dur);
+        // (A flight is over at its end, to within a tenth of a millisecond of the clock's steps.)
+        self.flows.retain(|_, f| t < f.start + f.dur - 1e-4);
         self.recomps.retain(|_, r| t < r.end);
         self.slides.retain(|_, sl| t < sl.start + sl.dur);
         let scrolled = self.step_scrolling(dt);
@@ -3843,6 +3855,21 @@ impl<S, M: Clone> Ui<S, M> {
                     } else {
                         for k in 0..4 { inst.rect[k] = f.from[k] + (inst.rect[k] - f.from[k]) * e; }
                     }
+                    if let Some(o) = &f.src {
+                        // The glyph's own box (without the spread) goes from the old one's to the new
+                        // one's; drawn as the old glyph, then as the new, scaled to it.
+                        let sp = crate::text::SPREAD as f32;
+                        let own = |r: [f32; 4]| [r[0] + sp, r[1] + sp, (r[2] - 2.0 * sp).max(1e-3), (r[3] - 2.0 * sp).max(1e-3)];
+                        let (gs, gd) = (own(o.rect), own(self.base[i].rect));
+                        let g: [f32; 4] = std::array::from_fn(|k| gs[k] + (gd[k] - gs[k]) * e);
+                        let (shape, at) = if e < 0.5 { (o, gs) } else { (&self.base[i], gd) };
+                        let (fx, fy) = (g[2] / at[2], g[3] / at[3]);
+                        inst.uv = shape.uv;
+                        inst.extra[1] = shape.extra[1];
+                        inst.rect = [g[0] - sp * fx, g[1] - sp * fy, g[2] + 2.0 * sp * fx, g[3] + 2.0 * sp * fy];
+                        for k in 0..3 { inst.paint[k] = o.paint[k] + (self.base[i].paint[k] - o.paint[k]) * e; }
+                    }
+                    if let Some([a, b]) = f.fade_in { inst.paint[2] *= ((now - a) / (b - a).max(1e-4)).clamp(0.0, 1.0); }
                     if p < 1.0 { inst.clip = [f.clip[0].min(inst.clip[0]), f.clip[1].min(inst.clip[1]), f.clip[2].max(inst.clip[2]), f.clip[3].max(inst.clip[3])]; }
                     inst.extra[2] = inst.extra[2].max(f.loose * (std::f32::consts::PI * e).sin());
                     if p < 1.0 && self.scene.layer.is_none() { lifted.push((i, inst)); inst.rect = [0.0; 4]; }
@@ -3860,13 +3887,13 @@ impl<S, M: Clone> Ui<S, M> {
         if active || self.animating { self.dirty = true; }
         self.animating = active;
         if let Some((i, _, _)) = self.caret && i < self.page_len { self.scene.instances[i].paint[2] = if self.caret_on { self.base[i].paint[2] } else { 0.0 }; }
-        self.ghosts.retain(|g| now < g.start + g.dur);
+        self.ghosts.retain(|g| now < g.start + g.dur - 1e-4);
         // An old page's 3D elements are not kept: their meshes went with that page's scene.
         for g in self.ghosts.iter().filter(|g| g.inst.paint[3] != MESH) {
             let p = ((now - g.start) / g.dur.max(1e-4)).clamp(0.0, 1.0);
             let mut inst = g.inst;
             // Less motion: it only fades.
-            if !self.fmap.reduced { inst.extra[2] = inst.extra[2].max(p); }
+            if g.loosen && !self.fmap.reduced { inst.extra[2] = inst.extra[2].max(p); }
             inst.paint[2] *= 1.0 - p;
             self.scene.push(inst);
         }
@@ -3938,23 +3965,58 @@ impl<S, M: Clone> Ui<S, M> {
     /// Morph into `to` from what the frame drawn last showed for `spec.from_last` (or `to`'s own key):
     /// call it, then change the view (a route that replaces the page). The source is not looked up in
     /// the tree: it is the instances that last frame drew under that key, kept until the morph is done,
-    /// so a title on the old page flies to the title of the new one. With nothing drawn under that key,
-    /// the new element just comes in as usual. `Cmd::Morph` with `from_last` set does the same.
+    /// so a title on the old page flies, glyph by glyph, to the title of the new one (`morph_last`).
+    /// With nothing drawn under that key, the new element just comes in as usual. `Cmd::Morph` with `from_last` set does the same.
     pub fn morph_from_last(&mut self, to: &str, spec: MorphSpec) {
         let from = spec.from_last.clone().unwrap_or_else(|| to.to_owned());
-        let src = self.collect(&from);
+        let src = self.instances_of(&from).into_iter().filter(|i| i.paint[2] > 0.0 && i.rect[2] > 0.0).collect();
         self.last_morph = Some((src, to.to_owned(), spec));
     }
     /// Start a morph kept by `morph_from_last`, once the new view is laid out.
+    /// The old title's glyphs fly to the new one's, glyph by glyph in order, each whole (DESIGN.md
+    /// §1.10): straight, eased in and out, its size and colour going over; each 30 ms after the last
+    /// (in all at most 40 % of the duration), so the last lands at the duration. Glyphs one side has
+    /// more of fade where they are: the old over the first 30 %, the new over the last 30 %. With less
+    /// motion nothing flies: the old fades out where it was and the new in where it is, 150 ms each.
     fn morph_last(&mut self) {
         let Some((src, to, spec)) = self.last_morph.take() else { return };
         if src.is_empty() { return; }
-        self.run = None;
-        self.paint();
-        let dst = self.collect(&to);
-        // The source is gone from the tree: the tiles carry it from the first frame (no loosening on
-        // the page first), under a key no element has.
-        self.morph_with(LAST_FRAME, &to, src, dst, MorphSpec { loosen_ms: 0.0, ..spec }, 0.0);
+        let Some(root) = self.nodes.iter().position(|n| n.key == to) else { return };
+        let now = self.clock;
+        let dst: Vec<usize> = (0..self.page_len).filter(|&i| within(&self.nodes, self.owners[i].0, root)).collect();
+        let reduced = self.fmap.reduced;
+        let dur = if reduced { REDUCED_FADE } else { (spec.duration_ms / 1000.0).max(1e-3) };
+        let glyph = |i: &Instance| i.paint[3] == GLYPH;
+        let (sg, so): (Vec<Instance>, Vec<Instance>) = src.into_iter().partition(glyph);
+        let (dg, d_other): (Vec<usize>, Vec<usize>) = dst.into_iter().partition(|&i| glyph(&self.base[i]));
+        let n = if reduced { 0 } else { sg.len().min(dg.len()) };
+        let per = if n > 1 { 0.03f32.min(0.4 * dur / (n - 1) as f32) } else { 0.0 };
+        let travel = dur - per * n.saturating_sub(1) as f32;
+        for k in 0..n {
+            let i = dg[k];
+            let id = self.owners[i].1;
+            self.flows.insert(id, FlowRec { from: sg[k].rect, clip: sg[k].clip, start: now + per * k as f32, dur: travel, loose: 0.0, src: Some(sg[k]), fade_in: None });
+            // It is the old glyph come over: born when that was.
+            self.births.insert(id, sg[k].extra[3]);
+            self.base[i].extra[3] = sg[k].extra[3];
+        }
+        let (out, inn) = if reduced { (dur, [now, now + dur]) } else { (0.3 * dur, [now + 0.7 * dur, now + dur]) };
+        for inst in sg[n..].iter().chain(&so) { self.ghosts.push(Ghost { inst: *inst, start: now, dur: out, loosen: false }); }
+        for &i in dg[n..].iter().chain(&d_other) {
+            let id = self.owners[i].1;
+            self.flows.insert(id, FlowRec { from: self.base[i].rect, clip: self.base[i].clip, start: now, dur, loose: 0.0, src: None, fade_in: Some(inn) });
+            // It fades in, and does not come in as a new element too.
+            self.births.insert(id, -1e4);
+            self.base[i].extra[3] = -1e4;
+        }
+        // The rest of the new page is in place from the first frame: it does not come in.
+        for i in 0..self.page_len {
+            if within(&self.nodes, self.owners[i].0, root) { continue; }
+            self.births.insert(self.owners[i].1, -1e4);
+            self.base[i].extra[3] = -1e4;
+        }
+        self.animating = true;
+        self.finish();
     }
     fn morph_with(&mut self, from: &str, to: &str, src: Vec<Instance>, dst: Vec<Instance>, spec: MorphSpec, k0: f32) {
         let now = self.clock;
@@ -4077,12 +4139,12 @@ impl<S, M: Clone> Ui<S, M> {
             if used[k] { continue; }
             used[k] = true;
             let o = &old[k];
-            self.flows.insert(id, FlowRec { from: o.inst.rect, clip: o.inst.clip, start: now, dur: spec.flow_ms / 1000.0, loose: spec.flow_loose });
+            self.flows.insert(id, FlowRec { from: o.inst.rect, clip: o.inst.clip, start: now, dur: spec.flow_ms / 1000.0, loose: spec.flow_loose, src: None, fade_in: None });
             self.births.insert(id, o.inst.extra[3]);
             self.base[i].extra[3] = o.inst.extra[3];
         }
         for (k, o) in old.iter().enumerate() {
-            if !used[k] && !new_ids.contains(&o.id) && spec.out_ms > 0.0 { self.ghosts.push(Ghost { inst: o.inst, start: now, dur: if self.fmap.reduced { REDUCED_FADE } else { spec.out_ms / 1000.0 } }); }
+            if !used[k] && !new_ids.contains(&o.id) && spec.out_ms > 0.0 { self.ghosts.push(Ghost { inst: o.inst, start: now, dur: if self.fmap.reduced { REDUCED_FADE } else { spec.out_ms / 1000.0 }, loosen: true }); }
         }
         self.animating = true;
         self.finish();
@@ -4725,8 +4787,6 @@ const IGNORE: [f32; 4] = [0.0, -1.0, 0.0, 0.0];
 /// How long what comes and goes fades when the viewer asked for less motion, s.
 pub const REDUCED_FADE: f32 = 0.15;
 
-/// The key a morph from the last frame (`Ui::morph_from_last`) gives its source: no element has it.
-const LAST_FRAME: &str = "\u{0}last frame";
 
 struct DecodeRun { start: f32, reverse: bool, spec: crate::decode::Decode, plan: Option<crate::decode::Plan>, ghost: Vec<Instance>, clip: Option<[f32; 4]> }
 /// What a decoded element showed in the last frame: its instances, its own spec and its clip (device

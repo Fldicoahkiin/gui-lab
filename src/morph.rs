@@ -49,7 +49,8 @@ pub struct MorphSpec {
     /// The material's lattice pitch (`Fx::pitch`), so the tiles are its cells.
     pub lattice: f32,
     /// Take the source from the frame drawn last, not from the tree (`Ui::morph_from_last`): the
-    /// instances that frame drew for this key (for `to`'s key when `None`).
+    /// glyphs that frame drew for this key (for `to`'s key when `None`), which fly, each whole, to the
+    /// new element's over `duration_ms` (the other fields are not used then).
     pub from_last: Option<String>,
 }
 impl Default for MorphSpec {

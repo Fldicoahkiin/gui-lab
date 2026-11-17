@@ -25,8 +25,8 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
   heads and rule are the control.
 - `El::pass` lets the pointer through to what is under it; `El::opacity` fades a subtree as one (at
   0 it takes no pointer); `El::commit_scope` keeps a commit inside one element's box.
-- `Ui::morph_from_last` and `MorphSpec::from_last` fly an element from where it was drawn last frame,
-  across a route change.
+- `Ui::morph_from_last` and `MorphSpec::from_last` fly an element's glyphs, each whole, from where they
+  were drawn last frame to the new element's, across a route change, in every material.
 - The readout goes in `Look::overlay_at`'s corner and moves on clockwise rather than cover text to read.
 - The INK leader is dashed and routed round text to read; `Gaze::echo` keeps fading earlier INK boxes.
 - With reduced motion, what comes and goes fades over 150 ms.
