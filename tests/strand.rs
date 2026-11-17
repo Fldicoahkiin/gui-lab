@@ -324,3 +324,89 @@ fn a_retracting_title_hurries_past_its_half_drawn_looks() {
     assert!(peak > 0.9, "the stir loosened the title to {peak}");
     assert!(band <= 8, "{band} frames between 0.15 and 0.4 on the way back");
 }
+
+/// The Loose Thread composition as the site shows it (a kicker, the title, a picture with its caption,
+/// a paragraph beside it, a row of small controls along the foot, a tangle behind the picture's corner),
+/// in the `loose-thread` preset, with a point under the pointer that stirs the map.
+mod loose_page {
+    use amenui::el::{El, Font, Paint, Response, Scope, Stirr, col, picture, row, space, text, text_lh};
+    pub struct P { pub at: Option<(f32, f32)> }
+    #[derive(Clone)] pub struct At(pub Option<(f32, f32)>);
+    pub fn view(s: &P) -> El<At> {
+        let (w, pic_w, side_w, height) = (640.0f32, 300.0f32, 260.0f32, 480.0f32);
+        let mut comp = col().key("comp").width(w + 72.0).height(height).gaze_scope().ripplr_scope().on_move(|p| Some(At(p)));
+        comp.style.padding.right = taffy::prelude::length(72.0);
+        let (cx, cy, r) = (pic_w + 20.0, 0.66 * height, 70.0);
+        let pts: Vec<[f32; 2]> = amenui::strand::figure(17, r, cy - 4.0, height - cy - 34.0).iter().map(|p| [p[0] + 90.0, p[1] + cy]).collect();
+        comp = comp.child(space(180.0, height).key("tangle").trace(amenui::strand::Trace { points: std::rc::Rc::new(pts), progress: 1.0, weight: 1.0, pull: 2.5, ..Default::default() }).absolute(Some(cx - 90.0), Some(0.0), None, None));
+        if let Some((x, y)) = s.at { comp = comp.child(space(1.0, 1.0).key("stylus").stirr(Stirr { energy: 1.0, radius: Some(72.0), scope: Scope::Container(Some("comp".into())) }).absolute(Some(x), Some(y), None, None)); }
+        let word = |k: &str, t: &str, on: bool| text(t, 12.0, if on { Paint::ACCENT } else { Paint::TEXT }).whisper().key(k);
+        let footer = row().key("footer").width(w).gap(28.0).align(taffy::AlignItems::BASELINE).justify(taffy::JustifyContent::END).absolute(Some(0.0), Some(height - 22.0), None, None)
+            .child(row().gap(8.0).child(word("black", "black", true)).child(word("dot", "·", false)).child(word("paper", "paper", false)))
+            .child(word("binary", "1-bit", false)).child(word("invert", "invert", false));
+        comp.child(text("amenui — no. 10", 11.0, Paint::TEXT).whisper().key("kicker"))
+            .child(space(1.0, 22.0))
+            .child(text_lh("loose thread", 30.0, 40.0, Paint::INK).font(Font::Whisper).tracking(0.3).key("title").respond(Response::Loosen).legible(false))
+            .child(space(1.0, 34.0))
+            .child(row().key("spread").width(w).gap(w - pic_w - side_w).align(taffy::AlignItems::START)
+                .child(col().key("fig").gap(10.0).child(col().width(pic_w).child(picture(amenui::pictures::SPHERE, 0.5).key("pic"))).child(text("fig. 1", 11.0, Paint::TEXT).whisper().key("caption")))
+                .child(col().key("side").width(side_w).pad(0.0, 6.0).child(text_lh("At rest this page is only type and a picture. Where the pointer passes, the title comes apart into one thread, then gathers again.", 14.0, 24.0, Paint::TEXT).key("body"))))
+            .child(footer)
+    }
+    pub fn look() -> amenui::style::Look {
+        let p = amenui::preset::presets().into_iter().find(|p| p.hash == "loose-thread").expect("the loose-thread preset");
+        p.apply(&amenui::style::Look::default())
+    }
+}
+
+/// Each legible element's ink (its instances' boxes, a glyph's without the spread), grown by `m`.
+fn legible_boxes<S, M: Clone>(ui: &Ui<S, M>, m: f32) -> Vec<(String, [f32; 4])> {
+    let tree = ui.export_tree();
+    let spread = amenui::text::SPREAD as f32;
+    let mut ink: Vec<(String, [f32; 4])> = vec![];
+    for (i, inst) in ui.scene().instances.iter().enumerate() {
+        let Some(key) = ui.owner_key(i) else { continue };
+        if key.is_empty() || !tree.find(key).is_some_and(|n| n.legible) || inst.paint[2] <= 0.0 { continue; }
+        let p = if inst.paint[3] == amenui::scene::GLYPH { spread } else { 0.0 };
+        let b = [inst.rect[0] + p, inst.rect[1] + p, inst.rect[0] + inst.rect[2] - p, inst.rect[1] + inst.rect[3] - p];
+        match ink.iter_mut().find(|e| e.0 == key) {
+            Some(e) => e.1 = [e.1[0].min(b[0]), e.1[1].min(b[1]), e.1[2].max(b[2]), e.1[3].max(b[3])],
+            None => ink.push((key.to_owned(), b)),
+        }
+    }
+    ink.into_iter().map(|(k, b)| (k, [b[0] - m, b[1] - m, b[2] + m, b[3] + m])).collect()
+}
+/// The distance from a piece to a box (0 when it passes through it).
+fn seg_box(a: [f32; 2], b: [f32; 2], r: &[f32; 4]) -> f32 {
+    (0..=32).map(|j| { let t = j as f32 / 32.0; let p = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]; let (dx, dy) = ((r[0] - p[0]).max(p[0] - r[2]).max(0.0), (r[1] - p[1]).max(p[1] - r[3]).max(0.0)); (dx * dx + dy * dy).sqrt() }).fold(f32::INFINITY, f32::min)
+}
+
+#[test]
+fn on_the_loose_thread_page_no_piece_enters_text_to_read_and_the_tails_keep_clear_of_it() {
+    // The pointer through the title and down across the page, as a person would: every piece of every
+    // thread (all four kinds) stays out of the ink of text to read (4 px larger), and no tail passes
+    // within 12 px of it (a tail is a way out to the edge, not a line drawn past the text).
+    let mut ui = Ui::new(loose_page::P { at: None }, loose_page::view, |s, m: loose_page::At| s.at = m.0, fonts(), 1000, 640, 1.0).on_look(|_| loose_page::look());
+    let mut t = 0.0;
+    let step = |ui: &mut Ui<loose_page::P, loose_page::At>, t: &mut f32| { *t += 1.0 / 60.0; ui.tick(*t); ui.frame_drawn(); };
+    for _ in 0..90 { step(&mut ui, &mut t); }
+    let comp = ui.node("comp").expect("comp").rect;
+    let title = ui.node("title").expect("title").rect;
+    let mut seen = 0;
+    for i in 0..=40 {
+        let k = (i.min(30)) as f32 / 30.0;
+        ui.pointer_move(comp.x + 10.0 + (title.w + 40.0) * k, title.y + title.h * 0.5 + 220.0 * k * k);
+        step(&mut ui, &mut t);
+        if i % 5 != 0 { continue; }
+        let (ink, near) = (legible_boxes(&ui, 4.0), legible_boxes(&ui, 12.0));
+        assert!(ink.iter().any(|e| e.0 == "body") && ink.iter().any(|e| e.0 == "paper"), "{:?}", ink.iter().map(|e| &e.0).collect::<Vec<_>>());
+        for (key, _, segs) in ui.strands() {
+            for s in segs {
+                seen += 1;
+                for (name, b) in &ink { assert!(seg_box(s.a, s.b, b) > 0.0, "step {i}: a {:?} piece of `{key}` enters `{name}`: {:?} → {:?}", s.kind, s.a, s.b); }
+                if s.kind == Kind::Tail { for (name, b) in &near { assert!(seg_box(s.a, s.b, b) > 0.0, "step {i}: a tail of `{key}` passes within 12 px of `{name}`: {:?} → {:?}", s.a, s.b); } }
+            }
+        }
+    }
+    assert!(seen > 100, "{seen} pieces: the title did not come apart");
+}
