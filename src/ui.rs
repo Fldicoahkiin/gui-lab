@@ -340,6 +340,9 @@ pub struct Ui<S, M> {
     /// The beat clock (DESIGN.md §1.32), s: what moves on its own runs on it; the runtime's own while the
     /// look has no beat.
     clock: f32,
+    /// The last frame drawn was taken while something moved: one more frame is owed, so the screen
+    /// ends on the settled page even when the motion ends between two frames.
+    owed: bool,
     /// The runtime's own clock (what `tick` was given).
     wall: f32,
     /// Where the beat clock is against the runtime's.
@@ -810,7 +813,7 @@ impl<S, M: Clone> Ui<S, M> {
             hover: None, focus: None, pressed: None, capture: None, modal_at: None, modal_key: None, return_focus: None, split: None, splits: 0,
             keyboard: false, marks: Marks::default(), sized: None, commands: None, unseen: vec![], base: vec![], tags: vec![], roles: vec![],
             run: None, painted_phase: 0, flows: HashMap::new(), ghosts: vec![], body_len: 0, animating: false, lifted: HashMap::new(),
-            gaze_of: None, gaze_seen: HashMap::new(), annots: vec![], readout: gaze::Readout::default(), hovered: None, pointer_of: None, scripted: false, ticked: None, warm: None, warmed: None, unused_key: None, shortcut: None, scrolled_of: None, released: None, input: None,
+            gaze_of: None, gaze_seen: HashMap::new(), annots: vec![], readout: gaze::Readout::default(), hovered: None, pointer_of: None, scripted: false, ticked: None, warm: None, warmed: None, owed: false, unused_key: None, shortcut: None, scrolled_of: None, released: None, input: None,
             dirty: true, look_of: None, locale_of: None, timing: Timing::default(), wake_of: None, latest_birth: f32::NEG_INFINITY, gaze_until: f32::NEG_INFINITY,
             marks_moving: false, caret: None, caret_on: true, static_loose: false, mclock: 0.0, moving: false, gclock: 0.0, ground_moving: false,
             perf: crate::perf::Perf { quality: 1.0, ..Default::default() }, span: 0, painting: false, overlay: 0, overlay_at: 0.0, shape_seen: 0.0, hud_idle: false, rebuilt: 0,
@@ -1068,7 +1071,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// input or `next_wake`.
     pub fn needs_frame(&self, now: f32) -> bool {
         let b = self.beat_of(now);
-        self.dirty || self.warm.is_some() || self.prep.pending() || self.held(now) || self.moving_at(b) || self.wake_at(b).is_some_and(|w| w <= b)
+        self.dirty || self.owed || self.warm.is_some() || self.prep.pending() || self.held(now) || self.moving_at(b) || self.wake_at(b).is_some_and(|w| w <= b)
     }
     /// A `Cmd::Hold` is going on: frames go on (the same) until it ends.
     fn held(&self, now: f32) -> bool { self.timing.beat.on() && self.bclock.hold.is_some_and(|(_, until)| now < until) }
@@ -1076,7 +1079,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// when only input can change anything.
     pub fn next_wake(&self, now: f32) -> Option<f32> {
         let b = self.beat_of(now);
-        if self.dirty || self.warm.is_some() || self.prep.pending() || self.held(now) || self.moving_at(b) { return Some(now); }
+        if self.dirty || self.owed || self.warm.is_some() || self.prep.pending() || self.held(now) || self.moving_at(b) { return Some(now); }
         // A wake on the beat clock is that much later on the runtime's.
         self.wake_at(b).map(|w| (w + now - b).max(now))
     }
@@ -1150,7 +1153,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// Ask for a frame even though nothing changed (the host lost what it showed).
     pub fn invalidate(&mut self) { self.dirty = true; }
     /// The host drew a frame of the current scene.
-    pub fn frame_drawn(&mut self) { self.dirty = false; }
+    pub fn frame_drawn(&mut self) { self.dirty = false; self.owed = self.moving_at(self.beat_of(self.clock)); }
     /// Frame times and work counters (the renderer closes each frame with `perf_mut().frame(..)`).
     pub fn perf(&self) -> &crate::perf::Perf { &self.perf }
     /// The performance counters, to change (a shell sets the backend and adapter names).
