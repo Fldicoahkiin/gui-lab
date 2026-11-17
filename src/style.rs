@@ -62,8 +62,8 @@ const fn theme(name: &'static str, ground: [f32; 3], ink: [f32; 3], accent: [f32
 
 /// Near-black ground, warm white ink, an orange accent: the default.
 pub const DARK: Theme = Theme { second: [0.30, 0.62, 1.0], third: [0.98, 0.80, 0.25], ..theme("暗", [0.047, 0.051, 0.055], [0.886, 0.89, 0.878], [1.0, 0.42, 0.17]) };
-/// Warm white ground, near-black ink, a deeper orange accent.
-pub const LIGHT: Theme = Theme { second: [0.10, 0.36, 0.78], third: [0.80, 0.60, 0.02], ..theme("明", [0.914, 0.910, 0.890], [0.09, 0.094, 0.10], [0.86, 0.30, 0.08]) };
+/// Warm white ground, near-black ink, a deep orange accent.
+pub const LIGHT: Theme = Theme { second: [0.10, 0.36, 0.78], third: [0.80, 0.60, 0.02], ..theme("明", [0.914, 0.910, 0.890], [0.09, 0.094, 0.10], [0.64, 0.20, 0.035]) };
 /// The Lab (DESIGN.md §5.3): near-black ground, grey-white ink, one blue accent (all three hues the
 /// same blue), everything in the monospaced pixel face.
 pub const LAB: Theme = Theme { display: MONO, body: MONO, ..theme("实验室", [0.031, 0.033, 0.036], [0.84, 0.85, 0.86], [0.26, 0.52, 1.0]) };
