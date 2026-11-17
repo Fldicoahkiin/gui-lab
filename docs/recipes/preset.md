@@ -4,9 +4,9 @@ kind: howto
 
 # A custom preset
 
-A style preset is plain data (`amenui::preset::Preset`): theme, material and its numbers, faces, annotation, the interaction character (press feedback, fronts, default responses, recomposition) and a transition. Start from one of the twelve and change what you want, or read one from JSON (`Preset::from_json`; the website's styles page exports any preset). `Preset::apply` gives the look; when a commit applies it, its transition plays between the frame as it was and the new one — here rows that reveal from the top. A second press in the middle goes on from what is on the screen.
+A style preset is plain data (`amenui::preset::Preset`): theme, material and its numbers, faces, annotation, the interaction character (press feedback, fronts, default responses, recomposition) and a transition. Start from one of the twelve and change what you want, or read one from JSON (`Preset::from_json`; the website's styles page exports any preset). `Preset::apply` gives the look; when a commit applies it, its transition plays between the frame as it was and the new one — here rows that reveal from the top. A second press in the middle goes on from what is on the screen. The Crack button commits a third look through the Crack transition (`StepKind::Crack`, numbers `preset::CRACK`): the page splits along long pieces and the cracks widen until only the new page is left.
 
-A preset also carries `post`, the finishing pass (`amenui::post::PostSpec`: bloom → chromatic offset → scanlines → grain → vignette → curvature, then a dither and a palette, each off by default), and `marks` (`depth_scale`, `depth_dim`) for 3D elements. They are numbers like the rest: `p.set_number("post.scanlines.strength", 0.2)`, and they travel in the `look:v2:` recipe.
+A preset also carries `post`, the finishing pass (`amenui::post::PostSpec`: bloom → chromatic offset → scanlines → grain → vignette → curvature, then a dither and a palette, each off by default), and `marks` (`depth_scale`, `depth_dim`) for 3D elements. They are numbers like the rest: `p.set_number("post.scanlines.strength", 0.2)`, and they travel in the `look:v3:` recipe.
 
 The code is `examples/preset.rs`, compiled into the library as `amenui::recipes::preset`; `tests/recipes.rs` renders it, plays its interaction, and fails if this block differs from the file.
 
