@@ -49,6 +49,14 @@ pub trait Driven {
     fn draw(&mut self, o: &mut Offscreen, look: &Look) -> Vec<u8>;
     /// The look as a recipe string (`Preset::recipe`), when the page has one.
     fn recipe(&self) -> Option<String> { None }
+    /// Something visible moves on purpose (`El::ongoing`).
+    fn ongoing(&self) -> bool { false }
+    /// A frame was drawn (or counts as drawn): what was asked for is done.
+    fn frame_drawn(&mut self) {}
+    /// The audit of the frame just drawn (`audit::audit`): draws it again with the glyphs hidden for
+    /// the ground under the text. `px` is the frame as drawn. A page wrapping a `Ui` forwards to it;
+    /// the default finds nothing.
+    fn audit(&mut self, _o: &mut Offscreen, _look: &Look, _px: &[u8]) -> Vec<crate::audit::Finding> { vec![] }
 }
 impl<S, M: Clone> Driven for Ui<S, M> {
     fn now(&self) -> f32 { Ui::now(self) }
@@ -58,6 +66,16 @@ impl<S, M: Clone> Driven for Ui<S, M> {
     fn problems(&self) -> Vec<ViewProblem> { Ui::problems(self) }
     fn needs_frame(&self, t: f32) -> bool { Ui::needs_frame(self, t) }
     fn draw(&mut self, o: &mut Offscreen, look: &Look) -> Vec<u8> { o.render(self, look) }
+    fn ongoing(&self) -> bool { Ui::ongoing(self) }
+    fn frame_drawn(&mut self) { Ui::frame_drawn(self) }
+    fn audit(&mut self, o: &mut Offscreen, look: &Look, px: &[u8]) -> Vec<crate::audit::Finding> {
+        let (partial, hide) = (o.r.partial, o.r.hide_glyphs);
+        (o.r.partial, o.r.hide_glyphs) = (false, true);
+        self.invalidate();
+        let ground = o.render(self, look);
+        (o.r.partial, o.r.hide_glyphs) = (partial, hide);
+        crate::audit::audit(self, px, &ground)
+    }
     fn apply(&mut self, input: &Input) -> Result<(), DriveError> {
         let at = |ui: &Self, x: &Option<f32>, y: &Option<f32>, target: &Option<String>| -> Result<(f32, f32), DriveError> {
             if let Some(k) = target {
@@ -106,6 +124,9 @@ impl Driven for Styled {
     fn problems(&self) -> Vec<ViewProblem> { self.inner.problems() }
     fn needs_frame(&self, t: f32) -> bool { self.inner.needs_frame(t) }
     fn draw(&mut self, o: &mut Offscreen, look: &Look) -> Vec<u8> { self.inner.draw(o, look) }
+    fn ongoing(&self) -> bool { self.inner.ongoing() }
+    fn frame_drawn(&mut self) { self.inner.frame_drawn() }
+    fn audit(&mut self, o: &mut Offscreen, look: &Look, px: &[u8]) -> Vec<crate::audit::Finding> { self.inner.audit(o, look, px) }
 }
 
 /// Open a recipe (`recipe-form`, or just `form`) at `w` × `h` device px and `scale`, with the material
@@ -173,6 +194,17 @@ pub fn render(spec: &RenderSpec, faces: Vec<crate::text::Face>, o: Option<&mut O
 }
 /// `render` with the pages an application adds (its `open` falls back to `open_in` for recipes).
 pub fn render_with(spec: &RenderSpec, faces: Vec<crate::text::Face>, o: Option<&mut Offscreen>, open: Opener) -> Result<Rendered, DriveError> {
+    render_inner(spec, faces, o, open, false).map(|r| r.0)
+}
+/// `render`, and the audit of the frame (`audit::audit`, `audit::restless`), most serious first.
+pub fn audit(spec: &RenderSpec, faces: Vec<crate::text::Face>, o: Option<&mut Offscreen>) -> Result<(Rendered, Vec<crate::audit::Finding>), DriveError> {
+    audit_with(spec, faces, o, &open_in)
+}
+/// `audit` with the pages an application adds.
+pub fn audit_with(spec: &RenderSpec, faces: Vec<crate::text::Face>, o: Option<&mut Offscreen>, open: Opener) -> Result<(Rendered, Vec<crate::audit::Finding>), DriveError> {
+    render_inner(spec, faces, o, open, true)
+}
+fn render_inner(spec: &RenderSpec, faces: Vec<crate::text::Face>, o: Option<&mut Offscreen>, open: Opener, audit: bool) -> Result<(Rendered, Vec<crate::audit::Finding>), DriveError> {
     let material = spec.material.as_deref().map(material).transpose()?;
     let theme = spec.theme.as_deref().map(theme).transpose()?;
     if spec.w == 0 || spec.h == 0 { return Err(SurfaceError::ZeroSize { w: spec.w, h: spec.h }.into()); }
@@ -186,5 +218,14 @@ pub fn render_with(spec: &RenderSpec, faces: Vec<crate::text::Face>, o: Option<&
     let px = d.draw(o, &look);
     let recipe = d.recipe();
     let texts: Vec<(&str, &str)> = recipe.as_deref().map(|r| ("amenui-recipe", r)).into_iter().collect();
-    Ok(Rendered { png: png_bytes_with(spec.w, spec.h, &px, &texts), tree: d.tree(), problems: d.problems() })
+    let (tree, problems) = (d.tree(), d.problems());
+    let findings = if audit {
+        let mut f = d.audit(o, &look, &px);
+        // Restless: the clock runs on from the frame with no input.
+        let last = spec.events.iter().map(|e| e.at_ms).fold(0.0f32, f32::max).max(spec.at_ms) / 1000.0;
+        f.extend(crate::audit::restless(d.as_mut(), last));
+        crate::audit::sort(&mut f);
+        f
+    } else { vec![] };
+    Ok((Rendered { png: png_bytes_with(spec.w, spec.h, &px, &texts), tree, problems }, findings))
 }
