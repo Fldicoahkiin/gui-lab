@@ -429,6 +429,18 @@ pub enum Scope {
     Off,
 }
 
+/// A material, a response and a scope for a subtree, put on in one line with `El::effect`. `None`
+/// leaves that part as it is (inherited, or the look's).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Effect {
+    /// The material the subtree is drawn with.
+    pub material: Option<crate::style::Material>,
+    /// How it answers fronts, the lens and pulls.
+    pub response: Option<Response>,
+    /// What a press inside it sends a front to.
+    pub scope: Option<Scope>,
+}
+
 /// Ripple and recomposition settings of an element (DESIGN.md §1.15, §1.16). `None` means inherited
 /// (or the default for what the element is).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -868,6 +880,19 @@ impl<M> El<M> {
     pub fn gaze_scope(mut self) -> Self { self.gaze_scope = true; self }
     /// Draw this subtree with another material (`style::Material` id), under the collage material.
     pub fn material(mut self, id: u8) -> Self { self.material = Some(id); self }
+    /// Put a material, a response and a scope on this subtree in one line (DESIGN.md §1.6, §1.15):
+    /// `page.effect(Effect { material: Some(Material::Print), response: Some(Response::Loosen), scope: Some(Scope::Container(None)) })`.
+    /// What is `None` stays as it is. A scope of `Scope::Container(None)` also makes this element the
+    /// container, so the effect's fronts stay inside it.
+    pub fn effect(mut self, e: Effect) -> Self {
+        if let Some(m) = e.material { self = self.material(m.id()); }
+        if let Some(r) = e.response { self = self.respond(r); }
+        if let Some(s) = e.scope {
+            if s == Scope::Container(None) { self = self.ripple_scope(); }
+            self = self.ripple(s);
+        }
+        self
+    }
     /// Hold the whole subtree at looseness `k`.
     pub fn loosen(mut self, k: f32) -> Self { self.loosen = k; self }
     /// Place this element just below the element `key` (see `anchor`).
@@ -1033,6 +1058,12 @@ impl<M> El<M> {
         self
     }
 }
+
+/// A page to read from plain text or Markdown (the subset `markdown.rs` reads: headings, paragraphs,
+/// lists, code and tables; a link shows as its text), 600 logical px wide and keyed `wrap/…`. Put an
+/// `El::effect` on it to give existing text a material and a field; `markdown::render` gives other
+/// widths and links that send messages.
+pub fn wrap_text<M: Clone>(src: &str) -> El<M> { crate::markdown::page(src, "wrap", 600.0) }
 
 /// A text leaf with an explicit line height.
 pub fn text_lh<M>(s: impl Into<String>, size: f32, line: f32, paint: Paint) -> El<M> {

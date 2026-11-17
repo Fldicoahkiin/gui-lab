@@ -110,7 +110,10 @@ pub fn links(src: &str) -> Vec<String> {
 
 /// The document as elements: blocks keyed `{key}/b{i}`, headings `{key}/h{i}` (the outline: level,
 /// title, key). `go` turns a link target into a message.
-pub fn render<M: Clone>(src: &str, key: &str, width: f32, go: &dyn Fn(&str) -> M) -> (El<M>, Vec<(u8, String, String)>) {
+pub fn render<M: Clone>(src: &str, key: &str, width: f32, go: &dyn Fn(&str) -> M) -> (El<M>, Vec<(u8, String, String)>) { blocks(src, key, width, Some(go)) }
+/// The document as elements, its links shown as their text only (`el::wrap_text`).
+pub fn page<M: Clone>(src: &str, key: &str, width: f32) -> El<M> { blocks::<M>(src, key, width, None).0 }
+fn blocks<M: Clone>(src: &str, key: &str, width: f32, go: Option<&dyn Fn(&str) -> M>) -> (El<M>, Vec<(u8, String, String)>) {
     let mut c = col().key(key.to_owned()).gap(14.0).width(width);
     let mut outline = vec![];
     for (i, b) in parse(src).into_iter().enumerate() {
@@ -155,10 +158,10 @@ pub fn render<M: Clone>(src: &str, key: &str, width: f32, go: &dyn Fn(&str) -> M
     }
     (c, outline)
 }
-fn para<M: Clone>(k: &str, s: &str, width: f32, go: &dyn Fn(&str) -> M) -> El<M> {
+fn para<M: Clone>(k: &str, s: &str, width: f32, go: Option<&dyn Fn(&str) -> M>) -> El<M> {
     let (t, links) = inline(s);
     let body = text_lh(t, 15.0, 26.0, Paint::TEXT).width(width).key(format!("{k}/text")).selectable();
-    if links.is_empty() { return body; }
+    let Some(go) = go.filter(|_| !links.is_empty()) else { return body };
     let mut r = row().key(format!("{k}/links")).wrap().gap(10.0);
     for (j, (label, target)) in links.iter().enumerate() {
         r = r.child(text(format!("→ {label}"), 13.0, Paint::ACCENT).key(format!("{k}/link{j}")).on_press(go(target)).focusable(true).role(Role::Link));
