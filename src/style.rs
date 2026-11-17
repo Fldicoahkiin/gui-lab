@@ -364,12 +364,20 @@ pub struct Gaze {
     /// The mean energy that fills the level bar.
     #[serde(default = "level_full")]
     pub level_full: f32,
+    /// `INK` keeps this many of its earlier measurements as echoes, 0–8 (0: none): each fainter than
+    /// the one after it, gone once it has faded, and none drawn where the box has not moved.
+    #[serde(default)]
+    pub echo: u8,
+    /// How long between two echoes, ms; on a beat, a whole number of steps (at least one).
+    #[serde(default = "echo_ms")]
+    pub echo_ms: f32,
 }
 fn osc_amp() -> f32 { 40.0 }
 fn osc_y() -> f32 { 0.5 }
 fn level_full() -> f32 { 0.08 }
+fn echo_ms() -> f32 { 200.0 }
 impl Default for Gaze {
-    fn default() -> Self { Self { mode: GazeMode::Off, kinds: gaze::FRAME | gaze::INDEX | gaze::SIZE, density: 24.0, draw_ms: 260.0, colour: [0.30, 1.0, 0.50], only_marked: false, osc_amp: osc_amp(), osc_y: osc_y(), level_full: level_full() } }
+    fn default() -> Self { Self { mode: GazeMode::Off, kinds: gaze::FRAME | gaze::INDEX | gaze::SIZE, density: 24.0, draw_ms: 260.0, colour: [0.30, 1.0, 0.50], only_marked: false, osc_amp: osc_amp(), osc_y: osc_y(), level_full: level_full(), echo: 0, echo_ms: echo_ms() } }
 }
 impl Gaze {
     /// Whether it draws the `gaze` kind `k`.
