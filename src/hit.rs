@@ -1,14 +1,21 @@
 //! Hit geometry: where things are drawn, so the pointer lands on what it is over. An element turned
 //! after layout (`El::turn`) is hit where it is drawn, not in its layout box; a posed glyph (on a path,
 //! on a form) is hit where its outline is now, the nearest one first (`Ui::glyph_at`).
+#![warn(missing_docs)]
 use crate::scene::{GLYPH, Instance};
 use crate::ui::Rect;
 
 /// A 2D affine map in logical px: `(x, y) → m × (x, y) + t`, `m` row-major.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Affine { pub m: [[f32; 2]; 2], pub t: [f32; 2] }
+pub struct Affine {
+    /// The linear part, row-major.
+    pub m: [[f32; 2]; 2],
+    /// The translation.
+    pub t: [f32; 2],
+}
 impl Default for Affine { fn default() -> Self { Self::IDENTITY } }
 impl Affine {
+    /// The map that leaves every point where it is.
     pub const IDENTITY: Affine = Affine { m: [[1.0, 0.0], [0.0, 1.0]], t: [0.0, 0.0] };
     /// A turn by `angle` radians (clockwise on screen, y down) about (cx, cy).
     pub fn turn_about(angle: f32, cx: f32, cy: f32) -> Self {
@@ -24,6 +31,7 @@ impl Affine {
         let (x, y) = self.apply(first.t[0], first.t[1]);
         Affine { m, t: [x, y] }
     }
+    /// Where it maps (x, y).
     pub fn apply(&self, x: f32, y: f32) -> (f32, f32) {
         (self.m[0][0] * x + self.m[0][1] * y + self.t[0], self.m[1][0] * x + self.m[1][1] * y + self.t[1])
     }
@@ -70,23 +78,49 @@ pub fn contains(rect: &Rect, xf: Option<&Affine>, x: f32, y: f32) -> bool {
 /// The glyph drawn under a point: which element (its key), its number in the text, its depth
 /// (`Pose::z`), and the point in the text's own unposed layout (logical px from the element's content box).
 #[derive(Clone, Debug, PartialEq)]
-pub struct GlyphHit { pub key: String, pub i: usize, pub z: f32, pub local: (f32, f32) }
+pub struct GlyphHit {
+    /// The element's key.
+    pub key: String,
+    /// The glyph's number in the text.
+    pub i: usize,
+    /// Its depth (`Pose::z`).
+    pub z: f32,
+    /// The point in the text's unposed layout, logical px from the content box.
+    pub local: (f32, f32),
+}
 
 /// What the runtime remembers of each drawn glyph for hits: its instance's index in the scene, its
 /// node, its number in the text, its depth, and where it was laid out before its pose (its centre,
 /// logical px in the element's content box).
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct DrawnGlyph { pub inst: usize, pub node: usize, pub i: usize, pub z: f32, pub at: (f32, f32) }
+pub struct DrawnGlyph {
+    /// Its instance's index in the scene.
+    pub inst: usize,
+    /// Its node.
+    pub node: usize,
+    /// Its number in the text.
+    pub i: usize,
+    /// Its depth.
+    pub z: f32,
+    /// Its centre before its pose, logical px in the content box.
+    pub at: (f32, f32),
+}
 
 /// Every glyph of the last paint: the drawn ones (`DrawnGlyph`), and per text element (its node) every
 /// laid-out glyph's centre with whether it was drawn (a pose or a clip can leave some out).
 #[derive(Clone, Debug, Default)]
-pub struct Glyphs { pub log: Vec<DrawnGlyph>, pub laid: Vec<Laid> }
+pub struct Glyphs {
+    /// The drawn glyphs.
+    pub log: Vec<DrawnGlyph>,
+    /// Per text element, every laid-out glyph and whether it was drawn.
+    pub laid: Vec<Laid>,
+}
 /// A text element's laid-out glyphs: its node, each glyph's centre, and whether it was drawn.
 pub type Laid = (usize, Vec<(f32, f32)>, Vec<bool>);
 /// An element's ink box (device px) and the point of its outline nearest a corner (`ink_of`).
 pub type Ink = Option<([f32; 4], Option<(f32, f32)>)>;
 impl Glyphs {
+    /// Forget every glyph (a new paint).
     pub fn clear(&mut self) { self.log.clear(); self.laid.clear(); }
 }
 

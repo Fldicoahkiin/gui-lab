@@ -6,13 +6,23 @@
 //! drawn over each other, text drawn too small, and a page that keeps asking for frames with nothing
 //! going on; the view's structural problems (`Ui::problems`) join the list. `render --audit` prints it,
 //! `--strict` fails on P0 and P1.
+#![warn(missing_docs)]
 use crate::form::ink_box;
 use crate::ui::{Rect, Ui};
 use serde::Serialize;
 
 /// How serious a finding is: P0 breaks reading, P1 hurts it, P2 is worth a look, P3 a note.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
-pub enum Level { P0, P1, P2, P3 }
+pub enum Level {
+    /// Breaks reading.
+    P0,
+    /// Hurts reading.
+    P1,
+    /// Worth a look.
+    P2,
+    /// A note.
+    P3,
+}
 
 /// What a finding is about.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
@@ -34,6 +44,7 @@ pub enum Kind {
     Structure,
 }
 impl Kind {
+    /// Its name in the audit's output.
     pub fn name(self) -> &'static str {
         match self { Kind::Clipped => "clipped", Kind::Contrast => "contrast", Kind::Overlap => "overlap", Kind::Small => "small", Kind::Restless => "restless", Kind::Eroded => "eroded", Kind::Structure => "structure" }
     }
@@ -42,7 +53,20 @@ impl Kind {
 /// One finding: how serious, which element (its key), what kind, what was measured and the limit it
 /// broke (in the kind's unit: px, a ratio, a fraction, seconds), and a sentence on what to do.
 #[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct Finding { pub level: Level, pub key: String, pub kind: Kind, pub measured: f32, pub limit: f32, pub fix: String }
+pub struct Finding {
+    /// How serious it is.
+    pub level: Level,
+    /// The element's key.
+    pub key: String,
+    /// What it is about.
+    pub kind: Kind,
+    /// What was measured.
+    pub measured: f32,
+    /// The limit it broke.
+    pub limit: f32,
+    /// What to do.
+    pub fix: String,
+}
 impl std::fmt::Display for Finding {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:?} {} `{}`: {}", self.level, self.kind.name(), self.key, self.fix)

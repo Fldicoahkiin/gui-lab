@@ -5,6 +5,7 @@
 //! from the runtime's tick, so the same inputs give the same bytes. No GPU here: the renderer uploads
 //! `bytes()` as a small texture when they change; the CPU model (`energy_at`, `flow_at`) reads the same
 //! quantised values the shaders read.
+#![warn(missing_docs)]
 use crate::field::noise;
 use std::rc::Rc;
 
@@ -30,8 +31,9 @@ pub struct MapFx {
     pub flow: f32,
     /// How far the flow pushes what it reaches at most, logical px.
     pub drift: f32,
-    /// How long energy and flow live (s): their exponential part.
+    /// How long energy lives (s): its exponential part.
     pub energy_life: f32,
+    /// How long flow lives (s): its exponential part.
     pub flow_life: f32,
     /// How much of the 3 × 3 average every node takes each step.
     pub bleed: f32,
@@ -42,6 +44,7 @@ pub struct MapFx {
     /// A floor of energy at rest that rises and falls over `breath_s` seconds (0: none; a page with it
     /// never rests, as a flow field with speed does not).
     pub breath: f32,
+    /// How long one breath takes (s).
     pub breath_s: f32,
 }
 impl Default for MapFx {
@@ -54,9 +57,11 @@ pub const MAP_PARAMS: [(&str, f32, f32, f32, usize, &str); 12] = [
     ("meander", 0.0, 1.0, 0.05, 2, ""), ("creep", 0.0, 1.0, 0.05, 2, ""), ("breath", 0.0, 0.3, 0.01, 2, ""), ("breath_s", 2.0, 12.0, 0.5, 1, "s"),
 ];
 impl MapFx {
+    /// The number at place `i` of `MAP_PARAMS`.
     pub fn get(&self, i: usize) -> f32 {
         [self.cell, self.stirr, self.stirr_radius, self.flow, self.drift, self.energy_life, self.flow_life, self.bleed, self.meander, self.creep, self.breath, self.breath_s][i]
     }
+    /// Set the number at place `i` of `MAP_PARAMS`, clamped to its range.
     pub fn set(&mut self, i: usize, v: f32) {
         let (_, lo, hi, ..) = MAP_PARAMS[i];
         let v = v.clamp(lo, hi);
@@ -70,14 +75,38 @@ impl MapFx {
 /// One stir: at a point (logical px), in a direction (unit or zero), this much energy and flow, over a
 /// radius, only on nodes inside `scope` (logical px box x0, y0, x1, y1).
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Stir { pub at: [f32; 2], pub dir: [f32; 2], pub energy: f32, pub flow: f32, pub radius: f32, pub scope: [f32; 4] }
+pub struct Stir {
+    /// Where, logical px.
+    pub at: [f32; 2],
+    /// Which way (unit, or zero for energy alone).
+    pub dir: [f32; 2],
+    /// How much energy.
+    pub energy: f32,
+    /// How much flow.
+    pub flow: f32,
+    /// How far it reaches, logical px.
+    pub radius: f32,
+    /// The box it is kept to (x0, y0, x1, y1, logical px).
+    pub scope: [f32; 4],
+}
 /// A scope over everything.
 pub const EVERYWHERE: [f32; 4] = [-1e6, -1e6, 1e6, 1e6];
 
 /// The map's bytes as the renderer and `dirty` see them: nodes across and down, the cell (logical px)
 /// and RGBA8 per node (r = energy × 255, g and b = 128 + 127 × flow), shared so a frame's copy is free.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Snapshot { pub cols: usize, pub rows: usize, pub cell: f32, pub bytes: Rc<Vec<u8>>, pub nonzero: bool }
+pub struct Snapshot {
+    /// Nodes across.
+    pub cols: usize,
+    /// Nodes down.
+    pub rows: usize,
+    /// The distance between nodes, logical px.
+    pub cell: f32,
+    /// RGBA8 per node.
+    pub bytes: Rc<Vec<u8>>,
+    /// Whether any node is not at rest.
+    pub nonzero: bool,
+}
 impl Default for Snapshot { fn default() -> Self { Self { cols: 0, rows: 0, cell: 16.0, bytes: Rc::new(vec![]), nonzero: false } } }
 impl Snapshot {
     /// The box of nodes (logical px, grown by one cell for the bilinear reads) whose bytes differ from
@@ -99,8 +128,11 @@ impl Snapshot {
 /// The map itself.
 #[derive(Clone, Debug)]
 pub struct FieldMap {
+    /// Nodes across.
     pub cols: usize,
+    /// Nodes down.
     pub rows: usize,
+    /// The distance between nodes, logical px.
     pub cell: f32,
     e: Vec<f32>,
     u: Vec<f32>,
@@ -109,6 +141,7 @@ pub struct FieldMap {
     ink: Vec<f32>,
     /// Time owed to steps not taken yet, and the map's own clock (s), which runs only while it moves.
     acc: f64,
+    /// The map's own clock (s).
     pub clock: f32,
     /// Boxes nodes are kept at zero in (logical px; `El::calm`).
     pub calm: Vec<[f32; 4]>,

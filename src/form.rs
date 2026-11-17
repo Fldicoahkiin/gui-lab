@@ -5,6 +5,7 @@
 //! is edge on fades out, a glyph mostly hidden by nearer ones is not drawn, the far side is dimmer.
 //! `Form::hit` says where on the surface a point of the element is, so an opening or a drag follows the
 //! form instead of the flat page.
+#![warn(missing_docs)]
 use crate::el::{GlyphAt, Pose};
 use crate::mesh::{Camera, Mesh, Projection, add, cross, dot, mulf, norm, sub};
 use crate::scene::Instance;
@@ -19,7 +20,16 @@ use std::rc::Rc;
 /// | `overlap` | a glyph whose ink is covered by nearer glyphs more than this is not drawn | 0.1–1 | 0.05 | 0.35 |
 /// | `fog` | tone of the farthest glyphs (the nearest keep theirs) | 0–1 | 0.05 | 0.6 |
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct FormFx { pub back: f32, pub edge: f32, pub overlap: f32, pub fog: f32 }
+pub struct FormFx {
+    /// The opacity kept by glyphs facing away.
+    pub back: f32,
+    /// Glyphs facing less than this fade out.
+    pub edge: f32,
+    /// Covered more than this by nearer glyphs, a glyph is not drawn.
+    pub overlap: f32,
+    /// The tone of the farthest glyphs.
+    pub fog: f32,
+}
 impl Default for FormFx { fn default() -> Self { Self { back: 0.0, edge: 0.6, overlap: 0.35, fog: 0.6 } } }
 impl FormFx {
     /// The numbers' ranges and steps, for controls: (name, min, max, step).
@@ -45,7 +55,22 @@ impl FormFx {
 /// posed), its glyph id and number in the text, its depth and facing, and where layout put it (its
 /// centre, logical px in the content box).
 #[derive(Clone, Copy, Debug)]
-pub struct Posed { pub inst: Instance, pub glyph: u32, pub seq: usize, pub z: f32, pub facing: f32, pub at: (f32, f32), pub group: Option<u32> }
+pub struct Posed {
+    /// Its instance (device px, posed).
+    pub inst: Instance,
+    /// Its glyph id.
+    pub glyph: u32,
+    /// Its number in the text.
+    pub seq: usize,
+    /// Its depth (larger is nearer).
+    pub z: f32,
+    /// How it faces the viewer (1 head on, 0 edge on, below 0 away).
+    pub facing: f32,
+    /// Its centre as laid out, logical px in the content box.
+    pub at: (f32, f32),
+    /// The piece it belongs to, when the text has pieces.
+    pub group: Option<u32>,
+}
 
 /// Fade each posed glyph by how it faces the viewer (`FormFx::facing_alpha`).
 pub fn face(glyphs: &mut [Posed], fx: &FormFx) {
@@ -179,7 +204,16 @@ impl std::fmt::Debug for Shape {
 /// and how much of the shape the text covers (`cover`: the fraction of the way round, and of pole to
 /// pole). The text's block (the span its glyphs' centres cover) maps onto that much of the shape.
 #[derive(Clone, Debug)]
-pub struct Form { pub shape: Shape, pub spin: [f32; 2], pub camera: Camera, pub cover: [f32; 2] }
+pub struct Form {
+    /// What the text lies on.
+    pub shape: Shape,
+    /// How it is turned: degrees about the vertical axis, then about the horizontal one.
+    pub spin: [f32; 2],
+    /// The camera that sees it.
+    pub camera: Camera,
+    /// How much of the shape the text covers: of the way round, and of pole to pole.
+    pub cover: [f32; 2],
+}
 impl Default for Form {
     fn default() -> Self { Self { shape: Shape::Sphere(1.0), spin: [0.0, 0.0], camera: Camera { yaw: 0.0, pitch: 0.0, ..Camera::default() }, cover: [1.0, 0.72] } }
 }
@@ -187,13 +221,33 @@ impl Default for Form {
 /// Where a point on the form is seen: in the element's box (logical px), its depth (logical px toward
 /// the viewer from the target's plane), and how it faces the viewer (1 straight on, 0 edge on).
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Seen { pub x: f32, pub y: f32, pub z: f32, pub facing: f32, pub perspective: f32 }
+pub struct Seen {
+    /// Across the element's box, logical px.
+    pub x: f32,
+    /// Down it, logical px.
+    pub y: f32,
+    /// The depth, logical px toward the viewer.
+    pub z: f32,
+    /// How it faces the viewer (1 straight on, 0 edge on).
+    pub facing: f32,
+    /// How much nearer things are drawn larger (1 for an orthographic camera).
+    pub perspective: f32,
+}
 
 /// Where a point of the element's box meets the form: the point and its normal in the form's own space
 /// (so it turns with the form), the distance along the ray (world units), and where it is in the text's
 /// block (`uv`, fractions of its span; outside 0..1 where the text does not reach).
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct FormHit { pub point: [f32; 3], pub normal: [f32; 3], pub t: f32, pub uv: [f32; 2] }
+pub struct FormHit {
+    /// The point, in the form's own space.
+    pub point: [f32; 3],
+    /// The normal there, in the form's own space.
+    pub normal: [f32; 3],
+    /// The distance along the ray, world units.
+    pub t: f32,
+    /// Where it is in the text's block, fractions of its span.
+    pub uv: [f32; 2],
+}
 
 impl Form {
     /// A sphere of radius 1 seen straight on, turned by `spin`.
