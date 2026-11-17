@@ -344,6 +344,9 @@ pub struct Ui<S, M> {
     field: Field,
     scroll: HashMap<String, f32>,
     births: HashMap<u64, f32>,
+    /// When `condense_all` began loosening the page toward each element's cap (DESIGN.md §1.23), while
+    /// it does.
+    ramp: Option<f32>,
     /// Each text node's birth (by key): a glyph new to a text that was already there (its lines broke
     /// differently) takes the text's birth, so a paragraph never shows some glyphs condensing among
     /// crisp neighbours. A text is crisp or it condenses as a whole.
@@ -706,6 +709,8 @@ impl Timing {
 
 /// Blink half-period of the caret, seconds.
 pub const BLINK: f32 = 0.53;
+/// How long `Ui::condense_all` takes to loosen the page to each element's cap before it condenses (s).
+pub const RAMP: f32 = 0.12;
 /// How tall a skeleton's bar is, as a fraction of its line's height.
 pub const SKELETON_BAR: f32 = 0.56;
 /// How far a selected glyph's halo reaches past its outline, logical px.
@@ -778,7 +783,7 @@ impl<S, M: Clone> Ui<S, M> {
     pub fn new(state: S, view: fn(&S) -> El<M>, update: fn(&mut S, M), faces: Vec<Face>, w: u32, h: u32, scale: f32) -> Self {
         let mut ui = Self {
             state, view, update, text: Text::new(faces), size: (0.0, 0.0), scale, now: 0.0, nodes: vec![], scene: Scene::default(),
-            owners: vec![], page_len: 0, field: Field::default(), scroll: HashMap::new(), births: HashMap::new(), text_births: HashMap::new(),
+            owners: vec![], page_len: 0, field: Field::default(), scroll: HashMap::new(), births: HashMap::new(), ramp: None, text_births: HashMap::new(),
             hover: None, focus: None, pressed: None, capture: None, modal_at: None, modal_key: None, return_focus: None, split: None, splits: 0,
             keyboard: false, marks: Marks::default(), sized: None, commands: None, unseen: vec![], base: vec![], tags: vec![], roles: vec![],
             run: None, painted_phase: 0, flows: HashMap::new(), ghosts: vec![], body_len: 0, animating: false, lifted: HashMap::new(),
@@ -1051,15 +1056,28 @@ impl<S, M: Clone> Ui<S, M> {
     pub fn set_prepare_budget(&mut self, ms: f32) { self.prep.budget_ms = ms.max(0.0); }
     /// The renderer says how far its warm-up is (`render::Warmup`).
     pub fn set_render_ready(&mut self, f: f32) { if (self.prep.render - f).abs() > 1e-6 { self.prep.render = f; self.dirty = true; } }
-    /// Everything on the page condenses again from now, each element from no looser than its cap (the
-    /// frame the look's material is ready after the warm-up, DESIGN.md §1.23): text to read and
-    /// controls only nudge, decoration and pictures condense from loose.
+    /// Everything on the page loosens and condenses again from now (the frame the look's material is
+    /// ready after the warm-up, DESIGN.md §1.23): over `RAMP` each element loosens from 0 to its cap,
+    /// then condenses as a new element does from there. Text to read and controls only nudge,
+    /// decoration and pictures come apart and condense; the frame the material arrives is the page at
+    /// rest, so nothing jumps.
     pub fn condense_all(&mut self) {
+        self.ramp = Some(self.now);
+        self.ramp_births();
+    }
+    /// The births that hold each element at its place on the ramp `condense_all` began.
+    fn ramp_births(&mut self) {
+        let Some(t0) = self.ramp else { return };
         let enter = self.timing.enter;
+        let x = ((self.now - t0) / RAMP).clamp(0.0, 1.0);
+        // On the ramp, each frame's birth gives the looseness reached; past it, the birth from which
+        // the element condenses from its cap.
+        let at = if x < 1.0 { self.now } else { t0 + RAMP };
         for &(owner, id) in &self.owners {
             let (_, cap, _) = response_caps(&self.nodes[owner], self.timing.legible_cap);
-            self.births.insert(id, self.now - enter * (1.0 - cap));
+            self.births.insert(id, at - enter * (1.0 - cap * x));
         }
+        if x >= 1.0 { self.ramp = None; }
         self.paint();
     }
     /// Ask for a frame even though nothing changed (the host lost what it showed).
@@ -1097,7 +1115,7 @@ impl<S, M: Clone> Ui<S, M> {
         let tm = &self.timing;
         let fronts = self.field.fronts.iter().any(|f| f[3] > 0.0 && now - f[2] < tm.wave_life);
         let split = self.split.as_ref().is_some_and(|sp| self.split_alive(sp, now));
-        fronts || split || self.field.burst_at(now) > 0.0 || now < self.latest_birth + tm.enter
+        fronts || split || self.ramp.is_some() || self.field.burst_at(now) > 0.0 || now < self.latest_birth + tm.enter
             || self.run.is_some() || !self.flows.is_empty() || !self.ghosts.is_empty() || self.animating
             || self.marks_moving || now < self.gaze_until || self.fling.is_some() || !self.over.is_empty()
             || self.static_loose || !self.recomps.is_empty() || !self.slides.is_empty() || self.motion_alive(now)
@@ -1237,6 +1255,7 @@ impl<S, M: Clone> Ui<S, M> {
         if self.ground_moving { self.gclock += dt; }
         self.now = t;
         if let Some(f) = self.look_of { self.timing = Timing::of(&f(&self.state)); }
+        self.ramp_births();
         if let Some(f) = self.ticked && f(&mut self.state, t) { self.relayout(); }
         // Preparation in the spare time (`Ui::prepare`): what it changed is shown.
         if self.prep.run(&mut self.state) { self.relayout(); }
