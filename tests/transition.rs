@@ -130,3 +130,66 @@ fn the_cracks_run_out_from_the_press_and_the_pieces_leave_whole() {
     assert!(pieces.len() >= 6, "only {} pieces", pieces.len());
     assert!(between * 4 <= pieces.len(), "{between} of {} pieces are partly gone at 0.53", pieces.len());
 }
+
+/// A note on the left and, on the right, a panel marked `commit_scope` whose button commits a new
+/// material for the panel alone.
+mod scoped {
+    use amenui::el::{El, Paint, col, row, text};
+    use amenui::style::{Look, Material};
+    use amenui::widgets::button;
+    pub struct S { pub alt: bool, pub scoped: bool }
+    pub fn view(s: &S) -> El<bool> {
+        let mut panel = col().key("panel").width(220.0).pad(16.0, 16.0).gap(12.0).border(1.0, Paint::FAINT)
+            .material(if s.alt { Material::Halftonr } else { Material::Plain }.id())
+            .child(text(if s.alt { "Halftone" } else { "Plain" }, 22.0, Paint::INK).key("panel/title"))
+            .child(button("swap", "Swap", true).commit());
+        if s.scoped { panel = panel.commit_scope(); }
+        row().key("page").pad(24.0, 24.0).gap(40.0)
+            .child(col().key("left").width(160.0).child(text("Outside the panel. Nothing here changes.", 15.0, Paint::TEXT).key("note")))
+            .child(panel)
+    }
+    pub fn update(s: &mut S, m: bool) { s.alt = m; }
+    pub fn look(_: &S) -> Look { Look { material: Material::Plain, ..Look::default() } }
+}
+
+#[test]
+fn a_scoped_commit_plays_inside_its_box_and_nothing_outside_it_changes() {
+    let Ok(mut o) = Offscreen::try_new(W, H) else { eprintln!("no GPU adapter here: skipped"); return };
+    let mut ui = amenui::ui::Ui::new(scoped::S { alt: false, scoped: true }, scoped::view, scoped::update, fonts(), W, H, 1.0).on_look(scoped::look);
+    let mut t = 0.0;
+    while t < 1.0 { t += 1.0 / 60.0; ui.tick(t); let look = ui.look(); let _ = o.render(&mut ui, &look); }
+    let look = ui.look();
+    let before = o.render(&mut ui, &look);
+    let b = ui.node("panel").expect("panel").rect;
+    let inside = |i: usize| { let (x, y) = ((i as u32 % W) as f32 + 0.5, (i as u32 / W) as f32 + 0.5); x >= b.x.floor() && y >= b.y.floor() && x < b.right().ceil() && y < b.bottom().ceil() };
+    let (x, y) = ui.node("swap").expect("swap").rect.center();
+    ui.press(x, y);
+    ui.release(x, y);
+    ui.pointer_leave();
+    assert!(ui.state.alt);
+    let mut moved = 0;
+    let mut last = vec![];
+    for k in 0..150 {
+        t += 1.0 / 60.0;
+        ui.tick(t);
+        let look = ui.look();
+        let px = o.render(&mut ui, &look);
+        let outside = px.chunks_exact(4).zip(before.chunks_exact(4)).enumerate().filter(|(i, (a, b))| !inside(*i) && a != b).count();
+        assert_eq!(outside, 0, "frame {k}: {outside} px outside the panel changed");
+        if px != last { moved += 1; }
+        last = px;
+    }
+    assert!(moved > 10, "the panel changes over frames ({moved})");
+    // Inside, the end is the new state drawn directly.
+    let mut fresh = amenui::ui::Ui::new(scoped::S { alt: true, scoped: true }, scoped::view, scoped::update, fonts(), W, H, 1.0).on_look(scoped::look);
+    let mut o2 = Offscreen::new(W, H);
+    let mut tf = 0.0;
+    // The pressed button kept the focus: so does the one drawn directly.
+    if let Some(k) = ui.focus() { fresh.command(amenui::morph::Cmd::Focus { key: k.to_owned() }); }
+    while tf < t - 1e-4 { tf += 1.0 / 60.0; fresh.tick(tf); }
+    fresh.tick(t);
+    let look = fresh.look();
+    let direct = o2.render(&mut fresh, &look);
+    let differ = last.chunks_exact(4).zip(direct.chunks_exact(4)).enumerate().filter(|(i, (a, b))| inside(*i) && a != b).count();
+    assert_eq!(differ, 0, "{differ} px inside the panel differ from the new state drawn directly");
+}

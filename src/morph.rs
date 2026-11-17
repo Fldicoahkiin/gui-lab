@@ -197,8 +197,9 @@ pub enum Cmd {
     /// demonstrations and tests. It does not count as a person's input (`Ui::on_input` is not told).
     Press { key: String },
     /// Keep the frame as it is now and play the new look's transition from (x, y), logical px: a commit
-    /// that no press made (a key, a timer). Taken before the layout, like a flow.
-    Commit { x: f32, y: f32 },
+    /// that no press made (a key, a timer). Taken before the layout, like a flow. With `scope` (the key
+    /// of an element marked `El::commit_scope`), it plays only within that element's box.
+    Commit { x: f32, y: f32, scope: Option<String> },
     /// Give the element `key` the focus (as the keyboard would), after this layout.
     Focus { key: String },
     /// Scroll so the element `key` is at the top of its scroller (an outline's link), after this layout.

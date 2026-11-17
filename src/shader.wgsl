@@ -47,6 +47,7 @@ struct U {
   post: array<vec4f, 6>, // the finishing pass (post.rs Post::pack): dither kind, levels, palette size, on; bloom strength, threshold, radius, dither strength; chroma offset, scanline strength, period, grain; vignette strength, radius, curvature, grain cell; invert
   pal: array<vec4f, 16>, // the palette, sRGB 0–1
   fmap: vec4f,     // the field map (DESIGN.md §1.29): cell (device px), drift (device px), nodes across, down (0: all zero, not read)
+  sbox: vec4f,     // a commit's scope (El::commit_scope): x0, y0, x1, y1 device px; outside it the old frame stays (x1 <= x0: none)
 };
 @group(0) @binding(0) var<uniform> u: U;
 @group(0) @binding(1) var samp: sampler;
@@ -942,6 +943,8 @@ fn shade(p: vec2f) -> vec3f {
   var s: TS;
   s.m = 1.0; s.offn = vec2f(0.0); s.offo = vec2f(0.0); s.tint = vec4f(0.0); s.fade = 0.0; s.split = 0.0; s.toner = 0.0;
   if (u.split.w > 0.5) {
+    // A commit within a scope: outside its box the frame stays as it was.
+    if (u.sbox.z > u.sbox.x && (p.x < u.sbox.x || p.y < u.sbox.y || p.x >= u.sbox.z || p.y >= u.sbox.w)) { return old_at(p); }
     if (u.tr[0].x <= 0.0) {
       let r = (u.res.w - u.split.z) * u.fb.x * u.res.z;
       if (distance(p, u.split.xy) > r) { return old_at(p); }

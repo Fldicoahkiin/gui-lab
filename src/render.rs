@@ -56,6 +56,8 @@ struct Uniforms {
     pal: [[f32; 4]; crate::post::PALETTE_MAX],
     /// The field map: cell and drift (device px), nodes across and down (0: all zero, not read).
     fmap: [f32; 4],
+    /// A commit's scope (`El::commit_scope`), device px x0, y0, x1, y1 (empty: the whole window).
+    sbox: [f32; 4],
 }
 
 const INK: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -217,6 +219,8 @@ pub struct Renderer {
     had_groups: bool,
     /// The viewer asked for less motion (`Ui::reduced_motion`): new instances fade in, not condense.
     reduced: bool,
+    /// The running commit's scope (`El::commit_scope`), device px; empty for the whole window.
+    sbox: [f32; 4],
     /// The finishing pass in place of the blit when the look has one (DESIGN.md §1.21).
     /// Made by the warm-up (or the first frame that needs it).
     post: Option<wgpu::RenderPipeline>,
@@ -390,7 +394,7 @@ impl Renderer {
             pictures: HashMap::new(), instances, capacity, pipes, annots, annot_capacity: 256, up_pipe: None, shader, pl,
             ink: blank.clone(), lo: blank.clone(), lo_key: (0, 0, 0), material_up: material.clone(), auto: Default::default(), always_lo: false, no_map: false,
             near: blank, material_first: material.clone(), material, size: (0, 0), tiles, mesh, sim_rows: 0,
-            region: crate::dirty::Region::All, partial: true, frame_view: blank_view.clone(), prev: None, zero, blit, group: None, group_pipe, had_groups: false, reduced: false, post: None, blit_group: blank_group, warm: None, condense: false, last_region: None, tr: [[0.0; 4]; 9], boxes: [[0.0; 4]; 16], tr_loose: 0.0, t_cont: 0.0,
+            region: crate::dirty::Region::All, partial: true, frame_view: blank_view.clone(), prev: None, zero, blit, group: None, group_pipe, had_groups: false, reduced: false, sbox: [0.0; 4], post: None, blit_group: blank_group, warm: None, condense: false, last_region: None, tr: [[0.0; 4]; 9], boxes: [[0.0; 4]; 16], tr_loose: 0.0, t_cont: 0.0,
         };
         r.set_picture(u32::MAX, 1, 1, &[0, 0, 0, 255]);
         r.resize(w, h);
@@ -941,6 +945,7 @@ impl Renderer {
         // from there) into `before`, once; before any frame was kept, the old scene in its old look.
         if let Some(sp) = ui.split() && sp.id != self.split_seen {
             self.split_seen = sp.id;
+            self.sbox = sp.scope.unwrap_or([0.0; 4]);
             if self.prev.is_some() {
                 let mut enc = self.device.create_command_encoder(&Default::default());
                 {
@@ -1312,7 +1317,7 @@ impl Renderer {
             scrolls: field.scrolls, scrollo: field.scrollo,
             scrp: [look.scroll.trail * scale, look.scroll.misreg * scale, look.scroll.slip * scale, look.scroll.band.max(4.0) * scale],
             scrq: [look.scroll.slip_ms.max(16.0) / 1000.0, if look.beat.on() { self.t_cont } else { t }, th.press_keep(look.legible_cap), if self.reduced { 1.0 } else { 0.0 }],
-            post: post.0, pal: post.1, fmap: self.fmap_u,
+            post: post.0, pal: post.1, fmap: self.fmap_u, sbox: if split[3] > 0.0 { self.sbox } else { [0.0; 4] },
         };
         self.queue.write_buffer(&self.ubuf, 0, bytemuck::bytes_of(&u));
     }

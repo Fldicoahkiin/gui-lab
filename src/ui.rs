@@ -164,6 +164,8 @@ pub struct Node<M> {
     pub opacity: f32,
     /// Its opacity with its ancestors' (0: not drawn, takes no pointer).
     pub opacity_all: f32,
+    /// Commits within it stay in its box (`El::commit_scope`).
+    pub commit_scope: bool,
     /// The box layout gave it, relative to its parent (scrolling does not change it).
     local: taffy::Layout,
     tid: NodeId,
@@ -218,6 +220,9 @@ pub struct Split {
     pub t: f32,
     /// The look it was drawn in.
     pub look: Look,
+    /// The box the commit is confined to (`El::commit_scope`), device px x0, y0, x1, y1: outside it the
+    /// frame stays as it was.
+    pub scope: Option<[f32; 4]>,
 }
 
 /// The four accent corners that frame the hovered or focused element. They are on their target in the
@@ -2131,11 +2136,18 @@ impl<S, M: Clone> Ui<S, M> {
 
     /// Keep the frame as it is now for the renderer, with the commit's origin (logical px).
     fn snapshot(&mut self, x: f32, y: f32) {
+        // A press's commit stays within the scope the pressed element is in.
+        let scope = self.hit(x, y).and_then(|i| self.up(i, |n| n.commit_scope));
+        self.snapshot_in(x, y, scope);
+    }
+    /// The same, confined to node `scope`'s box as seen (`El::commit_scope`).
+    fn snapshot_in(&mut self, x: f32, y: f32, scope: Option<usize>) {
         // Unique across runtimes: a renderer that draws several runtimes (tools, checks) tells commits apart.
         self.splits = next_run();
         let s = self.scale;
         let look = self.look();
-        self.split = Some(Split { id: self.splits, scene: self.scene.clone(), field: self.field, at: [x * s, y * s], t: self.beat_grid(), look });
+        let scope = scope.map(|i| { let r = self.nodes[i].rect.intersect(&self.nodes[i].clip); [(r.x * s).floor(), (r.y * s).floor(), (r.right() * s).ceil(), (r.bottom() * s).ceil()] });
+        self.split = Some(Split { id: self.splits, scene: self.scene.clone(), field: self.field, at: [x * s, y * s], t: self.beat_grid(), look, scope });
     }
 
     /// The node itself or its nearest ancestor that satisfies `f`.
@@ -2304,7 +2316,12 @@ impl<S, M: Clone> Ui<S, M> {
         cmds.extend(self.commands.map(|f| f(&mut self.state)).unwrap_or_default());
         let flow = cmds.iter().find_map(|c| if let Cmd::Flow(f) = c { Some(*f) } else { None });
         // A commit keeps the frame as it is before the new view.
-        if let Some((x, y)) = cmds.iter().find_map(|c| if let Cmd::Commit { x, y } = c { Some((*x, *y)) } else { None }) { self.snapshot(x, y); }
+        if let Some((x, y, scope)) = cmds.iter().find_map(|c| if let Cmd::Commit { x, y, scope } = c { Some((*x, *y, scope.clone())) } else { None }) {
+            match scope {
+                Some(k) => { let i = self.nodes.iter().position(|n| n.key == k); self.snapshot_in(x, y, i); }
+                None => self.snapshot_in(x, y, None),
+            }
+        }
         let old = flow.map(|_| self.record());
         self.no_recompose = flow.is_some();
         self.layout();
@@ -4806,7 +4823,7 @@ fn measure_key(c: &Content) -> u64 {
 /// A virtual list's rows are built here, for what its viewport shows.
 #[allow(clippy::too_many_arguments)]
 fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], off: (bool, bool), flow: Option<(Rc<str>, usize)>, inh: Inherit, vx: &mut VirtCtx, built: &mut Built, nodes: &mut Vec<Node<M>>) -> usize {
-    let El { key, style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, mut on_text, multiline, selectable, cursor, virt, access, ripple, mut on_pick, mut on_wheel, mut on_move, guide, skeleton, rtl, on_visible, on_outline, decode, form, turn, reveal_by, ongoing, pass, opacity, mut children } = el;
+    let El { key, style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, mut on_text, multiline, selectable, cursor, virt, access, ripple, mut on_pick, mut on_wheel, mut on_move, guide, skeleton, rtl, on_visible, on_outline, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, mut children } = el;
     let mut style = style;
     let mut inh = inh;
     if let Some(r) = rtl { inh.rtl = r; }
@@ -4870,8 +4887,8 @@ fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], of
         key, parent, rect: Rect::default(), clip: Rect::default(), inner: Rect::default(), scroll, horizontal, focusable, tab_order, skip_to, focus_shown, disabled: off, extent: 0.0,
         content, fill, border, radius, on_press, on_key, on_drag, on_blur, loose, wipe, bar, reveal, commit, modal, hidden, shift, shed, flow_field, stirr, trace, flow: flow.clone(),
         mat: inh.code(), loosen: inh.loosen, annotate, scope: gaze_scope, anchor, clips, calm, on_text, multiline, selectable: inh.select, cursor,
-        virt: virt_info, access, respond, legible, ripple: inh.scope.clone(), ripple_scope: ripple.container, recompose, recompose_always: is_text && ripple.recompose == Some(true), unframed: ripple.unframed, keyed,
-        on_pick, on_wheel, on_move, guide, on_visible, on_outline, decode, skeleton: inh.skeleton, form, turn, xf: None, reveal_by, ongoing: ongoing || parent.is_some_and(|p| nodes[p].ongoing), pass, opacity, opacity_all: opacity * parent.map_or(1.0, |p| nodes[p].opacity_all), local: taffy::Layout::new(), tid: placeholder,
+        virt: virt_info, access, respond, legible, ripple: inh.scope.clone(), ripple_scope: ripple.container || commit_scope, recompose, recompose_always: is_text && ripple.recompose == Some(true), unframed: ripple.unframed, keyed,
+        on_pick, on_wheel, on_move, guide, on_visible, on_outline, decode, skeleton: inh.skeleton, form, turn, xf: None, reveal_by, ongoing: ongoing || parent.is_some_and(|p| nodes[p].ongoing), pass, opacity, opacity_all: opacity * parent.map_or(1.0, |p| nodes[p].opacity_all), commit_scope, local: taffy::Layout::new(), tid: placeholder,
     });
     built.styles.push(style);
     built.kids.push(vec![]);
