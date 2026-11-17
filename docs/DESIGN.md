@@ -420,10 +420,19 @@ seven materials loosened to 0.6, at least 99 % of the legible ink's pixels equal
 lattice opens to 1.6 × the pitch and its units stray twice as far; `charr` switches its cells at 0.3 and 0.7 (half,
 then 1.5 × the pitch; one cell size per element at a time) and halves its levels toward 1; `halftonr` opens its
 screen to 1.5 × the pitch and doubles the split, accent ink keeps one screen in its own colour, and each separation
-is half the ink's own colour so no pixel shows a single channel; `glitchr` shifts and repeats blocks up to twice as
+is half the ink's own colour so no pixel shows a single channel (on a light ground: cyan and magenta a third of the
+way to the ink and the ink itself, no yellow; ink that is partly the accent's is left to the accent's screen); `glitchr` shifts and repeats blocks up to twice as
 far, only where something is drawn, and flashes rows only there. `sheet --sweep <n>` (`sample::sweep`) measures the
 share of the title's pixels that changed from rest and moved from the cell before at each looseness
-(`tests/sample.rs`).
+(`tests/sample.rs`). Under `charr` a thin accent element (a rule) is at least a row of accent characters under any cell
+size, and a cell over a picture's edge is not made into characters.
+
+**Pictures past half loose** differ by material: `dottr` keeps the marks (§1.6.1); `halftonr` draws a screen at 1.5 ×
+its pitch whose dots follow the cell's brightness (bright cells big on a dark ground, dark ones on a light ground,
+from 0.25 to 0.95 of the pitch, over the tones pictures mostly have); `charr` draws square cells of the title's size,
+each a character by the cell's brightness in the cell's average colour over a faint tile of it (`tests/sample.rs`:
+fully loose, any two of the three differ in over a quarter of the picture; halftonr's largest dot is at least twice as
+wide as its smallest).
 
 Acceptance (`check` items 5 and 6): except `near`, every material at looseness 0 matches `plain` pixel for
 pixel in body text (`smudgr` within its grain amplitude, ≤ 4/255 by default; `dottr` compares only the glyphs'
@@ -2157,7 +2166,10 @@ glyphs fill in. Text to read and controls never become thread and always stay as
   `max(tail, 0.6 × the scope's long side)`, and when the way meets the edge, exactly enough to reach it; each is one long slow curve: `tail_turns` gentle bends (each 12–25°, smaller with more turns, at about even
   places, one way then the other, so a tail never strays more than 25° from its way) are the control points of a
   curve sampled at 24–32 even places, with a waver of the hand across it (0.6–1.5 % of its length, two or three
-  times along it); a way that would pass within 24 px of text to read scores 0.3 of its reach; every point draws
+  times along it); a way that would pass within 24 px of text to read scores 0.3 of its reach, and a tail whose tip would
+  land within 24 px of text to read is drawn back until it does not; the line goes round pictures 12 px clear (a
+  picture is drawn over what lies under it); a `Trace`'s points keep 12 px off pictures and 24 px off text to read
+  (`strand::clear_path`); every point draws
   back in proportion to `k`. Tails, and the long line once drawn, are at `tail_tone` (0.5) of the line's opacity, and knots are whole:
   bright knots on quiet lines, so the density reads. Leaving the scope box, the last segment is cut at the edge, and a tail stops before the
   box of text to read or a control (and before calm boxes). (6) Past `k = 0.3` the line bends toward the curve
@@ -2316,7 +2328,9 @@ The beat clock runs with the runtime's (`Ui::beat_time`; `Ui::beat()` is `BeatNo
 each from 1, for the application's own state) and only the beat's commands move it against it: `Cmd::Hold(n)` stops
 it for `n` steps (the frame stays byte for byte, and frames are still wanted), `Cmd::Retrigger` plays the current
 step again from its start, `Cmd::Rewind(beats)` takes it back (never before 0) and with it what it carries (fronts,
-transitions, held rows); the application's state, the field map and condensing are not taken back. `Cmd::Set {
+transitions, held rows); the application's state, the field map, condensing and the materials' own clocks (the
+ground's drift, scribblr's pose) are not taken back. With a beat, text to read is not pushed by fronts (a push a step
+at a time reads as the page shaking), only loosened up to `legible_cap`; without one it is pushed as before. `Cmd::Set {
 name, value }` sets a number of the look over the application's (`Look::set`: `loose_scale`, `legible_cap`,
 `loose_max`, `press_ms`, `fx.*`, `beat.*`, a material's number as `<material>.<name>` in `MAT_PARAMS`, clamped to its
 range); a switch (`post.invert`, `post.binary`) given 1 turns over and given 0 goes back to the look's own.
@@ -2418,11 +2432,21 @@ boxed in reading order, the box drawn along its edges, and the inside swapped fo
 ground, knife cuts grow on both sides of the new outline, then ink floods in), outline first (outlines and boxes are
 drawn first in reading order, the content filled in after), torn reveal (torn along a noisy line, the old layer
 sliding away offset) and crack (`StepKind::Crack`, id 11; numbers `preset::CRACK`: cell size 120 px, angle 70°, bias
-0.6, rag 3 px, hard edge 1): the page breaks along the edges of a Voronoi tiling turned by the angle and squashed
-across it by the bias; the cracks open from hairlines to slabs as the step runs, with ragged edges, the new page
-showing through what has opened and the whole of it at the step's end. The `preset` recipe's Crack button commits the
-tech-manual look through an 800 ms crack (`tests/transition.rs`: the last frame is the new page drawn directly, a
-tenth of the way in under a tenth of it shows, what shows only grows, the same numbers give the same bytes).
+0.6, waver 2 px, hard edge 1): the page breaks along the edges of a Voronoi tiling turned by the angle and squashed
+across it by the bias. The cracks run out from where the commit was pressed (the page's centre without one): a pixel's
+crack is drawn once the run (0 to the page's diagonal over the first 0.4 of the step) has passed it, and the cracks
+stay thin, from 0.6 px to `0.06 a` (7 px) at 0.4, measured in page px whichever way they run. Their edges are straight
+but for a slow waver (`d` px every `a / 5` px). Then each piece leaves whole at its own time `t = 0.35 + 0.5 × (0.6 ×
+distance from the press ÷ the farthest corner's + 0.4 × the piece's hash)`: between `t` and `t + 0.15` its own crack
+widens (slowly, then fast: the fourth power) until it covers the piece, so at any moment most pieces are whole or
+gone. (Against the farthest corner rather than the diagonal, so the last pieces leave at the step's end wherever the
+press was.) The `preset` recipe's Crack button commits the tech-manual look through an 800 ms crack
+(`tests/transition.rs`: the last frame is the new page drawn directly, a tenth of the way in under a tenth of it
+shows, what shows only grows, the same numbers give the same bytes; at 0.2 nothing of the new page shows farther than
+0.6 diagonals from the press; at 0.3 under 12 % shows; at 0.6 at most a quarter of the pieces are between 15 % and
+85 % gone). During a masked transition every pixel is one page's whole colour (ground, ink and edge together); no
+element blends its own colours between the two themes, and `render --frames <the transition> --audit` finds no P0 in
+any frame.
 
 The ten presets' transitions (`presets()`, all ≤ 900 ms): Gaze detection boxes; Dotmatrix row-by-row lattice; Lo-Fi
 Print light bar; Glitch slipping bands with three hard cuts and then lock; Linocut carve; Tech-Manual outline first
