@@ -28,12 +28,14 @@ pub enum Kind {
     Small,
     /// Frames asked for with no input and nothing declared as moving (`El::ongoing`).
     Restless,
+    /// Text to read whose strokes the material wears away at rest: less of its ink drawn than plain draws.
+    Eroded,
     /// A problem in the view's structure (`Ui::problems`).
     Structure,
 }
 impl Kind {
     pub fn name(self) -> &'static str {
-        match self { Kind::Clipped => "clipped", Kind::Contrast => "contrast", Kind::Overlap => "overlap", Kind::Small => "small", Kind::Restless => "restless", Kind::Structure => "structure" }
+        match self { Kind::Clipped => "clipped", Kind::Contrast => "contrast", Kind::Overlap => "overlap", Kind::Small => "small", Kind::Restless => "restless", Kind::Eroded => "eroded", Kind::Structure => "structure" }
     }
 }
 
@@ -53,6 +55,8 @@ pub const MIN_TEXT_PX: f32 = 9.0;
 pub const MAX_OVERLAP: f32 = 0.10;
 /// How long a page may go on asking for frames after the last input (s).
 pub const SETTLE_S: f32 = 2.0;
+/// The least share of plain's ink pixels a material draws of text to read at rest.
+pub const MIN_INK: f32 = 0.85;
 
 /// Whether the findings fail a strict run (any P0 or P1).
 pub fn fails(f: &[Finding]) -> bool { f.iter().any(|f| f.level <= Level::P1) }
@@ -93,19 +97,26 @@ pub fn restless(d: &mut dyn crate::drive::Driven, from: f32) -> Option<Finding> 
         fix: format!("the page still asks for frames {:.1} s after the last input with nothing moving on purpose: let what animates settle (a field effect, a loop), or mark a live part with `.ongoing()`", busy - from) })
 }
 
-/// A device box that the window and every clipping ancestor that is not a scroll view leave visible
-/// (logical px). Scroll views are left out: what they hide can be scrolled to.
-fn hard_clip<S, M: Clone>(ui: &Ui<S, M>, i: usize) -> Rect {
+/// The box that the window and every clipping ancestor that is not a scroll view leave visible
+/// (logical px), and for each side (left, top, right, bottom) the key of the element whose edge it is
+/// (`None`: the window's). Scroll views are left out: what they hide can be scrolled to.
+fn hard_clip<S, M: Clone>(ui: &Ui<S, M>, i: usize) -> (Rect, [Option<String>; 4]) {
     let (w, h) = ui.logical_size();
     let nodes = ui.nodes();
-    let mut r = Rect::new(0.0, 0.0, w, h);
+    let (mut e, mut by): ([f32; 4], [Option<String>; 4]) = ([0.0, 0.0, w, h], Default::default());
     let mut a = nodes[i].parent;
     while let Some(p) = a {
         let n = &nodes[p];
-        if n.clips && !n.scroll { r = r.intersect(&n.rect); }
+        if n.clips && !n.scroll {
+            let r = [n.rect.x, n.rect.y, n.rect.right(), n.rect.bottom()];
+            for k in 0..4 {
+                let tighter = if k < 2 { r[k] > e[k] } else { r[k] < e[k] };
+                if tighter { e[k] = r[k]; by[k] = Some(n.key.clone()); }
+            }
+        }
         a = n.parent;
     }
-    r
+    (Rect::new(e[0], e[1], (e[2] - e[0]).max(0.0), (e[3] - e[1]).max(0.0)), by)
 }
 
 /// Text that is read (legible text, drawn, not disabled), as node indices.
@@ -117,11 +128,13 @@ fn reading<S, M: Clone>(ui: &Ui<S, M>) -> Vec<usize> {
 fn clipped<S, M: Clone>(ui: &mut Ui<S, M>, out: &mut Vec<Finding>) {
     let s = ui.scale();
     let glyphs = ui.glyphs().clone();
+    const SIDES: [&str; 4] = ["left", "top", "right", "bottom"];
     for i in reading(ui) {
-        let hard = hard_clip(ui, i);
+        let (hard, by) = hard_clip(ui, i);
         let h = [hard.x * s, hard.y * s, hard.right() * s, hard.bottom() * s];
         let key = ui.nodes()[i].key.clone();
-        let (mut whole, mut most, mut side) = (0usize, 0.0f32, "");
+        // Glyphs wholly outside, and on each side the farthest any ink goes past it (logical px).
+        let (mut whole, mut past) = (0usize, [0.0f32; 4]);
         for g in glyphs.log.iter().filter(|g| g.node == i) {
             let Some(inst) = ui.scene().instances.get(g.inst) else { continue };
             if inst.paint[2] < 0.05 { continue; }
@@ -129,10 +142,12 @@ fn clipped<S, M: Clone>(ui: &mut Ui<S, M>, out: &mut Vec<Finding>) {
             if b[2] <= b[0] || b[3] <= b[1] { continue; }
             let cut = [(h[0] - b[0]).max(0.0), (h[1] - b[1]).max(0.0), (b[2] - h[2]).max(0.0), (b[3] - h[3]).max(0.0)];
             let inside = (b[2].min(h[2]) - b[0].max(h[0])).max(0.0) * (b[3].min(h[3]) - b[1].max(h[1])).max(0.0);
-            if inside <= 0.0 { whole += 1; continue; }
-            let (k, c) = cut.iter().enumerate().fold((0, 0.0f32), |m, (k, c)| if *c > m.1 { (k, *c) } else { m });
-            if c > 0.5 && c / s > most { most = c / s; side = ["left", "top", "right", "bottom"][k]; }
+            if inside <= 0.0 { whole += 1; }
+            for k in 0..4 { if cut[k] > 0.5 { past[k] = past[k].max(cut[k] / s); } }
         }
+        let (side, most) = past.iter().enumerate().fold((0, 0.0f32), |m, (k, c)| if *c > m.1 { (k, *c) } else { m });
+        // Who cuts it there: an element's key, or the window.
+        let cutter = by[side].as_deref().map_or_else(|| "the window".to_owned(), |k| format!("`{k}`"));
         // A word of which some glyphs are drawn and some are not (a pose, a clip by glyph).
         let mut halves = 0;
         if let Some((_, laid, drawn)) = glyphs.laid.iter().find(|(n, ..)| *n == i)
@@ -146,13 +161,15 @@ fn clipped<S, M: Clone>(ui: &mut Ui<S, M>, out: &mut Vec<Finding>) {
             }
         }
         let reveal = ui.nodes()[i].reveal_by;
+        let side = SIDES[side];
         if whole > 0 || halves > 0 {
-            let what = if halves > 0 { format!("{halves} word(s) drawn in part") } else { format!("{whole} glyph(s) outside the {}", if hard.w < ui.logical_size().0 - 0.5 || hard.h < ui.logical_size().1 - 0.5 { "clip" } else { "window" }) };
+            let what = if halves > 0 { format!("{halves} word(s) drawn in part") } else { format!("{whole} glyph(s) outside, past the {side} edge of {cutter} by up to {most:.0} px") };
+            let room = if halves > 0 { "give it room".to_owned() } else { format!("give it {:.0} px more room on the {side}", most.ceil() + 2.0) };
             out.push(Finding { level: Level::P0, key: key.clone(), kind: Kind::Clipped, measured: (whole + halves) as f32, limit: 0.0,
-                fix: format!("{what}: show it by whole words (`.reveal_by(Reveal::Word)`){}, or give it room", if reveal == crate::el::Reveal::Glyph { "" } else { " already set; check what hides it" }) });
+                fix: format!("{what}: show it by whole words (`.reveal_by(Reveal::Word)`){}, or {room}", if reveal == crate::el::Reveal::Glyph { "" } else { " already set; check what hides it" }) });
         } else if most > 0.0 {
             out.push(Finding { level: Level::P1, key, kind: Kind::Clipped, measured: most, limit: 0.0,
-                fix: format!("cut {most:.0} px at the {side}: show it by whole words (`.reveal_by(Reveal::Word)`), or give it {:.0} px more room on the {side}", most.ceil() + 2.0) });
+                fix: format!("cut {most:.0} px at the {side} by {cutter}: show it by whole words (`.reveal_by(Reveal::Word)`), or give it {:.0} px more room on the {side}", most.ceil() + 2.0) });
         }
     }
 }
@@ -290,6 +307,78 @@ fn covered(a: &crate::scene::Instance, ab: &[f32; 4], b: &crate::scene::Instance
         if crate::morph::cover_at(b, x, y, atlas) >= 0.5 { hid += 1.0; }
     } }
     if ink < 3.0 { 0.0 } else { hid / ink }
+}
+
+/// How many pixels of `px` within `boxes` (device px, any overlap counted once) are drawn as ink: they
+/// stand out from `ground` (the same frame with the glyphs hidden) by at least half the contrast of the
+/// strongest of them (WCAG ratio), so an antialiased edge counts, a stroke left in a colour close to
+/// what is under it does not.
+pub fn ink_pixels(px: &[u8], ground: &[u8], (w, h): (u32, u32), boxes: &[[f32; 4]]) -> usize {
+    if boxes.is_empty() || px.len() < (w * h * 4) as usize || ground.len() < px.len() { return 0; }
+    let bb = boxes.iter().fold([f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY], |a, b| [a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])]);
+    let (x0, y0) = (bb[0].floor().max(0.0) as u32, bb[1].floor().max(0.0) as u32);
+    let (x1, y1) = ((bb[2].ceil().max(0.0) as u32).min(w), (bb[3].ceil().max(0.0) as u32).min(h));
+    if x1 <= x0 || y1 <= y0 { return 0; }
+    let bw = (x1 - x0) as usize;
+    let mut mask = vec![false; bw * (y1 - y0) as usize];
+    for b in boxes {
+        let (bx0, by0) = ((b[0].floor().max(x0 as f32) as u32), (b[1].floor().max(y0 as f32) as u32));
+        let (bx1, by1) = ((b[2].ceil() as u32).min(x1), (b[3].ceil() as u32).min(y1));
+        for y in by0..by1 { for x in bx0..bx1 { mask[(y - y0) as usize * bw + (x - x0) as usize] = true; } }
+    }
+    let mut rs = vec![];
+    for y in y0..y1 {
+        for x in x0..x1 {
+            if !mask[(y - y0) as usize * bw + (x - x0) as usize] { continue; }
+            let o = ((y * w + x) * 4) as usize;
+            let (p, g) = ([px[o], px[o + 1], px[o + 2]], [ground[o], ground[o + 1], ground[o + 2]]);
+            let d: i32 = (0..3).map(|c| (p[c] as i32 - g[c] as i32).abs()).sum();
+            if d >= 24 { rs.push(ratio(p, g)); }
+        }
+    }
+    let top = rs.iter().copied().fold(1.0f32, f32::max);
+    let half = 1.0 + 0.5 * (top - 1.0);
+    rs.iter().filter(|r| **r >= half).count()
+}
+
+/// The ink boxes (device px, within its clip and the window) of each text to read drawn at rest (no
+/// glyph of it loose), by node.
+fn resting_ink<S, M: Clone>(ui: &Ui<S, M>) -> Vec<(usize, Vec<[f32; 4]>)> {
+    let (dw, dh) = ui.device_size();
+    let glyphs = ui.glyphs();
+    reading(ui).into_iter().filter_map(|i| {
+        let mut boxes = vec![];
+        for g in glyphs.log.iter().filter(|g| g.node == i) {
+            let inst = ui.scene().instances.get(g.inst)?;
+            if inst.extra[2] > 0.01 { return None; }
+            if inst.paint[2] < 0.3 { continue; }
+            let (b, c) = (ink_box(inst), inst.clip);
+            let b = [b[0].max(c[0]).max(0.0), b[1].max(c[1]).max(0.0), b[2].min(c[2]).min(dw as f32), b[3].min(c[3]).min(dh as f32)];
+            if b[2] > b[0] && b[3] > b[1] { boxes.push(b); }
+        }
+        (!boxes.is_empty()).then_some((i, boxes))
+    }).collect()
+}
+
+/// Text to read that the material wears away at rest: `px` and `ground` the frame as drawn and with
+/// the glyphs hidden, `plain` and `plain_ground` the same two in `plain` (the material swapped, nothing
+/// else). Where a text to read at rest has fewer than `MIN_INK` of plain's ink pixels, it is a P1: its
+/// strokes are broken or drawn in the colour of what is under them, which contrast (measured on the
+/// strongest pixel) does not see.
+pub fn eroded<S, M: Clone>(ui: &Ui<S, M>, (px, ground): (&[u8], &[u8]), (plain, plain_ground): (&[u8], &[u8]), material: &str) -> Vec<Finding> {
+    let size = ui.device_size();
+    let mut out = vec![];
+    for (i, boxes) in resting_ink(ui) {
+        let want = ink_pixels(plain, plain_ground, size, &boxes);
+        if want < 20 { continue; }
+        let got = ink_pixels(px, ground, size, &boxes);
+        let share = got as f32 / want as f32;
+        if share < MIN_INK {
+            out.push(Finding { level: Level::P1, key: ui.nodes()[i].key.clone(), kind: Kind::Eroded, measured: share, limit: MIN_INK,
+                fix: format!("`{material}` draws {:.0}% of the ink plain draws for this text at rest ({got} of {want} px): the material should keep text to read whole at rest, by the text's own paint (its instance), not by the pixels round it", share * 100.0) });
+        }
+    }
+    out
 }
 
 fn small<S, M: Clone>(ui: &mut Ui<S, M>, out: &mut Vec<Finding>) {
