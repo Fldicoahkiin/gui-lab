@@ -406,7 +406,15 @@ fn on_the_loose_thread_page_no_piece_enters_text_to_read_and_the_tails_keep_clea
                 seen += 1;
                 for (name, b) in &ink { assert!(seg_box(s.a, s.b, b) > 0.0, "step {i}: a {:?} piece of `{key}` enters `{name}`: {:?} → {:?}", s.kind, s.a, s.b); }
                 if s.kind == Kind::Tail { for (name, b) in &near { assert!(seg_box(s.a, s.b, b) > 0.0, "step {i}: a tail of `{key}` passes within 12 px of `{name}`: {:?} → {:?}", s.a, s.b); } }
+                // The line goes round the picture, clear of it.
+                let pic = ui.node("pic").expect("the picture").rect;
+                let pb = [pic.x - 11.0, pic.y - 11.0, pic.right() + 11.0, pic.bottom() + 11.0];
+                if key == "title" { assert!(seg_box(s.a, s.b, &pb) > 0.0, "step {i}: a {:?} piece of the title runs within 12 px of the picture: {:?} → {:?}", s.kind, s.a, s.b); }
             }
+            // A tail's tip keeps 24 px from text to read; the line is one, piece after piece.
+            let far = legible_boxes(&ui, 24.0);
+            if let Some(last) = segs.last().filter(|s| s.kind == Kind::Tail) { for (name, b) in &far { assert!(seg_box(last.b, last.b, b) > 0.0, "step {i}: the tail of `{key}` ends within 24 px of `{name}` at {:?}", last.b); } }
+            for w in segs.windows(2) { assert!(w[0].b == w[1].a, "step {i}: the line of `{key}` breaks between {:?} and {:?}", w[0].b, w[1].a); }
         }
     }
     assert!(seen > 100, "{seen} pieces: the title did not come apart");

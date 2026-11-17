@@ -211,8 +211,9 @@ pub enum Cmd {
     Hold(u8),
     /// Play the beat clock's current step again from its start.
     Retrigger,
-    /// Take the beat clock back this many beats (never before its start): what the beat carries
-    /// (fronts, held rows and poses, a transition's steps) goes back; the application's state does not.
+    /// Take the beat clock back this many beats (never before its start): what the beat carries (the
+    /// fronts and a transition's steps) goes back; the materials' own clocks (the ground's drift,
+    /// scribblr's pose) and the application's state do not.
     Rewind(f32),
     /// Set one number of the look by its name (`Look::set`) from now on, over what the application's
     /// look says; a switch (`post.invert`) given 1 turns over, given 0 goes back to the look's own.

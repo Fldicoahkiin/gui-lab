@@ -2750,6 +2750,9 @@ impl<S, M: Clone> Ui<S, M> {
             // What the field may do to it (DESIGN.md §1.15): fronts add at most `front_cap`; a press held
             // and a pull past a scroll end at most `own_cap`.
             let (_, own_cap, mut resp) = response_caps(n, self.timing.legible_cap);
+            // On a beat a front moves in steps, and text to read pushed a step at a time reads as the page
+            // shaking: it is not pushed then, only loosened up to `legible_cap` (DESIGN.md §1.32).
+            if n.legible && self.timing.beat.on() && !matches!(n.content, Content::Picture { .. }) { resp[1] = 0.0; }
             // Text to read and controls are pushed as one piece (the control they are in, or the text
             // element itself), so a front never pulls a word apart: the push is measured at that
             // piece's centre (device px), carried in the spare numbers.
@@ -3313,6 +3316,10 @@ impl<S, M: Clone> Ui<S, M> {
         // Under a modal layer the page holds its lines back: they would be drawn in the layer, over it.
         // Only a dialog's layer: a floating window's or a lifted element's layer starts one too.
         let modal = self.modal_at.and(self.scene.layer).map(|l| l as usize);
+        // What a drawn path keeps clear of: pictures (it goes round them, 12 px out) and text to read (its
+        // tips stop 24 px short of it).
+        let pics: Vec<[f32; 4]> = self.nodes.iter().filter(|n| n.kind() == "image" && !n.hidden).map(|n| { let r = n.rect.intersect(&n.clip); [r.x * s, r.y * s, r.right() * s, r.bottom() * s] }).filter(|b| b[2] > b[0] && b[3] > b[1]).collect();
+        let read: Vec<[f32; 4]> = self.nodes.iter().filter(|n| n.legible && !n.hidden && matches!(n.kind(), "text" | "control")).map(|n| { let r = n.rect.intersect(&n.clip); [r.x * s, r.y * s, r.right() * s, r.bottom() * s] }).filter(|b| b[2] > b[0] && b[3] > b[1]).collect();
         for n in self.nodes.iter().filter(|n| n.trace.is_some() && !n.hidden && modal.is_none()) {
             let tr = n.trace.as_ref().expect("filtered");
             let o = n.origin();
@@ -3321,6 +3328,7 @@ impl<S, M: Clone> Ui<S, M> {
                 let f = self.fmap.flow_at(x, y);
                 [(x + f[0] * drift * tr.pull) * s, (y + f[1] * drift * tr.pull) * s]
             }).collect();
+            let pts = strand::clear_path(pts, &pics, 12.0 * s, &read, 24.0 * s);
             let pieces = strand::dashes(&pts, tr.progress, tr.dash * s, tr.gap * s);
             let want: usize = pieces.iter().map(|p| p.len().saturating_sub(1)).sum();
             let got = crate::budget::grant(want);
@@ -3432,7 +3440,7 @@ impl<S, M: Clone> Ui<S, M> {
                     let lh = match &n.content { Content::Text { line, .. } => *line, _ => n.rect.w.min(n.rect.h) } * s;
                     // A held pose is never one of the in-between looks (`strand::held`).
                     let kp = if hold > 0.0 { strand::held(k) } else { k };
-                    let c = strand::Ctx { k: kp, t, seed: (ni as u32).wrapping_mul(7919), scale: s, drift, scope, calm: &calm, lh };
+                    let c = strand::Ctx { k: kp, t, seed: (ni as u32).wrapping_mul(7919), scale: s, drift, scope, calm: &calm, pics: &pics, lh };
                     let map = &self.fmap;
                     let field = |x: f32, y: f32| (map.energy_at(x / s, y / s), map.flow_at(x / s, y / s));
                     // Knots and tails belong to text: an element of shapes only (a rule, a box, a ground)
