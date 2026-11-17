@@ -202,3 +202,36 @@ fn the_waveform_and_the_level_read_the_field_map() {
     let r = u.readout().clone();
     assert!(r.osc.iter().all(|p| p[1] == base) && r.level_h == 0.0, "settled by {t}");
 }
+
+// Labels never cover text to read, nor each other: the pages the audit breaks on purpose, every element
+// numbered and named, with its true ink measured.
+struct B { gaze: Gaze, page: u8 }
+fn broken(b: &B) -> El<()> {
+    let line = "two lines drawn over each other";
+    let body = match b.page {
+        0 => col().child(text("this line runs on well past the right edge of the window and is cut off there", 22.0, Paint::TEXT).nowrap().key("long")),
+        1 => col().child(text("grey text on a grey ground", 18.0, Paint::tone(0.14)).key("grey")),
+        2 => amenui::el::layers([text(line, 18.0, Paint::TEXT).key("under"), text(line, 18.0, Paint::TEXT).key("over").shift(2.0, 3.0)]),
+        3 => col().child(text("six pixels tall", 6.0, Paint::TEXT).key("tiny")),
+        _ => col().gap(8.0).child(text("This is a calm page", 22.0, Paint::INK).key("title")).child(text("Everything on it reads, and the next line is close.", 15.0, Paint::DIM).key("note")),
+    };
+    col().key("page").pad(20.0, 20.0).child(body)
+}
+#[test]
+fn labels_cover_no_text_to_read_and_no_other_label() {
+    let g = Gaze { mode: GazeMode::All, kinds: kinds::FRAME | kinds::INDEX | kinds::KIND | kinds::INK, density: 100.0, draw_ms: 0.0, ..Gaze::default() };
+    for page in 0..5u8 {
+        let mut u = Ui::new(B { gaze: g, page }, broken, |_, _| {}, fonts(), 480, 240, 1.0).on_gaze(|s| s.gaze);
+        u.tick(1.0);
+        let inks: Vec<[f32; 4]> = u.glyphs().log.iter().filter(|gl| u.nodes()[gl.node].legible)
+            .map(|gl| amenui::form::ink_box(&u.scene().instances[gl.inst])).filter(|b| b[2] > b[0] && b[3] > b[1]).collect();
+        // A label's plate: a shape in the page's ground under its text.
+        let plates: Vec<[f32; 4]> = u.scene().annot.iter().filter(|i| i.paint[1] == 1.0 && i.paint[3] == 1.0).map(|i| [i.rect[0], i.rect[1], i.rect[0] + i.rect[2], i.rect[1] + i.rect[3]]).collect();
+        assert!(!plates.is_empty(), "page {page}: some label is drawn");
+        let meet = |a: &[f32; 4], b: &[f32; 4]| (a[2].min(b[2]) - a[0].max(b[0])) > 0.5 && (a[3].min(b[3]) - a[1].max(b[1])) > 0.5;
+        for (k, p) in plates.iter().enumerate() {
+            for i in &inks { assert!(!meet(p, i), "page {page}: a label {p:?} covers text {i:?}"); }
+            for q in &plates[k + 1..] { assert!(!meet(p, q), "page {page}: labels {p:?} and {q:?} meet"); }
+        }
+    }
+}
