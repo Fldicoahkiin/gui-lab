@@ -4257,7 +4257,8 @@ impl<S, M: Clone> Ui<S, M> {
     /// logical px, in the annotation colour, over everything, whatever the annotation mode.
     fn paint_guides(&mut self) {
         let s = self.scale;
-        let col = self.gaze_of.map_or(Gaze::default().colour, |f| f(&self.state).colour);
+        let ground = self.look().theme.ground;
+        let col = self.gaze_of.map_or(Gaze::default(), |f| f(&self.state)).colour_on(ground);
         let t = s.round().max(1.0) * 1.5;
         for n in self.nodes.iter().filter(|n| !n.hidden) {
             let Some(g) = &n.guide else { continue };
@@ -4292,7 +4293,8 @@ impl<S, M: Clone> Ui<S, M> {
         let (scope, scopes) = gaze::scope(&self.nodes, window);
         let view = scopes.first().map_or(window, |&i| self.nodes[i].clip);
         let clip = [view.x * s, view.y * s, view.right() * s, view.bottom() * s];
-        let col = [g.colour[0], g.colour[1], g.colour[2], 0.0];
+        let gc = g.colour_on(self.look().theme.ground);
+        let col = [gc[0], gc[1], gc[2], 0.0];
         let t = s.round().max(1.0);
         // The scope-wide readouts show with the pointer in the scope (Hover, Focus) or always (All).
         let in_scope = pointer.filter(|&(x, y)| scope.contains(x, y));
@@ -4432,30 +4434,27 @@ impl<S, M: Clone> Ui<S, M> {
                 run(&mut out, x1 - t, y0, x1 - t, y1);
                 run(&mut out, x0, y1 - t, x1, y1 - t);
                 run(&mut out, x0, y0, x0, y1);
-                // The leader (DESIGN.md §1.7): dashed, 4 on and 4 off, drawn on from its free end to the
-                // point of the true outline nearest that end. The free end is that corner,
-                // or the first other corner of the box, that is 12 px clear of every other element's text
-                // to read; the line between is routed round that text as threads are (control points
-                // moved, then curved), so no dash crosses it.
-                if let Some(&(ex, ey)) = end.as_ref() {
+                // The leader (DESIGN.md §1.7): dashed, 4 on and 4 off, from a corner of the ink box to the
+                // point of the true outline nearest it, and never outside the box. Of the corners 12 px
+                // clear of every other element's text to read, the one farthest from the outline; one
+                // shorter than 16 px (two dashes) is not drawn: a box that hugs its ink needs none.
+                if end.is_some() {
                     let own = Rect::new(b[0] / s, b[1] / s, (b[2] - b[0]) / s, (b[3] - b[1]) / s);
                     let read: Vec<[f32; 4]> = avoid.iter().filter(|r| r.intersect(&own).w <= 0.0 || r.intersect(&own).h <= 0.0)
                         .map(|r| [r.x * s, r.y * s, r.right() * s, r.bottom() * s]).collect();
                     let clear = |q: [f32; 2]| read.iter().all(|r| q[0] < r[0] - 12.0 * s || q[0] > r[2] + 12.0 * s || q[1] < r[1] - 12.0 * s || q[1] > r[3] + 12.0 * s);
-                    let r = a.rect;
-                    let from = [[r.x, r.y], [r.right(), r.y], [r.right(), r.bottom()], [r.x, r.bottom()]].into_iter().map(|c| [c[0] * s, c[1] * s]).find(|q| clear(*q));
-                    // The end is the point of the outline nearest where the leader starts, so it never
-                    // crosses the element to reach its far side.
-                    let (ex, ey) = match from {
-                        Some(f) if (f[0] - r.x * s).abs() > 0.5 || (f[1] - r.y * s).abs() > 0.5 => crate::hit::ink_of(&self.scene.instances, &self.owners[..self.page_len.min(self.owners.len())], |n| within(&self.nodes, n, a.node), (f[0], f[1]), &text.pixels)
-                            .and_then(|(_, e)| e).unwrap_or((ex, ey)),
-                        _ => (ex, ey),
-                    };
-                    if let Some(f) = from && (ex - f[0]).hypot(ey - f[1]) > 6.0 * t {
-                        let n = (((ex - f[0]).hypot(ey - f[1]) / (4.0 * s)).ceil() as usize).max(2);
+                    let mut best: Option<(f32, [f32; 2], (f32, f32))> = None;
+                    for c in [[b[0], b[1]], [b[2], b[1]], [b[2], b[3]], [b[0], b[3]]].into_iter().filter(|q| clear(*q)) {
+                        let near = crate::hit::ink_of(&self.scene.instances, &self.owners[..self.page_len.min(self.owners.len())], |n| within(&self.nodes, n, a.node), (c[0], c[1]), &text.pixels).and_then(|(_, e)| e);
+                        if let Some(e) = near { let d = (e.0 - c[0]).hypot(e.1 - c[1]); if best.is_none_or(|(bd, _, _)| d > bd) { best = Some((d, c, e)); } }
+                    }
+                    if let Some((d, f, (ex, ey))) = best && d >= 16.0 * s {
+                        let n = ((d / (4.0 * s)).ceil() as usize).max(2);
                         let line: Vec<[f32; 2]> = (0..=n).map(|k| { let u = k as f32 / n as f32; [f[0] + (ex - f[0]) * u, f[1] + (ey - f[1]) * u] }).collect();
                         let mut path = crate::strand::clear_path(line, &[], 0.0, &read, 12.0 * s);
-                        // Its end stays on the outline.
+                        // Inside the box, from its corner to the outline.
+                        for q in path.iter_mut() { q[0] = q[0].clamp(b[0], b[2]); q[1] = q[1].clamp(b[1], b[3]); }
+                        if let Some(q) = path.first_mut() { *q = f; }
                         if let Some(e) = path.last_mut() { *e = [ex, ey]; }
                         self.leaders.push((a.key.clone(), path.clone()));
                         for piece in crate::strand::dashes(&path, p, 4.0 * s, 4.0 * s) {
