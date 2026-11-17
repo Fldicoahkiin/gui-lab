@@ -444,11 +444,69 @@ fn straight_and_turn(segs: &[Piece]) -> (f32, f32, [f32; 2], [f32; 2]) {
     (worst_run, worst_turn, at_run, at_turn)
 }
 
+/// Arc length along a line of pieces at each of its points.
+fn arcs(segs: &[Piece]) -> (Vec<[f32; 2]>, Vec<f32>) {
+    let mut pts = segs.first().map_or(vec![], |s| vec![s.1]);
+    pts.extend(segs.iter().map(|s| s.2));
+    let mut at = vec![0.0f32];
+    for w in pts.windows(2) { at.push(at[at.len() - 1] + ((w[1][0] - w[0][0]).powi(2) + (w[1][1] - w[0][1]).powi(2)).sqrt()); }
+    (pts, at)
+}
+/// The tightest radius of a line between arc lengths `lo` and `hi`: the circle through points 3 px
+/// either side, on the line resampled every pixel; and where.
+fn tightest(pts: &[[f32; 2]], at: &[f32], lo: f32, hi: f32) -> (f32, [f32; 2]) {
+    let point = |s: f32| {
+        let i = at.partition_point(|&a| a <= s).clamp(1, pts.len() - 1);
+        let (a, b, l) = (pts[i - 1], pts[i], (at[i] - at[i - 1]).max(1e-6));
+        let t = ((s - at[i - 1]) / l).clamp(0.0, 1.0);
+        [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
+    };
+    let (lo, hi) = (lo.max(0.0), hi.min(at[at.len() - 1]));
+    let q: Vec<[f32; 2]> = (0..=((hi - lo).max(0.0) as usize)).map(|i| point(lo + i as f32)).collect();
+    let dist = |a: [f32; 2], b: [f32; 2]| ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt();
+    (3..q.len().saturating_sub(3)).map(|i| {
+        let (a, b, c) = (q[i - 3], q[i], q[i + 3]);
+        let cross = ((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])).abs();
+        (if cross < 1e-6 { f32::INFINITY } else { dist(a, b) * dist(b, c) * dist(a, c) / (2.0 * cross) }, b)
+    }).fold((f32::INFINITY, [0.0; 2]), |m, x| if x.0 < m.0 { x } else { m })
+}
+/// Where a line's own pieces turn into a tail (the last point of its own line, the first of the
+/// tail's): the tightest radius from 4 px before it over the tail's first 36 px, at each end that has
+/// one.
+fn join_radii(segs: &[Piece]) -> Vec<(&'static str, f32, [f32; 2])> {
+    let (pts, at) = arcs(segs);
+    let mut out = vec![];
+    if let Some(j) = segs.iter().rposition(|s| s.0 != Kind::Tail).filter(|&j| j + 1 < segs.len()) {
+        let (r, p) = tightest(&pts, &at, at[j + 1] - 4.0, at[j + 1] + 36.0);
+        out.push(("end", r, p));
+    }
+    if let Some(j) = segs.iter().position(|s| s.0 != Kind::Tail).filter(|&j| j > 0) {
+        let (r, p) = tightest(&pts, &at, at[j] - 36.0, at[j] + 4.0);
+        out.push(("start", r, p));
+    }
+    out
+}
+/// A line's two outermost pieces at each end, from the tip in: of its own line where a tail starts
+/// there 100 px long or more (a way out to the edge, its pieces long by design), else of the line.
+fn outermost(segs: &[Piece]) -> Vec<(&'static str, Piece, Piece)> {
+    let l = |s: &Piece| ((s.2[0] - s.1[0]).powi(2) + (s.2[1] - s.1[1]).powi(2)).sqrt();
+    let own: Vec<Piece> = segs.iter().copied().filter(|s| l(s) > 0.01).collect();
+    let head: f32 = own.iter().take_while(|s| s.0 == Kind::Tail).map(l).sum();
+    let tail: f32 = own.iter().rev().take_while(|s| s.0 == Kind::Tail).map(l).sum();
+    let from = if head >= 100.0 { own.iter().position(|s| s.0 != Kind::Tail).unwrap_or(0) } else { 0 };
+    let to = if tail >= 100.0 { own.iter().rposition(|s| s.0 != Kind::Tail).map_or(own.len(), |j| j + 1) } else { own.len() };
+    let own = &own[from..to];
+    if own.len() < 4 { return vec![]; }
+    vec![("start", own[0], own[1]), ("end", own[own.len() - 2], own[own.len() - 1])]
+}
+
 #[test]
 fn on_the_loose_thread_page_the_lines_bend_and_never_run_straight() {
     // At looseness 1, 0.7 and 0.5 (the pointer through the title, then away): in every line, no
     // straight run of six pieces or more is longer than 24 px, and no two neighbouring pieces turn by
-    // more than 25° (the line is moved by its control points and curved, never pressed flat).
+    // more than 25° (the line is moved by its control points and curved, never pressed flat). The
+    // title's own line is held to that in every frame at 0.9 and more, with no hairpin where it turns
+    // into its tail, and at 0.7 and 0.5 its outermost pieces too.
     let mut ui = Ui::new(loose_page::P { at: None }, loose_page::view, |s, m: loose_page::At| s.at = m.0, fonts(), 1000, 640, 1.0).on_look(|_| loose_page::look());
     let mut t = 0.0;
     let step = |ui: &mut Ui<loose_page::P, loose_page::At>, t: &mut f32| { *t += 1.0 / 60.0; ui.tick(*t); ui.frame_drawn(); };
@@ -457,11 +515,20 @@ fn on_the_loose_thread_page_the_lines_bend_and_never_run_straight() {
     let title = ui.node("title").expect("title").rect;
     let mut want = vec![1.0f32, 0.7, 0.5];
     let mut checked = vec![];
+    let mut joins = 0;
     for i in 0..=200 {
         if i <= 40 { let k = (i.min(30)) as f32 / 30.0; ui.pointer_move(comp.x + 10.0 + (title.w + 40.0) * k, title.y + title.h * 0.5 + 220.0 * k * k); }
         if i == 41 { ui.pointer_leave(); }
         step(&mut ui, &mut t);
-        let Some(k) = ui.strands().iter().find(|s| s.0 == "title").map(|s| s.1) else { continue };
+        let Some((k, title_segs)) = ui.strands().iter().find(|s| s.0 == "title").map(|s| (s.1, s.2.iter().map(|s| (s.kind, s.a, s.b)).collect::<Vec<Piece>>())) else { continue };
+        // Loose 0.9 and more, every frame: the title's own line as above, and where it turns into a
+        // tail it turns on a radius of 10 px or more, never back on itself.
+        if k >= 0.9 {
+            let (run, turn, at_run, at_turn) = straight_and_turn(&title_segs);
+            assert!(run <= 24.0 && turn <= 25.0, "loose {k:.2}: the title runs straight for {run:.1} px (to {at_run:?}) or turns by {turn:.1}° (at {at_turn:?})");
+            for (end, r, at) in join_radii(&title_segs) { assert!(r >= 10.0, "loose {k:.2}: the title turns into its {end} tail on a radius of {r:.1} px at {at:?}"); }
+            joins += 1;
+        }
         let Some(&w) = want.first() else { break };
         if (w == 1.0 && k < 0.995) || (w < 1.0 && (i <= 41 || k > w)) { continue; }
         want.remove(0);
@@ -473,6 +540,18 @@ fn on_the_loose_thread_page_the_lines_bend_and_never_run_straight() {
             assert!(run <= 24.0, "loose {k:.2}: `{key}` runs straight for {run:.1} px, to {at_run:?}");
             assert!(turn <= 25.0, "loose {k:.2}: `{key}` turns by {turn:.1}° at {at_turn:?}");
         }
+        // At 0.7 and 0.5 the title's two outermost pieces at either end (of its own line, or of a tail drawn
+        // back to under 100 px) are no straight stroke: 24 px long at most, turning by 25° at most.
+        if w < 1.0 {
+            for (end, a, b) in outermost(&title_segs) {
+                let l = |s: &Piece| ((s.2[0] - s.1[0]).powi(2) + (s.2[1] - s.1[1]).powi(2)).sqrt();
+                assert!(l(&a) <= 24.0 && l(&b) <= 24.0, "loose {k:.2}: the title's {end} runs straight for {:.1} px", l(&a).max(l(&b)));
+                let (_, turn, _, at) = straight_and_turn(&[a, b]);
+                assert!(turn <= 25.0, "loose {k:.2}: the title's {end} turns by {turn:.1}° at {at:?}");
+            }
+        }
     }
     assert_eq!(checked.len(), 3, "looseness reached: {checked:?}");
+    assert!(joins >= 10, "{joins} frames at loose 0.9 or more");
 }
+

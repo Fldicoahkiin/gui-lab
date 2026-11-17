@@ -662,7 +662,8 @@ fn bend_line(pts: &[[f32; 2]], w: f32, max_turn: f32) -> Vec<([f32; 2], usize)> 
     }
     d.dedup_by(|b, a| d2(a.0, b.0) <= 1e-8);
     let keep = decimate(&d.iter().map(|x| x.0).collect::<Vec<_>>(), max_turn);
-    keep.into_iter().map(|i| (d[i].0, (d[i].1.ceil().max(0.0) as usize).min(n - 1))).collect()
+    // A sample at `u` in (s, s + 1] is on the span that arrives toward `pts[s]`.
+    keep.into_iter().map(|i| (d[i].0, ((d[i].1.ceil() - 1.0).max(0.0) as usize).min(n - 1))).collect()
 }
 
 /// The control points of a knot about `centre` (`tangle` draws the curve through them).
@@ -969,7 +970,8 @@ pub fn thread(rest: &Rest, fx: &StrandFx, c: &Ctx, field: &dyn Fn(f32, f32) -> (
             // simplified (to 2 px as it bends), then curved through what is left.
             let line: Vec<[f32; 2]> = pts.iter().map(|p| p.0).collect();
             let keep = simplified(&line, 2.0 * s * smooth(0.3, 0.7, k));
-            let corners: Vec<([f32; 2], Kind)> = keep.iter().map(|&j| pts[j]).collect();
+            let mut corners: Vec<([f32; 2], Kind)> = keep.iter().map(|&j| pts[j]).collect();
+            bow_ends(&mut corners, 20.0 * s, smooth(0.3, 0.5, k));
             // Round what it would cross by its control points, then curve, then move the control points
             // where the curve still comes too close (never the curve's own points).
             let mut corners = round_boxes(corners, &walls, bow);
@@ -988,6 +990,19 @@ pub fn thread(rest: &Rest, fx: &StrandFx, c: &Ctx, field: &dyn Fn(f32, f32) -> (
         pts.dedup_by(|b, a| d2(a.0, b.0) <= 1e-6);
         // A line that bends (`angular` under 1) keeps no corner; an angular one keeps its own.
         if blend > 0.0 { ease_corners(&mut pts, 25.0); }
+        // Where the line turns into a tail it turns on a radius of 12 px (once it bends), not back on
+        // itself.
+        if blend > 0.0 {
+            let r = 12.0 * s * smooth(0.3, 0.5, k);
+            let clear = |p: [f32; 2]| inside(p) == p && !walls.iter().any(|b| way_out(p, b).is_some());
+            if let Some(j) = pts.iter().rposition(|p| p.1 != Kind::Tail).filter(|&j| j + 1 < pts.len()) { round_join(&mut pts, j, r, &clear); }
+            if let Some(j) = pts.iter().position(|p| p.1 != Kind::Tail).filter(|&j| j > 0) {
+                pts.reverse();
+                let j = pts.len() - j;
+                round_join(&mut pts, j, r, &clear);
+                pts.reverse();
+            }
+        }
         pts
     };
     // Within the budget: coarser curves, then fewer knot points, then every n-th vertex.
@@ -1059,6 +1074,94 @@ fn tails(rest: &Rest, at: &[[f32; 2]], fx: &StrandFx, c: &Ctx, field: &dyn Fn(f3
     let head: Vec<[f32; 2]> = tail_from(at[0], start_dir, full, k, c.seed ^ 0x51, turns, c).into_iter().rev().collect();
     let end = tail_from(at[n - 1], end_dir, full, k, c.seed ^ 0x77, turns, c);
     (head, end)
+}
+
+/// A line's end (its own or a tail's) that runs straight for `long` or more between two corners (a
+/// glyph's upright stroke, or a tail drawn back to a stub) is given a corner halfway along, `by` × 15 % of its length
+/// to the side away from the turn that follows, so the curve bends all the way to its end.
+fn bow_ends(corners: &mut Vec<([f32; 2], Kind)>, long: f32, by: f32) {
+    if by <= 0.0 || corners.len() < 2 { return; }
+    for end in [0, 1] {
+        let n = corners.len();
+        let (i, j, nx) = if end == 0 { (0, 1, 2) } else { (n - 1, n - 2, n.wrapping_sub(3)) };
+        let (a, b) = (corners[i].0, corners[j].0);
+        let l = d2(a, b).sqrt();
+        if l < long { continue; }
+        let d = [(b[0] - a[0]) / l, (b[1] - a[1]) / l];
+        let turn = corners.get(nx).filter(|_| n >= 3).map_or(0.0, |p| d[0] * (p.0[1] - b[1]) - d[1] * (p.0[0] - b[0]));
+        let side = if turn > 0.0 { -1.0 } else { 1.0 };
+        let o = 0.15 * l * by * side;
+        let m = ([(a[0] + b[0]) * 0.5 - d[1] * o, (a[1] + b[1]) * 0.5 + d[0] * o], corners[if end == 0 { j } else { i }].1);
+        corners.insert(if end == 0 { 1 } else { n - 1 }, m);
+    }
+}
+
+/// The tightest radius of the path `p` between arc lengths `lo` and `hi`: the circle through points
+/// 3 px either side, on the path resampled every pixel.
+fn tightest(p: &[[f32; 2]], lo: f32, hi: f32) -> f32 {
+    let (lo, hi) = (lo.max(0.0), hi.min(length(p)));
+    let q: Vec<[f32; 2]> = (0..=((hi - lo).max(0.0) as usize)).map(|i| at_length(p, lo + i as f32)).collect();
+    (3..q.len().saturating_sub(3)).map(|i| {
+        let (a, b, c) = (q[i - 3], q[i], q[i + 3]);
+        let cross = ((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])).abs();
+        if cross < 1e-6 { f32::INFINITY } else { d2(a, b).sqrt() * d2(b, c).sqrt() * d2(a, c).sqrt() / (2.0 * cross) }
+    }).fold(f32::INFINITY, f32::min)
+}
+
+/// Where the line `pts` turns into its tail at point `j` (the last of the line), tighter than `r`:
+/// from 4 px before `j` (or farther back, by up to three radii, while the line turns tighter there) the
+/// pen goes round an arc of radius `r` toward the way the
+/// tail goes, then on a curve that meets the tail, tangent to it, three radii or more from `j` (the
+/// tail's points before that are dropped). On the side the tail goes, or else the other, if every new
+/// point is `clear`; otherwise left as it is.
+fn round_join(pts: &mut Vec<([f32; 2], Kind)>, j: usize, r: f32, clear: &dyn Fn([f32; 2]) -> bool) {
+    if r < 2.0 || j == 0 || j + 1 >= pts.len() { return; }
+    let line: Vec<[f32; 2]> = pts.iter().map(|p| p.0).collect();
+    let arc_at: Vec<f32> = std::iter::once(0.0).chain(line.windows(2).scan(0.0, |a, w| { *a += d2(w[0], w[1]).sqrt(); Some(*a) })).collect();
+    let at = arc_at[j];
+    if tightest(&line, at - 4.0, at + 3.0 * r) >= 10.0f32.min(r) { return; }
+    let unit = |d: [f32; 2]| { let l = (d[0] * d[0] + d[1] * d[1]).sqrt().max(1e-6); [d[0] / l, d[1] / l] };
+    // From: 4 px back along the line (and the way it comes there); to: the tail's first point three
+    // radii on and as far from `j` (or its end), and the way it goes on from there.
+    // The arc starts 4 px back, or farther (up to three radii) while the line there turns tighter.
+    let least = 10.0f32.min(r);
+    let mut back = 4.0;
+    while back < 3.0 * r && back < at && tightest(&line, at - back - 3.0, at - back + 3.0) < least { back += 1.0; }
+    let Some(b) = (0..j).rev().find(|&i| at - arc_at[i] >= back) else { return };
+    let start = at_length(&line, at - back);
+    let Some(t) = (j + 1..pts.len()).find(|&i| arc_at[i] - at >= 3.0 * r && d2(line[i], line[j]) >= 9.0 * r * r).or(Some(pts.len() - 1)).filter(|&i| i > j) else { return };
+    let u = unit([line[b + 1][0] - line[b][0], line[b + 1][1] - line[b][1]]);
+    let vt = if t + 1 < line.len() { unit([line[t + 1][0] - line[t][0], line[t + 1][1] - line[t][1]]) } else { unit([line[t][0] - line[t - 1][0], line[t][1] - line[t - 1][1]]) };
+    let toward = unit([line[t][0] - start[0], line[t][1] - start[1]]);
+    let first = if u[0] * toward[1] - u[1] * toward[0] >= 0.0 { 1.0 } else { -1.0 };
+    for side in [first, -first] {
+        let w = [-u[1] * side, u[0] * side];
+        let c = [start[0] + w[0] * r, start[1] + w[1] * r];
+        let at_turn = |f: f32| { let (sn, cs) = (side * f).sin_cos(); [c[0] - (w[0] * cs - w[1] * sn) * r, c[1] - (w[0] * sn + w[1] * cs) * r] };
+        let tangent = |f: f32| { let (sn, cs) = (side * f).sin_cos(); [u[0] * cs - u[1] * sn, u[0] * sn + u[1] * cs] };
+        // Round until the pen heads for the tail's point (or by at most 300°).
+        let aim = |f: f32| { let (p, d) = (at_turn(f), tangent(f)); let to = unit([line[t][0] - p[0], line[t][1] - p[1]]); side * (d[0] * to[1] - d[1] * to[0]) };
+        let step = 5f32.to_radians();
+        // The other side turns the long way: on until the tail's point comes round to that side.
+        let most = 300f32.to_radians();
+        let mut f = 0.0;
+        while f < most && aim(f) <= 0.0 { f += step; }
+        while f < most && aim(f) > 0.0 { f += step; }
+        let mut new: Vec<[f32; 2]> = (0..=(f / step).round() as usize).map(|i| at_turn(i as f32 * step)).collect();
+        let q = new.last().copied().unwrap_or(start);
+        let dq = tangent(f);
+        // A curve from the arc's end to the tail's point, tangent to both.
+        let l = d2(q, line[t]).sqrt();
+        let n = (l / 3.0).ceil().max(1.0) as usize;
+        for i in 1..n {
+            let x = i as f32 / n as f32;
+            let (h00, h10, h01, h11) = (2.0 * x * x * x - 3.0 * x * x + 1.0, x * x * x - 2.0 * x * x + x, -2.0 * x * x * x + 3.0 * x * x, x * x * x - x * x);
+            new.push(std::array::from_fn(|a| h00 * q[a] + h10 * dq[a] * l + h01 * line[t][a] + h11 * vt[a] * l));
+        }
+        if !new.iter().all(|p| clear(*p)) { continue; }
+        pts.splice(b + 1..t, new.into_iter().map(|p| (p, Kind::Tail)));
+        return;
+    }
 }
 
 /// What is left of a corner, rounded: where two pieces 1.5 px long or more turn by more than `most`
