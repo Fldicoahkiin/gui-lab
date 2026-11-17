@@ -735,8 +735,9 @@ pub fn knot_plan(rest: &Rest, fx: &StrandFx, c: &Ctx, field: &dyn Fn(f32, f32) -
 }
 
 fn in_box(p: [f32; 2], boxes: &[[f32; 4]]) -> bool { boxes.iter().any(|b| p[0] >= b[0] && p[1] >= b[1] && p[0] < b[2] && p[1] < b[3]) }
-const R: f32 = std::f32::consts::FRAC_1_SQRT_2;
-const COMPASS: [[f32; 2]; 8] = [[1.0, 0.0], [R, R], [0.0, 1.0], [-R, R], [-1.0, 0.0], [-R, -R], [0.0, -1.0], [R, -R]];
+/// Sixteen ways, 22.5° apart from +x: what a tail chooses between, so a way clear of text to read is
+/// found between two that pass close to it.
+fn ways16() -> [[f32; 2]; 16] { std::array::from_fn(|i| { let a = i as f32 * std::f32::consts::PI / 8.0; [a.cos(), a.sin()] }) }
 
 /// A strand from `from` along `dir`, `len` long at full looseness: a long, slowly bending curve. Its bends
 /// (`turns` of them, each 12–25°, at about even places along it, one way then the other) are the control
@@ -806,8 +807,11 @@ pub fn strand_path(from: [f32; 2], dir: [f32; 2], len: f32, k: f32, seed: u32, t
 fn tail_from(from: [f32; 2], dir: [f32; 2], len: f32, k: f32, seed: u32, turns: usize, c: &Ctx) -> Vec<[f32; 2]> {
     let sc = c.scope;
     let edge = |p: f32, d: f32, lo: f32, hi: f32| if d > 1e-4 { (hi - p) / d } else if d < -1e-4 { (lo - p) / d } else { f32::INFINITY };
-    // Long enough to reach the edge however it bends (it strays at most 25° from `dir`).
-    let len = len.max(edge(from[0], dir[0], sc[0], sc[2]).min(edge(from[1], dir[1], sc[1], sc[3])) * 1.12 + 8.0);
+    // Just long enough to reach the edge however it bends (it strays at most 25° from `dir`), so its
+    // bends fall inside the scope and the part that shows is a curve, not the straight first stretch
+    // of a longer one.
+    let to_edge = edge(from[0], dir[0], sc[0], sc[2]).min(edge(from[1], dir[1], sc[1], sc[3])) * 1.12 + 8.0;
+    let len = if to_edge.is_finite() { to_edge } else { len };
     let out = |p: [f32; 2]| p[0] < sc[0] || p[1] < sc[1] || p[0] > sc[2] || p[1] > sc[3];
     let mut pts = vec![];
     let mut last = from;
@@ -919,18 +923,23 @@ pub fn thread(rest: &Rest, fx: &StrandFx, c: &Ctx, field: &dyn Fn(f32, f32) -> (
 /// (ending just before it) and out from its end. Out from the end along the flow as far as it is free
 /// (or the longest free way), in from the start along the way that gets farthest other than the end's;
 /// neither back across the middle of its own word, and a way that would pass within 24 px of text to read
-/// is worth a third as much. Directions are read at the rest points, so every tail point moves in
+/// is worth a third as much; a way out to the scope's edge clear of text to read is taken over any that
+/// is not. Directions are read at the rest points, so every tail point moves in
 /// proportion to `k` and they draw back in a straight way.
 fn tails(rest: &Rest, at: &[[f32; 2]], fx: &StrandFx, c: &Ctx, field: &dyn Fn(f32, f32) -> (f32, [f32; 2]), turns: usize) -> (Vec<[f32; 2]>, Vec<[f32; 2]>) {
     let (k, s, n) = (c.k.clamp(0.0, 1.0), c.scale, rest.pts.len());
     let sc = c.scope;
     let full = (fx.tail * s).max(0.6 * (sc[2] - sc[0]).max(sc[3] - sc[1]));
-    // How far a whole tail from a rest point would get that way, a third as far near text to read.
+    // How far a whole tail from a rest point would get that way, a third as far near text to read; a
+    // way that reaches the scope's edge clear of text to read beats every way that is not, however short
+    // (a tail is a way out to the edge, not a line drawn past the text).
+    let on_edge = |p: [f32; 2]| p[0] <= sc[0] + 1.0 || p[1] <= sc[1] + 1.0 || p[0] >= sc[2] - 1.0 || p[1] >= sc[3] - 1.0;
     let reach = |from: [f32; 2], dir: [f32; 2], seed: u32| {
         let t = tail_from(from, dir, full, 1.0, seed, turns, c);
         let far = t.last().map_or(0.0, |p| d2(*p, from).sqrt());
         let close = t.iter().any(|p| c.calm.iter().any(|b| box_dist(*p, b) < 24.0 * s));
-        if close { far * 0.3 } else { far }
+        let out = !close && t.last().is_some_and(|p| on_edge(*p));
+        (if close { far * 0.3 } else { far }) + if out { 1e5 } else { 0.0 }
     };
     // Out of the word, not back across it: a way that does not cross the middle half of the line's box.
     let bb = rest.pts.iter().fold([f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY], |a, p| [a[0].min(p[0]), a[1].min(p[1]), a[2].max(p[0]), a[3].max(p[1])]);
@@ -940,18 +949,18 @@ fn tails(rest: &Rest, at: &[[f32; 2]], fx: &StrandFx, c: &Ctx, field: &dyn Fn(f3
     let away = |from: [f32; 2], d: &[f32; 2]| span_in(from, [from[0] + d[0] * span, from[1] + d[1] * span], &core).is_none();
     let best = |from: [f32; 2], skip: Option<[f32; 2]>, seed: u32| -> [f32; 2] {
         let ok = |d: &[f32; 2]| skip.is_none_or(|e| d[0] * e[0] + d[1] * e[1] < 0.9);
-        let pick = |out: bool| COMPASS.iter().filter(|d| ok(d) && (!out || away(from, d))).map(|d| (*d, reach(from, *d, seed))).max_by(|a, b| a.1.total_cmp(&b.1)).map(|b| b.0);
+        let pick = |out: bool| ways16().iter().filter(|d| ok(d) && (!out || away(from, d))).map(|d| (*d, reach(from, *d, seed))).max_by(|a, b| a.1.total_cmp(&b.1)).map(|b| b.0);
         pick(true).or_else(|| pick(false)).unwrap_or([1.0, 0.0])
     };
     let (e0, e1) = (rest.pts[0], rest.pts[n - 1]);
     let (_, fl) = field(e1[0], e1[1]);
     let fl_len = (fl[0] * fl[0] + fl[1] * fl[1]).sqrt();
     // With a flow, the way that goes farthest weighed by how close it is to the flow (the flow itself
-    // and 30° and 60° either side of it among them); without, the farthest of eight.
+    // and 30° and 60° either side of it among them); without, the farthest of sixteen.
     let end_dir = if fl_len > 0.05 {
         let f = [fl[0] / fl_len, fl[1] / fl_len];
         let turn = |a: f32| [f[0] * a.cos() - f[1] * a.sin(), f[0] * a.sin() + f[1] * a.cos()];
-        let ways: Vec<[f32; 2]> = [0.0f32, 30.0, -30.0, 60.0, -60.0].iter().map(|d| turn(d.to_radians())).chain(COMPASS).collect();
+        let ways: Vec<[f32; 2]> = [0.0f32, 30.0, -30.0, 60.0, -60.0].iter().map(|d| turn(d.to_radians())).chain(ways16()).collect();
         let score = |d: &[f32; 2]| reach(e1, *d, c.seed ^ 0x77) * (0.4 + 0.6 * (d[0] * f[0] + d[1] * f[1]).max(0.0));
         let pick = |out: bool| ways.iter().filter(|d| !out || away(e1, d)).map(|d| (*d, score(d))).max_by(|a, b| a.1.total_cmp(&b.1)).map(|b| b.0);
         pick(true).or_else(|| pick(false)).unwrap_or(f)
@@ -1483,7 +1492,7 @@ mod tests {
 
     #[test]
     fn a_tail_is_one_long_slow_curve() {
-        let dir = [R, R];
+        let dir = [std::f32::consts::FRAC_1_SQRT_2; 2];
         for seed in 0..40u32 {
             for turns in [1usize, 2, 3, 6] {
                 let p = strand_path([10.0, 20.0], dir, 600.0, 1.0, seed, seed as f32 * 0.37, turns);
