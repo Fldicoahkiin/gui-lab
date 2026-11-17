@@ -2948,7 +2948,8 @@ impl<S, M: Clone> Ui<S, M> {
         let drift = self.timing.map.drift;
         let mut out: Vec<Instance> = vec![];
         // Under a modal layer the page holds its lines back: they would be drawn in the layer, over it.
-        let modal = self.scene.layer.map(|l| l as usize);
+        // Only a dialog's layer: a floating window's or a lifted element's layer starts one too.
+        let modal = self.modal_at.and(self.scene.layer).map(|l| l as usize);
         for n in self.nodes.iter().filter(|n| n.trace.is_some() && !n.hidden && modal.is_none()) {
             let tr = n.trace.as_ref().expect("filtered");
             let o = n.origin();
