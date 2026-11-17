@@ -6,7 +6,7 @@
 // @param 结的半径 4.0 120.0 1.0 0 px 48.0
 // @param 线头 0.0 1200.0 10.0 0 px 480.0
 // @param 跟场走 0.0 2.0 0.05 2 - 1.0
-// @param 折角 0.0 1.0 0.05 2 - 0.9
+// @param 折角 0.0 1.0 0.05 2 - 0.35
 // scribblr: a flat ground and the ink exactly as stage 1 left it. The fill's fade and the thread that
 // leaves the outline are worked out on the CPU per element (strand.rs, DESIGN.md §1.30) and drawn into
 // stage 1, so a line over a loose glyph is never faded with it; at looseness 0 this is plain's frame.

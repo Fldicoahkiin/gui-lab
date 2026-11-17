@@ -177,18 +177,104 @@ fn hui_is_four_outlines_and_three_bridges() {
 }
 
 /// The thread of a 64 px "Loose thread" with no knots and no tails, as plain polylines (`angular` 1).
-fn title_thread(k: f32) -> Vec<amenui::strand::Seg> {
-    fn v(k: &f32) -> El<()> { col().pad(60.0, 60.0).child(text("Loose thread", 64.0, Paint::INK).font(amenui::el::Font::Display).key("title").legible(false).loose(*k)) }
-    fn look(_: &f32) -> Look {
+fn title_thread(k: f32) -> Vec<amenui::strand::Seg> { title_with(k, Some(1.0)) }
+/// The same title's thread with no knots and no tails, at `angular` (`None`: the material's default).
+fn title_with(k: f32, angular: Option<f32>) -> Vec<amenui::strand::Seg> {
+    fn v(s: &(f32, Option<f32>)) -> El<()> { col().pad(60.0, 60.0).child(text("Loose thread", 64.0, Paint::INK).font(amenui::el::Font::Display).key("title").legible(false).loose(s.0)) }
+    fn look(s: &(f32, Option<f32>)) -> Look {
         let mut l = Look { material: Material::Scribblr, ..Look::default() };
         let p = &mut l.params[Material::Scribblr.id() as usize].0;
-        (p[5], p[7]) = (0.0, 1.0);
+        (p[3], p[5]) = (0.0, 0.0);
+        if let Some(a) = s.1 { p[7] = a; }
         l
     }
-    let mut ui = Ui::new(k, v, |_, _| {}, fonts(), 900, 300, 1.0).on_look(look);
+    let mut ui = Ui::new((k, angular), v, |_, _| {}, fonts(), 900, 300, 1.0).on_look(look);
     ui.pointer_leave();
     ui.tick(5.0);
     ui.strands().iter().find(|s| s.0 == "title").map(|s| s.2.clone()).unwrap_or_default()
+}
+
+#[test]
+fn a_loose_title_is_one_curving_line() {
+    // At the default `angular`, fully loose: nine in ten neighbouring pieces of the line turn by 25° or less.
+    let all = title_with(1.0, None);
+    let turn = |a: &amenui::strand::Seg, b: &amenui::strand::Seg| {
+        let (u, v) = ([a.b[0] - a.a[0], a.b[1] - a.a[1]], [b.b[0] - b.a[0], b.b[1] - b.a[1]]);
+        let (lu, lv) = ((u[0] * u[0] + u[1] * u[1]).sqrt(), (v[0] * v[0] + v[1] * v[1]).sqrt());
+        ((u[0] * v[0] + u[1] * v[1]) / (lu * lv).max(1e-9)).clamp(-1.0, 1.0).acos().to_degrees()
+    };
+    let pairs: Vec<f32> = all.windows(2).filter(|w| w[0].kind == Kind::Line && w[1].kind == Kind::Line).map(|w| turn(&w[0], &w[1])).collect();
+    let gentle = pairs.iter().filter(|a| **a <= 25.0).count();
+    eprintln!("the loose title: {gentle} of {} turns at most 25°", pairs.len());
+    assert!(!pairs.is_empty() && gentle * 10 >= pairs.len() * 9, "{gentle} of {} turns at most 25°", pairs.len());
+    // Below 0.3 the line is the letters' outline: the default draws it as `angular` 1 does.
+    let (a, b) = (title_with(0.2, None), title_with(0.2, Some(1.0)));
+    assert_eq!(a.len(), b.len());
+    for (x, y) in a.iter().zip(&b) { for (p, q) in [(x.a, y.a), (x.b, y.b)] { assert!(((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2)).sqrt() < 0.5, "{p:?} against {q:?}"); } }
+}
+
+/// The sample page (`amenui::sample`) under scribblr, its decoration held at `k` and stirred through the
+/// title, half a second on at 60 Hz.
+fn sample_at(k: f32) -> Ui<amenui::sample::Sample, ()> {
+    let look = Look { material: Material::Scribblr, ..Look::default() };
+    let cmds = vec![amenui::morph::Cmd::Stir { at: amenui::morph::StirAt::Key("title".into()), v: [1.0, 0.15], energy: 1.0, radius: 200.0, scope: amenui::el::Scope::Global }];
+    let (w, h) = amenui::sample::CELL;
+    let mut ui = Ui::new(amenui::sample::Sample { k, label: "scribblr".into(), look, cmds }, amenui::sample::view, |_, _| {}, fonts(), w, h, 1.0)
+        .on_look(|s| s.look).on_commands(|s| std::mem::take(&mut s.cmds));
+    ui.relayout();
+    let mut t = 0.0;
+    while t < 0.5 { t += 1.0 / 60.0; ui.tick(t); }
+    ui
+}
+
+#[test]
+fn no_piece_of_thread_enters_text_to_read() {
+    for k in [1.0f32, 0.7, 0.4] {
+        let ui = sample_at(k);
+        let tree = ui.export_tree();
+        // Each legible element's ink: its instances' boxes (a glyph's without the spread around it), 4 px larger.
+        let spread = amenui::text::SPREAD as f32;
+        let mut ink: Vec<(String, [f32; 4])> = vec![];
+        for (i, inst) in ui.scene().instances.iter().enumerate() {
+            let Some(key) = ui.owner_key(i) else { continue };
+            if key.is_empty() || !tree.find(key).is_some_and(|n| n.legible) || inst.paint[2] <= 0.0 { continue; }
+            let p = if inst.paint[3] == amenui::scene::GLYPH { spread } else { 0.0 };
+            let b = [inst.rect[0] + p, inst.rect[1] + p, inst.rect[0] + inst.rect[2] - p, inst.rect[1] + inst.rect[3] - p];
+            match ink.iter_mut().find(|e| e.0 == key) {
+                Some(e) => e.1 = [e.1[0].min(b[0]), e.1[1].min(b[1]), e.1[2].max(b[2]), e.1[3].max(b[3])],
+                None => ink.push((key.to_owned(), b)),
+            }
+        }
+        assert!(ink.iter().any(|e| e.0 == "body") && ink.iter().any(|e| e.0 == "label"), "{:?}", ink.iter().map(|e| &e.0).collect::<Vec<_>>());
+        let boxes: Vec<(String, [f32; 4])> = ink.into_iter().map(|(k, b)| (k, [b[0] - 4.0, b[1] - 4.0, b[2] + 4.0, b[3] + 4.0])).collect();
+        assert!(!ui.strands().is_empty(), "k {k}: no thread");
+        for (key, _, segs) in ui.strands() {
+            for s in segs {
+                for (name, b) in &boxes {
+                    // Liang–Barsky: does the piece pass through the box's inside?
+                    let d = [s.b[0] - s.a[0], s.b[1] - s.a[1]];
+                    let (mut t0, mut t1) = (0.0f32, 1.0f32);
+                    let mut hit = true;
+                    for (p, q) in [(-d[0], s.a[0] - b[0]), (d[0], b[2] - s.a[0]), (-d[1], s.a[1] - b[1]), (d[1], b[3] - s.a[1])] {
+                        if p == 0.0 { if q <= 0.0 { hit = false; } continue; }
+                        let r = q / p;
+                        if p < 0.0 { t0 = t0.max(r); } else { t1 = t1.min(r); }
+                    }
+                    assert!(!(hit && t0 < t1), "k {k}: a {:?} piece of `{key}` enters `{name}`: {:?} → {:?}", s.kind, s.a, s.b);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_rule_comes_apart_without_knots_or_tails() {
+    let ui = sample_at(1.0);
+    let (_, _, rule) = ui.strands().iter().find(|s| s.0 == "rule").expect("the rule has a thread");
+    assert!(!rule.is_empty());
+    assert!(rule.iter().all(|s| s.kind != Kind::Knot && s.kind != Kind::Tail), "the rule has a knot or a tail");
+    let (_, _, title) = ui.strands().iter().find(|s| s.0 == "title").expect("the title has a thread");
+    assert!(title.iter().any(|s| s.kind == Kind::Knot), "the title has no knot");
 }
 
 #[test]
