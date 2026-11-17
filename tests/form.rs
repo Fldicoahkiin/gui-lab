@@ -43,7 +43,8 @@ fn a_turning_sphere_shows_only_its_front_and_thins_its_rim() {
         let ui = sphere(yaw);
         let node = ui.nodes().iter().position(|n| n.key == "passage").expect("passage");
         let log: Vec<_> = ui.glyphs().log.iter().filter(|g| g.node == node).copied().collect();
-        assert!(log.len() > 150, "yaw {yaw}: only {} glyphs drawn", log.len());
+        // The rim fades from `edge` 0.6: the front keeps over 120 glyphs at any turn.
+        assert!(log.len() > 120, "yaw {yaw}: only {} glyphs drawn", log.len());
         let insts = &ui.scene().instances;
         // Far to near: depths never fall along the drawing order.
         for w in log.windows(2) { assert!(w[0].z <= w[1].z + 1e-4, "yaw {yaw}: drawn out of depth order"); }
@@ -136,4 +137,57 @@ fn form_hit_finds_the_text_drawn_under_the_pointer() {
         assert!((x + p.dx - 200.0).abs() < 0.5 && (y + p.dy - 200.0).abs() < 0.5, "spin {spin:?}: drawn at {} {}", x + p.dx, y + p.dy);
         assert!(p.facing > 0.99, "straight on: {}", p.facing);
     }
+}
+
+#[test]
+fn every_clearly_drawn_glyph_keeps_most_of_its_width() {
+    // With the default `edge`, a glyph drawn at (nearly) full opacity is never squeezed under 0.6 of its
+    // width, at any turn.
+    for step in 0..24 {
+        let yaw = step as f32 * 15.0;
+        let ui = sphere(yaw);
+        let node = ui.nodes().iter().position(|n| n.key == "passage").expect("passage");
+        for g in ui.glyphs().log.iter().filter(|g| g.node == node) {
+            let inst = &ui.scene().instances[g.inst];
+            if inst.paint[2] < 0.95 { continue; }
+            let sx = (1.0 + inst.xf[0]).hypot(inst.xf[2]);
+            assert!(sx >= 0.6, "yaw {yaw}: glyph {} drawn whole at {sx:.2} of its width", g.i);
+        }
+    }
+}
+
+#[test]
+fn the_pointer_lights_glyphs_by_a_smooth_falloff() {
+    let mut ui = sphere(-18.0);
+    let node = ui.nodes().iter().position(|n| n.key == "passage").expect("passage");
+    // The pointer in the middle of the sphere.
+    let n = ui.nodes()[node].inner;
+    let h = form3d::form(ui.state.spin).hit(n.w * 0.5, n.h * 0.5, n.w, n.h).expect("on the sphere");
+    ui.state.hover = Some(h.uv);
+    ui.relayout();
+    ui.tick(2.5);
+    let (_, laid, _) = ui.glyphs().laid.iter().find(|(n, ..)| *n == node).cloned().expect("laid");
+    let span = laid.iter().fold([f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY], |b, &(x, y)| [b[0].min(x), b[1].min(y), b[2].max(x), b[3].max(y)]);
+    let at = |i: usize| { let (x, y) = laid[i]; let (gx, gy) = (span[0] + h.uv[0] * (span[2] - span[0]), span[1] + h.uv[1] * (span[3] - span[1])); let w = span[2] - span[0]; let dx = (x - gx).abs().min(w - (x - gx).abs()); dx.hypot(y - gy) };
+    let accent: std::collections::HashMap<usize, f32> = ui.glyphs().log.iter().filter(|g| g.node == node).map(|g| (g.i, ui.scene().instances[g.inst].paint[1])).collect();
+    let mut lit = 0;
+    for (&i, &a) in &accent {
+        if at(i) >= form3d::REACH { assert_eq!(a, 0.0, "glyph {i} {:.0} px away is lit {a}", at(i)); }
+        if a > 0.5 { lit += 1; }
+    }
+    assert!(lit >= 6, "the pointer lights a few words: {lit}");
+    // Neighbours in a word: no hard edge between them.
+    let groups = ui.reveal_groups(node, Reveal::Word);
+    let origin = { let n = &ui.nodes()[node]; (n.inner.x, n.inner.y) };
+    let mut pairs = 0;
+    for bs in &groups {
+        let mut inw: Vec<usize> = (0..laid.len()).filter(|&i| bs.iter().any(|r| r.inset(-0.5, -0.5, -0.5, -0.5).contains(laid[i].0 + origin.0, laid[i].1 + origin.1))).collect();
+        inw.sort();
+        for w in inw.windows(2) {
+            let (Some(a), Some(b)) = (accent.get(&w[0]), accent.get(&w[1])) else { continue };
+            if *a > 0.0 || *b > 0.0 { pairs += 1; }
+            assert!((a - b).abs() <= 0.35, "glyphs {} and {} of one word: accent {a:.2} then {b:.2}", w[0], w[1]);
+        }
+    }
+    assert!(pairs > 10, "lit neighbours checked: {pairs}");
 }
