@@ -1128,7 +1128,8 @@ impl<S, M: Clone> Ui<S, M> {
         let hit = self.hit_target(x, y);
         // A scroll area inside a dragged element (a sheet's body) scrolls first: its drag waits for a pull
         // past the scroll's start (the hand-off in `drag_scroll`).
-        let dragged = hit.and_then(|i| self.up(i, |n| n.on_drag.is_some() || n.on_text.is_some()));
+        let dragged = hit.and_then(|i| self.up(i, |n| n.on_drag.is_some() || n.on_text.is_some() || n.on_press.is_some()))
+            .filter(|&i| self.nodes[i].on_drag.is_some() || self.nodes[i].on_text.is_some());
         let scroller = hit.and_then(|i| self.up(i, |n| n.scroll));
         let inner_scroll = matches!((dragged, scroller), (Some(d), Some(sc)) if self.nodes[d].on_text.is_none() && self.within(sc, d) && sc != d);
         let direct = (dragged.is_some() && !inner_scroll) || scroller.is_none();
@@ -1397,7 +1398,10 @@ impl<S, M: Clone> Ui<S, M> {
         // A press on a 3D element says which copy it was on, then the element's drag (an orbit) goes on.
         if let Some((i, h)) = self.pick_at(x, y) && let Some(f) = self.nodes[i].on_pick.clone() && let Some(m) = f(crate::mesh::Pick::Press(h)) { self.send(m); }
         let hit = self.hit_target(x, y);
-        if let Some(i) = hit.and_then(|i| self.up(i, |n| n.on_drag.is_some())) {
+        // The nearest element that takes the press decides: a button or link inside a dragged element
+        // (a scene that hears the pointer) gets its own press; the drag starts only on the dragged
+        // element's own area or on something inside it that takes no press.
+        if let Some(i) = hit.and_then(|i| self.up(i, |n| n.on_drag.is_some() || n.on_press.is_some())).filter(|&i| self.nodes[i].on_drag.is_some()) {
             let n = &self.nodes[i];
             let Some(handler) = n.on_drag.clone() else { return };
             self.capture = Some(Capture { key: n.key.clone(), handler, start: (x, y), rect: n.rect });

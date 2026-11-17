@@ -2,7 +2,8 @@
 //! as functions; a finger scrolling the 10,000 rows, flinging on and coming to rest; a tap pressing; a
 //! scroll that started on a row not pressing it; pulling past the top loosening the edge, not moving
 //! the content, and springing back; a second finger cancelling; pointer capture for a finger on a
-//! slider; small controls hit within 28 px; no hover from a finger; the pointer's shapes.
+//! slider; small controls hit within 28 px; no hover from a finger; the pointer's shapes; a button
+//! inside an element that drags (a scene hearing the pointer) taking its own press.
 use amenui::el::{Cursor, El, Paint, col, space};
 use amenui::ui::{MIN_HIT, Scrolling, Ui, fling_step, rubber_band};
 
@@ -98,4 +99,48 @@ fn hover_marks_land_in_the_pointers_frame() {
     ui.pointer_move(300.0, 190.0);
     for _ in 0..6 { t += 1.0 / 60.0; ui.tick(t); }
     assert!(ui.marks_frame().is_none());
+}
+
+/// A scene that hears the pointer (`on_point`, which drags) with a button and a caption in it.
+#[derive(Clone, Debug, PartialEq)]
+enum Heard { Pressed, Point(bool) }
+fn scene(_: &Vec<Heard>) -> El<Heard> {
+    col().key("scene").pad(60.0, 60.0).gap(40.0).width(500.0).height(400.0)
+        .on_point(|p| p.map(|p| Heard::Point(p.down)))
+        .child(amenui::widgets::button("go", "Go", Heard::Pressed))
+        .child(amenui::el::text("a caption that takes no press", 14.0, Paint::TEXT).key("caption"))
+}
+fn held(log: &[Heard]) -> usize { log.iter().filter(|h| **h == Heard::Point(true)).count() }
+
+#[test]
+fn a_button_inside_a_pointer_scene_takes_its_own_press() {
+    let mut ui = Ui::new(vec![], scene, |s: &mut Vec<Heard>, m| s.push(m), fonts(), 640, 480, 1.0);
+    ui.tick(1.0);
+    let b = ui.node("go").unwrap().rect;
+    let (x, y) = b.center();
+    ui.press(x, y);
+    ui.pointer_move(x + 30.0, y + 10.0);
+    ui.release(x + 30.0, y + 10.0);
+    assert_eq!(ui.state.iter().filter(|h| **h == Heard::Pressed).count(), 1, "the button is pressed: {:?}", ui.state);
+    assert_eq!(held(&ui.state), 0, "the scene does not take the button's press");
+    assert!(ui.dragging().is_none());
+}
+
+#[test]
+fn a_pointer_scene_still_drags_from_its_own_area_and_from_what_takes_no_press() {
+    let mut ui = Ui::new(vec![], scene, |s: &mut Vec<Heard>, m| s.push(m), fonts(), 640, 480, 1.0);
+    ui.tick(1.0);
+    let s = ui.node("scene").unwrap().rect;
+    let c = ui.node("caption").unwrap().rect;
+    for (x, y) in [(s.x + 20.0, s.bottom() - 20.0), c.center()] {
+        ui.state.clear();
+        ui.press(x, y);
+        assert_eq!(ui.dragging(), Some("scene"));
+        ui.pointer_move(x + 40.0, y);
+        ui.pointer_move(x + 80.0, y);
+        ui.release(x + 80.0, y);
+        assert!(held(&ui.state) >= 3, "pressed and moved: {:?}", ui.state);
+        assert!(!ui.state.contains(&Heard::Pressed));
+        assert_eq!(ui.state.last(), Some(&Heard::Point(false)), "the drag ends");
+    }
 }
