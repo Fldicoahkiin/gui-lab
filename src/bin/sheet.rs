@@ -4,11 +4,12 @@
 //!
 //! With `--material`, a material's sample sheet instead (`amenui::sample`): the sample page at each
 //! looseness given, and with `--arrival` how the material arrives after the warm-up; the sheet checks
-//! itself and the tool fails when it shows nothing it should.
+//! itself and the tool fails when it shows nothing it should. `--sweep <n>` draws it at n + 1 even steps
+//! from 0 to 1 and prints how much of the title has changed from rest at each.
 //!
 //! ```text
 //! usage: sheet <out_dir>
-//!        sheet --material <name> [--loose 1,0.7,0.4,0.2,0] [--theme <id>] [--arrival] [--out sheet.png]
+//!        sheet --material <name> [--loose 1,0.7,0.4,0.2,0 | --sweep <n>] [--theme <id>] [--arrival] [--out sheet.png]
 //! ```
 use amenui::pictures::{self, BUST, PICTURE_SIZES, SKY, TERRAIN};
 use amenui::el::{El, col, picture, row};
@@ -46,6 +47,7 @@ fn view(s: &Sheet) -> El<()> {
 fn material_sheet(args: &[String]) {
     let fail = |m: String| -> ! { eprintln!("sheet: {m}"); std::process::exit(2) };
     let (mut material, mut loose, mut theme, mut arrival, mut out) = (None, vec![1.0, 0.7, 0.4, 0.2, 0.0], 0, false, "sheet.png".to_owned());
+    let mut sweep = None;
     let mut i = 0;
     while i < args.len() {
         let flag = args[i].as_str();
@@ -54,6 +56,7 @@ fn material_sheet(args: &[String]) {
         match flag {
             "--material" => material = Some(amenui::style::material_named(&v).unwrap_or_else(|e| fail(e.to_string()))),
             "--loose" => loose = v.split(',').map(|x| x.trim().parse::<f32>().unwrap_or_else(|_| fail(format!("`--loose {v}`: write loosenesses 0..1 with commas, e.g. 1,0.5,0")))).collect(),
+            "--sweep" => sweep = Some(v.parse::<usize>().ok().filter(|n| (1..=16).contains(n)).unwrap_or_else(|| fail(format!("`--sweep {v}`: write how many steps from 0 to 1, 1–16")))),
             "--theme" => theme = amenui::style::theme_named(&v).unwrap_or_else(|e| fail(e.to_string())),
             "--out" => out = v,
             _ => fail(format!("unknown flag `{flag}`")),
@@ -63,7 +66,13 @@ fn material_sheet(args: &[String]) {
     let material = material.unwrap_or_else(|| fail("`--material` is required".into()));
     let faces = || amenui::text::load_bundled(concat!(env!("CARGO_MANIFEST_DIR"), "/assets")).unwrap_or_else(|e| fail(e.to_string()));
     let mut o = Offscreen::try_new(amenui::sample::CELL.0, amenui::sample::CELL.1).unwrap_or_else(|e| fail(e.to_string()));
-    let s = amenui::sample::sheet(&mut o, &faces, material, &loose, theme, arrival).unwrap_or_else(|e| { eprintln!("sheet: {e}"); std::process::exit(1) });
+    let s = match sweep {
+        Some(n) => amenui::sample::sweep(&mut o, &faces, material, n, theme),
+        None => amenui::sample::sheet(&mut o, &faces, material, &loose, theme, arrival),
+    }.unwrap_or_else(|e| { eprintln!("sheet: {e}"); std::process::exit(1) });
+    if sweep.is_some() {
+        for (k, c) in s.cells.iter().zip(&s.changed) { if let (Some(k), Some(c)) = (k, c) { println!("loose {k:.2}: {:.1} % of the title changed", c * 100.0); } }
+    }
     save_png(&out, s.w, s.h, &s.px);
     eprintln!("sheet: {} cells -> {out}", s.cells.len());
 }

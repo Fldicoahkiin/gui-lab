@@ -1,6 +1,7 @@
 //! Driving a page from outside, deterministically (DESIGN.md §1.17): the `render` tool and the tests open
 //! a recipe (or a page an application adds, `render_with`), play a list of input events on a fixed 60 Hz clock, and read back one
-//! frame (PNG) and the laid-out tree (JSON). Same arguments, same bytes.
+//! frame (PNG) and the laid-out tree (JSON), or a run of frames at a fixed rate (`frames`). Same
+//! arguments, same bytes.
 use crate::error::{DriveError, LookError, SurfaceError, ViewProblem};
 use crate::el::{Key, Mods};
 use crate::offscreen::{Offscreen, png_bytes_with};
@@ -157,27 +158,42 @@ pub fn open_in(page: &str, faces: Vec<crate::text::Face>, (w, h, scale): (u32, u
 /// A page drawn in the material and theme given (else its own).
 pub fn styled(inner: Box<dyn Driven>, material: Option<Material>, theme: Option<usize>) -> Box<dyn Driven> { Box::new(Styled { inner, material, theme }) }
 
+/// The rates `frames` takes: those that step the 60 Hz clock by a whole number of ticks.
+pub const FPS: [u32; 5] = [60, 30, 20, 15, 12];
+
 /// Play `events` on a fixed 60 Hz clock from 0 to `at_ms` (each event is applied on the first frame at
 /// or after its time, in the order given), then tick exactly at `at_ms`.
 pub fn play(d: &mut dyn Driven, events: &[Event], at_ms: f32) -> Result<(), DriveError> {
-    let end = (at_ms.max(0.0)) / 1000.0;
-    let mut order: Vec<&Event> = events.iter().collect();
-    order.sort_by(|a, b| a.at_ms.total_cmp(&b.at_ms));
-    let mut next = 0;
-    let mut k: u32 = 0;
-    loop {
-        let t = (k as f32 / 60.0).min(end);
-        while next < order.len() && order[next].at_ms / 1000.0 <= t + 1e-6 {
-            d.tick(t);
-            d.apply(&order[next].input).map_err(|e| DriveError::AtEvent { index: next, inner: Box::new(e) })?;
-            next += 1;
-        }
-        d.tick(t);
-        if t >= end { break; }
-        k += 1;
-    }
+    let mut p = Player::new(events);
+    p.to(d, at_ms.max(0.0) / 1000.0)?;
     // Events after the end are not played.
     Ok(())
+}
+
+/// The 60 Hz clock and the events still to play, so a run of frames plays on from where it is.
+struct Player<'a> { order: Vec<(usize, &'a Event)>, next: usize, k: u32 }
+impl<'a> Player<'a> {
+    fn new(events: &'a [Event]) -> Self {
+        let mut order: Vec<(usize, &Event)> = events.iter().enumerate().collect();
+        order.sort_by(|a, b| a.1.at_ms.total_cmp(&b.1.at_ms));
+        Self { order, next: 0, k: 0 }
+    }
+    /// Tick from where the clock is to `end` s (each event applied on the first tick at or after its
+    /// time, in the order given), then exactly at `end`.
+    fn to(&mut self, d: &mut dyn Driven, end: f32) -> Result<(), DriveError> {
+        loop {
+            let t = (self.k as f32 / 60.0).min(end);
+            while self.next < self.order.len() && self.order[self.next].1.at_ms / 1000.0 <= t + 1e-6 {
+                d.tick(t);
+                let (index, e) = self.order[self.next];
+                d.apply(&e.input).map_err(|e| DriveError::AtEvent { index, inner: Box::new(e) })?;
+                self.next += 1;
+            }
+            d.tick(t);
+            if t >= end { return Ok(()); }
+            self.k += 1;
+        }
+    }
 }
 
 /// What one `render` call asks for.
@@ -213,12 +229,54 @@ pub fn audit(spec: &RenderSpec, faces: Vec<crate::text::Face>, o: Option<&mut Of
 pub fn audit_with(spec: &RenderSpec, faces: Vec<crate::text::Face>, o: Option<&mut Offscreen>, open: Opener) -> Result<(Rendered, Vec<crate::audit::Finding>), DriveError> {
     render_inner(spec, faces, o, open, true)
 }
-fn render_inner(spec: &RenderSpec, faces: Vec<crate::text::Face>, o: Option<&mut Offscreen>, open: Opener, audit: bool) -> Result<(Rendered, Vec<crate::audit::Finding>), DriveError> {
+/// A run of frames: the page opened once, its events played on the fixed 60 Hz clock, and frame `n` of
+/// `range` drawn at `n / fps` s (`fps` one of `FPS`), handed to `each` with its number. Frame `n` at 60
+/// is the frame `render` draws at `n × 1000 / 60` ms; at 30 it is frame `2n` at 60. The wall clock
+/// is never read.
+pub fn frames(spec: &RenderSpec, range: std::ops::Range<u32>, fps: u32, faces: Vec<crate::text::Face>, o: Option<&mut Offscreen>, open: Opener, each: &mut dyn FnMut(u32, &Rendered)) -> Result<(), DriveError> {
+    frames_inner(spec, range, fps, faces, o, open, false, &mut |n, r, _| each(n, r))
+}
+/// `frames`, each frame audited (`audit::audit`; the restless check is left to the last frame).
+pub fn audit_frames(spec: &RenderSpec, range: std::ops::Range<u32>, fps: u32, faces: Vec<crate::text::Face>, o: Option<&mut Offscreen>, open: Opener, each: &mut dyn FnMut(u32, &Rendered, &[crate::audit::Finding])) -> Result<(), DriveError> {
+    frames_inner(spec, range, fps, faces, o, open, true, each)
+}
+#[allow(clippy::too_many_arguments)]
+fn frames_inner(spec: &RenderSpec, range: std::ops::Range<u32>, fps: u32, faces: Vec<crate::text::Face>, o: Option<&mut Offscreen>, open: Opener, audit: bool, each: &mut dyn FnMut(u32, &Rendered, &[crate::audit::Finding])) -> Result<(), DriveError> {
+    if !FPS.contains(&fps) { return Err(DriveError::BadFps { given: fps }); }
+    if range.is_empty() { return Err(DriveError::NoFrames { from: range.start, to: range.end }); }
+    let mut d = open_spec(spec, faces, open)?;
+    let mut own;
+    let o = match o { Some(o) => o, None => { own = Offscreen::try_new(spec.w, spec.h)?; &mut own } };
+    if (o.w, o.h) != (spec.w, spec.h) { return Err(SurfaceError::SizeMismatch { w: spec.w, h: spec.h, have_w: o.w, have_h: o.h }.into()); }
+    let step = 60 / fps;
+    let mut p = Player::new(&spec.events);
+    // Each frame drawn whole, as a single `render` draws it.
+    let partial = o.r.partial;
+    o.r.partial = false;
+    let recipe = d.recipe();
+    let texts: Vec<(&str, &str)> = recipe.as_deref().map(|r| ("amenui-recipe", r)).into_iter().collect();
+    let mut out = Ok(());
+    for n in range {
+        let ticks = n * step;
+        if let Err(e) = p.to(d.as_mut(), ticks as f32 / 60.0) { out = Err(e); break; }
+        let look = d.look();
+        let px = d.draw(o, &look);
+        let findings = if audit { d.audit(o, &look, &px) } else { vec![] };
+        let r = Rendered { png: png_bytes_with(spec.w, spec.h, &px, &texts), tree: d.tree(), problems: d.problems() };
+        each(n, &r, &findings);
+    }
+    o.r.partial = partial;
+    out
+}
+fn open_spec(spec: &RenderSpec, faces: Vec<crate::text::Face>, open: Opener) -> Result<Box<dyn Driven>, DriveError> {
     let material = spec.material.as_deref().map(material).transpose()?;
     let theme = spec.theme.as_deref().map(theme).transpose()?;
     if spec.w == 0 || spec.h == 0 { return Err(SurfaceError::ZeroSize { w: spec.w, h: spec.h }.into()); }
     let locale = match spec.locale.as_deref() { Some(t) => Some(crate::i18n::Locale::from_tag(t).ok_or_else(|| LookError::UnknownLocale { given: t.to_owned(), known: crate::i18n::Locale::ALL.iter().map(|l| l.tag()).collect::<Vec<_>>().join(", ") })?), None => None };
-    let mut d = open(&spec.page, faces, (spec.w, spec.h, spec.scale.max(0.25)), (material, theme, locale))?;
+    Ok(open(&spec.page, faces, (spec.w, spec.h, spec.scale.max(0.25)), (material, theme, locale))?)
+}
+fn render_inner(spec: &RenderSpec, faces: Vec<crate::text::Face>, o: Option<&mut Offscreen>, open: Opener, audit: bool) -> Result<(Rendered, Vec<crate::audit::Finding>), DriveError> {
+    let mut d = open_spec(spec, faces, open)?;
     play(d.as_mut(), &spec.events, spec.at_ms)?;
     let look = d.look();
     let mut own;
