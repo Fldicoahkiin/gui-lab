@@ -1,8 +1,8 @@
 # 更新记录 · Changelog
 
-按 DESIGN.md §7 的步骤记。Each step of DESIGN.md §7.
+新的在上面，各部分的验收见 DESIGN.md §7。Newest first; acceptance for each part is in DESIGN.md §7.
 
-## 17 — 场图和尾迹、线、小字、Loose Thread · The field map and trails, the line, small type, Loose Thread
+## 场图和尾迹、线、小字、Loose Thread · The field map and trails, the line, small type, Loose Thread
 
 - 形体这一页只用英文，不论界面是什么语言；语言标记写 `LANGUAGE  EN / ZH`，按下换的是 gallery 其余页的语言。Body is English only.
 - 场图（`src/fieldmap.rs`）：整窗一张粗网格，每个结点有能量和流向，固定 1/60 秒一步，摊开、按寿命衰减、蜿蜒（`meander`）、沿着墨爬（`creep`），有限时间里正好回到 0，静止时不要帧。The field map: energy and flow on a coarse grid, back to exactly zero within a bound.
@@ -21,7 +21,7 @@
 - 修了 `THEME_IDS` 和风格页说明里删掉的主题、风格留下的错位。Fixed theme ids and style descriptions that had drifted out of line.
 - `check` 第 7.2、7.3 条（边注、波形、电平条、1080p 的边注）、第 20.6、20.7 条（只用黑白、翻转），`tests/gaze.rs` 的三个测试，`tests/i18n.rs` 的 Loose Thread 页，`craft <目录> loose-thread`、`craft <目录> thread-ref`。Checks, tests and samples.
 
-## 16 — 基础的收尾、实验室的墙、形体 · Foundation leftovers, the Lab as a wall, Body
+## 基础的收尾、实验室的墙、形体 · Foundation leftovers, the Lab as a wall, Body
 
 - 取样看变换：`morph::cover_at` 把点按实例自己的变换反算回盒子里，`cells`、`ink_bounds` 用转过的外接框，摆了姿态、转过的字从它画在的地方松开，遮罩和解码也在那里。Sampling honours `xf` and glyph poses.
 - 角标在指针到的那一帧就落在目标上（原来每帧追过去，总落后一段滑行），只有 70 ms 的收拢和淡入。Hover and focus marks land in the pointer's frame.
@@ -34,7 +34,7 @@
 - 形体（`#body`）是新的落地页，铺满窗口：一页能读的文字先出现，再自己聚成由它自己的字（皮，字数守恒）和一万多个体积记号组成、慢慢转动的发光形体，一盏主光、边光、雾、辉光、地上的倒影和光晕、三层灰尘、视差和镜头的呼吸；画面里的小标记（形、种子、聚拢 / 散开、语言、实验室、组件库）；指针处开口读到原文。Body is the landing page, full-bleed, as a picture.
 - 辉光的采样按像素转一个噪声角度，不再出现文字的重影；`Pose::hue` 让一个字换强调色。Bloom without ghost copies; a glyph's hue in its pose.
 
-## 15 — 场、实验室、解码过渡、范围缩小、帧预算 · Fields, the Lab, decode, a narrower scope, the frame budget
+## 场、实验室、解码过渡、范围缩小、帧预算 · Fields, the Lab, decode, a narrower scope, the frame budget
 
 - 实例自己的变换（`Instance::xf`：转、缩放、斜切，绕自己的中心），字形的姿态（`El::pose`），所以字可以沿路径、包在球上、被光照亮，轮廓不变。Per-instance transforms and glyph poses.
 - 图（`el::canvas(Drawing)`：点和笔画都是有真实轮廓的形状），`El::on_point`（移动、按下拖动、离开一个处理函数，画布上是画布的坐标）。Drawings and one pointer handler.
@@ -45,7 +45,7 @@
 - 解码过渡（`El::decode`）：按真实轮廓由粗到细解开，倒放消失；文档页有分层的三维视图和时间轴。The decode transition with an exploded view and a timeline.
 - 删掉了金属、液体、拼贴三种材质，Neo-Y2K 和 Mixed media 两个预设，影片第 11、12 章（连同终章）。Removed chrome, liquid and collage, two presets and two film chapters.
 
-## 14 — 交互的手艺 · Interaction craft
+## 交互的手艺 · Interaction craft
 
 - 手势的物理：弹簧（解析步，松手速度交接）、橡皮筋、投射、速度（`amenui::gesture`）。Gesture physics: a spring with velocity hand-off, a rubber band, projection, velocity.
 - 底部面板（几档、按投射收起、橡皮筋、背板、滚动交接）和浮动窗口（按投射选角）。A bottom sheet and a floating box.
@@ -58,7 +58,7 @@
 - 骨架：`El::skeleton()` 用真实的树画骨架（条是量出来的行宽），`Loading` 的两个数，零位移；四种加载方式的比较。Skeletons from the real tree, the loading rules, zero layout shift.
 - 多级菜单：安全区三角形、两个延迟、键盘、可画出的三角形（`El::on_move`、`El::guide`）。Nested menus with a safe-zone triangle.
 
-## 11 — 序章、展示而不是标语、引导、文字绕排、读数、配方 · The prologue, display not slogans, guidance, wrap, readout, recipes
+## 序章、展示而不是标语、引导、文字绕排、读数、配方 · The prologue, display not slogans, guidance, wrap, readout, recipes
 
 - 影片的序章：同一个小界面左边原样、右边一种材质，分界线能拖，材质名一排。The prologue: one small interface, as it is and in a material, a divider and chips.
 - 不再有标语：章名是一个元素，换章时一个字一个字地重组；第 9、10、11 章重做。No slogan: the chapter's title recomposes across cuts; chapters 9, 10, 11 redone.
@@ -67,33 +67,33 @@
 - F2 读数：一行和全部两种，带火花线，空闲时不要帧。The F2 readout: one line or every number, a sparkline, no frames at rest.
 - `look:v1:` 配方（网址、PNG 的文本块）；八种新记号，按家族分组；Geist Pixel 的五种字面；`<amenui-view>` 自定义元素。Recipes; eight new mark sets; Geist Pixel; the `<amenui-view>` element.
 
-## 10 — 滚动、标志与机件、多语言、组件与文档 · Scrolling, the sign and the mechanism, languages, components and docs
+## 滚动、标志与机件、多语言、组件与文档 · Scrolling, the sign and the mechanism, languages, components and docs
 
 - 慢速滚动是整像素移动的图，快速滚动每种材质有自己的痕迹（§1.8.3，`check` 第 18 条）。Slow scrolling is a picture moved by whole pixels; fast, each material leaves its own trace.
 - 影片的第三个演员是平面的标志；第 13 章是真正三维的机件（齿轮、凸轮、从动杆）。The film's third actor is a flat sign; chapter 13 is a real 3D mechanism.
 - 消息目录、`t!`、复数、回退链、从右往左的行（§1.20）。Message catalogs, `t!`, plurals, a fallback chain, right-to-left rows.
 - 十八个新组件、`amenui add`、按 shadcn/ui 的样子组织的文档站。Eighteen new components, `amenui add`, a documentation site laid out after shadcn/ui.
 
-## 9 — 修正和影片 · Fixes and the film
+## 修正和影片 · Fixes and the film
 重组有界、网格表面发射粒子、局部的时钟、十二章的影片。Bounded recomposition, particles from mesh surfaces, local clocks, the twelve-chapter film.
 
-## 8 — 三维、GPU 粒子、只画变了的部分、预设和过渡 · 3D, GPU particles, dirty boxes, presets and transitions
+## 三维、GPU 粒子、只画变了的部分、预设和过渡 · 3D, GPU particles, dirty boxes, presets and transitions
 
-## 7 — 涟漪规则、内容重组、给模型用的一面 · Ripple rules, recomposition, the model-facing surface
+## 涟漪规则、内容重组、给模型用的一面 · Ripple rules, recomposition, the model-facing surface
 
-## 6 — 交互和性能 · Interaction and performance
+## 交互和性能 · Interaction and performance
 只在有变化时画、帧时间读数、文字输入、增量布局和长列表、触摸、无障碍镜像。
 
-## 5 — 标注层、全部材质、十二个预设、展示场景 · Annotation, every material, twelve presets, scenes
+## 标注层、全部材质、十二个预设、展示场景 · Annotation, every material, twelve presets, scenes
 
-## 4 — 变换：粒子和流动 · Transforms: particles and flows
+## 变换：粒子和流动 · Transforms: particles and flows
 
-## 3 — 组件和 gallery · Components and the gallery
+## 组件和 gallery · Components and the gallery
 
-## 2.5 — 图片的记号、像素字、主题和材质作为数据 · Marks, pixel type, themes and materials as data
+## 图片的记号、像素字、主题和材质作为数据 · Marks, pixel type, themes and materials as data
 
-## 2 — 骨架 · The skeleton
+## 骨架 · The skeleton
 界面树、taffy、parley、滚动、点击、焦点、数字控件。
 
-## 1 — 竖线 · The vertical slice
+## 竖线 · The vertical slice
 两遍绘制、按轮廓走的波、原生和网页同一份代码。

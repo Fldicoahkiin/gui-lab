@@ -1,4 +1,4 @@
-//! The components added in step 10, through the runtime: roles in the accessibility mirror, keyboard
+//! The eighteen later components, through the runtime: roles in the accessibility mirror, keyboard
 //! behaviour per the WAI-ARIA authoring practices (checkbox, radio group, select, table, toggle group,
 //! context menu, command palette, accordion, pagination), and what they draw.
 use amenui::el::{El, Key, col, text, Paint};

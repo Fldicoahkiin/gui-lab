@@ -41,7 +41,7 @@ fn a_dialog_decodes_in_and_out() {
 }
 
 /// A panel filled in the ground's own tone is still an outline: at the finest tier its hollow interior
-/// is covered too, not only the text and the border (round 16).
+/// is covered too, not only the text and the border.
 #[test]
 fn the_panel_interior_is_covered() {
     let mut ui = amenui::ui::Ui::new(S { open: false }, view, update, fonts(), 800, 600, 1.0);
