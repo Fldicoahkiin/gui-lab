@@ -41,9 +41,17 @@ pub enum StepKind {
     Carve,
     /// Outlines (a px) and frames draw first, in reading order; the content fills from b (0–1) on.
     Outline,
+    /// The old page cracks and the new one shows through the cracks as they widen: a = the size of the
+    /// pieces (16–400 px), b = the angle the cracks lean to (0–180°, 90 vertical bands), c = how strongly
+    /// (0 a dried mud floor, 1 bands), d = how ragged their edges are (0–12 px), e = hard edges (1) or
+    /// soft (0). The pattern is hashed in the shader from the numbers alone: no earlier frame is read.
+    Crack,
 }
 impl StepKind {
-    pub const ALL: [StepKind; 11] = [StepKind::None, StepKind::Reveal, StepKind::Bands, StepKind::Fade, StepKind::Bar, StepKind::Planes, StepKind::Loosen, StepKind::Layers, StepKind::Boxes, StepKind::Carve, StepKind::Outline];
+    pub const ALL: [StepKind; 12] = [StepKind::None, StepKind::Reveal, StepKind::Bands, StepKind::Fade, StepKind::Bar, StepKind::Planes, StepKind::Loosen, StepKind::Layers, StepKind::Boxes, StepKind::Carve, StepKind::Outline, StepKind::Crack];
+    /// Crack's numbers as `StepKind::params` names them, at their defaults: pieces 120 px, leaning 70°,
+    /// 0.6 toward bands, 3 px ragged, hard edges.
+    pub const CRACK: [f32; 5] = [120.0, 70.0, 0.6, 3.0, 1.0];
     pub fn id(self) -> f32 { Self::ALL.iter().position(|k| *k == self).unwrap_or(0) as f32 }
     /// The names of `a`–`e` for this kind (empty: unused), for number controls.
     pub fn params(self) -> [&'static str; 5] {
@@ -59,6 +67,7 @@ impl StepKind {
             StepKind::Boxes => ["框数", "线宽", "", "", ""],
             StepKind::Carve => ["刻痕", "灌墨", "", "", ""],
             StepKind::Outline => ["线宽", "填充", "", "", ""],
+            StepKind::Crack => ["裂块", "角度", "偏向", "毛边", "硬边"],
         }
     }
 }
