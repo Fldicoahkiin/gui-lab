@@ -1,0 +1,70 @@
+# Lints and tests the framework on every push and pull request, then runs the website's tests against
+# this commit, since the website's pages exercise the framework end to end. GPU tests draw with Mesa's
+# lavapipe (Vulkan on the CPU).
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+  # Test binaries without debug info: the runner's disk holds the framework's and the site's builds.
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal --component clippy --target wasm32-unknown-unknown && rustup default stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy (native)
+        run: cargo clippy --all-targets
+      - name: Clippy (web)
+        run: cargo clippy --lib --target wasm32-unknown-unknown
+      - name: Docs
+        run: cargo doc --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal && rustup default stable
+      - name: lavapipe
+        run: sudo apt-get update -q && sudo apt-get install -yq mesa-vulkan-drivers
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test
+
+  website:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: amenui
+      - uses: actions/checkout@v4
+        with:
+          repository: amenui-dev/website
+          path: website
+      - run: rustup toolchain install stable --profile minimal && rustup default stable
+      - name: lavapipe
+        run: sudo apt-get update -q && sudo apt-get install -yq mesa-vulkan-drivers
+      - name: Use this commit of the framework
+        working-directory: website
+        run: |
+          sed -i 's|^# \[patch\."https://github.com/amenui-dev/amenui"\]|[patch."https://github.com/amenui-dev/amenui"]|; s|^# amenui = { path = "../amenui" }|amenui = { path = "../amenui" }|' Cargo.toml
+          grep -q '^amenui = { path = "../amenui" }' Cargo.toml
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: website
+      - working-directory: website
+        run: cargo test
