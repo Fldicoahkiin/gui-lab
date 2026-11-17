@@ -326,7 +326,7 @@ pub fn presets() -> Vec<Preset> {
             "glitch" => { map.stirr = 0.7; map.energy_life = 0.25; }
             "dotmatrix" => { map.stirr = 0.8; map.energy_life = 0.7; }
             // The thread wanders and creeps; no breathing, so it rests plain.
-            "loose-thread" => { map.stirr = 0.8; map.meander = 0.5; map.creep = 0.4; map.energy_life = 0.7; map.breath = 0.0; }
+            "loose-thread" => { map.stirr = 1.0; map.meander = 0.5; map.creep = 0.15; map.energy_life = 2.0; map.bleed = 0.06; map.breath = 0.0; }
             _ => {}
         }
         Preset {
