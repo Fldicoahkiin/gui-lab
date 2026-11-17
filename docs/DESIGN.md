@@ -581,7 +581,9 @@ activate. Hover and focus are shown by four corner marks around the target (hove
 take focus, be pressed or be dragged). The marks land on a new target in the frame the target changes
 (computed on pointer movement, not at the next `tick`) and never slide between targets; the only easing is
 `ui::MARKS_SETTLE` (70 ms), closing in from 3 px outside and going from half to full opacity, fading out
-over the same time on leaving. They used to chase the target each frame by `1 − e^(−16·dt)` and always
+over the same time on leaving. A front (a press's) pushes them as it pushes the control they frame, as one piece
+about its centre, so a pressed button never slips out from between its corners
+(`the_focus_corners_move_with_the_control_a_press_pushes`). They used to chase the target each frame by `1 − e^(−16·dt)` and always
 trailed the pointer. Acceptance: `hover_marks_land_in_the_pointers_frame` in `tests/pointer.rs`. The wheel
 finds the nearest scrolling ancestor.
 

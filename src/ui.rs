@@ -4231,13 +4231,17 @@ impl<S, M: Clone> Ui<S, M> {
         // The cosmetic close: a few pixels out at the change, on the target `MARKS_SETTLE` later.
         let e = if self.marks.key.is_some() { 1.0 - ((self.clock - self.marks.since) / MARKS_SETTLE).clamp(0.0, 1.0) } else { 0.0 };
         let open = 4.0 + MARKS_OPEN * e * e;
+        // A front (a press's) pushes the corners as it pushes the control they frame: as one piece about
+        // its centre, so they stay on it.
+        let (mx, my) = r.center();
+        let resp = [0.0, 2.0, mx * s, my * s];
         let r = r.inset(-open, -open, -open, -open);
         let (len, th) = (8.0f32.min(r.w * 0.4).min(r.h * 0.4), 1.5);
         let c = self.marks.clip.inset(-6.0, -6.0, -6.0, -6.0);
         let clip = [c.x * s, c.y * s, c.right() * s, c.bottom() * s];
         let bar = |x: f32, y: f32, w: f32, h: f32| Instance {
             rect: [(x * s).round(), (y * s).round(), (w * s).round().max(1.0), (h * s).round().max(1.0)],
-            paint: [1.0, 1.0, self.marks.alpha, SHAPE], clip, extra: [0.0, 0.0, 0.0, -1e4], ..Default::default()
+            paint: [1.0, 1.0, self.marks.alpha, SHAPE], clip, extra: [0.0, 0.0, 0.0, -1e4], resp, ..Default::default()
         };
         for (cx, cy, sx, sy) in [(r.x, r.y, 1.0, 1.0), (r.right(), r.y, -1.0, 1.0), (r.x, r.bottom(), 1.0, -1.0), (r.right(), r.bottom(), -1.0, -1.0)] {
             let x0 = if sx > 0.0 { cx } else { cx - len };
