@@ -2933,10 +2933,23 @@ impl<S, M: Clone> Ui<S, M> {
             let (cx, cy) = ((a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5);
             Instance { rect: [cx - (len + w) * 0.5, cy - w * 0.5, len + w, w], uv: [w * 0.5, 0.0, 0.0, 0.0], paint, clip, extra: [0.0, 0.0, 0.0, -1e4], look: [look[0], look[1], 0.0, 0.0], resp, xf: if len > 0.0 { let (c, sn) = (dx / len, dy / len); [c - 1.0, -sn, sn, c - 1.0] } else { [0.0; 4] } }
         };
+        // Where pictures are drawn (device px): a line goes behind them, as the first pass would read a
+        // line's ink over a picture as the picture's own colours.
+        let pics: Vec<[f32; 4]> = self.scene.instances[..self.page_len.min(self.scene.instances.len())].iter()
+            .filter(|i| i.paint[3] == PICTURE && i.paint[2] > 0.0)
+            .map(|i| [i.rect[0].max(i.clip[0]), i.rect[1].max(i.clip[1]), (i.rect[0] + i.rect[2]).min(i.clip[2]), (i.rect[1] + i.rect[3]).min(i.clip[3])])
+            .filter(|b| b[2] > b[0] && b[3] > b[1]).collect();
+        let bar = |a: [f32; 2], b: [f32; 2], w: f32, paint: [f32; 4], look: [f32; 2], resp: [f32; 4], clip: [f32; 4], out: &mut Vec<Instance>| {
+            let pad = w * 0.5 + 0.5;
+            let grown: Vec<[f32; 4]> = pics.iter().map(|p| [p[0] - pad, p[1] - pad, p[2] + pad, p[3] + pad]).collect();
+            for (a, b) in strand::outside(a, b, &grown) { out.push(bar(a, b, w, paint, look, resp, clip)); }
+        };
         // Traces, under any material: the drawn part, pushed by the map's flow.
         let drift = self.timing.map.drift;
         let mut out: Vec<Instance> = vec![];
-        for n in self.nodes.iter().filter(|n| n.trace.is_some() && !n.hidden) {
+        // Under a modal layer the page holds its lines back: they would be drawn in the layer, over it.
+        let modal = self.scene.layer.map(|l| l as usize);
+        for n in self.nodes.iter().filter(|n| n.trace.is_some() && !n.hidden && modal.is_none()) {
             let tr = n.trace.as_ref().expect("filtered");
             let o = n.origin();
             let pts: Vec<[f32; 2]> = tr.points.iter().map(|p| {
@@ -2956,7 +2969,7 @@ impl<S, M: Clone> Ui<S, M> {
             for piece in pieces {
                 let mut keep: Vec<[f32; 2]> = piece.iter().step_by(every).copied().collect();
                 if keep.last() != piece.last() { keep.push(*piece.last().expect("a point")); }
-                for ab in keep.windows(2) { out.push(bar(ab[0], ab[1], w, [p.tone, p.accent, p.alpha, SHAPE], [0.0, p.hue as f32], IGNORE, clip)); }
+                for ab in keep.windows(2) { bar(ab[0], ab[1], w, [p.tone, p.accent, p.alpha, SHAPE], [0.0, p.hue as f32], IGNORE, clip, &mut out); }
             }
         }
         if self.timing.material != crate::style::Material::Scribblr.id() {
@@ -3008,7 +3021,7 @@ impl<S, M: Clone> Ui<S, M> {
             if idx.is_empty() { continue; }
             let n = &self.nodes[ni];
             // Text to read and controls hold: no thread, no fade, not carried by the map (DESIGN.md §1.30).
-            if n.legible || n.hidden || matches!(n.content, Content::Canvas(_)) || self.recomps.contains_key(&n.key) || self.decodes.contains_key(&n.key) || (running && self.roles[ni] != 0) || idx.iter().any(|&i| self.flows.contains_key(&self.owners[i].1)) { continue; }
+            if n.legible || n.hidden || modal.is_some_and(|l| idx[0] < l) || matches!(n.content, Content::Canvas(_)) || self.recomps.contains_key(&n.key) || self.decodes.contains_key(&n.key) || (running && self.roles[ni] != 0) || idx.iter().any(|&i| self.flows.contains_key(&self.owners[i].1)) { continue; }
             let k = idx.iter().map(|&i| self.inst_loose(i, now)).fold(tr_k, f32::max).clamp(0.0, 1.0);
             if k <= 0.0 { continue; }
             let f = strand::fill(k);
@@ -3069,7 +3082,7 @@ impl<S, M: Clone> Ui<S, M> {
             for g in &segs {
                 let a = alpha * if g.kind == Kind::Line { line_a } else { bridge_a };
                 if a <= 0.0 { continue; }
-                out.push(bar(g.a, g.b, w, [first.paint[0], first.paint[1], a, SHAPE], [first.look[0], first.look[1]], resp, first.clip));
+                bar(g.a, g.b, w, [first.paint[0], first.paint[1], a, SHAPE], [first.look[0], first.look[1]], resp, first.clip, &mut out);
             }
             self.strand_drawn.push((n.key.clone(), k, segs));
         }

@@ -1155,8 +1155,10 @@ fn binary_px(p: vec2f, col: vec3f, is_pic: bool) -> vec3f {
   let ink = u.fg.rgb;
   let lum = vec3f(0.30, 0.59, 0.11);
   if (is_pic) {
+    // The share of the way from the ground to the ink, lifted (square root) so a dark picture on a dark
+    // ground keeps its middle tones as dots.
     let f = (dot(col, lum) - dot(g, lum)) / select(dot(ink, lum) - dot(g, lum), 1e-3, abs(dot(ink, lum) - dot(g, lum)) < 1e-3);
-    return select(g, ink, clamp(f, 0.0, 1.0) > bayer_t(p, 4u, 2u));
+    return select(g, ink, sqrt(clamp(f, 0.0, 1.0)) > bayer_t(p, 4u, 2u));
   }
   let d = dec(p);
   // Faint fills (a panel in the ground's tone) stay ground.
