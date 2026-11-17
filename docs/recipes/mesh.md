@@ -52,5 +52,5 @@ pub fn ui(faces: Vec<Face>, w: u32, h: u32, scale: f32) -> Ui<Shop, Msg> {
 See it:
 
 ```sh
-cargo run --release --bin render -- --page recipe-mesh --material ascii --at 600 --out ring.png --tree ring.json
+cargo run --release --bin render -- --page recipe-mesh --material charr --at 600 --out ring.png --tree ring.json
 ```

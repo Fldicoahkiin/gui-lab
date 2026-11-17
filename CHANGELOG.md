@@ -8,6 +8,38 @@ crate and the `amenui` npm package (`web/`) always carry the same version, becau
 match the module that `web_app!` generates. The minimum Rust is the one CI builds with (`rust-version`
 in Cargo.toml); raising it is a breaking change before 1.0 only in the second number.
 
+## Materials named for what they do, and as source
+
+- Breaking: the six printing materials are named for what they do: `dot` → `dottr`, `halftone` →
+  `halftonr`, `ascii` → `charr`, `print` → `smudgr`, `lino` → `carvr`, `glitch` → `glitchr` (the
+  `Material` variants and their strings); `plain`, `near` and `scribblr` keep theirs. `PicFx` is
+  `Markr` (`El::markr`), the finishing pass's `Dither` is `Dithr` (`post.dithr`, `DithrKind`),
+  `Cmd::Front` / `Cmd::FrontAt` are `Cmd::Ripplr` / `Cmd::RipplrAt`, and `El::ripple`,
+  `El::ripple_scope` and `El::wipe` are `El::ripplr`, `El::ripplr_scope` and `El::wipr`. No aliases: an
+  old material name is refused and the error names the new one, and `LookError` gives the closest name
+  for any other. Look recipes start with `look:v2:`; a `look:v1:` recipe is refused with the renames
+  listed. `Material` has a variant for added materials, so cast with `Material::id()`, not `as`.
+- Materials as source (§1.6.4): each material is `src/materials/<name>.wgsl` with its name and numbers
+  in a header; `amenui add material <name>` copies one into a project, and
+  `Look::material_source(name, wgsl, params)` adds one back under a name of its own (ids 9–15,
+  `Material::Custom`). `Look::numbers(m)` reads the numbers a material is drawn with.
+- `El::effect(Effect { material, response, scope })` puts a material, a response and a scope on a
+  subtree in one line, and `el::wrap_text` turns plain text or Markdown into a page to read.
+- The thread (§1.30): one large lopsided knot and smaller ones (`knot_fall`), a few chords escaping
+  (`escape`), long flat tails with a few gentle bends (`tail_turns`) at half the line's tone
+  (`tail_tone`), all in `strand::ThreadShape`; it no longer lingers between a half-drawn title and a
+  thread when it draws back (`strand::shown`), and it passes behind pictures without changing colour.
+- Sample sheets that check themselves (`amenui::sample`, `sheet --material <name> --loose … --arrival`).
+- The audit finds text a material wears away at rest (`Eroded`, P1 under 85 % of plain's ink); a
+  clipped finding names the side, the distance and what cuts it. Annotation tags and `INK` readouts
+  keep off text to read and off each other.
+- `near` keeps a label in the ground's colour on a solid button whole. Text on a form fades its rim
+  from `edge` 0.6 (range 0–0.8), and in `form3d` the pointer's light falls off smoothly.
+- The warm-up (§1.23): the material arrives on the page at rest, then over 120 ms (`ui::RAMP`) the page
+  loosens to its caps and condenses, so the arrival no longer jumps.
+- Every public item of `strand`, `fieldmap`, `field`, `hit`, `audit`, `form` and `materials` has a doc
+  comment.
+
 ## Text on a form, the warm-up and the audit
 
 - Glyph poses have a depth and a facing (`Pose::z`, `Pose::facing`; the defaults draw as before), and a
