@@ -23,7 +23,7 @@ pub struct Instance {
     pub clip: [f32; 4],
     /// Shapes: border width (device px, 0 = filled). Pictures: picture id in y. Glyphs: print pitch
     /// (logical px, 0 = off) in y. All: static looseness, time the instance first appeared.
-    /// Pictures carry their `PicFx` slot in `paint[1]`.
+    /// Pictures carry their `Markr` slot in `paint[1]`.
     pub extra: [f32; 4],
     /// Material override code (0 = the global material; else `128 + level × 16 + id`, see
     /// `style::override_code`), accent hue (0, 1, 2), whether it reads the field map (1; 0 for a
@@ -115,7 +115,7 @@ pub struct Field {
     pub wipe: [f32; 4],
     pub wipe_rect: [f32; 4],
     /// A short burst over a rect (x0, y0, x1, y1), and when it started, how strong, how long (s).
-    /// Hover and press put one over the control; the glitch material reads it.
+    /// Hover and press put one over the control; glitchr reads it.
     pub burst: [f32; 4],
     pub burst_t: [f32; 4],
     /// Up to four boxes (x0, y0, x1, y1, device px) that fronts pass by (`El::calm`).
@@ -189,7 +189,7 @@ impl Field {
 /// Field and material parameters. Every one is a plain number so it can be set exactly.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Fx {
-    /// Lattice pitch for text and shapes (logical px). Pictures have their own, in `PicFx`.
+    /// Lattice pitch for text and shapes (logical px). Pictures have their own, in `Markr`.
     pub pitch: f32,
     /// How far each unit may sit off the lattice, 0..1 of the pitch.
     pub jitter: f32,

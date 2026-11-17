@@ -37,7 +37,7 @@ fn every_recipe_lays_out_and_answers() {
             "dialog" => ("rename/save", Box::new(|t| t.find("rename").is_none())),
             "flow" => ("card/1", Box::new(|t| t.find("detail").is_some())),
             "morph" => ("swap", Box::new(|t| t.find("b").is_some())),
-            "material" => ("ripple", Box::new(|t| t.find("card").is_some_and(|n| n.material == "halftone"))),
+            "material" => ("ripple", Box::new(|t| t.find("card").is_some_and(|n| n.material == "halftonr"))),
             "annotate" => ("", Box::new(|t| t.find("panel").is_some())),
             "chapter" => ("cut", Box::new(|t| t.find("scene1").is_some() && t.find("s1/sentence").is_some())),
             "preset" => ("switch", Box::new(|t| t.find("title").and_then(|n| n.text.as_deref()) == Some("A style of its own"))),

@@ -26,9 +26,9 @@ fn rect(r: [f32; 4]) -> Bx { [r[0], r[1], r[0] + r[2], r[1] + r[3]] }
 
 /// How many lens radii from the pointer the lens can still change a pixel: `exp(-r²)` there is under
 /// 0.01, which moves no picture cell off pitch 1 (at pitch 64 the pitch's ramp is 0.07 of a step) and
-/// lights no dot of the dot ground (its threshold is 0.05).
+/// lights no dot of the dottr ground (its threshold is 0.05).
 pub const LENS_REACH: f32 = 2.2;
-/// The same for the dot ground, where the lens adds to the drift: any trace of it moves the edge of a
+/// The same for the dottr ground, where the lens adds to the drift: any trace of it moves the edge of a
 /// dot the drift has lit, so it reaches as far as the bell is above 1e-5.
 pub const LENS_REACH_DOT: f32 = 3.5;
 
@@ -43,7 +43,7 @@ pub struct Inputs {
     pub look: Look,
     pub now: f32,
     pub mclock: f32,
-    /// The ground clock (the dot ground's drift), which only global motion moves.
+    /// The ground clock (the dottr ground's drift), which only global motion moves.
     pub gclock: f32,
     pub size: (u32, u32),
     /// Something acts on every pixel this frame: a commit's front, flying tiles, the reduced pass.
@@ -59,22 +59,22 @@ pub enum Region { All, Boxes { stage1: Bx, stage2: Bx } }
 /// How far stage 2 reads around a pixel under material `m` (device px).
 pub fn reach(m: Material, look: &Look, s: f32) -> f32 {
     let p = |i: usize| look.numbers(m).0[i];
-    let base = 2.0 + 10.0 * s; // the dot ground's cells read the nearness at their centre
+    let base = 2.0 + 10.0 * s; // the dottr ground's cells read the nearness at their centre
     base + match m {
         Material::Plain | Material::Near | Material::Scribblr => 4.0 * s,
-        Material::Dot => 2.0 * look.fx.pitch * s + 40.0 * look.fx.glitch * s,
-        Material::Halftone => 2.0 * p(0) * s + p(2) * s,
-        Material::Ascii => 2.0 * p(0) * s,
-        Material::Print => (p(1) + p(3)) * s + 6.0 * s,
-        Material::Lino => (p(1) + p(2)) * s,
-        Material::Glitch => p(1) * s + 3.0 * p(4) * s + p(2) * s,
+        Material::Dottr => 2.0 * look.fx.pitch * s + 40.0 * look.fx.glitch * s,
+        Material::Halftonr => 2.0 * p(0) * s + p(2) * s,
+        Material::Charr => 2.0 * p(0) * s,
+        Material::Smudgr => (p(1) + p(3)) * s + 6.0 * s,
+        Material::Carvr => (p(1) + p(2)) * s,
+        Material::Glitchr => p(1) * s + 3.0 * p(4) * s + p(2) * s,
         // What an added material reads around a pixel is not known: everything is redrawn.
         Material::Custom(_) => 1e6,
     }
 }
 
 /// Whether a material reads the material clock where things are loose (glitch's rows).
-fn clocked(m: Material) -> bool { matches!(m, Material::Glitch) }
+fn clocked(m: Material) -> bool { matches!(m, Material::Glitchr) }
 
 /// The materials in use: the global one and every override.
 fn materials(i: &Inputs) -> Vec<Material> {
@@ -97,7 +97,7 @@ pub fn region(prev: &Inputs, cur: &Inputs, scale: f32) -> Region {
     if prev.global || cur.global || prev.size != cur.size || prev.look != cur.look || prev.field.calm != cur.field.calm || prev.meshes.len() != cur.meshes.len() { return Region::All; }
     let mats = materials(cur);
     // The dot ground drifts everywhere on the ground clock.
-    if prev.gclock != cur.gclock && mats.contains(&Material::Dot) { return Region::All; }
+    if prev.gclock != cur.gclock && mats.contains(&Material::Dottr) { return Region::All; }
     if mats != materials(prev) { return Region::All; }
     let clock_moved = prev.mclock != cur.mclock && mats.iter().any(|m| clocked(*m));
     let s = scale;
@@ -123,7 +123,7 @@ pub fn region(prev: &Inputs, cur: &Inputs, scale: f32) -> Region {
     acting.extend(fronts(&cur.field, look, cur.now, s));
     let lens_moved = prev.field.pointer != cur.field.pointer;
     // The lens is a bell: past `LENS_REACH` radii it is too weak to change a cell's pitch or a dot.
-    let reach_r = if mats.contains(&Material::Dot) { LENS_REACH_DOT } else { LENS_REACH };
+    let reach_r = if mats.contains(&Material::Dottr) { LENS_REACH_DOT } else { LENS_REACH };
     let lens = |f: &Field| { let r = reach_r * look.fx.lens.max(0.0) * s; if f.pointer[2] > 0.0 && look.fx.lens >= 0.5 { [f.pointer[0] - r, f.pointer[1] - r, f.pointer[0] + r, f.pointer[1] + r] } else { EMPTY } };
     let lenses = if lens_moved { union(lens(&prev.field), lens(&cur.field)) } else { EMPTY };
     let burst = |f: &Field, t: f32| if f.burst_at(t) > 0.0 { f.burst } else { EMPTY };
@@ -160,7 +160,7 @@ pub fn region(prev: &Inputs, cur: &Inputs, scale: f32) -> Region {
     st2 = union(st2, grow(st1, rch));
     for f in &acting { st2 = union(st2, grow(*f, rch)); }
     // The lens acts on the pictures and 3D elements that let it (above) and on the dot ground.
-    if mats.contains(&Material::Dot) { st2 = union(st2, grow(lenses, rch)); }
+    if mats.contains(&Material::Dottr) { st2 = union(st2, grow(lenses, rch)); }
     st2 = union(st2, grow(bursts, rch));
     // The ground under the field map (dot's units lean up to half their pitch, glitch's rows slip).
     if let Some(mb) = map_box { st2 = union(st2, grow(mb, rch + 9.0 * s)); }
@@ -221,7 +221,7 @@ mod tests {
         assert!(stage2[0] <= stage1[0] && stage2[2] >= stage1[2]);
         // A new look is everything.
         let mut c = b.clone();
-        c.look.material = Material::Dot;
+        c.look.material = Material::Dottr;
         assert_eq!(region(&b, &c, 1.0), Region::All);
     }
 

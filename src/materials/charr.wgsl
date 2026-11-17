@@ -1,11 +1,11 @@
-// @material ascii
+// @material charr
 // @param 点距 4.0 40.0 1.0 0 px 10.0
 // @param 级数 2.0 16.0 1.0 0 - 12.0
 // @param 上色方式 0.0 1.0 1.0 0 - 0.0
 // @param 法线 0.0 1.0 0.05 2 - 1.0
-// ascii: cells of the print pitch show characters from the character mark set, chosen by the ink
+// charr: cells of the print pitch show characters from the character mark set, chosen by the ink
 // they cover; the more loose, the coarser the cells.
-fn m_ascii(p: vec2f) -> vec3f {
+fn m_charr(p: vec2f) -> vec3f {
   let s = u.res.z;
   let a0 = mp(SELF, 0);
   let P0 = clamp(round(a0.x * s), CHAR_MIN, CHAR_MAX);

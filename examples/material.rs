@@ -16,8 +16,8 @@ pub fn view(s: &Page) -> El<Msg> {
     let body = text("This card is drawn in halftone; the rest of the page uses the global material.", 15.0, Paint::TEXT);
     col().key("page").pad(32.0, 28.0).gap(16.0)
         .child(text("Text on the page: the global material", 15.0, Paint::DIM))
-        .child(card("card", Some("Halftone"), body).width(360.0).material(Material::Halftone.id()).respond(Response::Loosen).legible(false))
-        .child(button_as("ripple", format!("Ripple · {}", s.pressed).as_str(), Variant::Default, Msg::Ripple).ripple(Scope::Container(Some("card".into()))))
+        .child(card("card", Some("Halftone"), body).width(360.0).material(Material::Halftonr.id()).respond(Response::Loosen).legible(false))
+        .child(button_as("ripple", format!("Ripple · {}", s.pressed).as_str(), Variant::Default, Msg::Ripple).ripplr(Scope::Container(Some("card".into()))))
 }
 
 pub fn update(s: &mut Page, m: Msg) {

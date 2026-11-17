@@ -162,13 +162,13 @@ pub enum Content {
         /// Extra letter spacing, em.
         track: f32,
     },
-    /// A picture by id, with its height as a fraction of its width, and the `PicFx` slot it uses.
+    /// A picture by id, with its height as a fraction of its width, and the `Markr` slot it uses.
     Picture {
         /// The picture's id (`Renderer::set_picture`).
         id: u32,
         /// Height over width.
         ratio: f32,
-        /// The `PicFx` slot it uses.
+        /// The `Markr` slot it uses.
         fx: u8,
     },
     /// Meshes, a camera and a light, drawn into the element's box (DESIGN.md §1.18).
@@ -853,7 +853,7 @@ impl<M> El<M> {
     /// How loose it is at rest, 0–1.
     pub fn loose(mut self, k: f32) -> Self { self.loose = k; self }
     /// A compare wipe at `x`, a fraction of its width: loosened right of it, untouched left.
-    pub fn wipe(mut self, x: f32) -> Self { self.wipe = Some(x); self }
+    pub fn wipr(mut self, x: f32) -> Self { self.wipe = Some(x); self }
     /// Fronts do not push or loosen anything in this element's box.
     pub fn calm(mut self) -> Self { self.calm = true; self }
     /// The focus marks frame it only when it has keyboard focus, never on hover.
@@ -881,15 +881,15 @@ impl<M> El<M> {
     /// Draw this subtree with another material (`style::Material` id), under the collage material.
     pub fn material(mut self, id: u8) -> Self { self.material = Some(id); self }
     /// Put a material, a response and a scope on this subtree in one line (DESIGN.md §1.6, §1.15):
-    /// `page.effect(Effect { material: Some(Material::Print), response: Some(Response::Loosen), scope: Some(Scope::Container(None)) })`.
+    /// `page.effect(Effect { material: Some(Material::Smudgr), response: Some(Response::Loosen), scope: Some(Scope::Container(None)) })`.
     /// What is `None` stays as it is. A scope of `Scope::Container(None)` also makes this element the
     /// container, so the effect's fronts stay inside it.
     pub fn effect(mut self, e: Effect) -> Self {
         if let Some(m) = e.material { self = self.material(m.id()); }
         if let Some(r) = e.response { self = self.respond(r); }
         if let Some(s) = e.scope {
-            if s == Scope::Container(None) { self = self.ripple_scope(); }
-            self = self.ripple(s);
+            if s == Scope::Container(None) { self = self.ripplr_scope(); }
+            self = self.ripplr(s);
         }
         self
     }
@@ -931,14 +931,14 @@ impl<M> El<M> {
     pub fn legible(mut self, on: bool) -> Self { self.ripple.legible = Some(on); self }
     /// What a press in this subtree sends a front to (inherited). Controls default to `Scope::Own`;
     /// pressing plain ground sends nothing unless a scope is set here.
-    pub fn ripple(mut self, s: Scope) -> Self { self.ripple.scope = Some(s); self }
+    pub fn ripplr(mut self, s: Scope) -> Self { self.ripple.scope = Some(s); self }
     /// Fronts sent with `Scope::Container(None)` from inside stop at this element's box.
-    pub fn ripple_scope(mut self) -> Self { self.ripple.container = true; self }
+    pub fn ripplr_scope(mut self) -> Self { self.ripple.container = true; self }
     /// Whether a change of this text's string recomposes the changed glyphs (inherited; on by default
     /// for text with an explicit key, off inside text fields).
     pub fn recompose(mut self, on: bool) -> Self { self.ripple.recompose = Some(on); self }
-    /// Choose the `PicFx` slot of a picture.
-    pub fn pic_fx(mut self, slot: u8) -> Self { if let Content::Picture { fx, .. } = &mut self.content { *fx = slot; } self }
+    /// Choose the `Markr` slot of a picture.
+    pub fn markr(mut self, slot: u8) -> Self { if let Content::Picture { fx, .. } = &mut self.content { *fx = slot; } self }
     /// Hear which copy of a `scene3d` element the pointer is over and which one it presses.
     pub fn on_pick(mut self, f: impl Fn(crate::mesh::Pick) -> Option<M> + 'static) -> Self { self.on_pick = Some(Rc::new(f)); self }
     /// Take the wheel over this element (before any scroll node): dx, dy in logical px.

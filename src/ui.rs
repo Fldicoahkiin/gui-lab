@@ -428,7 +428,7 @@ pub struct Ui<S, M> {
     caret_on: bool,
     /// Some drawn instance holds a static looseness under a time-varying material (which moves it).
     static_loose: bool,
-    /// The material clock: time terms of materials (glitch's hold, dot's drift) read it.
+    /// The material clock: time terms of materials (glitchr's hold, dottr's drift) read it.
     /// It only runs while something moves, so a page at rest is a still image.
     mclock: f32,
     /// The ground clock, and whether it runs (see `ground_clock`).
@@ -1085,7 +1085,7 @@ impl<S, M: Clone> Ui<S, M> {
     }
     /// The clock that materials' time terms read: it runs only while something moves.
     pub fn material_clock(&self) -> f32 { self.mclock }
-    /// The ground clock (the dot ground's drift): it runs only while something moves the whole window
+    /// The ground clock (the dottr ground's drift): it runs only while something moves the whole window
     /// (a commit, a front that reaches everywhere, a morph, a flow, a fling or a pull).
     pub fn ground_clock(&self) -> f32 { self.gclock }
     /// Set the ground clock (a check that needs one exact frame).
@@ -1169,7 +1169,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// What moves the material clock: the field and what loosens (fronts, a commit, condensing, morphs,
     /// flows, recomposition, a fling or a pull, loose things under a time material). Not the hover's
     /// burst, the focus marks gliding or the annotation layer drawing on: those change a few pixels, and
-    /// a clock that moved would change the dot ground under the whole window (DESIGN.md §1.19).
+    /// a clock that moved would change the dottr ground under the whole window (DESIGN.md §1.19).
     fn field_moving_at(&self, now: f32) -> bool {
         let tm = &self.timing;
         let fronts = self.field.fronts.iter().any(|f| f[3] > 0.0 && now - f[2] < tm.wave_life);
@@ -1470,7 +1470,7 @@ impl<S, M: Clone> Ui<S, M> {
             self.hit_target(x, y).and_then(|i| self.up(i, Node::active)).map(|i| self.nodes[i].key.clone())
         };
         if hover != self.hover {
-            // A control the pointer comes onto gets a short burst over it (the glitch material reads it).
+            // A control the pointer comes onto gets a short burst over it (glitchr reads it).
             if let Some(n) = hover.as_deref().and_then(|k| self.node(k)) { self.burst(n.rect, 0.75, 0.22); }
             self.hover = hover;
             if let Some(f) = self.hovered && f(&mut self.state, self.hover.as_deref()) { self.relayout(); }
@@ -2206,9 +2206,9 @@ impl<S, M: Clone> Ui<S, M> {
         for c in cmds {
             match c {
                 Cmd::Morph { from, to, spec } => self.morph(&from, &to, spec),
-                Cmd::Front { x, y, strength } => { let s = self.scale; self.field.front(x * s, y * s, self.now, strength); }
+                Cmd::Ripplr { x, y, strength } => { let s = self.scale; self.field.front(x * s, y * s, self.now, strength); }
                 // From an element's centre, reaching what that element's own press would reach.
-                Cmd::FrontAt { key, strength } => if let Some(i) = self.nodes.iter().position(|n| n.key == key) {
+                Cmd::RipplrAt { key, strength } => if let Some(i) = self.nodes.iter().position(|n| n.key == key) {
                     let (x, y) = self.nodes[i].rect.center();
                     self.front_from(Some(i), x, y, true, strength);
                 },

@@ -1,13 +1,13 @@
-// @material lino
+// @material carvr
 // @param 刻痕 0.0 1.0 0.05 2 - 0.6
 // @param 刻带 2.0 40.0 1.0 0 px 12.0
 // @param 刀长 2.0 40.0 1.0 0 px 12.0
 // @param 刀距 2.0 16.0 0.5 1 px 7.0
 // @param 抖动 0.0 1.0 0.05 2 - 0.4
-// lino: ink or ground, nothing between. Loosened, the outline is cut by hand (displaced by noise) and
+// carvr: ink or ground, nothing between. Loosened, the outline is cut by hand (displaced by noise) and
 // a band around it fills with gouge strokes that follow the outline: ridges of ink left standing
 // outside, white cuts inside; the band widens with the looseness until shapes break into strokes.
-fn m_lino(p: vec2f) -> vec3f {
+fn m_carvr(p: vec2f) -> vec3f {
   let s = u.res.z;
   let a0 = mp(SELF, 0); let a1 = mp(SELF, 1);
   let k = kt(p);

@@ -20,11 +20,13 @@ pub enum FontError {
 /// A material, theme or page named by an id that does not exist.
 #[derive(Debug, Error, PartialEq)]
 pub enum LookError {
-    #[error("unknown material `{given}`. Write one of: {known} (or its number 0–{last}).")]
+    #[error("unknown material `{given}`; the closest is `{nearest}`. Write one of: {known} (or its number 0–{last}).")]
     /// No material has that name or number.
     UnknownMaterial {
         /// What was asked for.
         given: String,
+        /// The name it is closest to (for a name materials had before, the name it has now).
+        nearest: String,
         /// The names there are.
         known: String,
         /// The highest number.
@@ -168,7 +170,7 @@ pub enum ViewProblem {
         /// The key it is anchored to.
         anchor: String,
     },
-    #[error("`{key}` sends fronts to `Scope::Container(Some(\"{container}\"))`, but no element has that key. Write the key of an element on the page, or `Scope::Container(None)` and mark the region with `.ripple_scope()`.")]
+    #[error("`{key}` sends fronts to `Scope::Container(Some(\"{container}\"))`, but no element has that key. Write the key of an element on the page, or `Scope::Container(None)` and mark the region with `.ripplr_scope()`.")]
     /// Fronts are scoped to a container key no element has.
     UnknownContainer {
         /// The element sending fronts.
@@ -210,7 +212,7 @@ pub enum PresetError {
     #[error("the preset has no number at `{0}`. Paths are the JSON keys joined by dots, array places by their index: `transition.steps.0.a`, `interaction.press_ms`.")]
     /// No number at that path.
     NoSuchNumber(String),
-    #[error("not a look recipe ({0}). A recipe is `look:v1:` and then base64url of a small JSON object: `base` (a preset's hash, such as \"normcore\") and `set` (paths as `numbers` names them, with their values). Copy one from the 风格 page, or from a PNG the render tool wrote (its `amenui-recipe` text chunk).")]
+    #[error("not a look recipe ({0}). A recipe is `look:v2:` and then base64url of a small JSON object: `base` (a preset's hash, such as \"normcore\") and `set` (paths as `numbers` names them, with their values). Copy one from the 风格 page, or from a PNG the render tool wrote (its `amenui-recipe` text chunk).")]
     /// Not a look recipe.
     Recipe(String),
 }

@@ -23,7 +23,7 @@ fn a_warming_renderer_starts_as_plain_and_ends_as_the_whole_one() {
     a.tick(0.5);
     b.tick(0.5);
     // A look with a material, so plain and the whole look differ.
-    let look = Look { material: Material::Dot, ..a.look() };
+    let look = Look { material: Material::Dottr, ..a.look() };
     // The first frame, before any step: the plain look's frame, byte for byte.
     assert!(cold.r.warming());
     let first = cold.render(&mut a, &look);

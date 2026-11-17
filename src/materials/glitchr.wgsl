@@ -1,12 +1,12 @@
-// @material glitch
+// @material glitchr
 // @param 行高 1.0 40.0 1.0 0 px 6.0
 // @param 位移 0.0 200.0 2.0 0 px 48.0
 // @param 色差 0.0 30.0 0.5 1 px 6.0
 // @param 保持 16.0 500.0 2.0 0 ms 90.0
 // @param 块 4.0 120.0 2.0 0 px 28.0
-// glitch: nothing at rest. Loosened, rows slip sideways (held for `hold` ms), the channels split and
+// glitchr: nothing at rest. Loosened, rows slip sideways (held for `hold` ms), the channels split and
 // blocks repeat; bursts (hover, press) do the same for a moment.
-fn m_glitch(p: vec2f, pic: bool) -> vec3f {
+fn m_glitchr(p: vec2f, pic: bool) -> vec3f {
   let s = u.res.z;
   let a0 = mp(SELF, 0); let a1 = mp(SELF, 1);
   let slice = max(a0.x * s, 1.0); let shift = a0.y * s; let split = a0.z * s; let hold = max(a0.w, 16.0); let block = max(a1.x * s, 2.0);

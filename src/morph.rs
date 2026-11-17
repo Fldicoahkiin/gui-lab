@@ -184,11 +184,11 @@ pub enum Cmd {
     Morph { from: String, to: String, spec: MorphSpec },
     /// The page is about to change: parts with the same flow id move instead of being replaced.
     Flow(FlowSpec),
-    /// A front from (x, y), logical px, of this strength (0..1): for things that disturb the page by
-    /// themselves, such as a beat.
-    Front { x: f32, y: f32, strength: f32 },
-    /// A front from the centre of the element `key` as laid out by this update.
-    FrontAt { key: String, strength: f32 },
+    /// A ripplr (a front) from (x, y), logical px, of this strength (0..1): for things that disturb the
+    /// page by themselves, such as a beat.
+    Ripplr { x: f32, y: f32, strength: f32 },
+    /// A ripplr from the centre of the element `key` as laid out by this update.
+    RipplrAt { key: String, strength: f32 },
     /// Stir the field map (DESIGN.md §1.29) at a point, at an element's centre, or along a path: `energy`
     /// (0..1) and flow `v` (logical px are not involved: a direction whose length is how much; along a
     /// path `v` is [along the path, across it]) over `radius` logical px, on what `scope` reaches.
@@ -434,7 +434,7 @@ fn cover(i: &Instance, x: f32, y: f32, atlas: &[u8], visible: bool) -> f32 {
 
 /// Every tile of an element at tile size `tile` (device px) on the global lattice, over its ink bounds
 /// widened by the near spread (so the tiles also carry the nearness around the ink). The cover of a
-/// cell is the average of four points at ± a quarter tile from its centre, as the dot material reads it.
+/// cell is the average of four points at ± a quarter tile from its centre, as dottr reads it.
 /// Only ink that shows counts (`ink_at`): these are the tiles a morph flies.
 pub fn cells(insts: &[Instance], tile: f32, atlas: &[u8]) -> Vec<Cell> { cells_by(insts, tile, atlas, true) }
 /// The cells of an element's true outline, whatever its colours (`cover_at`): what a decode covers.

@@ -91,8 +91,8 @@ let _ = field;
 ```rust
 use amenui::el::{El, Paint, Response, Scope, row, space};
 use amenui::widgets::button;
-let area: El<()> = row().key("area").ripple_scope().gap(16.0)
-    .child(button("go", "Press", ()).ripple(Scope::Container(None)))
+let area: El<()> = row().key("area").ripplr_scope().gap(16.0)
+    .child(button("go", "Press", ()).ripplr(Scope::Container(None)))
     .child(space(60.0, 40.0).fill(Paint::ACCENT).respond(Response::Loosen))
     .child(space(60.0, 40.0).fill(Paint::hue(1)).respond(Response::Ignore));
 let _ = area;
@@ -115,8 +115,8 @@ assert_eq!(cmds.len(), 6);
 ```rust
 use amenui::el::{El, Paint, text};
 use amenui::style::{Look, Material, LIGHT};
-let look = Look { theme: LIGHT, material: Material::Dot, legible_cap: 0.15, ..Look::default() };
-let card: El<()> = text("Halftone", 20.0, Paint::INK).material(Material::Halftone.id());
+let look = Look { theme: LIGHT, material: Material::Dottr, legible_cap: 0.15, ..Look::default() };
+let card: El<()> = text("Halftone", 20.0, Paint::INK).material(Material::Halftonr.id());
 let _ = (look, card);
 ```
 

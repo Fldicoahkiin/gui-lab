@@ -1317,51 +1317,51 @@
       ]
     },
     {
-      "name": "dot",
+      "name": "dottr",
       "description": "全局的点阵：松开的字按下面的墨散成单元，底子是一片小单元。",
       "description_en": "The global dot lattice: loosening text breaks into units sized by the ink under them, and the ground is a field of small units.",
       "files": [
-        "src/materials/dot.wgsl"
+        "src/materials/dottr.wgsl"
       ]
     },
     {
-      "name": "halftone",
+      "name": "halftonr",
       "description": "墨是转过角度的网点，第二种颜色套印错开。",
       "description_en": "Ink as round dots on a rotated screen, with the second colour out of register.",
       "files": [
-        "src/materials/halftone.wgsl"
+        "src/materials/halftonr.wgsl"
       ]
     },
     {
-      "name": "ascii",
+      "name": "charr",
       "description": "墨是按亮度挑出的字符，排在格子上。",
       "description_en": "Ink as characters chosen by brightness, on a grid.",
       "files": [
-        "src/materials/ascii.wgsl"
+        "src/materials/charr.wgsl"
       ]
     },
     {
-      "name": "print",
+      "name": "smudgr",
       "description": "粗糙的印刷：纸纹、错位的专色、斑点和洇开。",
       "description_en": "Lo-fi print: paper grain, misregistered spot ink, specks and bleed.",
       "files": [
-        "src/materials/print.wgsl"
+        "src/materials/smudgr.wgsl"
       ]
     },
     {
-      "name": "lino",
+      "name": "carvr",
       "description": "木刻：沿轮廓一条条刻出的刀痕。",
       "description_en": "Linocut: carved gouges along the outline, in bands.",
       "files": [
-        "src/materials/lino.wgsl"
+        "src/materials/carvr.wgsl"
       ]
     },
     {
-      "name": "glitch",
+      "name": "glitchr",
       "description": "松开时，行横向错开、颜色分离、块重复。",
       "description_en": "Rows that slip sideways, colour fringes and held blocks while something is loose.",
       "files": [
-        "src/materials/glitch.wgsl"
+        "src/materials/glitchr.wgsl"
       ]
     },
     {

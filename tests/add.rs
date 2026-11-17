@@ -33,28 +33,28 @@ fn every_file_the_registry_lists_is_compiled_in_and_current() {
 fn a_material_copied_out_and_added_back_draws_the_frame_the_built_in_one_draws() {
     use amenui::style::{Look, Material, MaterialParams};
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let files = amenui::add::material_files(amenui::sources::REGISTRY, &["print"]).expect("resolves");
-    assert_eq!(files, ["src/materials/print.wgsl"]);
+    let files = amenui::add::material_files(amenui::sources::REGISTRY, &["smudgr"]).expect("resolves");
+    assert_eq!(files, ["src/materials/smudgr.wgsl"]);
     let to = root.join("target/add-material-test");
     let _ = std::fs::remove_dir_all(&to);
     amenui::add::write(&to, &files, false).expect("copies");
-    let src = std::fs::read_to_string(to.join("src/materials/print.wgsl")).unwrap();
-    let e = amenui::add::material_files(amenui::sources::REGISTRY, &["prnt"]).expect_err("unknown");
-    assert!(e.to_string().contains("`print`"), "{e}");
+    let src = std::fs::read_to_string(to.join("src/materials/smudgr.wgsl")).unwrap();
+    let e = amenui::add::material_files(amenui::sources::REGISTRY, &["smudgy"]).expect_err("unknown");
+    assert!(e.to_string().contains("`smudgr`"), "{e}");
     // Added back under a name of its own, with the built-in one's numbers.
-    let m = Look::material_source("my_print", &src, MaterialParams::defaults(Material::Print)).expect("adds");
+    let m = Look::material_source("my_smudgr", &src, MaterialParams::defaults(Material::Smudgr)).expect("adds");
     assert!(matches!(m, Material::Custom(9)), "{m:?}");
-    assert_eq!(m.name(), "my_print");
-    assert_eq!(amenui::style::material_named("my_print"), Ok(m));
-    assert_eq!(Look::material_source("my_print", &src, MaterialParams::defaults(Material::Print)), Ok(m), "adding it again keeps its id");
-    assert!(Look::material_source("print", &src, MaterialParams::defaults(Material::Print)).unwrap_err().to_string().contains("built-in"));
-    assert!(Look::material_source("Mine", &src, MaterialParams::defaults(Material::Print)).is_err());
+    assert_eq!(m.name(), "my_smudgr");
+    assert_eq!(amenui::style::material_named("my_smudgr"), Ok(m));
+    assert_eq!(Look::material_source("my_smudgr", &src, MaterialParams::defaults(Material::Smudgr)), Ok(m), "adding it again keeps its id");
+    assert!(Look::material_source("smudgr", &src, MaterialParams::defaults(Material::Smudgr)).unwrap_err().to_string().contains("built-in"));
+    assert!(Look::material_source("Mine", &src, MaterialParams::defaults(Material::Smudgr)).is_err());
     let Ok(mut o) = amenui::offscreen::Offscreen::try_new(480, 360) else { eprintln!("no GPU adapter here: skipped"); return };
     let fonts = || amenui::text::load_bundled(concat!(env!("CARGO_MANIFEST_DIR"), "/assets")).expect("fonts");
     let spec = |material: &str| amenui::drive::RenderSpec { page: "recipe-counter".into(), w: 480, h: 360, scale: 1.0, material: Some(material.into()), theme: Some("light".into()), at_ms: 420.0,
         events: amenui::drive::parse_events(r#"[{"at_ms": 200, "kind": "press", "target": "inc"}, {"at_ms": 230, "kind": "release", "target": "inc"}]"#, "inline").unwrap(), locale: None };
-    let built_in = amenui::drive::render(&spec("print"), fonts(), Some(&mut o)).expect("render");
-    let added = amenui::drive::render(&spec("my_print"), fonts(), Some(&mut o)).expect("render");
+    let built_in = amenui::drive::render(&spec("smudgr"), fonts(), Some(&mut o)).expect("render");
+    let added = amenui::drive::render(&spec("my_smudgr"), fonts(), Some(&mut o)).expect("render");
     assert!(built_in.png == added.png, "the added copy draws another frame");
     let plain = amenui::drive::render(&spec("plain"), fonts(), Some(&mut o)).expect("render");
     assert!(plain.png != added.png, "the frame shows the material");

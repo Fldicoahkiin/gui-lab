@@ -6,7 +6,7 @@ use amenui::style::Material;
 const DOC: &str = "# A page\n\nSome text that was already written, with a [link](#elsewhere).\n\n- one\n- two\n";
 
 fn view(_: &()) -> El<()> {
-    wrap_text::<()>(DOC).effect(Effect { material: Some(Material::Print), response: Some(Response::Loosen), scope: Some(Scope::Container(None)) })
+    wrap_text::<()>(DOC).effect(Effect { material: Some(Material::Smudgr), response: Some(Response::Loosen), scope: Some(Scope::Container(None)) })
 }
 
 #[test]
@@ -15,11 +15,11 @@ fn text_is_wrapped_into_a_page_and_takes_the_effect_whole() {
     ui.tick(1.0);
     let tree = ui.export_tree();
     let root = tree.find("wrap").expect("the page is keyed wrap");
-    assert_eq!(root.material, "print");
+    assert_eq!(root.material, "smudgr");
     assert_eq!(root.response, "loosen");
     let heading = tree.find("wrap/h0").expect("the heading");
     assert_eq!(heading.text.as_deref(), Some("A page"));
-    assert_eq!(heading.material, "print", "the material is the subtree's");
+    assert_eq!(heading.material, "smudgr", "the material is the subtree's");
     let para = tree.find("wrap/b1/text").expect("the paragraph");
     assert_eq!(para.text.as_deref(), Some("Some text that was already written, with a link."));
     assert!(para.legible, "text to read stays legible under the effect");

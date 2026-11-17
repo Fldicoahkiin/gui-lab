@@ -18,7 +18,7 @@ struct U {
   fa: vec4f,       // pitch, material clock (s), jitter, glitch   (lengths in logical px)
   fb: vec4f,       // wave speed, wave life, wave width, wave tail
   fc: vec4f,       // push, lens radius, enter time, square (0 dot, 1 square)
-  fd: vec4f,       // material (0 plain, 1 dot), srgb surface, spread px, palette rows
+  fd: vec4f,       // material (0 plain, 1 dottr), srgb surface, spread px, palette rows
   bg: vec4f,
   fg: vec4f,
   accent: vec4f,
@@ -59,8 +59,8 @@ struct U {
 @group(0) @binding(8) var fmap_t: texture_2d<f32>;   // the field map: r energy, g b 128 + 127 × flow (fieldmap.rs)
 @group(0) @binding(9) var lo: texture_2d<f32>;       // the material at reduced resolution (DESIGN.md §1.12)
 
-const PLAIN: i32 = 0; const DOT: i32 = 1; const HALFTONE: i32 = 2; const ASCII: i32 = 3; const PRINT: i32 = 4;
-const LINO: i32 = 5; const GLITCH: i32 = 6; const NEAR: i32 = 7; const SCRIBBLR: i32 = 8;
+const PLAIN: i32 = 0; const DOTTR: i32 = 1; const HALFTONR: i32 = 2; const CHARR: i32 = 3; const SMUDGR: i32 = 4;
+const CARVR: i32 = 5; const GLITCHR: i32 = 6; const NEAR: i32 = 7; const SCRIBBLR: i32 = 8;
 fn mp(m: i32, i: i32) -> vec4f { return u.mats[m * 2 + i]; }
 /// The material an instance (or a pixel) is drawn with: its override, or the global one.
 fn eff_mat(code: f32) -> i32 { if (code >= 127.5) { return i32(round(code)) % 16; } return i32(u.fd.x); }
@@ -312,7 +312,7 @@ fn near_of(i: VOut) -> vec4f {
   let loose = enc_loose(min(own_loose(i), 1.0), s.x * i.paint.z > 0.5) * step(0.02, s.y) * step(0.01, i.paint.z);
   var slot = select(0.0, (i.paint.y + 1.0) / 8.0 - select(0.0, 1.0 / 32.0, i.resp.y > 1.5), s.z > 0.5);
   // A 3D element drawn through the material marks its pixels (within the nearness) with the projected
-  // normal's code, 1..9 / 255: below any picture's flag, so nothing else reads it (ascii does).
+  // normal's code, 1..9 / 255: below any picture's flag, so nothing else reads it (charr does).
   if (i.paint.w > 2.5 && i.extra.x < 0.5 && s.y > 0.01) { slot = max(round(mesh_near(i).b * 255.0), 1.0) / 255.0; }
   var code = select(0.0, round(i.extra.y * 2.0) / 255.0, i.paint.w < 0.5 && s.y > 0.02);
   // A material override reaches through the nearness of shapes and pictures, but only just around
@@ -358,7 +358,7 @@ fn near_of(i: VOut) -> vec4f {
   let s = inst(i);
   if (s.x < 0.02 || i.paint.z < 0.01) { discard; }
   // A glyph's faint outer edge leaves the panel's nearness under it, so the materials that read the
-  // nearness (collage's torn edge, lino's cut) do not take a label's rim for the panel's outline.
+  // nearness (collage's torn edge, carvr's cut) do not take a label's rim for the panel's outline.
   if (i.paint.w < 0.5 && s.y < 0.5) { discard; }
   return near_of(i);
 }
@@ -708,7 +708,7 @@ fn scroll_trace(col: vec3f, q: vec2f, m: i32, sc: Sc) -> vec3f {
   if (own.a > 0.5) { return col; }
   let d = sc.d;
   var c = col;
-  if (m == DOT) {
+  if (m == DOTTR) {
     // A phosphor trail: the rows the content has just left glow on as dots of the lattice, fading.
     let pitch = max(1.5, u.fa.x * s);
     let cell = floor(lat(q) / pitch);
@@ -728,9 +728,9 @@ fn scroll_trace(col: vec3f, q: vec2f, m: i32, sc: Sc) -> vec3f {
     let dotm = unit(q - centre, r) * step(0.12, best);
     return mix(c, mix(bc, u.accent.rgb, 0.35), dotm * 0.55 * k);
   }
-  if (m == ASCII) {
+  if (m == CHARR) {
     // A trail of light characters on the character grid.
-    let a0 = mp(ASCII, 0);
+    let a0 = mp(CHARR, 0);
     let P = clamp(round(a0.x * s), CHAR_MIN, CHAR_MAX);
     let cell = floor(lat(q) / P);
     let centre = (cell + 0.5) * P - anc;
@@ -747,14 +747,14 @@ fn scroll_trace(col: vec3f, q: vec2f, m: i32, sc: Sc) -> vec3f {
     let mk = char_mark(lv, fract(lat(q) / P), P);
     return mix(c, mix(gnd(q), u.fg.rgb, 0.55), mk * k);
   }
-  if (m == HALFTONE || m == PRINT) {
+  if (m == HALFTONR || m == SMUDGR) {
     // The second colour out of register along the motion: a screened ghost of the key ink, behind it.
     let off = d * u.scrp.y * k;
     let at = q + off;
     if (near_t(at).g > 0.05) { return c; }
-    if (m == HALFTONE) {
-      let pitch = max(2.0, mp(HALFTONE, 0).x * s * 0.5);
-      let ang = radians(mp(HALFTONE, 0).y + 30.0);
+    if (m == HALFTONR) {
+      let pitch = max(2.0, mp(HALFTONR, 0).x * s * 0.5);
+      let ang = radians(mp(HALFTONR, 0).y + 30.0);
       let rq = rot(lat(at), ang);
       let cell = floor(rq / pitch);
       let cc = rot((cell + 0.5) * pitch, -ang) - anc;
@@ -769,7 +769,7 @@ fn scroll_trace(col: vec3f, q: vec2f, m: i32, sc: Sc) -> vec3f {
     if (lum(gnd(q)) > 0.5) { return mix(c, c * mix(vec3f(1.0), u.accent.rgb / max(gnd(q), vec3f(0.05)), 0.7), a * k); }
     return mix(c, u.accent.rgb, a * k * 0.5);
   }
-  if (m == LINO) {
+  if (m == CARVR) {
     // A carved echo: broken lines of ink behind each edge, ink or ground.
     let L = u.scrp.x * k;
     var hit = 0.0;
@@ -779,7 +779,7 @@ fn scroll_trace(col: vec3f, q: vec2f, m: i32, sc: Sc) -> vec3f {
     }
     return mix(c, u.fg.rgb, hit);
   }
-  if (m == GLITCH || m == NEAR) { return c; }
+  if (m == GLITCHR || m == NEAR) { return c; }
   // plain: a soft trailing edge, at most.
   let L = u.scrp.x * k * 0.45;
   var a = 0.0; var tc = vec3f(0.0);
@@ -795,16 +795,16 @@ fn scroll_trace(col: vec3f, q: vec2f, m: i32, sc: Sc) -> vec3f {
 /// The final colour of the pixel centred at `p` (device px of the full-resolution frame).
 fn shade_new(pf: vec2f) -> vec3f {
   let s = u.res.z; let t = u.res.w;
-  // Inside a scroll node: the lattices follow the content; moving fast, dot and ascii hold their rows
-  // to their lattice and glitch slips a band now and then (DESIGN.md §1.8.3).
+  // Inside a scroll node: the lattices follow the content; moving fast, dottr and charr hold their rows
+  // to their lattice and glitchr slips a band now and then (DESIGN.md §1.8.3).
   let sc = scroll_here(pf);
   anc = sc.o;
   var p = pf;
   let m0 = eff_mat(near_t(pf).a * 255.0);
   if (sc.k > 0.0) {
-    if (m0 == DOT) { p = latch(pf, sc, max(1.5, u.fa.x * s)); }
-    else if (m0 == ASCII) { p = latch(pf, sc, clamp(round(mp(ASCII, 0).x * s), CHAR_MIN, CHAR_MAX)); }
-    else if (m0 == GLITCH) {
+    if (m0 == DOTTR) { p = latch(pf, sc, max(1.5, u.fa.x * s)); }
+    else if (m0 == CHARR) { p = latch(pf, sc, clamp(round(mp(CHARR, 0).x * s), CHAR_MIN, CHAR_MAX)); }
+    else if (m0 == GLITCHR) {
       // One band at a time, no more often than every `slip_ms`, and only as fast as the motion asks.
       let tq = floor(t / u.scrq.x);
       let ax = abs(sc.d);
@@ -819,12 +819,12 @@ fn shade_new(pf: vec2f) -> vec3f {
   let is_pic = here.g > 0.05;
   let m = eff_mat(here.a * 255.0);
   var col: vec3f;
-  if (is_pic && m != GLITCH) {
+  if (is_pic && m != GLITCHR) {
     // A picture is drawn from its own colours only (DESIGN.md §1.6.1), in every material.
     let slot = clamp(i32(round(here.g * 8.0)) - 1, 0, 7);
     var q = p;
-    if (m == DOT) {
-      // Glitch slip of the dot material: a slip that would leave the picture keeps it in place.
+    if (m == DOTTR) {
+      // Glitchr slip of dottr: a slip that would leave the picture keeps it in place.
       let bh = 5.0 * s; let band = floor(p.y / bh);
       let w0 = wave(vec2f(p.x, (band + 0.5) * bh), 0.6);
       let pick = step(0.55, h1(vec2f(band, floor(t * 9.0))));
@@ -838,12 +838,12 @@ fn shade_new(pf: vec2f) -> vec3f {
     if (u.wipe.y > 0.0 && p.x >= wx && p.x < wx + max(1.0, round(s)) && p.y >= r.y && p.y < r.w) { col = u.accent.rgb; }
   } else {
     switch m {
-      case 1: { col = m_dot(p); }
-      case 2: { col = m_halftone(p); }
-      case 3: { col = m_ascii(p); }
-      case 4: { col = m_print(p); }
-      case 5: { col = m_lino(p); }
-      case 6: { col = m_glitch(p, is_pic); }
+      case 1: { col = m_dottr(p); }
+      case 2: { col = m_halftonr(p); }
+      case 3: { col = m_charr(p); }
+      case 4: { col = m_smudgr(p); }
+      case 5: { col = m_carvr(p); }
+      case 6: { col = m_glitchr(p, is_pic); }
       case 7: { col = m_near(p); }
       case 8: { col = m_scribblr(p); }
       default: { col = m_plain(p); }

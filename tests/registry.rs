@@ -1,5 +1,6 @@
 //! `registry.json` lists every widget file, and every widget file starts with its header (purpose, props,
-//! states, messages, usage).
+//! states, messages, usage); every material is listed with its file and reads back by its name, and the
+//! names materials had before are refused with the names they have now.
 fn root() -> String { env!("CARGO_MANIFEST_DIR").to_owned() }
 
 #[test]
@@ -25,4 +26,28 @@ fn every_widget_is_in_the_registry_with_a_header() {
         assert!(name == "base" || i.get("group").and_then(|g| g.as_str()).is_some_and(|g| groups.contains(&g)), "{name}: no group (one of {groups:?}) in registry.json");
         if let Some(r) = i.get("recipe").and_then(|r| r.as_str()) { assert!(std::path::Path::new(&format!("{}/{r}", root())).exists(), "{name}: {r} missing"); }
     }
+}
+
+#[test]
+fn every_material_reads_back_by_its_name_and_old_names_say_the_new_ones() {
+    use amenui::style::{MATERIALS, RENAMED, material_named};
+    let reg: serde_json::Value = serde_json::from_str(amenui::sources::REGISTRY).unwrap();
+    let listed: Vec<&str> = reg["materials"].as_array().expect("materials").iter().filter_map(|m| m["name"].as_str()).collect();
+    for (m, name) in MATERIALS {
+        assert_eq!(material_named(name), Ok(m), "{name}");
+        assert_eq!(m.name(), name);
+        assert!(listed.contains(&name), "{name} is not in registry.json's materials");
+        assert!(amenui::materials::source(name).is_some(), "src/materials/{name}.wgsl");
+    }
+    for (old, new) in RENAMED {
+        let e = material_named(old).expect_err(old).to_string();
+        assert!(e.contains(&format!("the closest is `{new}`")), "{e}");
+    }
+    assert!(material_named("halftone").unwrap_err().to_string().contains("halftonr"));
+    // A recipe from before the names changed is refused, and says which prefix recipes have now.
+    let e = amenui::preset::Preset::from_recipe("look:v1:eyJiYXNlIjoibm9ybWNvcmUiLCJzZXQiOnt9fQ").expect_err("v1").to_string();
+    assert!(e.contains("v2") && e.contains("print → smudgr"), "{e}");
+    let p = &amenui::preset::presets()[0];
+    assert!(p.recipe().starts_with("look:v2:"));
+    assert_eq!(amenui::preset::Preset::from_recipe(&p.recipe()).map(|q| q.hash), Ok(p.hash.clone()));
 }

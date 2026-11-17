@@ -1,4 +1,4 @@
-//! Look recipes (DESIGN.md §1.11): a preset as the difference from the built-in one, `look:v1:` and
+//! Look recipes (DESIGN.md §1.11): a preset as the difference from the built-in one, `look:v2:` and
 //! base64url; every preset and an edited one go there and back unchanged; a wrong string says why;
 //! the gallery takes one from its address; the render tool's PNG carries one.
 use amenui::preset::{Preset, RECIPE_PREFIX, b64url, presets, un_b64url};
@@ -27,7 +27,7 @@ fn every_preset_round_trips() {
     let mut p = presets()[3].clone();
     p.set_number("interaction.press_ms", 512.0).unwrap();
     p.set_number("transition.steps.0.a", 0.25).unwrap();
-    p.material = amenui::style::Material::Halftone;
+    p.material = amenui::style::Material::Halftonr;
     p.theme = amenui::style::THEMES[1].name.to_owned();
     let r = p.recipe();
     let back = Preset::from_recipe(&format!("#{r}")).expect("reads back with a leading #");

@@ -35,7 +35,7 @@ impl StackLook {
     pub fn of(m: Material) -> Self {
         match m {
             Material::Plain | Material::Near => StackLook::Plain,
-            Material::Dot | Material::Ascii | Material::Halftone => StackLook::Marks(m),
+            Material::Dottr | Material::Charr | Material::Halftonr => StackLook::Marks(m),
             _ => StackLook::Thick,
         }
     }
@@ -201,7 +201,7 @@ mod tests {
     #[test]
     fn looks_follow_the_material() {
         assert_eq!(StackLook::of(Material::Plain), StackLook::Plain);
-        assert_eq!(StackLook::of(Material::Dot), StackLook::Marks(Material::Dot));
-        assert_eq!(StackLook::of(Material::Print), StackLook::Thick);
+        assert_eq!(StackLook::of(Material::Dottr), StackLook::Marks(Material::Dottr));
+        assert_eq!(StackLook::of(Material::Smudgr), StackLook::Thick);
     }
 }
