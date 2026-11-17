@@ -425,6 +425,27 @@ impl Text {
             crate::ui::Rect::new(origin.0 + m.offset + m.inline_min_coord, origin.1 + m.block_min_coord, (m.advance - m.hanging_advance).max(0.0) + h, m.block_max_coord - m.block_min_coord)
         }).collect()
     }
+    /// The pieces text is shown or taken away by under `El::reveal_by` (logical px boxes from `origin`,
+    /// one or more per piece): each line, or each word with the punctuation that follows it (each CJK
+    /// ideograph is a word of its own); `Reveal::Glyph` has none.
+    pub fn reveal_groups(&mut self, p: Para<'_>, origin: (f32, f32), by: crate::el::Reveal) -> Vec<Vec<crate::ui::Rect>> {
+        match by {
+            crate::el::Reveal::Glyph => vec![],
+            crate::el::Reveal::Line => self.line_boxes(p, origin).into_iter().map(|r| vec![r]).collect(),
+            crate::el::Reveal::Word => {
+                let mut words: Vec<(usize, usize)> = vec![];
+                for (i, w) in p.s.split_word_bound_indices() {
+                    if w.chars().all(char::is_whitespace) { continue; }
+                    match words.last_mut() {
+                        // Punctuation goes with the word just before it.
+                        Some(last) if !wordy(w) && last.1 == i => last.1 = i + w.len(),
+                        _ => words.push((i, i + w.len())),
+                    }
+                }
+                words.into_iter().map(|(a, b)| self.boxes(p, origin, a, b)).collect()
+            }
+        }
+    }
     /// Where each laid-out line's text ends (byte index).
     pub fn line_ends(&mut self, p: Para<'_>) -> Vec<usize> {
         let l = self.layout(p.s, p.face, p.size, p.line, Some(p.width), p.setting());

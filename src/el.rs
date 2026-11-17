@@ -88,16 +88,26 @@ pub struct GlyphAt { pub i: usize, pub n: usize, pub x: f32, pub y: f32, pub w: 
 /// `angle` (radians, clockwise), scaled by `sx`, `sy` about its centre; its tone and alpha multiplied,
 /// its accent raised to at least `accent`, drawn in accent `hue` (0, 1, 2; negative keeps the text's).
 /// Alpha 0 leaves it out. The glyph keeps its true outline.
+/// `z` is its depth (logical px, positive toward the viewer) and `facing` how it faces the viewer (1
+/// straight on, 0 edge on, negative turned away): the glyphs of one element are drawn far to near, and
+/// `El::form` thins and fades them by these (`form::FormFx`). The defaults change nothing.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Pose { pub dx: f32, pub dy: f32, pub angle: f32, pub sx: f32, pub sy: f32, pub tone: f32, pub alpha: f32, pub accent: f32, pub hue: f32 }
-impl Default for Pose { fn default() -> Self { Self { dx: 0.0, dy: 0.0, angle: 0.0, sx: 1.0, sy: 1.0, tone: 1.0, alpha: 1.0, accent: 0.0, hue: -1.0 } } }
+pub struct Pose { pub dx: f32, pub dy: f32, pub angle: f32, pub sx: f32, pub sy: f32, pub tone: f32, pub alpha: f32, pub accent: f32, pub hue: f32, pub z: f32, pub facing: f32 }
+impl Default for Pose { fn default() -> Self { Self { dx: 0.0, dy: 0.0, angle: 0.0, sx: 1.0, sy: 1.0, tone: 1.0, alpha: 1.0, accent: 0.0, hue: -1.0, z: 0.0, facing: 1.0 } } }
 /// A text element's glyph poses (`El::pose`): asked once per glyph each time the scene is made, never
 /// for layout, so moving glyphs costs no layout or shaping.
 pub type GlyphPose = Rc<dyn Fn(GlyphAt) -> Pose>;
 /// The pointer over or on an element (`El::on_point`): where (local px, or a canvas's own space) and
-/// whether it is pressed.
+/// whether it is pressed; over posed text, the glyph drawn under it (its number in the text, `Ui::glyph_at`)
+/// and that glyph's depth (while dragging, `None`: ask `Ui::glyph_at`, or `form::Form::hit` for the surface).
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Point { pub x: f32, pub y: f32, pub down: bool }
+pub struct Point { pub x: f32, pub y: f32, pub down: bool, pub glyph: Option<usize>, pub z: f32 }
+
+/// How a clip, a pose's alpha or the edge of the window takes text away (`El::reveal_by`): glyph by
+/// glyph (the default), or whole words or whole lines, so nothing is left as half a word.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Reveal { #[default] Glyph, Word, Line }
 /// An element coming into view (`true`, any part inside its clip) or leaving it.
 pub type OnVisible<M> = Rc<dyn Fn(bool) -> Option<M>>;
 /// Asks for the true outline of an element's subtree as coverage on a grid (`El::on_outline`).
@@ -107,8 +117,8 @@ pub struct Outline<M> { pub cols: usize, pub rows: usize, pub f: Rc<dyn Fn(Rc<cr
 pub type OnPick<M> = Rc<dyn Fn(crate::mesh::Pick) -> Option<M>>;
 /// Handles the wheel over an element before any scroll node does (dx, dy, logical px).
 pub type OnWheel<M> = Rc<dyn Fn(f32, f32) -> Option<M>>;
-/// The pointer over an element (`Some` local logical px) or leaving it (`None`).
-pub type OnMove<M> = Rc<dyn Fn(Option<(f32, f32)>) -> Option<M>>;
+/// The pointer over an element (`Some`: local logical px, and the glyph under it) or leaving it (`None`).
+pub type OnMove<M> = Rc<dyn Fn(Option<Point>) -> Option<M>>;
 /// Handles a key while the element has focus; the flag is Shift.
 pub type OnKey<M> = Rc<dyn Fn(Key, bool) -> Option<M>>;
 /// Handles text input while the element has focus (a text field, DESIGN.md §1.8.1).
@@ -319,6 +329,17 @@ pub struct El<M> {
     pub on_outline: Option<Outline<M>>,
     /// Appears and disappears by decoding (`El::decode`, DESIGN.md §1.28).
     pub decode: Option<crate::decode::Decode>,
+    /// Posed glyphs on a form: how the ones turned away, edge on, hidden behind nearer ones and far
+    /// away are drawn (`El::form`).
+    pub form: Option<crate::form::FormFx>,
+    /// Turned by this many radians (clockwise) about its centre after layout, with everything inside
+    /// it; hit testing follows (`El::turn`).
+    pub turn: f32,
+    /// How clips and poses take its text away (`El::reveal_by`).
+    pub reveal_by: Reveal,
+    /// It keeps moving on purpose (a live demo, a clock): the audit's "keeps asking for frames" does
+    /// not count it (`El::ongoing`).
+    pub ongoing: bool,
     pub children: Vec<El<M>>,
 }
 
@@ -392,7 +413,7 @@ impl<M> El<M> {
     fn new(style: Style, content: Content) -> Self {
         // Nothing shrinks unless asked: fixed sizes stay fixed inside columns and scroll areas.
         let style = Style { flex_shrink: 0.0, ..style };
-        Self { key: String::new(), style, content, fill: None, border: None, radius: 0.0, on_press: None, on_key: None, on_drag: None, on_blur: None, focusable: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, modal: None, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, shift: (0.0, 0.0), shed: None, flow_field: None, stirr: None, trace: None, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, clips: false, calm: false, on_text: None, multiline: false, selectable: false, cursor: None, virt: None, access: None, ripple: Ripple::default(), on_pick: None, on_wheel: None, on_move: None, guide: None, skeleton: false, rtl: None, on_visible: None, on_outline: None, decode: None, children: vec![] }
+        Self { key: String::new(), style, content, fill: None, border: None, radius: 0.0, on_press: None, on_key: None, on_drag: None, on_blur: None, focusable: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, modal: None, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, shift: (0.0, 0.0), shed: None, flow_field: None, stirr: None, trace: None, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, clips: false, calm: false, on_text: None, multiline: false, selectable: false, cursor: None, virt: None, access: None, ripple: Ripple::default(), on_pick: None, on_wheel: None, on_move: None, guide: None, skeleton: false, rtl: None, on_visible: None, on_outline: None, decode: None, form: None, turn: 0.0, reveal_by: Reveal::Glyph, ongoing: false, children: vec![] }
     }
     pub fn key(mut self, k: impl Into<String>) -> Self { self.key = k.into(); self }
     pub fn gap(mut self, g: f32) -> Self { self.style.gap = Size { width: length(g), height: length(g) }; self }
@@ -575,7 +596,19 @@ impl<M> El<M> {
     /// boxes, so nothing moves.
     pub fn skeleton(mut self) -> Self { self.skeleton = true; self }
     pub fn guide(mut self, points: Vec<(f32, f32)>) -> Self { self.guide = (points.len() >= 2).then(|| Rc::new(points)); self }
-    pub fn on_move(mut self, f: impl Fn(Option<(f32, f32)>) -> Option<M> + 'static) -> Self { self.on_move = Some(Rc::new(f)); self }
+    pub fn on_move(mut self, f: impl Fn(Option<(f32, f32)>) -> Option<M> + 'static) -> Self { self.on_move = Some(Rc::new(move |p: Option<Point>| f(p.map(|p| (p.x, p.y))))); self }
+    /// Draw this text's posed glyphs as lying on a form (`form::FormFx`): far ones first, the ones
+    /// turned away and edge on faded out, the ones mostly hidden by nearer ones left out, the far
+    /// side dimmed. Use with `El::pose` (or `form::Form::pose`).
+    pub fn form(mut self, fx: crate::form::FormFx) -> Self { self.form = Some(fx); self }
+    /// Turn this element and everything inside it by `radians` (clockwise) about its centre, after
+    /// layout: drawn turned, and pressed where it is drawn.
+    pub fn turn(mut self, radians: f32) -> Self { self.turn = radians; self }
+    /// How clips, poses and the window take this text away: `Reveal::Word` or `Reveal::Line` show a
+    /// word (a line) whole or not at all, and fade it as one.
+    pub fn reveal_by(mut self, r: Reveal) -> Self { self.reveal_by = r; self }
+    /// This element keeps moving on purpose (a live demo): the audit does not report the frames it asks for.
+    pub fn ongoing(mut self) -> Self { self.ongoing = true; self }
     /// The pointer over this element and dragging on it, as one handler: `Some(Point)` while it moves
     /// over it (`down` false: a mouse or pen hovering) or presses and drags (`down` true until let go;
     /// a finger only does this), `None` when it leaves. On a canvas the point is in the canvas's space.
@@ -583,8 +616,8 @@ impl<M> El<M> {
     pub fn on_point(mut self, f: impl Fn(Option<Point>) -> Option<M> + 'static) -> Self {
         let f = Rc::new(f);
         let g = f.clone();
-        self.on_move = Some(Rc::new(move |p: Option<(f32, f32)>| g(p.map(|(x, y)| Point { x, y, down: false }))));
-        self.on_drag = Some(Rc::new(move |d: Drag| f(Some(Point { x: d.x, y: d.y, down: d.phase != Phase::End }))));
+        self.on_move = Some(Rc::new(move |p: Option<Point>| g(p)));
+        self.on_drag = Some(Rc::new(move |d: Drag| f(Some(Point { x: d.x, y: d.y, down: d.phase != Phase::End, glyph: None, z: 0.0 }))));
         self.ripple.unframed = true;
         self
     }
@@ -610,20 +643,20 @@ impl<M> El<M> {
 
     /// The same tree sending other messages: lets one application embed another's view.
     pub fn map<N: 'static>(self, f: Rc<dyn Fn(M) -> N>) -> El<N> where M: 'static {
-        let El { key, style, content, fill, border, radius, on_press, on_key, on_drag, on_blur, focusable, scroll, horizontal, bar, reveal, disabled, commit, modal, fonts, loose, wipe, flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, on_text, multiline, selectable, cursor, virt, access, ripple, on_pick, on_wheel, on_move, guide, skeleton, rtl, on_visible, on_outline, decode, children } = self;
+        let El { key, style, content, fill, border, radius, on_press, on_key, on_drag, on_blur, focusable, scroll, horizontal, bar, reveal, disabled, commit, modal, fonts, loose, wipe, flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, on_text, multiline, selectable, cursor, virt, access, ripple, on_pick, on_wheel, on_move, guide, skeleton, rtl, on_visible, on_outline, decode, form, turn, reveal_by, ongoing, children } = self;
         let virt = virt.map(|v| { let f = f.clone(); let b = v.build; Virtual { count: v.count, row_h: v.row_h, overscan: v.overscan, selected: v.selected, build: Rc::new(move |i: usize| b(i).map(f.clone())) as Rc<dyn Fn(usize) -> El<N>> } });
         let on_key = on_key.map(|k| { let f = f.clone(); Rc::new(move |key: Key, shift: bool| k(key, shift).map(|m| f(m))) as OnKey<N> });
         let on_text = on_text.map(|t| { let f = f.clone(); Rc::new(move |i: TextInput| t(i).map(|m| f(m))) as OnText<N> });
         let on_drag = on_drag.map(|d| { let f = f.clone(); Rc::new(move |g: Drag| d(g).map(|m| f(m))) as OnDrag<N> });
         let on_pick = on_pick.map(|d| { let f = f.clone(); Rc::new(move |g: crate::mesh::Pick| d(g).map(|m| f(m))) as OnPick<N> });
         let on_wheel = on_wheel.map(|d| { let f = f.clone(); Rc::new(move |x: f32, y: f32| d(x, y).map(|m| f(m))) as OnWheel<N> });
-        let on_move = on_move.map(|d| { let f = f.clone(); Rc::new(move |p: Option<(f32, f32)>| d(p).map(|m| f(m))) as OnMove<N> });
+        let on_move = on_move.map(|d| { let f = f.clone(); Rc::new(move |p: Option<Point>| d(p).map(|m| f(m))) as OnMove<N> });
         let on_visible = on_visible.map(|d| { let f = f.clone(); Rc::new(move |v: bool| d(v).map(|m| f(m))) as OnVisible<N> });
         let on_outline = on_outline.map(|o| { let f = f.clone(); let g = o.f; Outline { cols: o.cols, rows: o.rows, f: Rc::new(move |x: Rc<crate::field::Grid>| g(x).map(|m| f(m))) } });
         El {
             key, style, content, fill, border, radius, on_press: on_press.map(|m| f(m)), on_key, on_drag, on_blur: on_blur.map(|m| f(m)),
             focusable, scroll, horizontal, bar, reveal, disabled, commit, modal: modal.map(|m| Modal { dismiss: f(m.dismiss), beneath: m.beneath }),
-            fonts, loose, wipe, flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, on_text, multiline, selectable, cursor, virt, access, ripple, on_pick, on_wheel, on_move, guide, skeleton, rtl, on_visible, on_outline, decode, children: children.into_iter().map(|c| c.map(f.clone())).collect(),
+            fonts, loose, wipe, flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, on_text, multiline, selectable, cursor, virt, access, ripple, on_pick, on_wheel, on_move, guide, skeleton, rtl, on_visible, on_outline, decode, form, turn, reveal_by, ongoing, children: children.into_iter().map(|c| c.map(f.clone())).collect(),
         }
     }
 }

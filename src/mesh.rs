@@ -114,6 +114,19 @@ impl Mesh {
         self
     }
     /// The radius of the smallest origin-centred ball holding it.
+    /// Where a ray (origin, unit direction; the mesh's own space) meets the mesh first: the distance,
+    /// the point and the face's normal turned toward the ray's origin.
+    pub fn ray(&self, o: [f32; 3], d: [f32; 3]) -> Option<(f32, [f32; 3], [f32; 3])> {
+        let mut best: Option<(f32, [f32; 3], [f32; 3])> = None;
+        for t in &self.tris {
+            if let Some(dist) = ray_tri(o, d, t[0], t[1], t[2]) && best.is_none_or(|b| dist < b.0) {
+                let mut n = Mesh::normal(t);
+                if dot(n, d) > 0.0 { n = mulf(n, -1.0); }
+                best = Some((dist, add(o, mulf(d, dist)), n));
+            }
+        }
+        best
+    }
     pub fn radius(&self) -> f32 { self.tris.iter().flatten().map(|p| dot(*p, *p)).fold(0.0, f32::max).sqrt() }
     /// Area-weighted points on its surface (for particles): `n` points, deterministic for a seed.
     pub fn sample(&self, n: usize, seed: u32) -> Vec<([f32; 3], [f32; 3])> {
@@ -514,7 +527,7 @@ impl Scene3d {
     /// first: the same transforms the GPU draws, intersected on the CPU (Möller–Trumbore).
     pub fn pick(&self, lib: &Library, fx: f32, fy: f32, aspect: f32) -> Option<MeshHit> {
         let (o, d) = self.camera.ray(fx, fy, aspect);
-        self.cast(lib, o, d).map(|(_, h)| h)
+        self.cast(lib, o, d).map(|(_, mut h)| { h.uv = [fx, fy]; h })
     }
     /// `n` points on the surfaces of every copy, area-weighted over the whole scene (world areas, so a
     /// copy drawn twice as large gets four times the points); deterministic for a seed. Particles
@@ -574,7 +587,9 @@ impl Scene3d {
                 for t in &mesh.tris {
                     let (a, b2, c2) = (m.point(t[0]), m.point(t[1]), m.point(t[2]));
                     if let Some(dist) = ray_tri(o, d, a, b2, c2) && best.is_none_or(|(bd, _)| dist < bd) {
-                        best = Some((dist, MeshHit { object: it.id, instance: k as u32 }));
+                        let mut n = Mesh::normal(&[a, b2, c2]);
+                        if dot(n, d) > 0.0 { n = mulf(n, -1.0); }
+                        best = Some((dist, MeshHit { object: it.id, instance: k as u32, point: add(o, mulf(d, dist)), normal: n, t: dist, uv: [0.0; 2] }));
                     }
                 }
             }
@@ -588,15 +603,21 @@ impl Scene3d {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SurfacePoint { pub item: u32, pub copy: u32, pub p: [f32; 3] }
 
-/// Which copy a pick found: the group's `id` and the copy's index in its transforms.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct MeshHit { pub object: u32, pub instance: u32 }
+/// Which copy a pick found: the group's `id` and the copy's index in its transforms; where the ray met
+/// it (world space), the surface's normal there (facing the ray), how far along the ray (world units),
+/// and the point of the view it was cast through (fractions 0..1 of the element from its top left).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MeshHit { pub object: u32, pub instance: u32, pub point: [f32; 3], pub normal: [f32; 3], pub t: f32, pub uv: [f32; 2] }
+impl MeshHit {
+    /// The same copy (ignoring where on it).
+    pub fn same(&self, o: &MeshHit) -> bool { self.object == o.object && self.instance == o.instance }
+}
 
 /// What a `scene3d` element hears: the pointer came onto (or off) a copy, or pressed one.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Pick { Hover(Option<MeshHit>), Press(Option<MeshHit>) }
 
-fn ray_tri(o: [f32; 3], d: [f32; 3], a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> Option<f32> {
+pub(crate) fn ray_tri(o: [f32; 3], d: [f32; 3], a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> Option<f32> {
     let (e1, e2) = (sub(b, a), sub(c, a));
     let p = cross(d, e2);
     let det = dot(e1, p);
@@ -768,11 +789,42 @@ mod tests {
         let mut s = Scene3d::single(MeshId::CUBE);
         s.items.push(MeshInstances { mesh: MeshId::CUBE, transforms: vec![Mat4::translate(-0.6, 0.0, -2.0), Mat4::translate(5.0, 0.0, 0.0)], paint: Paint::INK, id: 7 });
         s.camera = Camera { yaw: 0.0, pitch: 0.0, ..Camera::default() };
-        assert_eq!(s.pick(&lib, 0.5, 0.5, 1.0), Some(MeshHit { object: 1, instance: 0 }));
+        assert_eq!(s.pick(&lib, 0.5, 0.5, 1.0).map(|h| (h.object, h.instance)), Some((1, 0)));
         assert_eq!(s.pick(&lib, 0.02, 0.02, 1.0), None);
         // A copy behind the first, seen past its edge.
         let left = (0..50).map(|i| i as f32 / 100.0).find_map(|fx| s.pick(&lib, fx, 0.5, 1.0).filter(|h| h.object == 7));
-        assert_eq!(left, Some(MeshHit { object: 7, instance: 0 }));
+        assert_eq!(left.map(|h| (h.object, h.instance)), Some((7, 0)));
+    }
+
+    #[test]
+    fn a_pick_says_where_on_the_surface() {
+        let mut lib = Library::default();
+        let ball = lib.add(icosphere(4));
+        let mut s = Scene3d::single(ball);
+        // Icospheres have radius 0.5: twice the size is the unit sphere.
+        s.items[0].transforms = vec![Mat4::uniform(2.0)];
+        s.camera = Camera { yaw: 25.0, pitch: 10.0, ..Camera::default() };
+        let mut n = 0;
+        for (fx, fy) in [(0.5, 0.5), (0.42, 0.55), (0.6, 0.4), (0.5, 0.36)] {
+            let Some(h) = s.pick(&lib, fx, fy, 1.0) else { continue };
+            n += 1;
+            // An icosphere is a little inside the unit sphere between its vertices.
+            let r = dot(h.point, h.point).sqrt();
+            assert!((r - 1.0).abs() < 2e-3, "|point| = {r}");
+            // The face normal of a fine icosphere is the radial direction, within the facet's angle.
+            assert!(dot(h.normal, norm(h.point)) > 0.998, "normal {:?} point {:?}", h.normal, h.point);
+            let (o, d) = s.camera.ray(fx, fy, 1.0);
+            let back = add(o, mulf(d, h.t));
+            assert!(dot(sub(back, h.point), sub(back, h.point)).sqrt() < 1e-4);
+            assert_eq!(h.uv, [fx, fy]);
+        }
+        assert_eq!(n, 4);
+        // A unit sphere solved exactly: the ray's point is on it to 1e-4.
+        let (o, d) = s.camera.ray(0.5, 0.5, 1.0);
+        let b = dot(o, d);
+        let t = -b - (b * b - (dot(o, o) - 1.0)).sqrt();
+        let p = add(o, mulf(d, t));
+        assert!((dot(p, p).sqrt() - 1.0).abs() < 1e-4);
     }
 
     #[test]

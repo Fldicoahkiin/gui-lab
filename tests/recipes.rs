@@ -42,6 +42,7 @@ fn every_recipe_lays_out_and_answers() {
             "chapter" => ("cut", Box::new(|t| t.find("scene1").is_some() && t.find("s1/sentence").is_some())),
             "preset" => ("switch", Box::new(|t| t.find("title").and_then(|n| n.text.as_deref()) == Some("A style of its own"))),
             "chart" => ("", Box::new(|t| t.find("chart/d0.0").is_some())),
+            "form3d" => ("", Box::new(|t| t.find("passage").is_some())),
             "stack" => ("deck", Box::new(|t| t.find("deck").is_some_and(|n| n.kind == "mesh"))),
             "loading" => ("reload", Box::new(|t| t.find("row4/title").is_some())),
             "submenu" => ("menu/m0/r0", Box::new(|t| t.find("menu/m1").is_some())),

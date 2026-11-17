@@ -291,10 +291,14 @@ pub mod gaze {
     pub const OSC: u16 = 1024;
     /// The level bar of the mean energy (see `OSC`).
     pub const LEVEL: u16 = 2048;
+    /// The true ink (`INK`): a dashed box round what an element really draws (moved, turned, posed, on
+    /// a form), its size, and a dashed leader from its layout box to the nearest point of its outline;
+    /// the audit measures the same boxes (`amenui::audit`).
+    pub const INK: u16 = 4096;
     /// How many kinds there are.
-    pub const COUNT: usize = 12;
+    pub const COUNT: usize = 13;
     /// Each kind's label, in bit order.
-    pub const NAMES: [&str; COUNT] = ["角标", "边框", "编号", "尺寸", "类型", "引线", "标尺", "十字线", "网格", "边注", "波形", "电平"];
+    pub const NAMES: [&str; COUNT] = ["角标", "边框", "编号", "尺寸", "类型", "引线", "标尺", "十字线", "网格", "边注", "波形", "电平", "墨框"];
 }
 /// The annotation layer: which elements it marks and what it draws (DESIGN.md §1.7).
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
