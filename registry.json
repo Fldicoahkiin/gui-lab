@@ -628,8 +628,8 @@
       "functions": [
         "bottom_sheet"
       ],
-      "description": "从底边升起的面板：按把手或正文拖动，停在几档高度之间；往下甩就收起。松手时的速度交给弹簧，停在哪一档由这个速度能把它带到哪里决定；拉过最高一档会越拉越难；正文里的滚动到顶以后再往下拉就变成拖面板。Esc 收起。",
-      "description_en": "A panel that rises from the bottom edge: dragged by its handle or body between detents, swiped down to dismiss. The release velocity carries on into a spring; where it rests is decided by where that velocity would take it; past the top detent it resists; a scroll inside hands off to the sheet at its top. Esc dismisses.",
+      "description": "从底边升起的面板：按把手或正文拖动，停在几档高度之间；往下甩就收起。松手时的速度交给弹簧，停在哪一档由这个速度能把它带到哪里决定；拉过最高一档会越拉越难；正文里的滚动到顶以后再往下拉就变成拖面板。Esc 收起。面板升起和拖动时在场图里留下尾迹（`El::stirr`，强弱由预设定）。",
+      "description_en": "A panel that rises from the bottom edge: dragged by its handle or body between detents, swiped down to dismiss. The release velocity carries on into a spring; where it rests is decided by where that velocity would take it; past the top detent it resists; a scroll inside hands off to the sheet at its top. Esc dismisses. Rising and dragged, it leaves a trail in the field map (`El::stirr`; the preset sets how strong).",
       "files": [
         "src/widgets/bottom_sheet.rs",
         "src/gesture.rs"
@@ -648,8 +648,8 @@
       "functions": [
         "floating"
       ],
-      "description": "浮在一块区域上的小框（画中画）：随便拖，松手后按甩出去的方向和速度投射出终点，用弹簧滑到离终点最近的角。获得焦点后方向键换角。",
-      "description_en": "A small box floating over an area (picture in picture): drag it anywhere; let go, the throw's projected end picks the nearest corner and a spring takes it there. Arrow keys move it between corners.",
+      "description": "浮在一块区域上的小框（画中画）：随便拖，松手后按甩出去的方向和速度投射出终点，用弹簧滑到离终点最近的角。获得焦点后方向键换角。拖动、甩出和滑到角上时在场图里留下尾迹（`El::stirr`，强弱由预设定），经过的装饰松开一点、顺着动的方向漂开。",
+      "description_en": "A small box floating over an area (picture in picture): drag it anywhere; let go, the throw's projected end picks the nearest corner and a spring takes it there. Arrow keys move it between corners. Dragged, thrown and gliding, it leaves a trail in the field map (`El::stirr`; the preset sets how strong): decoration it passes loosens a little and drifts the way it went.",
       "files": [
         "src/widgets/floating.rs",
         "src/gesture.rs"
@@ -706,8 +706,8 @@
       "functions": [
         "card_stack"
       ],
-      "description": "一叠卡片：悬停或按下一张，它下面的卡片绕左下角展开，第 n 张转 angle0 × falloff^n（默认 42° × 0.7^n），晚 delay_ms × n（默认 28 ms）开始，各自用弹簧。卡片是三维元素，所以样子跟着材质：平的、带厚度能看见边的、或者由记号（点阵、ASCII）画出来的。",
-      "description_en": "A stack of cards: hover or press one and the cards beneath fan out about their bottom-left corners, card n turning angle0 × falloff^n (42° × 0.7^n) and starting delay_ms × n (28 ms) later, each on its own spring. The cards are a 3D element, so the look follows the material: flat, thick with visible edges, or drawn in marks (dots, ASCII).",
+      "description": "一叠卡片：悬停或按下一张，它下面的卡片绕左下角展开，第 n 张转 angle0 × falloff^n（默认 42° × 0.7^n），晚 delay_ms × n（默认 28 ms）开始，各自用弹簧。卡片是三维元素，所以样子跟着材质：平的、带厚度能看见边的、或者由记号（点阵、ASCII）画出来的。展开和落定时每张卡片在场图里留下一小段尾迹（`El::stirr`）。",
+      "description_en": "A stack of cards: hover or press one and the cards beneath fan out about their bottom-left corners, card n turning angle0 × falloff^n (42° × 0.7^n) and starting delay_ms × n (28 ms) later, each on its own spring. The cards are a 3D element, so the look follows the material: flat, thick with visible edges, or drawn in marks (dots, ASCII). Fanning out and settling, each card leaves a short trail in the field map (`El::stirr`).",
       "files": [
         "src/widgets/card_stack.rs",
         "src/gesture.rs",

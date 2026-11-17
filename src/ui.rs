@@ -2,7 +2,7 @@
 //! so all of it can be tested headless.
 use crate::el::{Content, Cursor, Drag, El, Font, Key, Modal, Mods, OnDrag, OnKey, OnText, Paint, Phase, Response, Role, Scope, TextInput};
 use crate::morph::{self, Cmd, Ease, FlowSpec, MorphSpec, Particle};
-use crate::scene::{EVERYWHERE, Field, Instance, MESH, PICTURE, SHAPE, Scene};
+use crate::scene::{EVERYWHERE, Field, GLYPH, Instance, MESH, PICTURE, SHAPE, Scene};
 use crate::gaze;
 use crate::style::{Gaze, GazeMode, Look, gaze as kinds};
 use crate::text::{Face, MONO, Nav, Para, Text};
@@ -67,6 +67,7 @@ pub struct Node<M> {
     shed: Option<crate::motes::Shed>,
     flow_field: Option<crate::motes::FlowField>,
     stirr: Option<crate::el::Stirr>,
+    trace: Option<crate::strand::Trace>,
     /// The nearest flow id at or above this node, and the node that carries it.
     flow: Option<(Rc<str>, usize)>,
     /// The material override of this subtree as the instance code (0 = none, see `style::override_code`).
@@ -141,9 +142,9 @@ impl<M> Node<M> {
     pub fn editable(&self) -> bool { self.on_text.is_some() }
     /// How its text is laid out, when it is text: the same paragraph that is drawn.
     fn para(&self) -> Option<Para<'_>> {
-        let Content::Text { s, size, line, font, print, around, nowrap, .. } = &self.content else { return None };
+        let Content::Text { s, size, line, font, print, around, nowrap, track, .. } = &self.content else { return None };
         let width = if *nowrap { f32::INFINITY } else { self.inner.w + if around.is_some() { 0.0 } else { 1.0 } };
-        Some(Para { s, face: font.resolve([0; 3]), size: *size, line: *line, width, print: *print, around: around.as_deref() })
+        Some(Para { s, face: font.resolve([0; 3]), size: *size, line: *line, width, print: *print, around: around.as_deref(), track: *track })
     }
     fn origin(&self) -> (f32, f32) { (self.inner.x, self.inner.y) }
 }
@@ -179,7 +180,7 @@ struct Old { id: u64, tag: Option<Tag>, inst: Instance }
 
 /// A text's glyphs as last painted, kept to see what changed in the next view (DESIGN.md §1.16).
 /// `changed` is when its string last changed (seconds), to tell a readout that changes every frame.
-struct TextRec { s: String, face: u8, size: f32, line: f32, width: f32, print: f32, origin: (f32, f32), glyphs: Vec<(u64, Instance)>, changed: f32 }
+struct TextRec { s: String, face: u8, size: f32, line: f32, width: f32, print: f32, track: f32, origin: (f32, f32), glyphs: Vec<(u64, Instance)>, changed: f32 }
 /// One tile of a recomposition: its run (a morph tile, `morph::Particle`) and the pieces of the old and
 /// the new glyphs it shows, as instances placed relative to its source and its target cell.
 struct RTile { p: Particle, src: Vec<Instance>, dst: Vec<Instance> }
@@ -446,6 +447,15 @@ pub struct Ui<S, M> {
     stirr_at: HashMap<String, (f32, f32)>,
     fmap_size: (f32, f32),
     fmap_ink: u64,
+    /// scribblr (DESIGN.md §1.30): page instances whose fill is faded this frame (their own alpha), each
+    /// glyph's outlines by its atlas place, size and transform (relative to its rect), the threads held
+    /// for `hold_ms` (by element: the beat and the pieces), the threads drawn last (for tests and the
+    /// tree), and where each trace's head was.
+    strand_faded: HashMap<usize, f32>,
+    strand_cache: HashMap<u64, Vec<Vec<[f32; 2]>>>,
+    strand_hold: HashMap<String, (i64, f32, Vec<crate::strand::Seg>)>,
+    strand_drawn: Vec<(String, f32, Vec<crate::strand::Seg>)>,
+    trace_head: HashMap<String, [f32; 2]>,
 }
 
 /// One element of the accessibility mirror (DESIGN.md §1.14): what a screen reader is told about it.
@@ -535,6 +545,8 @@ pub struct Timing {
     pub scroll: crate::style::Scroll,
     /// The field map's numbers (DESIGN.md §1.29).
     pub map: crate::fieldmap::MapFx,
+    /// scribblr's numbers and how long its line holds a pose (DESIGN.md §1.30).
+    pub strand: crate::strand::StrandFx, pub hold_ms: f32, pub binary: bool,
 }
 impl Default for Timing {
     fn default() -> Self { Self::of(&Look::default()) }
@@ -543,7 +555,7 @@ impl Timing {
     pub fn of(l: &Look) -> Self {
         Self { wave_life: l.fx.wave_life, wave_speed: l.fx.wave_speed, enter: l.fx.enter, material: l.material.id(), overlay: l.overlay,
                fx: l.fx, legible_cap: l.legible_cap, loose_max: l.loose_max, recompose: l.recompose,
-               press: l.press_ms / 1000.0, roles: l.roles, transition: l.transition.duration_ms / 1000.0, scroll: l.scroll, map: l.map }
+               press: l.press_ms / 1000.0, roles: l.roles, transition: l.transition.duration_ms / 1000.0, scroll: l.scroll, map: l.map, strand: crate::strand::StrandFx::of(l.params[crate::style::Material::Scribblr as usize].0), hold_ms: l.hold_ms, binary: l.post.binary }
     }
 }
 
@@ -631,7 +643,7 @@ impl<S, M: Clone> Ui<S, M> {
             scrolling: Scrolling::default(), touch: None, touches: HashSet::new(), touching: false, fling: None, over: HashMap::new(), motion: HashMap::new(), scroll_paint: false, event_t: None,
             recs: HashMap::new(), recomps: HashMap::new(), slides: HashMap::new(), no_recompose: false,
             meshes: crate::mesh::Library::default(), mesh_hover: None, move_over: None, particle_gpu: false, motes: vec![], shed_at: HashMap::new(), shed_owed: HashMap::new(), field_marks: HashMap::new(), seen: HashMap::new(), outlines: HashMap::new(), decodes: HashMap::new(), decode_last: HashMap::new(), queued: vec![], flushing: false, motes_made: 0,
-            fmap: crate::fieldmap::FieldMap::default(), stirr_at: HashMap::new(), fmap_size: (0.0, 0.0), fmap_ink: u64::MAX,
+            fmap: crate::fieldmap::FieldMap::default(), stirr_at: HashMap::new(), fmap_size: (0.0, 0.0), fmap_ink: u64::MAX, strand_faded: HashMap::new(), strand_cache: HashMap::new(), strand_hold: HashMap::new(), strand_drawn: vec![], trace_head: HashMap::new(),
         };
         ui.resize(w, h, scale);
         ui
@@ -716,10 +728,16 @@ impl<S, M: Clone> Ui<S, M> {
     /// centre; the style's looseness scale is not applied.
     pub fn looseness(&self, key: &str, now: f32) -> f32 {
         let Some(root) = self.nodes.iter().position(|n| n.key == key) else { return 0.0 };
+        (0..self.page_len).filter(|&i| within(&self.nodes, self.owners[i].0, root)).map(|i| self.inst_loose(i, now)).fold(0.0, f32::max)
+    }
+    /// The looseness of page instance `i` at `now` (the rule of `looseness`).
+    fn inst_loose(&self, i: usize, now: f32) -> f32 {
         let tm = &self.timing;
-        (0..self.page_len).filter(|&i| within(&self.nodes, self.owners[i].0, root)).map(|i| {
-            let inst = &self.scene.instances[*self.lifted.get(&i).unwrap_or(&i)];
-            if inst.paint[2] <= 0.0 { return 0.0; }
+        {
+            let j = *self.lifted.get(&i).unwrap_or(&i);
+            let inst = &self.scene.instances[j];
+            // A fill scribblr faded is still the element it was.
+            if self.strand_faded.get(&j).copied().unwrap_or(inst.paint[2]) <= 0.0 { return 0.0; }
             let born = ((now - inst.extra[3]) / tm.enter.max(1e-3)).clamp(0.0, 1.0);
             let own = inst.extra[2].max(1.0 - born);
             let c = if inst.resp[1] > 1.5 { [inst.resp[2], inst.resp[3]] } else { [inst.rect[0] + inst.rect[2] * 0.5, inst.rect[1] + inst.rect[3] * 0.5] };
@@ -730,7 +748,7 @@ impl<S, M: Clone> Ui<S, M> {
                 w.clamp(0.0, (inst.resp[0] - own).max(0.0))
             } else { 0.0 };
             (own + add).min(tm.loose_max)
-        }).fold(0.0, f32::max)
+        }
     }
     /// The look the state asks for (`on_look`), or the default one.
     pub fn look(&self) -> Look { self.look_of.map_or_else(Look::default, |f| f(&self.state)) }
@@ -952,6 +970,8 @@ impl<S, M: Clone> Ui<S, M> {
         let split = self.split.as_ref().is_some_and(|sp| self.split_alive(sp, now));
         fronts || split || now < self.latest_birth + tm.enter || self.run.is_some() || !self.flows.is_empty() || !self.ghosts.is_empty()
             || self.fling.is_some() || !self.over.is_empty() || self.static_loose || !self.recomps.is_empty() || !self.slides.is_empty()
+            // The field map loosens things too (DESIGN.md §1.29): its material clock runs while it moves.
+            || self.fmap.moving(&tm.map)
     }
     /// What moves the ground clock: what acts on the whole window. A front scoped to one control or
     /// one area does not (DESIGN.md §1.19).
@@ -2083,12 +2103,12 @@ impl<S, M: Clone> Ui<S, M> {
             let measure = |input: taffy::LayoutInput, _: NodeId, ctx: Option<&mut usize>, style: &Style| {
                 let none = |_: *const (), _: f32| 0.0;
                 match ctx.map(|i| &nodes[*i].content) {
-                    Some(Content::Text { s, size, line, font, around, nowrap, .. }) => taffy::compute_leaf_layout(input, style, none, |known, avail| {
+                    Some(Content::Text { s, size, line, font, around, nowrap, track, .. }) => taffy::compute_leaf_layout(input, style, none, |known, avail| {
                         let limit = known.width.or(match avail.width { AvailableSpace::Definite(w) => Some(w), AvailableSpace::MinContent => Some(0.0), AvailableSpace::MaxContent => None });
                         // Text flowing around obstacles fills whatever width it is given; text kept on one
                         // line is as wide as it is.
                         let limit = if around.is_some() { limit.filter(|w| *w > 0.0).or(Some(600.0)) } else if *nowrap { None } else { limit };
-                        let (w, h) = text.measure_around(s, font.resolve([0; 3]), *size, *line, limit, around.as_deref());
+                        let (w, h) = text.measure_around(s, font.resolve([0; 3]), *size, *line, limit, crate::text::Setting { around: around.as_deref(), track: *track });
                         Size { width: known.width.unwrap_or(w), height: known.height.unwrap_or(h) }
                     }),
                     Some(Content::Picture { ratio, .. }) => taffy::compute_leaf_layout(input, style, none, |known, avail| {
@@ -2285,6 +2305,7 @@ impl<S, M: Clone> Ui<S, M> {
         if self.text.is_full() {
             self.text.refill();
             self.recomps.clear();
+            self.strand_cache.clear();
             self.recs.clear();
             self.ghosts.clear();
             self.paint_once();
@@ -2293,6 +2314,8 @@ impl<S, M: Clone> Ui<S, M> {
     fn paint_once(&mut self) {
         let t0 = crate::perf::now_ms();
         self.painting = true;
+        // The scene is new: nothing in it is faded by scribblr yet.
+        self.strand_faded.clear();
         self.paint_inner();
         self.scroll_field();
         self.painting = false;
@@ -2513,7 +2536,7 @@ impl<S, M: Clone> Ui<S, M> {
                     if n.recompose && role == 0 && !hidden && !under && (!self.no_recompose || n.recompose_always) {
                         let ids = glyphs.iter().enumerate().map(|(seq, (inst, glyph))| (ident(&n.key, seq as u32, *glyph), *inst)).collect();
                         seen_recs.insert(n.key.clone());
-                        jobs.push(RecJob { node: i, rec: TextRec { s: para.s.to_owned(), face: para.face, size: para.size, line: para.line, width: para.width, print: para.print, origin: n.origin(), glyphs: ids, changed: f32::NEG_INFINITY } });
+                        jobs.push(RecJob { node: i, rec: TextRec { s: para.s.to_owned(), face: para.face, size: para.size, line: para.line, width: para.width, print: para.print, track: para.track, origin: n.origin(), glyphs: ids, changed: f32::NEG_INFINITY } });
                     }
                     for (seq, (inst, glyph)) in glyphs.into_iter().enumerate() { put(&mut sink, inst, ident(&n.key, seq as u32, glyph), Some(glyph)); }
                     // Text being composed is underlined.
@@ -2767,6 +2790,23 @@ impl<S, M: Clone> Ui<S, M> {
             stirs.push(([last.0, last.1], [c.0, c.1], energy * a, fx.flow * a, radius, scope));
         }
         self.stirr_at.retain(|k, _| seen.contains(k));
+        // A trace's head stirs the map where it goes (DESIGN.md §1.30).
+        let mut heads: Vec<String> = vec![];
+        for (i, n) in self.nodes.iter().enumerate() {
+            let Some(tr) = n.trace.as_ref().filter(|t| t.stir > 0.0 && !n.hidden) else { continue };
+            let o = n.origin();
+            let h = crate::strand::at_length(&tr.points, crate::strand::length(&tr.points) * tr.progress.clamp(0.0, 1.0));
+            let h = [o.0 + h[0], o.1 + h[1]];
+            heads.push(n.key.clone());
+            let Some(last) = self.trace_head.insert(n.key.clone(), h) else { continue };
+            let d = ((h[0] - last[0]).powi(2) + (h[1] - last[1]).powi(2)).sqrt();
+            let energy = tr.stir * fx.stirr;
+            if d < 0.5 || energy <= 0.0 { continue; }
+            let Some(scope) = self.stir_scope(Some(i), &Scope::Container(None)) else { continue };
+            let a = (d / 24.0).min(1.0);
+            stirs.push((last, h, energy * a, fx.flow * a, fx.stirr_radius, scope));
+        }
+        self.trace_head.retain(|k, _| heads.contains(k));
         for (a, b, e, f, r, sc) in stirs { self.fmap.stir_along(a, b, e, f, r, sc); }
         !std::rc::Rc::ptr_eq(&before, &self.fmap.snapshot().bytes) && *before != *self.fmap.snapshot().bytes
     }
@@ -2863,6 +2903,161 @@ impl<S, M: Clone> Ui<S, M> {
         self.field_marks.retain(|k, _| fields.contains(k));
         changed
     }
+    /// scribblr's threads and the traces, as round-capped bars over the page (DESIGN.md §1.30). Each loose
+    /// text or shape element's fill fades by `strand::fill(k)` and one thread leaves its true outline;
+    /// at looseness 0 nothing is added and nothing is faded.
+    fn paint_strands(&mut self) {
+        use crate::strand::{self, Kind, Seg};
+        // Last frame's fades undone: looseness is measured on the element as it is.
+        for (&i, &a) in &self.strand_faded { if let Some(inst) = self.scene.instances.get_mut(i) { inst.paint[2] = a; } }
+        self.strand_faded.clear();
+        self.strand_drawn.clear();
+        let s = self.scale;
+        let now = self.now;
+        let screen = [0.0, 0.0, self.size.0 * s, self.size.1 * s];
+        let bar = |a: [f32; 2], b: [f32; 2], w: f32, paint: [f32; 4], look: [f32; 2], resp: [f32; 4], clip: [f32; 4]| -> Instance {
+            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+            let len = (dx * dx + dy * dy).sqrt();
+            let (cx, cy) = ((a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5);
+            Instance { rect: [cx - (len + w) * 0.5, cy - w * 0.5, len + w, w], uv: [w * 0.5, 0.0, 0.0, 0.0], paint, clip, extra: [0.0, 0.0, 0.0, -1e4], look: [look[0], look[1], 0.0, 0.0], resp, xf: if len > 0.0 { let (c, sn) = (dx / len, dy / len); [c - 1.0, -sn, sn, c - 1.0] } else { [0.0; 4] } }
+        };
+        // Traces, under any material: the drawn part, pushed by the map's flow.
+        let drift = self.timing.map.drift;
+        let mut out: Vec<Instance> = vec![];
+        for n in self.nodes.iter().filter(|n| n.trace.is_some() && !n.hidden) {
+            let tr = n.trace.as_ref().expect("filtered");
+            let o = n.origin();
+            let pts: Vec<[f32; 2]> = tr.points.iter().map(|p| {
+                let (x, y) = (o.0 + p[0], o.1 + p[1]);
+                let f = self.fmap.flow_at(x, y);
+                [(x + f[0] * drift * tr.pull) * s, (y + f[1] * drift * tr.pull) * s]
+            }).collect();
+            let pieces = strand::dashes(&pts, tr.progress, tr.dash * s, tr.gap * s);
+            let want: usize = pieces.iter().map(|p| p.len().saturating_sub(1)).sum();
+            let got = crate::budget::grant(want);
+            // Fewer bars than asked: every n-th point of each piece, still unbroken.
+            let every = if got == 0 { usize::MAX } else { want.div_ceil(got).max(1) };
+            if every == usize::MAX { continue; }
+            let clip = [n.clip.x * s, n.clip.y * s, n.clip.right() * s, n.clip.bottom() * s];
+            let p = tr.paint;
+            let w = line_px(tr.weight * s, self.timing.binary);
+            for piece in pieces {
+                let mut keep: Vec<[f32; 2]> = piece.iter().step_by(every).copied().collect();
+                if keep.last() != piece.last() { keep.push(*piece.last().expect("a point")); }
+                for ab in keep.windows(2) { out.push(bar(ab[0], ab[1], w, [p.tone, p.accent, p.alpha, SHAPE], [0.0, p.hue as f32], IGNORE, clip)); }
+            }
+        }
+        if self.timing.material != crate::style::Material::Scribblr.id() {
+            self.strand_hold.clear();
+            for i in out { self.scene.push(i); }
+            return;
+        }
+        let fx = self.timing.strand;
+        let hold = self.timing.hold_ms;
+        // The thread's pose follows the material clock, which runs only while something moves: an element
+        // held loose at rest keeps its pose and asks for no frames.
+        let clock = self.mclock;
+        let beat = if hold > 0.0 { (clock * 1000.0 / hold).floor() as i64 } else { (clock * 1000.0).round() as i64 };
+        let t = if hold > 0.0 { beat as f32 * hold / 1000.0 } else { clock };
+        // Each element's own glyphs and shapes (not pictures, 3D views or drawings), in reading order.
+        let mut own: Vec<Vec<usize>> = vec![vec![]; self.nodes.len()];
+        for i in 0..self.page_len.min(self.scene.instances.len()) {
+            let inst = &self.scene.instances[i];
+            if inst.paint[3] != GLYPH && inst.paint[3] != SHAPE { continue; }
+            if inst.paint[2] <= 0.0 || inst.rect[2] <= 0.0 || inst.rect[3] <= 0.0 { continue; }
+            own[self.owners[i].0].push(i);
+        }
+        // Morphs, recomposition and decoding hand over to the first pass's own ink pixel for pixel, so
+        // their elements loosen as plain does (no thread).
+        let running = self.run.is_some();
+        let (grain_k, atlas) = (if crate::budget::usage().scale < 0.5 { 2.0 } else { 1.0 }, &self.text.pixels);
+        let calm: Vec<[f32; 4]> = self.field.calm.iter().filter(|r| r[2] > r[0]).copied().collect();
+        let mut keep_hold: Vec<String> = vec![];
+        let mut fades: Vec<(usize, f32, f32)> = vec![];
+        for (ni, idx) in own.iter().enumerate() {
+            if idx.is_empty() { continue; }
+            let n = &self.nodes[ni];
+            if n.hidden || matches!(n.content, Content::Canvas(_)) || self.recomps.contains_key(&n.key) || self.decodes.contains_key(&n.key) || (running && self.roles[ni] != 0) || idx.iter().any(|&i| self.flows.contains_key(&self.owners[i].1)) { continue; }
+            let k = idx.iter().map(|&i| self.inst_loose(i, now)).fold(0.0, f32::max).clamp(0.0, 1.0);
+            if k <= 0.0 { continue; }
+            let f = strand::fill(k);
+            for &i in idx { fades.push((i, self.scene.instances[i].paint[2], f)); }
+            // The thread: held for `hold_ms` (the pose; its opacity follows `k` every frame).
+            let segs: Vec<Seg> = match self.strand_hold.get(&n.key) {
+                Some((b, _, segs)) if hold > 0.0 && *b == beat => segs.clone(),
+                _ => {
+                    let g = fx.grain * s * grain_k;
+                    let mut loops: Vec<Vec<[f32; 2]>> = vec![];
+                    // Where the first pass draws an instance the map carries (vertex shader: its centre's
+                    // flow × drift), so the thread starts on the outline as drawn.
+                    let carried = |inst: &Instance| -> [f32; 2] {
+                        let c = if inst.resp[1] > 1.5 { [inst.resp[2], inst.resp[3]] } else { [inst.rect[0] + inst.rect[2] * 0.5, inst.rect[1] + inst.rect[3] * 0.5] };
+                        let calm_here = calm.iter().any(|b| c[0] >= b[0] && c[1] >= b[1] && c[0] < b[2] && c[1] < b[3]);
+                        if inst.look[2] <= 0.5 || inst.look[3] >= 0.5 || inst.resp[1] < 0.5 || calm_here { return [0.0; 2]; }
+                        let f = self.fmap.flow_at(c[0] / s, c[1] / s);
+                        [f[0] * drift * s, f[1] * drift * s]
+                    };
+                    for &i in idx {
+                        let mut inst = self.scene.instances[i];
+                        let off = carried(&inst);
+                        if inst.paint[3] == SHAPE {
+                            inst.rect[0] += off[0];
+                            inst.rect[1] += off[1];
+                            loops.push(strand::box_outline(inst.rect, inst.uv[0], inst.xf, g));
+                            continue;
+                        }
+                        inst.rect[0] += off[0];
+                        inst.rect[1] += off[1];
+                        let key = { use std::hash::{Hash, Hasher}; let mut h = std::hash::DefaultHasher::new(); for v in inst.uv.iter().chain(&inst.rect[2..]).chain(&inst.xf) { v.to_bits().hash(&mut h); } g.to_bits().hash(&mut h); h.finish() };
+                        let rel = self.strand_cache.entry(key).or_insert_with(|| {
+                            let mut at = inst;
+                            at.rect[0] = 0.0; at.rect[1] = 0.0;
+                            at.clip = EVERYWHERE;
+                            strand::outline(&at, atlas, g)
+                        });
+                        for l in rel.iter() { loops.push(l.iter().map(|p| [p[0] + inst.rect[0], p[1] + inst.rect[1]]).collect()); }
+                    }
+                    let rest = strand::join(&loops);
+                    let scope = self.stir_scope(Some(ni), &Scope::Container(None)).map_or(screen, |b| [b[0] * s, b[1] * s, b[2] * s, b[3] * s]);
+                    // Text to read and controls (capped at `legible_cap`) have no bridges, knots or tail:
+                    // only the outline, leaving the glyph by at most a logical pixel (at the cap) and a word
+                    // at a time, so the text reads as itself with a live line on its edge, not a doubled
+                    // copy. Decoration passing through the same looseness is not quiet (no jump at the cap).
+                    let quiet = n.legible;
+                    let cap = self.timing.legible_cap.max(1e-3);
+                    let fx_n = if quiet { crate::strand::StrandFx { knot: 0.0, tail: 0.0, reach: fx.reach.min(1.0 / cap), ..fx } } else { fx };
+                    let c = strand::Ctx { k, t, seed: (ni as u32).wrapping_mul(7919) ^ beat as u32, scale: s, drift, scope, calm: &calm, window: screen, fine: if quiet { 0.0 } else { 1.0 } };
+                    let map = &self.fmap;
+                    let field = |x: f32, y: f32| (map.energy_at(x / s, y / s), map.flow_at(x / s, y / s));
+                    let want = rest.pts.len() * (1 + strand::knots(fx_n.knot, 1.0, k)) * 2 + 32;
+                    let got = crate::budget::grant(want);
+                    let mut segs = strand::thread(&rest, &fx_n, &c, &field, got);
+                    if quiet { segs.retain(|g| g.kind == Kind::Line); }
+                    segs
+                }
+            };
+            if hold > 0.0 { self.strand_hold.insert(n.key.clone(), (beat, k, segs.clone())); keep_hold.push(n.key.clone()); }
+            let first = self.scene.instances[idx[0]];
+            let alpha = idx.iter().map(|&i| self.scene.instances[i].paint[2]).fold(0.0, f32::max);
+            let (line_a, bridge_a) = strand::opacity(k);
+            let resp = [0.0, first.resp[1], first.resp[2], first.resp[3]];
+            let w = line_px(fx.weight * s, self.timing.binary);
+            for g in &segs {
+                let a = alpha * if g.kind == Kind::Line { line_a } else { bridge_a };
+                if a <= 0.0 { continue; }
+                out.push(bar(g.a, g.b, w, [first.paint[0], first.paint[1], a, SHAPE], [first.look[0], first.look[1]], resp, first.clip));
+            }
+            self.strand_drawn.push((n.key.clone(), k, segs));
+        }
+        self.strand_hold.retain(|k, _| keep_hold.contains(k));
+        for (i, a, f) in fades { self.strand_faded.insert(i, a); self.scene.instances[i].paint[2] = a * f; }
+        self.scene.instances.reserve(out.len());
+        for i in out { self.scene.push(i); }
+    }
+    /// The threads scribblr drew in the last frame: each element's key, its looseness and its pieces
+    /// (device px; DESIGN.md §1.30).
+    pub fn strands(&self) -> &[(String, f32, Vec<crate::strand::Seg>)] { &self.strand_drawn }
+
     /// The motes as instances, over the page (shapes in the ink, under the annotation layer).
     fn paint_motes(&mut self) {
         if self.motes.is_empty() && self.field_marks.is_empty() { return; }
@@ -2888,6 +3083,7 @@ impl<S, M: Clone> Ui<S, M> {
         let t0 = crate::perf::now_ms();
         self.animate();
         self.paint_decodes();
+        self.paint_strands();
         self.paint_motes();
         // The page as animated, with its motes: what the hover marks are drawn over.
         self.body_len = self.scene.instances.len();
@@ -2967,7 +3163,7 @@ impl<S, M: Clone> Ui<S, M> {
             // The first line in the accent, as the slate's title is.
             let proto = Instance { paint: [0.0, if k == 0 { 1.0 } else { 0.0 }, if k == 0 { 1.0 } else { 0.85 }, 0.0], look: ink, ..Default::default() };
             let mut out = vec![];
-            self.text.emit(Para { s: l, face: MONO, size: SIZE, line: LINE, width: 1e5, print: 0.0, around: None }, (x, y + k as f32 * LINE), proto, s, |mut i, _| { i.clip = clip; out.push(i); });
+            self.text.emit(Para { s: l, face: MONO, size: SIZE, line: LINE, width: 1e5, print: 0.0, around: None, track: 0.0 }, (x, y + k as f32 * LINE), proto, s, |mut i, _| { i.clip = clip; out.push(i); });
             self.scene.annot.extend(out);
         }
         if spark_h > 0.0 {
@@ -3288,7 +3484,7 @@ impl<S, M: Clone> Ui<S, M> {
             // Which glyph is in which part: its centre in the boxes of that byte range (as a selection).
             let s = self.scale;
             let mut parts = |rec: &TextRec, a: usize, b: usize| -> Vec<u8> {
-                let para = Para { s: &rec.s, face: rec.face, size: rec.size, line: rec.line, width: rec.width, print: rec.print, around: None };
+                let para = Para { s: &rec.s, face: rec.face, size: rec.size, line: rec.line, width: rec.width, print: rec.print, around: None, track: rec.track };
                 let boxes = [(0, a), (a, b), (b, rec.s.len())].map(|(x, y)| if x < y { self.text.boxes(para, rec.origin, x, y) } else { vec![] });
                 rec.glyphs.iter().map(|(_, g)| {
                     let (cx, cy) = ((g.rect[0] + g.rect[2] * 0.5) / s, (g.rect[1] + g.rect[3] * 0.5) / s);
@@ -3475,7 +3671,7 @@ impl<S, M: Clone> Ui<S, M> {
             let (w, _) = text.measure(str, MONO, SIZE, LINE, None);
             bar(out, dev(x) - t * 2.0, dev(y), dev(w) + t * 4.0, dev(LINE), 1.0, true);
             let proto = Instance { paint: [0.0, 0.0, 1.0, 0.0], look: col, ..Default::default() };
-            text.emit(Para { s: str, face: MONO, size: SIZE, line: LINE, width: 1e5, print: 0.0, around: None }, (x, y), proto, s, |mut i, _| { i.clip = clip; out.push(i); });
+            text.emit(Para { s: str, face: MONO, size: SIZE, line: LINE, width: 1e5, print: 0.0, around: None, track: 0.0 }, (x, y), proto, s, |mut i, _| { i.clip = clip; out.push(i); });
             w
         };
         let mut tags: Vec<Rect> = vec![];
@@ -3672,7 +3868,7 @@ fn response_caps<M>(n: &Node<M>, legible_cap: f32) -> (f32, f32, [f32; 4]) {
 
 impl TextRec {
     /// The same text without its glyphs.
-    fn clone_head(&self) -> TextRec { TextRec { s: self.s.clone(), face: self.face, size: self.size, line: self.line, width: self.width, print: self.print, origin: self.origin, glyphs: vec![], changed: self.changed } }
+    fn clone_head(&self) -> TextRec { TextRec { s: self.s.clone(), face: self.face, size: self.size, line: self.line, width: self.width, print: self.print, track: self.track, origin: self.origin, glyphs: vec![], changed: self.changed } }
 }
 
 /// The part of a glyph instance inside box `b` (x0, y0, x1, y1, device px), as an instance of its own:
@@ -3884,7 +4080,7 @@ fn measure_key(c: &Content) -> u64 {
 /// A virtual list's rows are built here, for what its viewport shows.
 #[allow(clippy::too_many_arguments)]
 fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], off: (bool, bool), flow: Option<(Rc<str>, usize)>, inh: Inherit, vx: &mut VirtCtx, built: &mut Built, nodes: &mut Vec<Node<M>>) -> usize {
-    let El { key, style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, annotate, gaze_scope, material, loosen, anchor, clips, calm, mut on_text, multiline, selectable, cursor, virt, access, ripple, mut on_pick, mut on_wheel, mut on_move, guide, skeleton, rtl, on_visible, on_outline, decode, mut children } = el;
+    let El { key, style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, mut on_text, multiline, selectable, cursor, virt, access, ripple, mut on_pick, mut on_wheel, mut on_move, guide, skeleton, rtl, on_visible, on_outline, decode, mut children } = el;
     let mut style = style;
     let mut inh = inh;
     if let Some(r) = rtl { inh.rtl = r; }
@@ -3941,7 +4137,7 @@ fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], of
     let placeholder = NodeId::from(0u64);
     nodes.push(Node {
         key, parent, rect: Rect::default(), clip: Rect::default(), inner: Rect::default(), scroll, horizontal, focusable, disabled: off, extent: 0.0,
-        content, fill, border, radius, on_press, on_key, on_drag, on_blur, loose, wipe, bar, reveal, commit, modal, hidden, shift, shed, flow_field, stirr, flow: flow.clone(),
+        content, fill, border, radius, on_press, on_key, on_drag, on_blur, loose, wipe, bar, reveal, commit, modal, hidden, shift, shed, flow_field, stirr, trace, flow: flow.clone(),
         mat: inh.code(), loosen: inh.loosen, annotate, scope: gaze_scope, anchor, clips, calm, on_text, multiline, selectable: inh.select, cursor,
         virt: virt_info, access, respond, legible, ripple: inh.scope.clone(), ripple_scope: ripple.container, recompose, recompose_always: is_text && ripple.recompose == Some(true), unframed: ripple.unframed, keyed,
         on_pick, on_wheel, on_move, guide, on_visible, on_outline, decode, skeleton: inh.skeleton, local: taffy::Layout::new(), tid: placeholder,
@@ -3955,3 +4151,7 @@ fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], of
     }
     i
 }
+
+/// A thread's width in device px: at least half a pixel, and a whole number of pixels (at least one)
+/// when the frame is two colours only, so a threshold neither breaks nor thickens it unevenly.
+fn line_px(w: f32, binary: bool) -> f32 { if binary { w.round().max(1.0) } else { w.max(0.5) } }

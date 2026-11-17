@@ -33,7 +33,7 @@ struct U {
   third: vec4f,
   burst: vec4f,    // a burst's rect, device px (x0, y0, x1, y1)
   burst_t: vec4f,  // its start time, strength, length (s); w: the legibility cap (Look::legible_cap)
-  mats: array<vec4f, 16>, // every material's numbers, two vec4s each (style.rs MAT_PARAMS)
+  mats: array<vec4f, 18>, // every material's numbers, two vec4s each (style.rs MAT_PARAMS)
   calm: array<vec4f, 4>,  // boxes fronts pass by (x0, y0, x1, y1, device px)
   qual: vec4f,     // the material resolution: 1 / q for the reduced pass (1 otherwise), q, its size w, h
   scopes: array<vec4f, 8>, // each front's scope box (x0, y0, x1, y1, device px): it reaches instances centred inside
@@ -44,7 +44,7 @@ struct U {
   scrollo: array<vec4f, 8>, // their content offsets (x, y, whole device px), trace strength, the way the content moves (±1 down/up, ±2 right/left)
   scrp: vec4f,     // the trace's lengths (device px): trail, misregistration, glitch slip, glitch band
   scrq: vec4f,     // the least time between two glitch slips (s)
-  post: array<vec4f, 6>, // the finishing pass (post.rs Post::pack): dither kind, levels, palette size, on; bloom strength, threshold, radius, dither strength; chroma offset, scanline strength, period, grain; vignette strength, radius, curvature, grain cell
+  post: array<vec4f, 6>, // the finishing pass (post.rs Post::pack): dither kind, levels, palette size, on; bloom strength, threshold, radius, dither strength; chroma offset, scanline strength, period, grain; vignette strength, radius, curvature, grain cell; invert
   pal: array<vec4f, 16>, // the palette, sRGB 0–1
   fmap: vec4f,     // the field map (DESIGN.md §1.29): cell (device px), drift (device px), nodes across, down (0: all zero, not read)
 };
@@ -60,7 +60,7 @@ struct U {
 @group(0) @binding(9) var lo: texture_2d<f32>;       // the material at reduced resolution (DESIGN.md §1.12)
 
 const PLAIN: i32 = 0; const DOT: i32 = 1; const HALFTONE: i32 = 2; const ASCII: i32 = 3; const PRINT: i32 = 4;
-const LINO: i32 = 5; const GLITCH: i32 = 6; const NEAR: i32 = 7;
+const LINO: i32 = 5; const GLITCH: i32 = 6; const NEAR: i32 = 7; const SCRIBBLR: i32 = 8;
 fn mp(m: i32, i: i32) -> vec4f { return u.mats[m * 2 + i]; }
 /// The material an instance (or a pixel) is drawn with: its override, or the global one.
 fn eff_mat(code: f32) -> i32 { if (code >= 127.5) { return i32(round(code)) % 16; } return i32(u.fd.x); }
@@ -680,6 +680,10 @@ fn scene_at(q: vec2f) -> vec3f {
 
 // plain: what is held or just born is faint rather than loose; the ground is flat. The square root
 // lets a partial looseness (beneath a dialog) read clearly; fully loose is 0.3.
+// scribblr: a flat ground and the ink exactly as stage 1 left it. The fill's fade and the thread that
+// leaves the outline are worked out on the CPU per element (strand.rs, DESIGN.md §1.30) and drawn into
+// stage 1, so a line over a loose glyph is never faded with it; at looseness 0 this is plain's frame.
+fn m_scribblr(p: vec2f) -> vec3f { return exact(p); }
 fn m_plain(p: vec2f) -> vec3f {
   let d = dec(p);
   return mix(gnd(p), d.rgb, d.a * mix(1.0, 0.3, sqrt(clamp(loose_t(p) * loose_scale(), 0.0, 1.0))));
@@ -1130,6 +1134,7 @@ fn shade_new(pf: vec2f) -> vec3f {
       case 5: { col = m_lino(p); }
       case 6: { col = m_glitch(p, is_pic); }
       case 7: { col = m_near(p); }
+      case 8: { col = m_scribblr(p); }
       default: { col = m_plain(p); }
     }
     col = scroll_trace(col, p, m, sc);
@@ -1319,7 +1324,8 @@ fn tr_eval(p: vec2f, x: f32) -> TS {
 @fragment fn fs_blit(@builtin(position) frag: vec4f) -> @location(0) vec4f { return textureLoad(tex0, vec2i(floor(frag.xy)), 0); }
 
 // ── The finishing pass (DESIGN.md §1.21): the kept frame on its way to the screen. In this order:
-// bloom → chromatic offset → scanlines → grain → vignette → curvature, then dither and the palette.
+// bloom → chromatic offset → scanlines → grain → vignette → curvature, then dither and the palette,
+// then the negative.
 // Curvature is the last thing done to the image, so its warp is worked out first and everything
 // before it is read where it lands; the dither is on the screen's own pixels.
 fn post_src(p: vec2f) -> vec3f { return textureSampleLevel(tex0, samp, p / u.res.xy, 0.0).rgb; }
@@ -1416,6 +1422,11 @@ fn dither_t(kind: f32, p: vec2f) -> f32 {
       s = clamp(floor(s * lv + 0.5 + (t - 0.5) * amp), vec3f(0.0), vec3f(lv)) / lv;
     }
     c = select(s, from_srgb(s), srgb);
+  }
+  // The negative, last of all and in the colours as stored (sRGB), so turning it on twice is the frame.
+  if (u.post[4].x > 0.5) {
+    let srgb = u.fd.y > 0.5;
+    c = select(vec3f(1.0) - c, from_srgb(vec3f(1.0) - to_srgb(c)), srgb);
   }
   return vec4f(c, 1.0);
 }

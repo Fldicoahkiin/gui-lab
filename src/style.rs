@@ -125,11 +125,17 @@ pub enum Material {
     /// ink, cool outside), the outline itself, and the looseness as a tint. A view of the machinery,
     /// so it has its own look at rest.
     Near = 7,
+    /// One thread writes the ink out and back (DESIGN.md §1.30): at rest the page is plain; a loose
+    /// element's fill fades as a single line of constant width leaves its true outline, wanders, knots
+    /// where the field map has energy and trails off along its flow. The line is geometry
+    /// (`strand.rs`), drawn as shapes in the first pass.
+    Scribblr = 8,
 }
-pub const MATERIAL_COUNT: usize = 8;
+pub const MATERIAL_COUNT: usize = 9;
 pub const MATERIALS: [(Material, &str); MATERIAL_COUNT] = [
     (Material::Plain, "plain"), (Material::Dot, "dot"), (Material::Halftone, "halftone"), (Material::Ascii, "ascii"), (Material::Print, "print"),
     (Material::Lino, "lino"), (Material::Glitch, "glitch"), (Material::Near, "near"),
+    (Material::Scribblr, "scribblr"),
 ];
 impl Material {
     /// Whether the material has a time term that moves loose things by itself (glitch's held rows,
@@ -161,6 +167,8 @@ pub const MAT_PARAMS: [&[MatParam]; MATERIAL_COUNT] = [
     &[mp("刻痕", 0.0, 1.0, 0.05, 2, "", 0.6), mp("刻带", 2.0, 40.0, 1.0, 0, "px", 12.0), mp("刀长", 2.0, 40.0, 1.0, 0, "px", 12.0), mp("刀距", 2.0, 16.0, 0.5, 1, "px", 7.0), mp("抖动", 0.0, 1.0, 0.05, 2, "", 0.4)],
     &[mp("行高", 1.0, 40.0, 1.0, 0, "px", 6.0), mp("位移", 0.0, 200.0, 2.0, 0, "px", 48.0), mp("色差", 0.0, 30.0, 0.5, 1, "px", 6.0), mp("保持", 16.0, 500.0, 2.0, 0, "ms", 90.0), mp("块", 4.0, 120.0, 2.0, 0, "px", 28.0)],
     &[mp("间距", 1.5, 12.0, 0.5, 1, "px", 3.0), mp("填充", 0.0, 1.0, 0.05, 2, "", 0.25)],
+    &[mp("线宽", 0.5, 3.0, 0.25, 2, "px", 1.0), mp("取样", 1.0, 6.0, 0.5, 1, "px", 2.0), mp("游走", 0.0, 64.0, 1.0, 0, "px", 24.0), mp("打结", 0.0, 1.0, 0.05, 2, "", 0.6),
+      mp("结的半径", 4.0, 80.0, 1.0, 0, "px", 28.0), mp("线头", 0.0, 400.0, 5.0, 0, "px", 160.0), mp("跟场走", 0.0, 2.0, 0.05, 2, "", 1.0), mp("折角", 0.0, 1.0, 0.05, 2, "", 0.7)],
 ];
 
 /// A material's numbers, in the order of `MAT_PARAMS` (unused places are 0).
@@ -401,6 +409,9 @@ pub struct Look {
     pub marks: Marks,
     /// The field map: trails of moving things, how they spread and settle (DESIGN.md §1.29).
     pub map: MapFx,
+    /// How long `scribblr`'s line holds a pose before it takes the next (ms; 0: every frame). Its width,
+    /// opacity and the fill's fade are not held (DESIGN.md §1.30).
+    pub hold_ms: f32,
 }
 pub use crate::fieldmap::MapFx;
 /// How marks on a 3D element follow its depth: nearer parts get larger marks (`depth_scale`: the
@@ -409,7 +420,7 @@ pub use crate::fieldmap::MapFx;
 #[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Marks { pub depth_scale: f32, pub depth_dim: f32 }
 impl Default for Look {
-    fn default() -> Self { Self { fx: Fx::default(), theme: DARK, material: Material::Dot, pics: [PicFx::default(); 8], params: MaterialParams::all(), gaze: Gaze::default(), loose_scale: 1.0, quality: 1.0, overlay: 0, legible_cap: LEGIBLE_CAP, loose_max: 1.0, recompose: crate::morph::Recompose::default(), particles: crate::morph::Particles::default(), press_ms: 350.0, roles: [crate::el::Response::Nudge, crate::el::Response::Loosen], transition: crate::preset::Transition { duration_ms: 0.0, steps: [crate::preset::Step { kind: crate::preset::StepKind::None, from: 0.0, to: 0.0, a: 0.0, b: 0.0, c: 0.0, d: 0.0, e: 0.0 }; 4] }, scroll: Scroll::default(), post: crate::post::Post::default(), marks: Marks::default(), map: MapFx::default() } }
+    fn default() -> Self { Self { fx: Fx::default(), theme: DARK, material: Material::Dot, pics: [PicFx::default(); 8], params: MaterialParams::all(), gaze: Gaze::default(), loose_scale: 1.0, quality: 1.0, overlay: 0, legible_cap: LEGIBLE_CAP, loose_max: 1.0, recompose: crate::morph::Recompose::default(), particles: crate::morph::Particles::default(), press_ms: 350.0, roles: [crate::el::Response::Nudge, crate::el::Response::Loosen], transition: crate::preset::Transition { duration_ms: 0.0, steps: [crate::preset::Step { kind: crate::preset::StepKind::None, from: 0.0, to: 0.0, a: 0.0, b: 0.0, c: 0.0, d: 0.0, e: 0.0 }; 4] }, scroll: Scroll::default(), post: crate::post::Post::default(), marks: Marks::default(), map: MapFx::default(), hold_ms: 0.0 } }
 }
 /// The default `Look::legible_cap`.
 pub const LEGIBLE_CAP: f32 = 0.15;

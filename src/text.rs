@@ -69,15 +69,23 @@ pub fn geist_bytes() -> [Vec<u8>; 5] {
 }
 
 /// A paragraph to draw: text, face, font size, line height and the width it was laid out at
-/// (logical px; infinite for text kept on one line).
+/// (logical px; infinite for text kept on one line). `track` is extra letter spacing in em
+/// (`El::tracking`), laid out by parley so measuring, drawing, carets and selections all see it.
 #[derive(Clone, Copy)]
-pub struct Para<'a> { pub s: &'a str, pub face: u8, pub size: f32, pub line: f32, pub width: f32, pub print: f32, pub around: Option<&'a Around> }
+pub struct Para<'a> { pub s: &'a str, pub face: u8, pub size: f32, pub line: f32, pub width: f32, pub print: f32, pub around: Option<&'a Around>, pub track: f32 }
+impl<'a> Para<'a> {
+    /// How it is set beyond its size and width.
+    pub fn setting(&self) -> Setting<'a> { Setting { around: self.around, track: self.track } }
+}
+/// How a paragraph is set beyond its size and width: what it flows around and its tracking (em).
+#[derive(Clone, Copy, Default)]
+pub struct Setting<'a> { pub around: Option<&'a Around>, pub track: f32 }
 
 #[derive(Clone, Copy)]
 struct Slot { x: u32, y: u32, w: u32, h: u32, left: i32, top: i32 }
 
-/// Text, face, size bits, line bits, width bits, what it flows around.
-type MeasureKey = (String, u8, u32, u32, u32, u64);
+/// Text, face, size bits, line bits, width bits, what it flows around, tracking bits.
+type MeasureKey = (String, u8, u32, u32, u32, u64, u32);
 
 struct Family { name: String, pixel: Option<f32>, data: Arc<Vec<u8>>, blob: u64 }
 
@@ -168,15 +176,16 @@ impl Text {
 
     /// The paragraph shaped and broken, from the cache when it was laid out before (same text, face,
     /// size, line height, width and obstacles); only a miss shapes (and counts in `shaped`).
-    fn layout(&mut self, s: &str, face: u8, size: f32, line: f32, max_width: Option<f32>, around: Option<&Around>) -> Rc<Layout<()>> {
+    fn layout(&mut self, s: &str, face: u8, size: f32, line: f32, max_width: Option<f32>, set: Setting<'_>) -> Rc<Layout<()>> {
+        let Setting { around, track } = set;
         let max_width = max_width.filter(|w| w.is_finite());
-        let k = (s.to_owned(), face, size.to_bits(), line.to_bits(), max_width.unwrap_or(-1.0).to_bits(), around.map_or(0, Around::id));
+        let k = (s.to_owned(), face, size.to_bits(), line.to_bits(), max_width.unwrap_or(-1.0).to_bits(), around.map_or(0, Around::id), track.to_bits());
         if let Some(l) = self.cache[0].get(&k) { return l.clone(); }
         if let Some(l) = self.cache[1].remove(&k) { self.cache[0].insert(k, l.clone()); return l; }
         // Text that fits on its line without breaking is laid out the same at any width it fits in: the
         // unbounded layout serves (what layout measured is what is drawn).
         if let Some(w) = max_width && around.is_none() {
-            let free = (k.0.clone(), k.1, k.2, k.3, (-1.0f32).to_bits(), k.5);
+            let free = (k.0.clone(), k.1, k.2, k.3, (-1.0f32).to_bits(), k.5, k.6);
             let l = self.cache[0].get(&free).or_else(|| self.cache[1].get(&free)).cloned();
             if let Some(l) = l && l.width() <= w && !s.contains('\n') {
                 self.cache[0].insert(k, l.clone());
@@ -184,20 +193,20 @@ impl Text {
             }
         }
         if self.cache[0].len() >= LAYOUT_CACHE { self.cache.swap(0, 1); self.cache[0].clear(); }
-        let l = Rc::new(self.shape(s, face, size, line, max_width, around));
+        let l = Rc::new(self.shape(s, face, size, line, max_width, set));
         // One line that did not need breaking is also the unbounded layout (see above).
         if max_width.is_some() && around.is_none() && l.lines().count() <= 1 && !s.contains('\n') {
-            self.cache[0].entry((k.0.clone(), k.1, k.2, k.3, (-1.0f32).to_bits(), k.5)).or_insert_with(|| l.clone());
+            self.cache[0].entry((k.0.clone(), k.1, k.2, k.3, (-1.0f32).to_bits(), k.5, k.6)).or_insert_with(|| l.clone());
         }
         self.cache[0].insert(k, l.clone());
         l
     }
     /// Shape and break `s` at `size` logical px. Measuring and drawing use this same layout, so the
     /// line breaks on screen are exactly the ones layout planned for.
-    fn shape(&mut self, s: &str, face: u8, size: f32, line: f32, max_width: Option<f32>, around: Option<&Around>) -> Layout<()> {
+    fn shape(&mut self, s: &str, face: u8, size: f32, line: f32, max_width: Option<f32>, set: Setting<'_>) -> Layout<()> {
         self.shaped += 1;
         let t0 = crate::perf::now_ms();
-        let l = self.shape_inner(s, face, size, line, max_width, around);
+        let l = self.shape_inner(s, face, size, line, max_width, set);
         self.shape_ms += crate::perf::now_ms() - t0;
         l
     }
@@ -205,11 +214,13 @@ impl Text {
     pub fn shape_ms(&self) -> f64 { self.shape_ms }
     /// Paragraph layouts held in the cache.
     pub fn cached(&self) -> usize { self.cache[0].len() + self.cache[1].len() }
-    fn shape_inner(&mut self, s: &str, face: u8, size: f32, line: f32, max_width: Option<f32>, around: Option<&Around>) -> Layout<()> {
+    fn shape_inner(&mut self, s: &str, face: u8, size: f32, line: f32, max_width: Option<f32>, set: Setting<'_>) -> Layout<()> {
+        let Setting { around, track } = set;
         if self.log_shapes { self.shape_log.push(s.to_owned()); }
         let size = self.size_for(face, size);
         let fi = (face as usize).min(self.families.len() - 1);
-        let mut l = self.build(s, fi, size, line, &[]);
+        let track = track * size;
+        let mut l = self.build(s, fi, size, line, track, &[]);
         match around {
             None => l.break_all_lines(max_width),
             Some(a) => {
@@ -217,8 +228,8 @@ impl Text {
                 let plan = plan_around(&mut l, s, a, max_width.unwrap_or(1e5), line, if a.min > 0.0 { a.min } else { crate::wrap::MIN_EM * size }, size, hy);
                 // Justified pieces: the same text again, with the extra advance as letter spacing on the
                 // clusters it follows, broken at exactly the planned places.
-                let spans: Vec<(std::ops::Range<usize>, f32)> = plan.iter().flat_map(|p| p.after.iter().map(|r| (r.clone(), p.extra)).chain(p.letters.iter().map(|r| (r.clone(), p.track)))).collect();
-                if !spans.is_empty() { l = self.build(s, fi, size, line, &spans); }
+                let spans: Vec<(std::ops::Range<usize>, f32)> = plan.iter().flat_map(|p| p.after.iter().map(|r| (r.clone(), p.extra + track)).chain(p.letters.iter().map(|r| (r.clone(), p.track + track)))).collect();
+                if !spans.is_empty() { l = self.build(s, fi, size, line, track, &spans); }
                 set_planned(&mut l, s, &plan, max_width.unwrap_or(1e5));
             }
         }
@@ -232,8 +243,9 @@ impl Text {
     }
     /// Whether line `ln` of `p` ends in a hyphenated break (it flows around obstacles with hyphens on).
     fn hyphenated(p: &Para<'_>, end: usize) -> bool { p.around.is_some_and(|a| a.hyphenate) && crate::wrap::hyphenated_at(p.s, end) }
-    /// The paragraph shaped (not yet broken), with extra letter spacing on the given byte ranges.
-    fn build(&mut self, s: &str, fi: usize, size: f32, line: f32, spacing: &[(std::ops::Range<usize>, f32)]) -> Layout<()> {
+    /// The paragraph shaped (not yet broken), with `track` letter spacing (logical px) throughout and
+    /// other spacing on the given byte ranges.
+    fn build(&mut self, s: &str, fi: usize, size: f32, line: f32, track: f32, spacing: &[(std::ops::Range<usize>, f32)]) -> Layout<()> {
         let mut b = self.layouts.ranged_builder(&mut self.fonts, s, 1.0, true);
         // The first registered face (the proportional one, with CJK) backs up any face that lacks a
         // character, so a monospaced face can still show Chinese.
@@ -241,18 +253,21 @@ impl Text {
         b.push_default(StyleProperty::FontFamily(FontFamily::List(std::borrow::Cow::Borrowed(&stack))));
         b.push_default(StyleProperty::FontSize(size));
         b.push_default(LineHeight::Absolute(line));
+        if track != 0.0 { b.push_default(StyleProperty::LetterSpacing(track)); }
         for (r, v) in spacing { b.push(StyleProperty::LetterSpacing(*v), r.clone()); }
         b.build(s)
     }
 
     /// Width and height of a paragraph in logical px when limited to `max_width`.
-    pub fn measure(&mut self, s: &str, face: u8, size: f32, line: f32, max_width: Option<f32>) -> (f32, f32) { self.measure_around(s, face, size, line, max_width, None) }
-    /// The same, flowing around obstacles: the width is the whole column's, the height reaches the last line.
-    pub fn measure_around(&mut self, s: &str, face: u8, size: f32, line: f32, max_width: Option<f32>, around: Option<&Around>) -> (f32, f32) {
-        let k = (s.to_owned(), face, size.to_bits(), line.to_bits(), max_width.unwrap_or(-1.0).to_bits(), around.map_or(0, Around::id));
+    pub fn measure(&mut self, s: &str, face: u8, size: f32, line: f32, max_width: Option<f32>) -> (f32, f32) { self.measure_around(s, face, size, line, max_width, Setting::default()) }
+    /// The same, flowing around obstacles (the width is the whole column's, the height reaches the last
+    /// line) and tracked (`Setting`).
+    pub fn measure_around(&mut self, s: &str, face: u8, size: f32, line: f32, max_width: Option<f32>, set: Setting<'_>) -> (f32, f32) {
+        let Setting { around, track } = set;
+        let k = (s.to_owned(), face, size.to_bits(), line.to_bits(), max_width.unwrap_or(-1.0).to_bits(), around.map_or(0, Around::id), track.to_bits());
         if let Some(v) = self.measured.get(&k) { return *v; }
         if self.measured.len() > 4096 { self.measured.clear(); }
-        let l = self.layout(s, face, size, line, max_width, around);
+        let l = self.layout(s, face, size, line, max_width, set);
         let v = match around {
             None => (l.width().ceil(), l.height().ceil()),
             Some(_) => (max_width.unwrap_or(l.width()).ceil(), l.lines().map(|ln| ln.metrics().block_max_coord).fold(0.0f32, f32::max).ceil()),
@@ -264,7 +279,7 @@ impl Text {
     /// Where a caret at byte `index` of a paragraph goes: x, top and height, logical px. `origin` is
     /// where the paragraph is drawn.
     pub fn caret(&mut self, p: Para<'_>, origin: (f32, f32), index: usize) -> Option<crate::ui::Rect> {
-        let l = self.layout(p.s, p.face, p.size, p.line, Some(p.width), p.around);
+        let l = self.layout(p.s, p.face, p.size, p.line, Some(p.width), p.setting());
         let at = index.min(p.s.len());
         let b = parley::Cursor::from_byte_index(&l, at, parley::Affinity::Downstream).geometry(&l, 1.0);
         let h = (b.y1 - b.y0) as f32;
@@ -273,12 +288,12 @@ impl Text {
     /// The byte index (on a cluster boundary) nearest to the point (x, y), logical px; `origin` is where
     /// the paragraph is drawn. A point beyond the text goes to the nearest line's end.
     pub fn hit(&mut self, p: Para<'_>, origin: (f32, f32), x: f32, y: f32) -> usize {
-        let l = self.layout(p.s, p.face, p.size, p.line, Some(p.width), p.around);
+        let l = self.layout(p.s, p.face, p.size, p.line, Some(p.width), p.setting());
         parley::Cursor::from_point(&l, x - origin.0, y - origin.1).index().min(p.s.len())
     }
     /// The boxes (one per line, logical px) that bytes `a..b` cover: where a selection is.
     pub fn boxes(&mut self, p: Para<'_>, origin: (f32, f32), a: usize, b: usize) -> Vec<crate::ui::Rect> {
-        let l = self.layout(p.s, p.face, p.size, p.line, Some(p.width), p.around);
+        let l = self.layout(p.s, p.face, p.size, p.line, Some(p.width), p.setting());
         let (a, b) = (a.min(p.s.len()), b.min(p.s.len()));
         if a >= b { return vec![]; }
         let sel = parley::Selection::new(parley::Cursor::from_byte_index(&l, a, parley::Affinity::Downstream), parley::Cursor::from_byte_index(&l, b, parley::Affinity::Upstream));
@@ -287,7 +302,7 @@ impl Text {
     /// Each laid-out line's box, logical px from `origin`: from the line's start to the end of its last
     /// visible character (trailing spaces hang and are left out), over the line's full height.
     pub fn line_boxes(&mut self, p: Para<'_>, origin: (f32, f32)) -> Vec<crate::ui::Rect> {
-        let l = self.layout(p.s, p.face, p.size, p.line, Some(p.width), p.around);
+        let l = self.layout(p.s, p.face, p.size, p.line, Some(p.width), p.setting());
         let hy = self.hyphen_advance(p.face as usize, self.size_for(p.face, p.size));
         l.lines().map(|ln| {
             let m = ln.metrics();
@@ -298,13 +313,13 @@ impl Text {
     }
     /// Where each laid-out line's text ends (byte index).
     pub fn line_ends(&mut self, p: Para<'_>) -> Vec<usize> {
-        let l = self.layout(p.s, p.face, p.size, p.line, Some(p.width), p.around);
+        let l = self.layout(p.s, p.face, p.size, p.line, Some(p.width), p.setting());
         l.lines().map(|ln| ln.text_range().end).collect()
     }
     /// Where the caret goes from byte `at` by the layout: a line up or down (keeping its x), or the start
     /// or end of its visual line.
     pub fn nav(&mut self, p: Para<'_>, at: usize, to: Nav) -> usize {
-        let l = self.layout(p.s, p.face, p.size, p.line, Some(p.width), p.around);
+        let l = self.layout(p.s, p.face, p.size, p.line, Some(p.width), p.setting());
         let s = parley::Selection::from_byte_index(&l, at.min(p.s.len()), parley::Affinity::Downstream);
         let s = match to { Nav::Up => s.previous_line(&l, false), Nav::Down => s.next_line(&l, false), Nav::LineStart => s.line_start(&l, false), Nav::LineEnd => s.line_end(&l, false) };
         s.focus().index().min(p.s.len())
@@ -334,7 +349,7 @@ impl Text {
     /// The same, leaving out lines entirely outside `rows` (device px, top and bottom): what a clip
     /// hides is not even made into instances.
     pub fn emit_in(&mut self, p: Para<'_>, origin: (f32, f32), proto: Instance, scale: f32, rows: Option<(f32, f32)>, mut out: impl FnMut(Instance, u32)) {
-        let l = self.layout(p.s, p.face, p.size, p.line, Some(p.width), p.around);
+        let l = self.layout(p.s, p.face, p.size, p.line, Some(p.width), p.setting());
         let para_pixel = self.is_pixel(p.face);
         // A pixel face starts on a whole device pixel so its pixels land on the screen's.
         let (ox, oy) = if para_pixel { ((origin.0 * scale).round(), (origin.1 * scale).round()) } else { (origin.0 * scale, origin.1 * scale) };

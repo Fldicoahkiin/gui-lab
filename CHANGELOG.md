@@ -9,6 +9,10 @@
 - 尾迹：`El::stirr` 的元素动了就沿走过的路搅一下，`Cmd::Stir` 可以搅一点、一个元素或一条路径的一段；浮动窗口、底部面板、卡片叠默认带尾迹，强弱由预设定（Normcore 没有）。Trails: `El::stirr` and `Cmd::Stir`, on by default for the floating window, the sheet and the card stack.
 - 读场图：第一遍里它是一份松开度（照样受可读上限和响应管），会被推的实例顺着流向漂开（图片和三维元素在原地松开）；dot 的底点和 glitch 的底读它；`Ui::looseness` 用同一个值。留尾迹而有底色的元素画在上面一层，经过的松开的装饰不会透过它。Reading the map in both passes and on the CPU.
 - 页面 `#stirr`（概念一组），十二个数都是数字控件；F2 读数加一行；`check` 第 19 条（原来的第 19 条“效果”改为第 17 条）、`bench … map`、`craft <目录> stirr`。The `#stirr` page, check 19, a bench row and samples.
+- 线的材质 `scribblr`（`src/strand.rs`）：静止时和 plain 逐字节相同；松开时填充淡下去，墨变成一根连续的细线，沿字的真实轮廓走、用桥连成一笔，再松就游走、打结、甩出顺着流向的线头，收回时倒着来。可读的字只有贴着轮廓的线。八个数在材质参数里，`Look::hold_ms` 让线一拍一换姿势。The `scribblr` material: loose ink becomes one continuous thread that knots and trails off with the flow, and writes itself back.
+- 长路径 `El::trace`：按进度画出的长折线，可以是虚线（`dash`、`gap`，按弧长从起点算），被流向推歪，头经过处搅动场图；`#stirr` 页的“Draw a line”。The long-path element with dashes.
+- 线从第一遍画出来的轮廓起头（加上场图推开实例的那一段），要读的字的线离轮廓最多一个像素、整词一起偏；结是缠的圈，不是刺；线头出范围时切在边上。The thread starts on the outline as drawn; text to read keeps a tight line; knots tangle; the tail is cut at the scope's edge.
+- 页面 `#material-scribblr`；`check` 第 20 条、`bench … strand`、`craft <目录> scribblr`、`tests/strand.rs`。The page, check 20, a bench row, samples and tests.
 
 ## 16 — 基础的收尾、实验室的墙、形体 · Foundation leftovers, the Lab as a wall, Body
 
