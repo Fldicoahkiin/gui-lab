@@ -2703,7 +2703,11 @@ impl<S, M: Clone> Ui<S, M> {
             // The lens (DESIGN.md §1.15): a picture or a 3D element that fronts may loosen and that the
             // pointer is not there to operate (no handler on it or above it) shows its marks under it.
             if resp[0] > 0.0 && resp[1] < 1.5 && matches!(n.content, Content::Picture { .. } | Content::Scene3d(_)) && !operated(&self.nodes, i) { resp[3] = 1.0; }
-            let loose = if held[i] { own_cap } else if under { n.loose.max(n.loosen).max(beneath) } else { n.loose.max(n.loosen) };
+            // A subtree held loose (`El::loosen`, as an effect on existing text puts it) holds its text to
+            // read and controls at most `legible_cap`; a heading is a title and takes the whole number.
+            let heading = n.access.as_ref().is_some_and(|a| a.role == Some(crate::el::Role::Heading));
+            let held_at = if n.legible && !heading { n.loosen.min(self.timing.legible_cap) } else { n.loosen };
+            let loose = if held[i] { own_cap } else if under { n.loose.max(held_at).max(beneath) } else { n.loose.max(held_at) };
             let loose = loose.max(pulled(&self.nodes, i).min(own_cap));
             let mat = n.mat;
             let dim = if n.disabled { 0.4 } else { 1.0 };
