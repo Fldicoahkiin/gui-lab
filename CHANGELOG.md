@@ -10,6 +10,12 @@ Newest first. The acceptance checks for each part are in [DESIGN.md §7](docs/DE
   macro generate a wasm module's exports from an application's state and message types. The `App`
   trait is how a shell routes, reads the route, takes clipboard requests, and sets the look, the
   language and reduced motion; every method has a default.
+- Native screen readers: `app::access` builds an AccessKit tree from the accessibility mirror for the
+  window (UI Automation, NSAccessibility, AT-SPI) and turns Focus, Click, Increment and Decrement into the
+  runtime's focus, activation and arrow keys.
+- The mirror says more: `El::expanded`, `El::description`, `El::live` (`Role::Status` is polite by
+  default), `El::invalid`, `El::required`. The accordion, select and popover report `expanded` instead of
+  `checked`.
 - `web/amenui.js`, the `amenui` npm package: the page side of the web entry (`mount`, `stage`, `css`).
 - `offscreen::read_back`: one frame drawn into a texture of a given format and read back.
 - `error::WindowError`.

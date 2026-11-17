@@ -474,6 +474,11 @@ pub struct A11yNode {
     pub checked: Option<bool>,
     pub selected: Option<bool>,
     pub level: u8,
+    pub expanded: Option<bool>,
+    pub description: Option<String>,
+    pub live: Option<crate::el::Live>,
+    pub invalid: bool,
+    pub required: bool,
     pub modal: bool,
     pub disabled: bool,
     pub focusable: bool,
@@ -1553,7 +1558,9 @@ impl<S, M: Clone> Ui<S, M> {
             index[i] = Some(out.len());
             out.push(A11yNode {
                 key: n.key.clone(), parent: up.map(|k| out[k].key.clone()), role, name, value: a.value, text: a.text, checked: a.checked, selected: a.selected,
-                level: a.level, modal: n.modal.is_some() || (role == Role::Dialog && self.modal_at.is_some()), disabled: n.disabled, focusable: n.focusable, rect: n.rect,
+                level: a.level, expanded: a.expanded, description: a.description, invalid: a.invalid, required: a.required,
+                live: a.live.or((role == Role::Status).then_some(crate::el::Live::Polite)),
+                modal: n.modal.is_some() || (role == Role::Dialog && self.modal_at.is_some()), disabled: n.disabled, focusable: n.focusable, rect: n.rect,
             });
         }
         out
