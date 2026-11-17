@@ -24,9 +24,9 @@ use winit::window::WindowId;
 /// Open a window and run the application until the window closes.
 ///
 /// `setup` is called with the renderer before the first frame (to register pictures and meshes), and
-/// again with a new one if the GPU device is lost;
-/// `make` builds the `Ui` from the bundled faces, the window's size in device px and its scale. The
-/// window then opens `window.route` through [`App::route`], if there is one.
+/// again with a new one if the GPU device is lost. `make` builds the `Ui` from the faces (the bundled
+/// ones, compiled in by [`crate::text::embedded`], then the system's), the window's size in device px
+/// and its scale. The window then opens `window.route` through [`App::route`], if there is one.
 pub fn run<S: App + 'static, M: Clone + 'static>(
     window: Window,
     setup: impl Fn(&mut Renderer) + 'static,
@@ -100,7 +100,7 @@ impl<S: App, M: Clone> Shell<S, M> {
         let (r, config, info) = gpu(&instance, &surface, window.inner_size(), &lost, self.opts.report)?;
         let mut r = r;
         (self.setup)(&mut r);
-        let mut faces = crate::text::load_bundled(crate::text::ASSETS)?;
+        let mut faces = crate::text::embedded();
         // Scripts the bundled faces lack come from the system's fonts.
         faces.push(Face::system());
         let mut ui = make(faces, config.width, config.height, window.scale_factor() as f32);

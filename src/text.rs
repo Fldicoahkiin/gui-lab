@@ -85,6 +85,14 @@ pub fn load_bundled(dir: &str) -> Result<Vec<Face>, crate::error::FontError> {
     let geist = GEIST_FILES.iter().map(|f| r(f)).collect::<Result<Vec<_>, _>>()?;
     Ok(with_serif(with_geist(bundled(r(SANS_FILE)?, r(PIXEL_FILE)?, r(MONO_FILE)?), geist), r(SERIF_FILE)?))
 }
+/// Every bundled face, compiled into the binary (native only): what a native application ships with,
+/// so it finds its fonts on any machine. About 14 MB, most of it the two Chinese faces.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn embedded() -> Vec<Face> {
+    let main = bundled(include_bytes!("../assets/NotoSansSC-Regular.otf").to_vec(), include_bytes!("../assets/FusionPixel-12px-Proportional-zh_hans.otf").to_vec(),
+        include_bytes!("../assets/DepartureMono-Regular.otf").to_vec());
+    with_serif(with_geist(main, geist_bytes()), serif_bytes())
+}
 /// The serif, compiled in (the web build).
 pub fn serif_bytes() -> Vec<u8> { include_bytes!("../assets/SourceSerif4-8pt-subset.ttf").to_vec() }
 /// Geist Pixel's five faces, compiled in (the web build).

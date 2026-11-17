@@ -84,7 +84,7 @@ fn update(s: &mut Counter, m: Msg) {
     match m { Msg::Inc => s.n += 1 }
 }
 
-let faces = amenui::text::load_bundled(amenui::text::ASSETS).expect("bundled fonts");
+let faces = amenui::text::embedded();
 let mut ui = amenui::ui::Ui::new(Counter { n: 0 }, view, update, faces, 400, 300, 1.0);
 let (x, y) = ui.node("inc").unwrap().rect.center();
 ui.press(x, y);

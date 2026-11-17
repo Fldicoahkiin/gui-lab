@@ -41,7 +41,7 @@ let _ = (view(&S { n: 0 }), update as fn(&mut S, Msg));
 # #[derive(Clone)] enum Msg { Inc } struct S { n: u32 }
 # fn view(s: &S) -> El<Msg> { col().child(text(s.n.to_string(), 20.0, Paint::INK).key("count")).child(button("inc", "+", Msg::Inc)) }
 # fn update(s: &mut S, _: Msg) { s.n += 1 }
-let faces = amenui::text::load_bundled(concat!(env!("CARGO_MANIFEST_DIR"), "/assets")).expect("fonts");
+let faces = amenui::text::embedded();
 let mut ui = amenui::ui::Ui::new(S { n: 0 }, view, update, faces, 400, 300, 1.0);
 let (x, y) = ui.node("inc").unwrap().rect.center();
 ui.press(x, y);

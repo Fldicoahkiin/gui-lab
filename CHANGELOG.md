@@ -2,6 +2,12 @@
 
 Newest first. The acceptance checks for each part are in [DESIGN.md §7](docs/DESIGN.md).
 
+Versions follow [Semantic Versioning](https://semver.org) as Cargo reads it: before 1.0, a change to
+the second number (0.1 → 0.2) may break code, and a change to the third (0.1.0 → 0.1.1) does not. The
+crate and the `amenui` npm package (`web/`) always carry the same version, because the page side must
+match the module that `web_app!` generates. The minimum Rust is the one CI builds with (`rust-version`
+in Cargo.toml); raising it is a breaking change before 1.0 only in the second number.
+
 ## Running applications
 
 - `amenui::app`: the framework runs applications itself. `app::native::run` opens a winit window
@@ -26,6 +32,12 @@ Newest first. The acceptance checks for each part are in [DESIGN.md §7](docs/DE
   `i18n::installed()` lists the application's. `Locale::name` returns a `String`.
 - `App::set_appearance` (`Appearance { dark, high_contrast }`), `App::files_hovering` and
   `App::files_dropped` (`Dropped` with a path natively, name and bytes on the web), from both shells.
+- The native window draws with the bundled faces compiled in (`text::embedded`), so a shipped binary
+  finds its fonts anywhere. `WindowError::Font` is gone.
+- `amenui add` writes from the sources compiled into it (`sources::file`, `add::write` replaces
+  `add::copy`), so an installed command works without the repository.
+- Crate metadata for crates.io (description, keywords, categories, `rust-version`); the package
+  leaves out CI (8.7 MiB compressed, under the 10 MiB limit).
 - The native window recovers from a lost GPU device: new device and renderer, `setup` again, the `Ui`
   untouched. `native::run`'s `setup` is now `Fn`.
 - `web/amenui.js`, the `amenui` npm package: the page side of the web entry (`mount`, `stage`, `css`).

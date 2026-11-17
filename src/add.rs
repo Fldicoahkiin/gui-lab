@@ -1,6 +1,6 @@
 //! `amenui add`: copy a component's source into a project, shadcn-style (DESIGN.md §3). The registry
 //! (`registry.json`) names each component's files and the components it depends on; `add` resolves
-//! the dependencies, then copies every file, keeping its path under the destination (so
+//! the dependencies, then writes every file, keeping its path under the destination (so
 //! `src/widgets/button.rs` lands at `<to>/src/widgets/button.rs`), and says what it wrote. A file that
 //! is already there is left alone unless `overwrite` is set.
 use crate::error::AddError;
@@ -33,14 +33,17 @@ fn near(n: &str, known: &[&str]) -> String {
         for i in 1..=a.len() { let mut c = vec![i; b.len() + 1]; for j in 1..=b.len() { c[j] = (p[j] + 1).min(c[j - 1] + 1).min(p[j - 1] + usize::from(a[i - 1] != b[j - 1])); } p = c; } p[b.len()] };
     known.iter().min_by_key(|k| d(n, k)).map(|s| s.to_string()).unwrap_or_default()
 }
-/// Copy `files` from the framework's root `from` to `to`; returns the files written.
-pub fn copy(from: &Path, to: &Path, files: &[String], overwrite: bool) -> Result<Vec<PathBuf>, AddError> {
+/// Write `files` (paths from [`files`]) under `to`, from the sources compiled into the framework
+/// ([`crate::sources::file`]); returns the files written.
+pub fn write(to: &Path, files: &[String], overwrite: bool) -> Result<Vec<PathBuf>, AddError> {
     let mut wrote = vec![];
     for f in files {
-        let (src, dst) = (from.join(f), to.join(f));
+        let src = crate::sources::file(f).ok_or_else(|| AddError::Registry(format!("`{f}` is listed but not compiled into amenui::sources")))?;
+        let dst = to.join(f);
         if dst.exists() && !overwrite { continue; }
-        if let Some(p) = dst.parent() { std::fs::create_dir_all(p).map_err(|e| AddError::Io { path: p.display().to_string(), msg: e.to_string() })?; }
-        std::fs::copy(&src, &dst).map_err(|e| AddError::Io { path: src.display().to_string(), msg: e.to_string() })?;
+        let io = |p: &Path, e: std::io::Error| AddError::Io { path: p.display().to_string(), msg: e.to_string() };
+        if let Some(p) = dst.parent() { std::fs::create_dir_all(p).map_err(|e| io(p, e))?; }
+        std::fs::write(&dst, src).map_err(|e| io(&dst, e))?;
         wrote.push(dst);
     }
     Ok(wrote)
