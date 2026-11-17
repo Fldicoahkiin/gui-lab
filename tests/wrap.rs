@@ -183,3 +183,66 @@ fn an_effect_leaves_the_text_to_read_as_the_material_rests() {
     }
     eprintln!("the least alike to its rest: {:.2} % ({})", worst.0 * 100.0, worst.1);
 }
+
+#[test]
+fn controls_in_a_loosened_subtree_keep_their_fill_and_label_as_at_rest() {
+    // Controls (buttons, a field, a switch, tabs) under an effect, the subtree loosened to 0.3, 0.45,
+    // 0.6 and 1, in the seven materials that loosen: in each control's box (2 px larger) at least 99 %
+    // of the pixels are the material's own frame at rest, and the audit finds no P0 or P1.
+    use amenui::drive::Driven;
+    use amenui::el::{Effect, Response, Scope};
+    use amenui::offscreen::Offscreen;
+    use amenui::style::Material;
+    use amenui::widgets::{TextEdit, Variant, button, button_as, input, switch, tabs};
+    // Under an effect, and in a subtree marked decoration as a whole (a specimen of the material).
+    struct P { m: Material, k: f32, decoration: bool }
+    const KEYS: [&str; 5] = ["send", "save", "name", "live", "views"];
+    fn view(s: &P) -> El<()> {
+        let root = col().key("root");
+        let root = if s.decoration { root.legible(false) } else { root };
+        root.pad(24.0, 24.0).gap(16.0)
+            .child(text_lh("A heading the effect may take apart", 26.0, 32.0, Paint::INK).key("title").role(amenui::el::Role::Heading))
+            .child(amenui::el::row().key("bar").gap(12.0).child(button_as("send", "Send", Variant::Accent, ())).child(button("save", "Save", ())))
+            .child(input("name", &TextEdit::new("Ada Lovelace"), "Name", 260.0, 64, |_| ()))
+            .child(switch("live", "Live", true, None, ()))
+            .child(tabs("views", &["Notes", "Pictures", "Links"], 0, 16.0, 2.0, |_| (), col()))
+            .effect(Effect { material: Some(s.m), response: Some(Response::Loosen), scope: Some(Scope::Container(None)) }).loosen(s.k)
+    }
+    let (w, h) = (520u32, 340u32);
+    let Ok(mut o) = Offscreen::try_new(w, h) else { eprintln!("no GPU adapter here: skipped"); return };
+    let shot = |o: &mut Offscreen, m: Material, k: f32, decoration: bool| {
+        let mut ui = Ui::new(P { m, k, decoration }, view, |_, _| {}, font(), w, h, 1.0);
+        ui.tick(6.0);
+        let look = ui.look();
+        let px = o.render(&mut ui, &look);
+        (ui, px)
+    };
+    let mut worst = (1.0f32, String::new());
+    let mut fails = vec![];
+    for (m, decoration) in [Material::Dottr, Material::Halftonr, Material::Charr, Material::Smudgr, Material::Carvr, Material::Glitchr, Material::Scribblr].into_iter().flat_map(|m| [(m, false), (m, true)]) {
+        let (_, rest) = shot(&mut o, m, 0.0, decoration);
+        for k in [0.3, 0.45, 0.6, 1.0] {
+            let (mut ui, px) = shot(&mut o, m, k, decoration);
+            for key in KEYS {
+                let b = ui.node(key).expect(key).rect;
+                let (mut same, mut all) = (0usize, 0usize);
+                for y in ((b.y - 2.0).floor() as i32).max(0)..((b.bottom() + 2.0).ceil() as i32).min(h as i32) {
+                    for x in ((b.x - 2.0).floor() as i32).max(0)..((b.right() + 2.0).ceil() as i32).min(w as i32) {
+                        let i = ((y as u32 * w + x as u32) * 4) as usize;
+                        all += 1;
+                        if px[i..i + 4] == rest[i..i + 4] { same += 1; }
+                    }
+                }
+                let share = same as f32 / all.max(1) as f32;
+                let at = format!("{}{} at {k} `{key}`", m.name(), if decoration { " (decoration)" } else { "" });
+                if share < worst.0 { worst = (share, at.clone()); }
+                if share < 0.99 { fails.push(format!("{at}: {:.2} %", share * 100.0)); }
+            }
+            let look = ui.look();
+            let found = ui.audit(&mut o, &look, &px);
+            for f in found.iter().filter(|f| f.level <= amenui::audit::Level::P1 && f.key != "title") { fails.push(format!("{} at {k}: {:?} {} {:?}", m.name(), f.level, f.key, f.kind)); }
+        }
+    }
+    eprintln!("the least alike to its rest: {:.2} % ({})", worst.0 * 100.0, worst.1);
+    assert!(fails.is_empty(), "{fails:#?}");
+}

@@ -4752,7 +4752,12 @@ fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], of
     // Ripple settings: written ones pass down; otherwise text and controls are nudged and legible,
     // everything else loosens (DESIGN.md §1.15).
     let is_text = matches!(content, Content::Text { .. });
-    inh.control |= focusable || on_press.is_some() || on_drag.is_some() || on_text.is_some();
+    let own_control = focusable || on_press.is_some() || on_drag.is_some() || on_text.is_some();
+    // A control keeps its label readable even in a subtree marked decoration (`legible(false)` on an
+    // ancestor, a specimen that comes apart whole): it and what it holds are legible again unless it
+    // says otherwise itself. A picture, a drawing or a 3D view that takes presses stays decoration.
+    if own_control && ripple.legible.is_none() && inh.legible == Some(false) && !matches!(content, Content::Picture { .. } | Content::Canvas(_) | Content::Scene3d(_)) { inh.legible = None; }
+    inh.control |= own_control;
     inh.field |= on_text.is_some();
     if ripple.respond.is_some() { inh.respond = ripple.respond; }
     if ripple.legible.is_some() { inh.legible = ripple.legible; }

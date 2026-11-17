@@ -38,8 +38,10 @@ pub fn tabs<M: Clone + 'static>(key: &str, labels: &[&str], current: usize, gap:
             .child(text(*l, LABEL + 1.0, if on { Paint::INK } else { Paint::DIM }))
             .child(if on { line.fill(Paint::ACCENT) } else { line }));
     }
+    // The list and its rule are the control: held at the legibility cap with the tabs' labels, so an
+    // effect on the page leaves them as they rest (the panel is the page's own).
     col().key(key).gap(0.0)
-        .child(head)
-        .child(space(0.0, LINE).fill_width().fill(Paint::FAINT))
+        .child(head.legible(true))
+        .child(space(0.0, LINE).fill_width().fill(Paint::FAINT).legible(true))
         .child(col().key(format!("{key}/panel")).pad(0.0, 14.0).child(panel))
 }
