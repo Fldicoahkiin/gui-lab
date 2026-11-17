@@ -60,6 +60,45 @@ pub trait App {
     fn set_look(&mut self, _theme: &str, _material: &str) -> bool { false }
     /// The system's reduced-motion preference (the runtime's own parts follow it already).
     fn set_reduced_motion(&mut self, _on: bool) {}
+    /// The system's appearance: at start and whenever it changes. An application that follows the
+    /// system picks its theme here. Returns whether it changed anything (the shell lays out again).
+    fn set_appearance(&mut self, _appearance: Appearance) -> bool { false }
+    /// Files were dropped on the window or the canvas. Returns whether anything changed.
+    fn files_dropped(&mut self, _files: Vec<Dropped>) -> bool { false }
+    /// Files are being dragged over the window (`true`) or left it without a drop (`false`).
+    /// Returns whether anything changed.
+    fn files_hovering(&mut self, _on: bool) -> bool { false }
+}
+
+/// The system's appearance preferences.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Appearance {
+    /// The system asks for a dark appearance.
+    pub dark: bool,
+    /// The system asks for more contrast (the web page's `prefers-contrast: more`, Windows' high
+    /// contrast through the browser). Native windows report `false`: winit does not expose it.
+    pub high_contrast: bool,
+}
+
+/// A file dropped on the application.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Dropped {
+    /// The file's name, without its folder.
+    pub name: String,
+    /// Where it is (native windows; the application reads it when it wants).
+    pub path: Option<std::path::PathBuf>,
+    /// Its contents (web pages, which cannot see paths).
+    pub bytes: Option<Vec<u8>>,
+}
+
+impl Dropped {
+    /// A file on disk.
+    pub fn path(path: std::path::PathBuf) -> Self {
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        Self { name, path: Some(path), bytes: None }
+    }
+    /// A file's name and contents.
+    pub fn bytes(name: impl Into<String>, bytes: Vec<u8>) -> Self { Self { name: name.into(), path: None, bytes: Some(bytes) } }
 }
 
 /// A native window's options. `Window::from_args` reads the standard command line:
@@ -152,5 +191,12 @@ mod tests {
         assert_eq!(w.exit_after, Some(3000.0));
         assert!(w.report);
         assert!(!Window::new("t").with_args([]).report);
+    }
+
+    #[test]
+    fn a_dropped_path_is_named_by_its_file() {
+        let d = Dropped::path("/tmp/notes/a b.txt".into());
+        assert_eq!(d.name, "a b.txt");
+        assert!(d.bytes.is_none());
     }
 }

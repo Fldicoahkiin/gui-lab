@@ -193,6 +193,24 @@ export async function mount(stage, opts) {
     // Reduced motion: the application's own moving parts rest (App::set_reduced_motion in Rust).
     const rm = window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
     if (rm) { w.set_reduced_motion(rm.matches); if (rm.addEventListener) rm.addEventListener('change', e => { w.set_reduced_motion(e.matches); kick(); }); }
+    // The system's appearance: dark or light, and more contrast (App::set_appearance in Rust).
+    const mq = q => window.matchMedia ? window.matchMedia(q) : null;
+    const dark = mq('(prefers-color-scheme: dark)'), contrast = mq('(prefers-contrast: more)');
+    const look = () => { w.set_appearance(!!(dark && dark.matches), !!(contrast && contrast.matches)); after(); };
+    w.set_appearance(!!(dark && dark.matches), !!(contrast && contrast.matches));
+    for (const m of [dark, contrast]) if (m && m.addEventListener) m.addEventListener('change', look);
+    // Files dropped on the canvas: read in the page, handed over one by one, then together (App::files_dropped).
+    let over = false;
+    const hover = on => { if (on !== over) { over = on; w.files_hovering(on); after(); } };
+    canvas.addEventListener('dragover', e => { if (e.dataTransfer && [...e.dataTransfer.types].includes('Files')) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; hover(true); } });
+    canvas.addEventListener('dragleave', () => hover(false));
+    canvas.addEventListener('drop', async e => {
+      if (!e.dataTransfer || !e.dataTransfer.files.length) return;
+      e.preventDefault();
+      over = false;
+      for (const f of e.dataTransfer.files) w.drop_file(f.name, new Uint8Array(await f.arrayBuffer()));
+      w.drop_done(now()); after();
+    });
     window.addEventListener('hashchange', kick);
     new ResizeObserver(() => { fit(); w.resize(canvas.width, canvas.height, dpr); kick(); }).observe(stage);
     kick();
