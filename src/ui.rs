@@ -160,6 +160,10 @@ pub struct Node<M> {
     pub ongoing: bool,
     /// The pointer passes through it (`El::pass`).
     pub pass: bool,
+    /// Its own opacity (`El::opacity`).
+    pub opacity: f32,
+    /// Its opacity with its ancestors' (0: not drawn, takes no pointer).
+    pub opacity_all: f32,
     /// The box layout gave it, relative to its parent (scrolling does not change it).
     local: taffy::Layout,
     tid: NodeId,
@@ -854,6 +858,9 @@ impl<S, M: Clone> Ui<S, M> {
     /// The viewer asked for less motion (the web page's `prefers-reduced-motion`): the field map keeps
     /// its energy but puts in no flow, and lives half as long.
     pub fn set_reduced_motion(&mut self, on: bool) { self.fmap.reduced = on; }
+    /// The viewer asked for less motion (`Ui::set_reduced_motion`): what the framework brings in and
+    /// takes away fades over 150 ms instead of loosening and moving.
+    pub fn reduced_motion(&self) -> bool { self.fmap.reduced }
     /// The text system, to change (mark the atlas for upload after a new device).
     pub fn text_mut(&mut self) -> &mut Text { &mut self.text }
     /// Device px per logical px.
@@ -2092,7 +2099,7 @@ impl<S, M: Clone> Ui<S, M> {
         let grown = |r: Rect| { let (gw, gh) = ((MIN_HIT - r.w).max(0.0) * 0.5, (MIN_HIT - r.h).max(0.0) * 0.5); r.inset(-gw, -gh, -gw, -gh) };
         let d = |r: Rect| { let (cx, cy) = r.center(); (cx - x).powi(2) + (cy - y).powi(2) };
         (self.modal_at.unwrap_or(0)..self.nodes.len()).rev()
-            .filter(|&i| { let n = &self.nodes[i]; n.active() && !n.hidden && (n.rect.w < MIN_HIT || n.rect.h < MIN_HIT) && n.clip.contains(x, y) && grown(n.rect).contains(x, y) })
+            .filter(|&i| { let n = &self.nodes[i]; n.active() && !n.hidden && !n.pass && n.opacity_all > 0.0 && (n.rect.w < MIN_HIT || n.rect.h < MIN_HIT) && n.clip.contains(x, y) && grown(n.rect).contains(x, y) })
             .min_by(|&a, &b| d(self.nodes[a].rect).total_cmp(&d(self.nodes[b].rect)))
             .or(h)
     }
@@ -2100,7 +2107,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// Topmost node under a point, honouring clips; one the pointer passes through (`El::pass`) is not
     /// there. While a modal layer is open only it can be hit.
     fn hit(&self, x: f32, y: f32) -> Option<usize> {
-        (self.modal_at.unwrap_or(0)..self.nodes.len()).rev().find(|&i| { let n = &self.nodes[i]; !n.hidden && !n.pass && crate::hit::contains(&n.rect, n.xf.as_ref(), x, y) && n.clip.contains(x, y) })
+        (self.modal_at.unwrap_or(0)..self.nodes.len()).rev().find(|&i| { let n = &self.nodes[i]; !n.hidden && !n.pass && n.opacity_all > 0.0 && crate::hit::contains(&n.rect, n.xf.as_ref(), x, y) && n.clip.contains(x, y) })
     }
     /// The glyph drawn under (x, y) (logical px) in what was painted last: the nearest one, wherever
     /// its pose put it (on a path, on a form), with its element's key, its number in the text, its
@@ -2780,6 +2787,7 @@ impl<S, M: Clone> Ui<S, M> {
             };
             0.85 * (o.abs() / max_over).min(1.0).sqrt() * (1.0 - dist.max(0.0) / PULL_REACH).max(0.0)
         });
+        let mut group: Option<(usize, u32, f32)> = None;
         for i in 0..self.nodes.len() {
             let n = &self.nodes[i];
             if Some(i) == self.modal_at { self.scene.begin_layer(); }
@@ -2791,6 +2799,17 @@ impl<S, M: Clone> Ui<S, M> {
             held[i] = self.pressed.as_deref() == Some(n.key.as_str()) || n.parent.is_some_and(|p| held[p]);
             stirred[i] = n.stirr.is_some() || n.parent.is_some_and(|p| stirred[p]);
             unit[i] = n.parent.and_then(|p| unit[p]).or(n.active().then_some(i));
+            // A see-through subtree (`El::opacity`) is drawn as one group: it ends where the subtree does.
+            if let Some((root, start, op)) = group && !within(&self.nodes, i, root) {
+                let end = self.scene.instances.len() as u32;
+                if end > start { self.scene.groups.push(crate::scene::Group { start, end, opacity: op }); }
+                group = None;
+            }
+            // Fully see-through: not drawn (a screen reader still finds it).
+            if n.opacity_all <= 0.0 { continue; }
+            if group.is_none() && n.opacity < 1.0 { group = Some((i, self.scene.instances.len() as u32, n.opacity_all)); }
+            // Within a group, a see-through descendant is made so by its own alpha.
+            let fade = group.map_or(1.0, |(_, _, op)| n.opacity_all / op.max(1e-6));
             let seen = n.rect.intersect(&n.clip);
             if seen.w <= 0.0 || seen.h <= 0.0 || veiled[i] { continue; }
             let role = self.roles[i];
@@ -2830,7 +2849,7 @@ impl<S, M: Clone> Ui<S, M> {
             let loose = if held[i] { own_cap } else if under { n.loose.max(held_at).max(beneath) } else { n.loose.max(held_at) };
             let loose = loose.max(pulled(&self.nodes, i).min(own_cap));
             let mat = n.mat;
-            let dim = if n.disabled { 0.4 } else { 1.0 };
+            let dim = if n.disabled { 0.4 } else { 1.0 } * fade;
             let mut sink = Sink { scene: &mut self.scene, owners: &mut self.owners, tags: &mut self.tags, unseen: &mut self.unseen, counters: &mut counters, latest: &mut latest, loose: &mut any_loose };
             let nk = { use std::hash::{Hash, Hasher}; let mut h = std::hash::DefaultHasher::new(); n.key.hash(&mut h); h.finish() };
             let text_born = self.text_births.get(&nk).copied();
@@ -3049,6 +3068,7 @@ impl<S, M: Clone> Ui<S, M> {
                 }
             }
         }
+        if let Some((_, start, op)) = group && (self.scene.instances.len() as u32) > start { self.scene.groups.push(crate::scene::Group { start, end: self.scene.instances.len() as u32, opacity: op }); }
         // Text whose string changed: the changed glyphs recompose, the others keep their birth and slide.
         if !jobs.is_empty() || !self.recs.is_empty() {
             self.recompose_jobs(jobs, &mut births);
@@ -3780,7 +3800,8 @@ impl<S, M: Clone> Ui<S, M> {
         for g in self.ghosts.iter().filter(|g| g.inst.paint[3] != MESH) {
             let p = ((now - g.start) / g.dur.max(1e-4)).clamp(0.0, 1.0);
             let mut inst = g.inst;
-            inst.extra[2] = inst.extra[2].max(p);
+            // Less motion: it only fades.
+            if !self.fmap.reduced { inst.extra[2] = inst.extra[2].max(p); }
             inst.paint[2] *= 1.0 - p;
             self.scene.push(inst);
         }
@@ -3969,7 +3990,7 @@ impl<S, M: Clone> Ui<S, M> {
             self.base[i].extra[3] = o.inst.extra[3];
         }
         for (k, o) in old.iter().enumerate() {
-            if !used[k] && !new_ids.contains(&o.id) && spec.out_ms > 0.0 { self.ghosts.push(Ghost { inst: o.inst, start: now, dur: spec.out_ms / 1000.0 }); }
+            if !used[k] && !new_ids.contains(&o.id) && spec.out_ms > 0.0 { self.ghosts.push(Ghost { inst: o.inst, start: now, dur: if self.fmap.reduced { REDUCED_FADE } else { spec.out_ms / 1000.0 } }); }
         }
         self.animating = true;
         self.finish();
@@ -4540,6 +4561,9 @@ impl Inherit {
 const IGNORE: [f32; 4] = [0.0, -1.0, 0.0, 0.0];
 /// A decode transition running over one element (DESIGN.md §1.28): forward when it appeared, backwards
 /// over its last instances when it went.
+/// How long what comes and goes fades when the viewer asked for less motion, s.
+pub const REDUCED_FADE: f32 = 0.15;
+
 struct DecodeRun { start: f32, reverse: bool, spec: crate::decode::Decode, plan: Option<crate::decode::Plan>, ghost: Vec<Instance>, clip: Option<[f32; 4]> }
 /// What a decoded element showed in the last frame: its instances, its own spec and its clip (device
 /// px), so it goes as it came, inside the box it was seen in.
@@ -4782,7 +4806,7 @@ fn measure_key(c: &Content) -> u64 {
 /// A virtual list's rows are built here, for what its viewport shows.
 #[allow(clippy::too_many_arguments)]
 fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], off: (bool, bool), flow: Option<(Rc<str>, usize)>, inh: Inherit, vx: &mut VirtCtx, built: &mut Built, nodes: &mut Vec<Node<M>>) -> usize {
-    let El { key, style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, mut on_text, multiline, selectable, cursor, virt, access, ripple, mut on_pick, mut on_wheel, mut on_move, guide, skeleton, rtl, on_visible, on_outline, decode, form, turn, reveal_by, ongoing, pass, mut children } = el;
+    let El { key, style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, mut on_text, multiline, selectable, cursor, virt, access, ripple, mut on_pick, mut on_wheel, mut on_move, guide, skeleton, rtl, on_visible, on_outline, decode, form, turn, reveal_by, ongoing, pass, opacity, mut children } = el;
     let mut style = style;
     let mut inh = inh;
     if let Some(r) = rtl { inh.rtl = r; }
@@ -4847,7 +4871,7 @@ fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], of
         content, fill, border, radius, on_press, on_key, on_drag, on_blur, loose, wipe, bar, reveal, commit, modal, hidden, shift, shed, flow_field, stirr, trace, flow: flow.clone(),
         mat: inh.code(), loosen: inh.loosen, annotate, scope: gaze_scope, anchor, clips, calm, on_text, multiline, selectable: inh.select, cursor,
         virt: virt_info, access, respond, legible, ripple: inh.scope.clone(), ripple_scope: ripple.container, recompose, recompose_always: is_text && ripple.recompose == Some(true), unframed: ripple.unframed, keyed,
-        on_pick, on_wheel, on_move, guide, on_visible, on_outline, decode, skeleton: inh.skeleton, form, turn, xf: None, reveal_by, ongoing: ongoing || parent.is_some_and(|p| nodes[p].ongoing), pass, local: taffy::Layout::new(), tid: placeholder,
+        on_pick, on_wheel, on_move, guide, on_visible, on_outline, decode, skeleton: inh.skeleton, form, turn, xf: None, reveal_by, ongoing: ongoing || parent.is_some_and(|p| nodes[p].ongoing), pass, opacity, opacity_all: opacity * parent.map_or(1.0, |p| nodes[p].opacity_all), local: taffy::Layout::new(), tid: placeholder,
     });
     built.styles.push(style);
     built.kids.push(vec![]);
