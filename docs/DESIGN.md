@@ -2135,7 +2135,9 @@ release, the page is identical pixel for pixel to how it was before and wants no
 - **What leaves takes its field with it**: an element that leaves with its page (a page change, a closed dialog)
   (its nearest keyed ancestor goes too) leaves nothing: where it stirred the map, drew a flow or a decode, or was a
   ripple's scope, the map is cleared over its box, and when none of the old keyed elements is left the whole map is
-  (`Ui::forget_gone`, `FieldMap::clear_in`), so no field or colour of its stays on the next page. `audit::off_palette` counts
+  (`Ui::forget_gone`, `FieldMap::clear_in`), so no field or colour of its stays on the next page. A press's front still
+  running when the page changes belongs to the press: it goes on over the new page as a whole ring at half its
+  strength, its old scope (which went with the old page) dropped. `audit::off_palette` counts
   pixels in no colour the theme makes (the ground mixed toward the ink or an accent), and `tests/fieldmap.rs` checks it
   is 0 on the page after.
 - **Numbers** (`MapFx`, in `Look::map` and a preset's `interaction.map`; each a number control): `cell` 8–32 (16),

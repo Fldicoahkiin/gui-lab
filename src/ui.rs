@@ -2584,7 +2584,18 @@ impl<S, M: Clone> Ui<S, M> {
             // Its own decode goes with it when its container went too.
         }
         for k in &self.left { self.decodes.remove(k); }
-        if !any_kept && old.iter().any(|n| n.keyed) { clear = vec![crate::fieldmap::EVERYWHERE]; }
+        if !any_kept && old.iter().any(|n| n.keyed) {
+            clear = vec![crate::fieldmap::EVERYWHERE];
+            // A press's front still running belongs to the press, not to what it pressed: it goes on
+            // over the new page, at half its strength, as a whole ring (its old scope went with its page).
+            for k in 0..self.field.fronts.len() {
+                if self.field.fronts[k][3] > 0.0 {
+                    self.field.scopes[k] = crate::scene::EVERYWHERE;
+                    self.field.fronts[k][3] *= 0.5;
+                    self.field.sources[k] = 0;
+                }
+            }
+        }
         for b in clear { self.fmap.clear_in(b); }
     }
     /// Absolute rects, clips and scroll extents from the laid-out (relative) boxes and the scroll

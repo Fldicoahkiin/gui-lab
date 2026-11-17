@@ -218,3 +218,40 @@ fn an_element_that_leaves_with_its_page_leaves_no_field() {
     for _ in 0..120 { step(&mut ui, &mut t); if ui.needs_frame(t) { asked += 1; } let look = ui.look(); let _ = o.render(&mut ui, &look); ui.frame_drawn(); }
     assert_eq!(asked, 0, "{asked} frames asked for after the page went");
 }
+
+#[test]
+fn a_press_front_that_outlives_its_page_runs_on_as_a_whole_ring() {
+    // The press on "Reader" changes the page; 50 ms later its front shows on the new page all round the
+    // press, in all four quadrants, not only along the old row.
+    let (w, h) = (400u32, 300u32);
+    let Ok(mut o) = amenui::offscreen::Offscreen::try_new(w, h) else { eprintln!("no GPU adapter here: skipped"); return };
+    o.r.partial = false;
+    let look = |_: &route::R| Look::default();
+    let mut ui = Ui::new(route::R { index: true }, route::view, |s, _| s.index = !s.index, fonts(), w, h, 1.0).on_look(look);
+    let mut t = 0.0;
+    for _ in 0..60 { t += 1.0 / 60.0; ui.tick(t); let l = ui.look(); let _ = o.render(&mut ui, &l); }
+    let (px, py) = ui.node("go").expect("go").rect.center();
+    ui.press(px, py);
+    ui.release(px, py);
+    ui.pointer_leave();
+    assert!(!ui.state.index, "the page changed");
+    let mut at50 = vec![];
+    for k in 1..=180 { t += 1.0 / 60.0; ui.tick(t); let l = ui.look(); let f = o.render(&mut ui, &l); if k == 3 { at50 = f; } }
+    let l = ui.look();
+    let rest = o.render(&mut ui, &l);
+    let title = ui.node("reader/title").expect("title").rect;
+    let mut quads = [0usize; 4];
+    let mut far = [0usize; 2];
+    for (i, (a, b)) in at50.chunks_exact(4).zip(rest.chunks_exact(4)).enumerate() {
+        if a == b { continue; }
+        let (x, y) = ((i as u32 % w) as f32, (i as u32 / w) as f32);
+        // The new title is still coming in: not the front.
+        if x >= title.x - 4.0 && x <= title.right() + 4.0 && y >= title.y - 4.0 && y <= title.bottom() + 4.0 { continue; }
+        quads[(if x < px { 0 } else { 1 }) + (if y < py { 0 } else { 2 })] += 1;
+        if (y - py).abs() > 40.0 { if y < py { far[0] += 1; } else { far[1] += 1; } }
+    }
+    eprintln!("more than 40 px above and below the press: {far:?}");
+    assert!(far[0] > 0 && far[1] > 0, "the front reaches beyond the old row, above and below: {far:?}");
+    eprintln!("pixels changed by quadrant about the press: {quads:?}");
+    assert!(quads.iter().all(|q| *q > 0), "the front shows in every quadrant about the press: {quads:?}");
+}
