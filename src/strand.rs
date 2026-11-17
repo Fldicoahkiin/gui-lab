@@ -13,13 +13,19 @@
 //!     sides of a stroke become one line and then long chords across letters; the vertices left move by
 //!     `reach` (a smooth curl, weight 0.4, and a jag along the path, 0.3–1 each) and with the map's flow;
 //!  4. one to three knots where the map's energy is highest along the line, the most energetic the
-//!     largest and the others smaller by `knot_fall`, each off the line above or below it: lopsided
-//!     stars of 14–22 chords through their centre, of very different lengths, a few escaping well
-//!     past its radius (`escape`);
+//!     largest and the others smaller by `knot_fall`, each off the line above or below it and moved
+//!     clear of text to read: tangles (`tangle`) of one thin line looping through itself dozens of
+//!     times, a few strokes escaping past its radius (`escape`); a knot of fewer than `MIN_KNOT`
+//!     points is not drawn;
 //!  5. two tails: one from the scope's edge into the line's start, one from its end out to an edge,
-//!     long and straight with `tail_turns` gentle bends, stopping before text to read; drawn at
-//!     `tail_tone` of the line's opacity, so the knots stand out bright against quiet lines;
-//!  6. corners cut by `1 − angular`.
+//!     one long slow curve with `tail_turns` gentle bends and a slight waver of the hand, stopping
+//!     before text to read; drawn at `tail_tone` of the line's opacity, so the knots stand out bright
+//!     against quiet lines;
+//!  6. past `k = 0.3` the line bends toward the curve through its vertices (`curve`), by
+//!     `(1 − angular) × smooth(0.3, 0.7, k)`; then any piece that would cross text to read goes round it.
+//!
+//! Every curve is a uniform cubic B-spline drawn as short straight pieces (`curve`); when the budget is
+//! short the pieces turn up to 30° instead of 15°, then the knots lose points, then lose themselves.
 //!
 //! At `k = 0` there is nothing: no segment exists, so rest is plain's by construction.
 #![warn(missing_docs)]
@@ -36,7 +42,7 @@ pub struct StrandFx {
     pub grain: f32,
     /// How far loose vertices wander.
     pub reach: f32,
-    /// How many chords the knots have (0: no knots).
+    /// How large and dense the knots are (0: no knots).
     pub knot: f32,
     /// The largest knot's radius.
     pub knot_r: f32,
@@ -44,11 +50,11 @@ pub struct StrandFx {
     pub tail: f32,
     /// How much the map's flow carries the line.
     pub pull: f32,
-    /// How sharp its corners stay (1: as they are; less cuts them).
+    /// How sharp its corners stay (1: as they are; less bends the loose line into a curve).
     pub angular: f32,
     /// Each knot after the largest is this much the size of the one before (about: 1, 0.55, 0.35).
     pub knot_fall: f32,
-    /// Chords of each knot that escape to 1.4–2 times its radius.
+    /// Strokes of each knot that escape to 1.5–2.2 times its radius.
     pub escape: f32,
     /// How many gentle bends (each at most 25°) a tail has.
     pub tail_turns: f32,
@@ -75,14 +81,14 @@ impl StrandFx {
 /// | name | what | range | step | default |
 /// |---|---|---|---|---|
 /// | `knot_fall` | each knot after the largest is this much the size of the one before | 0.3–1 | 0.05 | 0.55 |
-/// | `escape` | chords of each knot that escape to 1.4–2 times its radius | 0–4 | 1 | 2 |
+/// | `escape` | strokes of each knot that escape to 1.5–2.2 times its radius | 0–4 | 1 | 2 |
 /// | `tail_turns` | gentle bends in a tail (each at most 25°) | 1–6 | 1 | 3 |
 /// | `tail_tone` | the tails' opacity as a share of the line's (the knots stay whole) | 0.2–1 | 0.05 | 0.5 |
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ThreadShape {
     /// Each knot after the largest is this much the size of the one before.
     pub knot_fall: f32,
-    /// Chords of each knot that escape to 1.4–2 times its radius.
+    /// Strokes of each knot that escape to 1.5–2.2 times its radius.
     pub escape: f32,
     /// Gentle bends in a tail.
     pub tail_turns: f32,
@@ -214,6 +220,22 @@ pub fn simplify(p: &[[f32; 2]], tol: f32) -> Vec<[f32; 2]> {
     p.iter().zip(keep).filter(|(_, k)| *k).map(|(q, _)| *q).collect()
 }
 
+/// The indices of the points Ramer–Douglas–Peucker keeps to within `tol` px (the ends are kept).
+fn simplified(p: &[[f32; 2]], tol: f32) -> Vec<usize> {
+    if p.len() < 3 { return (0..p.len()).collect(); }
+    let mut keep = vec![false; p.len()];
+    keep[0] = true;
+    keep[p.len() - 1] = true;
+    let mut stack = vec![(0, p.len() - 1)];
+    while let Some((a, b)) = stack.pop() {
+        if b <= a + 1 { continue; }
+        let (mut far, mut at) = (0.0, a);
+        for i in a + 1..b { let d = seg_dist(p[i], p[a], p[b]); if d > far { far = d; at = i; } }
+        if far > tol { keep[at] = true; stack.push((a, at)); stack.push((at, b)); }
+    }
+    (0..p.len()).filter(|&i| keep[i]).collect()
+}
+
 /// One polyline through every outline, in order: round each loop back to where it started, then a
 /// bridge to the nearest vertex of the next loop (which is walked from there).
 pub fn join(loops: &[Vec<[f32; 2]>]) -> Rest {
@@ -341,9 +363,11 @@ fn unsmooth(y: f32) -> f32 { 0.5 - ((1.0 - 2.0 * y.clamp(0.0, 1.0)).asin() / 3.0
 pub fn opacity(k: f32) -> (f32, f32) { (smooth(0.0, 0.12, k), smooth(0.1, 0.3, k)) }
 /// How much of a loose element's fill is left at `k`.
 pub fn fill(k: f32) -> f32 { 1.0 - smooth(0.02, 0.25, k) }
-/// How many points the knot with the most has, with energy `e` at `k` (22 at the defaults, fully loose;
-/// each knot has 64–100 % of it).
-pub fn knots(knot: f32, e: f32, k: f32) -> usize { (36.7 * knot * e * k).round().max(0.0) as usize }
+/// How many control points the knot with the most has, with energy `e` at `k` (36 at the defaults, fully
+/// loose; each knot has 64–100 % of it, and one with fewer than `MIN_KNOT` is not drawn).
+pub fn knots(knot: f32, e: f32, k: f32) -> usize { (60.0 * knot * (0.5 + 0.5 * e.clamp(0.0, 1.0)) * smooth(0.2, 0.6, k)).round().max(0.0) as usize }
+/// The fewest control points a knot is drawn with: fewer would read as a star, so there is no knot.
+pub const MIN_KNOT: usize = 12;
 /// The looseness the thread shows for looseness `k`: the same at the ends, but through 0.15–0.4, where a
 /// half-drawn letter and a few loose lines look neither like text nor like a thread, it hurries (that
 /// band is crossed while `k` goes from 0.22 to 0.30), so loosening and drawing back stay there only a
@@ -410,27 +434,260 @@ pub fn pose(rest: &Rest, fx: &StrandFx, c: &Ctx, field: &dyn Fn(f32, f32) -> (f3
     (at, sl)
 }
 
-/// A knot about `centre`: `n` points, each turned 2.2–2.9 radians about it from the last, so every piece
-/// is a chord through the knot; most at `r × (0.3–1)` from it, `escape` of them at `r × (1.5–2)`; the whole
-/// stretched along a hashed way (1.15 against 0.87), so the star is lopsided.
-pub fn star(centre: [f32; 2], r: f32, n: usize, escape: usize, seed: u32, t: f32) -> Vec<[f32; 2]> {
+/// A curve through control points `ctrl` (device px): a uniform cubic B-spline whose end points are
+/// repeated three times, so it leaves the first control point and arrives at the last; between, it does
+/// not pass through them, so a place where the control points fold back becomes a narrow loop. Sampled
+/// by how much it bends: neighbouring pieces turn by at most `max_turn` degrees (where the curve itself
+/// is sharper than that over 1.5 px, a little more), no piece is shorter than 1.5 px, and no piece
+/// strays more than a quarter pixel from the curve. The same input gives the same output.
+pub fn curve(ctrl: &[[f32; 2]], max_turn: f32) -> Vec<[f32; 2]> {
+    if ctrl.len() < 2 { return ctrl.to_vec(); }
+    let (dense, keep) = smooth_spline(ctrl, max_turn);
+    keep.into_iter().map(|i| dense[i].0).collect()
+}
+/// The control points with each end repeated twice more.
+/// Where the control points fold straight back (the points either side of one nearly on top of each
+/// other), the one after is moved aside, so the curve makes a narrow loop there and not a point.
+fn padded(ctrl: &[[f32; 2]]) -> Vec<[f32; 2]> {
+    let (a, b) = (ctrl[0], ctrl[ctrl.len() - 1]);
+    let mut c = ctrl.to_vec();
+    let n = c.len();
+    for i in 1..n.saturating_sub(1) {
+        // The point that moves: the one after, or before the last, the one before (the ends stay).
+        let (fixed, moved) = if i + 1 < n - 1 { (i - 1, i + 1) } else if i >= 2 { (i + 1, i - 1) } else { continue };
+        let (p, q, r) = (c[fixed], c[i], c[moved]);
+        let arm = d2(p, q).sqrt().max(d2(q, r).sqrt());
+        let gap = d2(p, r).sqrt();
+        if arm < 1e-3 || gap >= 0.15 * arm { continue; }
+        // Aside: across the way in, to the side the moved point already leans to.
+        let len = d2(p, q).sqrt().max(1e-3);
+        let way = [(q[0] - p[0]) / len, (q[1] - p[1]) / len];
+        let mut side = [-way[1], way[0]];
+        if (r[0] - p[0]) * side[0] + (r[1] - p[1]) * side[1] < 0.0 { side = [-side[0], -side[1]]; }
+        let along = (r[0] - p[0]) * way[0] + (r[1] - p[1]) * way[1];
+        c[moved] = [p[0] + way[0] * along + side[0] * 0.15 * arm, p[1] + way[1] * along + side[1] * 0.15 * arm];
+    }
+    let mut out = Vec::with_capacity(n + 4);
+    out.extend([a, a]);
+    out.extend_from_slice(&c);
+    out.extend([b, b]);
+    out
+}
+/// The B-spline over padded control points `p` at `u` (0 to `p.len() − 3`): span `floor(u)`.
+fn spline_at(p: &[[f32; 2]], u: f32) -> [f32; 2] {
+    let spans = p.len() - 3;
+    let s = (u.floor().max(0.0) as usize).min(spans - 1);
+    let t = (u - s as f32).clamp(0.0, 1.0);
+    let (t2, t3) = (t * t, t * t * t);
+    let w = [(1.0 - t).powi(3) / 6.0, (3.0 * t3 - 6.0 * t2 + 4.0) / 6.0, (-3.0 * t3 + 3.0 * t2 + 3.0 * t + 1.0) / 6.0, t3 / 6.0];
+    let mut q = [0.0f32; 2];
+    for (k, wk) in w.iter().enumerate() { q[0] += wk * p[s + k][0]; q[1] += wk * p[s + k][1]; }
+    q
+}
+/// The spline sampled at most half a pixel apart, and finer where it turns sharply (each step turning at
+/// most 4°, down to a five-hundredth of a pixel), with each sample's parameter `u`.
+fn dense(p: &[[f32; 2]]) -> Vec<([f32; 2], f32)> {
+    let spans = p.len() - 3;
+    let mut out = Vec::with_capacity(spans * 8);
+    fn refine(p: &[[f32; 2]], u0: f32, a: [f32; 2], u1: f32, b: [f32; 2], depth: u32, out: &mut Vec<([f32; 2], f32)>) {
+        let um = 0.5 * (u0 + u1);
+        let m = spline_at(p, um);
+        let far = d2(a, b).sqrt();
+        let bent = far > 0.002 && angle([m[0] - a[0], m[1] - a[1]], [b[0] - m[0], b[1] - m[1]]) > 4.0;
+        if depth < 18 && (far > 0.5 || bent) {
+            refine(p, u0, a, um, m, depth + 1, out);
+            refine(p, um, m, u1, b, depth + 1, out);
+        } else { out.push((b, u1)); }
+    }
+    out.push((p[0], 0.0));
+    for s in 0..spans {
+        let poly: f32 = (0..3).map(|k| d2(p[s + k], p[s + k + 1]).sqrt()).sum();
+        let m = ((poly / 4.0).ceil() as usize).clamp(2, 400);
+        for j in 0..m {
+            let (u0, u1) = (s as f32 + j as f32 / m as f32, s as f32 + (j + 1) as f32 / m as f32);
+            let a = out.last().expect("a sample").0;
+            refine(p, u0, a, u1, spline_at(p, u1), 0, &mut out);
+        }
+    }
+    // The ends exactly: the first and last control points.
+    out.dedup_by(|b, a| d2(a.0, b.0) <= 1e-8);
+    if let Some(l) = out.last_mut() { l.0 = p[p.len() - 1]; }
+    out
+}
+/// The spline through `ctrl`, densely sampled, and which samples `decimate` keeps, with no point where
+/// it stops and turns back: where two kept pieces still turn by more than 60° (a cusp, the curve
+/// standing still), the control point nearest to it is moved aside a little, up to ten times, further
+/// each time.
+fn smooth_spline(ctrl: &[[f32; 2]], max_turn: f32) -> (Vec<([f32; 2], f32)>, Vec<usize>) {
+    let mut pad = padded(ctrl);
+    let mut d = dense(&pad);
+    let mut keep = decimate(&d.iter().map(|x| x.0).collect::<Vec<_>>(), max_turn);
+    for round in 0..10 {
+        let cusp = keep.windows(3).find(|w| { let (a, b, c) = (d[w[0]].0, d[w[1]].0, d[w[2]].0); angle([b[0] - a[0], b[1] - a[1]], [c[0] - b[0], c[1] - b[1]]) > 60.0 }).map(|w| d[w[1]].1);
+        let Some(u) = cusp else { break };
+        let s = (u.floor().max(0.0) as usize).min(pad.len() - 4);
+        let at = spline_at(&pad, u);
+        let Some(j) = (s..s + 4).filter(|&j| j >= 3 && j + 3 < pad.len()).min_by(|&a, &b| d2(pad[a], at).total_cmp(&d2(pad[b], at))) else { break };
+        let arm = d2(pad[j - 1], pad[j]).sqrt().max(d2(pad[j], pad[j + 1]).sqrt()).max(1.0);
+        let way = [pad[j + 1][0] - pad[j - 1][0], pad[j + 1][1] - pad[j - 1][1]];
+        let l = (way[0] * way[0] + way[1] * way[1]).sqrt().max(1e-6);
+        // Aside, across the way through it, a little further each time.
+        let by = (0.05 + 0.025 * round as f32) * arm;
+        pad[j] = [pad[j][0] - way[1] / l * by, pad[j][1] + way[0] / l * by];
+        d = dense(&pad);
+        keep = decimate(&d.iter().map(|x| x.0).collect::<Vec<_>>(), max_turn);
+    }
+    (d, keep)
+}
+/// The angle between two directions, degrees.
+fn angle(u: [f32; 2], v: [f32; 2]) -> f32 {
+    let (lu, lv) = ((u[0] * u[0] + u[1] * u[1]).sqrt(), (v[0] * v[0] + v[1] * v[1]).sqrt());
+    if lu < 1e-9 || lv < 1e-9 { return 0.0; }
+    ((u[0] * v[0] + u[1] * v[1]) / (lu * lv)).clamp(-1.0, 1.0).acos().to_degrees()
+}
+/// Which of the densely sampled points `d` to keep: from each kept point, the farthest next one whose
+/// piece turns from the last by at most `max_turn` degrees, leaves and meets the curve within half of it,
+/// and stays within a quarter pixel of the points it skips; 1.5–48 px long, or shorter only where the
+/// curve is too tight for a piece that long (the tip of a narrow loop). The ends are kept.
+fn decimate(d: &[[f32; 2]], max_turn: f32) -> Vec<usize> {
+    const MIN: f32 = 1.5;
+    const LEAST: f32 = 0.05;
+    const MAX: f32 = 48.0;
+    const TOL: f32 = 0.25;
+    let last = d.len().saturating_sub(1);
+    let mut out = vec![0];
+    if last == 0 { return out; }
+    let tangent = |j: usize| { let (a, b) = (d[j.saturating_sub(1)], d[(j + 1).min(last)]); [b[0] - a[0], b[1] - a[1]] };
+    let (mut i, mut prev): (usize, Option<[f32; 2]>) = (0, None);
+    while i < last {
+        let (mut best, mut j) = (None, i + 1);
+        let ti = tangent(i);
+        while j <= last {
+            let c = [d[j][0] - d[i][0], d[j][1] - d[i][1]];
+            let l = (c[0] * c[0] + c[1] * c[1]).sqrt();
+            let ok = l <= MAX && prev.is_none_or(|p| angle(p, c) <= max_turn) && angle(ti, c) <= 0.5 * max_turn && angle(c, tangent(j)) <= 0.5 * max_turn
+                && (i + 1..j).all(|m| seg_dist(d[m], d[i], d[j]) <= TOL);
+            if ok { best = Some(j); } else if l >= MIN { break; }
+            j += 1;
+        }
+        let long = |b: usize| d2(d[b], d[i]).sqrt();
+        let next = match best { Some(b) if long(b) > 1e-4 => b, _ => j.min(last) };
+        prev = Some([d[next][0] - d[i][0], d[next][1] - d[i][1]]);
+        out.push(next);
+        i = next;
+    }
+    // A last piece shorter than half a pixel: its start dropped (the end is kept).
+    if out.len() > 2 && d2(d[out[out.len() - 2]], d[last]).sqrt() < LEAST { out.remove(out.len() - 2); }
+    out
+}
+/// A line through the points `pts` blended toward the curve through them by `w` (0: the polyline
+/// itself, 1: `curve`), sampled as `curve` is. Each point it returns carries the index of the point of
+/// `pts` it arrives toward (to keep what each piece is).
+fn bend_line(pts: &[[f32; 2]], w: f32, max_turn: f32) -> Vec<([f32; 2], usize)> {
+    let n = pts.len();
+    if n < 2 { return pts.iter().map(|p| (*p, 0)).collect(); }
+    let (sp, _) = smooth_spline(pts, max_turn);
+    // The polyline with its corners rounded as far as the blend goes (up to half of the shorter edge
+    // when it is all curve), so what is left of a corner after the blend is a turn of the pen, not a kink.
+    let unit = |a: [f32; 2], b: [f32; 2]| { let l = d2(a, b).sqrt().max(1e-6); [(b[0] - a[0]) / l, (b[1] - a[1]) / l] };
+    let round: Vec<f32> = (0..n).map(|i| if i == 0 || i == n - 1 { 0.0 } else { 0.5 * w * d2(pts[i - 1], pts[i]).sqrt().min(d2(pts[i], pts[i + 1]).sqrt()) }).collect();
+    let bez = |p0: [f32; 2], p1: [f32; 2], p2: [f32; 2], v: f32| lerp2(lerp2(p0, p1, v), lerp2(p1, p2, v), v);
+    // Span `s` of the spline runs from about `pts[s − 1]` to about `pts[s]`; the polyline the same way.
+    let poly = |u: f32| {
+        let s = u.floor().max(0.0) as usize;
+        let t = (u - s as f32).clamp(0.0, 1.0);
+        let (i0, i1) = (s.saturating_sub(1).min(n - 1), s.min(n - 1));
+        let (a, b) = (pts[i0], pts[i1]);
+        let l = d2(a, b).sqrt();
+        if i0 == i1 || l < 1e-6 { return lerp2(a, b, t); }
+        let (ta, tb) = (round[i0] / l, round[i1] / l);
+        let ab = unit(a, b);
+        if t < ta {
+            let din = unit(pts[i0 - 1], a);
+            bez([a[0] - din[0] * round[i0], a[1] - din[1] * round[i0]], a, [a[0] + ab[0] * round[i0], a[1] + ab[1] * round[i0]], 0.5 + 0.5 * t / ta)
+        } else if t > 1.0 - tb {
+            let dout = unit(b, pts[i1 + 1]);
+            bez([b[0] - ab[0] * round[i1], b[1] - ab[1] * round[i1]], b, [b[0] + dout[0] * round[i1], b[1] + dout[1] * round[i1]], 0.5 * (t - (1.0 - tb)) / tb)
+        } else { lerp2(a, b, t) }
+    };
+    let d: Vec<([f32; 2], f32)> = sp.into_iter().map(|(q, u)| (lerp2(poly(u), q, w), u)).collect();
+    let mut d = d;
+    d.dedup_by(|b, a| d2(a.0, b.0) <= 1e-8);
+    let keep = decimate(&d.iter().map(|x| x.0).collect::<Vec<_>>(), max_turn);
+    keep.into_iter().map(|i| (d[i].0, (d[i].1.ceil().max(0.0) as usize).min(n - 1))).collect()
+}
+
+/// The control points of a knot about `centre` (`tangle` draws the curve through them).
+fn tangle_ctrl(centre: [f32; 2], r: f32, n: usize, escape: usize, seed: u32, t: f32) -> Vec<[f32; 2]> {
     let (kt, ft) = (t.floor() as i32, smooth(0.0, 1.0, t - t.floor()));
     let h = |j: u32, salt: u32, key: i32| hash(seed.wrapping_mul(0x9E37_79B9) ^ j.wrapping_mul(0x85EB_CA6B) ^ salt ^ (key as u32).wrapping_mul(0xC2B2_AE35));
-    let eased = |j: u32, salt: u32| h(j, salt, kt) + (h(j, salt, kt + 1) - h(j, salt, kt)) * ft;
-    let mut a = hash(seed ^ 0x1B87_3593) * std::f32::consts::TAU;
+    let esc_n = escape.min(n / 4);
     // The escapes: evenly through the knot, each place moved by a hash.
-    let esc: Vec<usize> = (0..escape.min(n)).map(|e| ((e as f32 + 0.25 + 0.5 * hash(seed ^ 0x3C6E_F372 ^ e as u32)) * n as f32 / escape.min(n) as f32) as usize % n.max(1)).collect();
+    let esc: Vec<usize> = (0..esc_n).map(|e| ((e as f32 + 0.25 + 0.5 * hash(seed ^ 0x3C6E_F372 ^ e as u32)) * n as f32 / esc_n as f32) as usize % n.max(1)).collect();
+    let out_at = |j: usize| esc.contains(&j);
+    // A step about the centre at key `key`: through the knot, round it, or back the way it came.
+    let step = |j: u32, key: i32| {
+        let (u, v) = (h(j, 0x27D4_EB2F, key), h(j, 0x6A09_E667, key));
+        // Out to an escape and back in: nearly straight out from the centre, so it is a long narrow
+        // loop, a stroke that gets out of the knot.
+        if out_at(j as usize) || out_at((j as usize + n - 1) % n.max(1)) { 0.05 + 0.15 * v } else if u < 0.55 { 1.9 + 0.9 * v } else if u < 0.85 { 0.5 + 0.8 * v } else { 2.9 + 0.5 * v }
+    };
+    // How far out: a step across the knot reaches 0.4–1 of the radius, one round it stays inside
+    // (0.25–0.6: the small loops are in the middle), one back the way it came anywhere in 0.25–1.
+    let radius = |j: u32, key: i32| {
+        let (u, v) = (h(j, 0x27D4_EB2F, key), h(j, 0x1656_67B1, key));
+        if out_at(j as usize) { 1.5 + 0.7 * v }
+        else if u < 0.55 { 0.3 + 0.65 * v } else if u < 0.85 { 0.3 + 0.35 * v } else { 0.25 + 0.45 * v }
+    };
+    let eased = |f: &dyn Fn(u32, i32) -> f32, j: u32| f(j, kt) + (f(j, kt + 1) - f(j, kt)) * ft;
+    // The centre wanders within a quarter of the radius, slowly (a new way every six points).
+    let drift = |m: i32, key: i32| { let a = h(m as u32, 0x3243_F6A8, key) * std::f32::consts::TAU; let l = h(m as u32, 0x8858_6E5B, key); [l * a.cos(), l * a.sin()] };
+    let wander = |j: u32| {
+        let x = j as f32 / 6.0;
+        let (m, f) = (x.floor() as i32, smooth(0.0, 1.0, x - x.floor()));
+        let at = |key: i32| lerp2(drift(m, key), drift(m + 1, key), f);
+        let p = lerp2(at(kt), at(kt + 1), ft);
+        [0.25 * r * p[0], 0.25 * r * p[1]]
+    };
+    let turn = if hash(seed ^ 0x2B99_2DDF) < 0.5 { -1.0 } else { 1.0 };
     let lean = hash(seed ^ 0x5851_F42D) * std::f32::consts::PI;
     let (lc, ls) = (lean.cos(), lean.sin());
-    (0..n as u32).map(|j| {
-        a += 2.2 + 0.7 * eased(j, 0x27D4_EB2F);
-        let rr = if esc.contains(&(j as usize)) { r * (1.5 + 0.5 * eased(j, 0x1656_67B1)) } else { r * (0.3 + 0.7 * eased(j, 0x1656_67B1)) };
-        let (x, y) = (rr * a.cos(), rr * a.sin());
-        // Stretched along the lean, squeezed across it.
+    let steps: Vec<f32> = (0..n as u32 + 1).map(|j| eased(&step, j)).collect();
+    // Each place: its angle, and its distance from the centre. A B-spline lands at about
+    // `(4 P + P₋ + P₊) / 6`, so the curve stays well inside the points across the knot (the dense
+    // middle); an escape is set out by as much, so it gets as far as asked.
+    let mut a = hash(seed ^ 0x1B87_3593) * std::f32::consts::TAU;
+    let mut ang: Vec<f32> = Vec::with_capacity(n);
+    for (j, st) in steps.iter().take(n).enumerate() {
+        a += turn * st;
+        // A step back the way it came lands beside the point before last, not on it, so it makes a
+        // narrow loop rather than a point.
+        if j >= 2 && { let d = (a - ang[j - 2]).rem_euclid(std::f32::consts::TAU); d.min(std::f32::consts::TAU - d) < 0.3 } { a += turn * 0.3; }
+        ang.push(a);
+    }
+    (0..n).map(|j| {
+        let (tin, tout) = (steps[j], steps[j + 1]);
+        let raw = 6.0 / (4.0 + tin.cos() + tout.cos());
+        let set_out = if out_at(j) { raw.clamp(1.4, 1.8) } else { raw.sqrt().clamp(1.0, 1.45) };
+        let rr = r * eased(&radius, j as u32) * set_out;
+        let (x, y) = (rr * ang[j].cos(), rr * ang[j].sin());
+        // Stretched along the lean, squeezed across it (an escape is not squeezed: it gets out).
         let (u, v) = (x * lc + y * ls, -x * ls + y * lc);
-        let (u, v) = (u * 1.15, v * 0.87);
-        [centre[0] + u * lc - v * ls, centre[1] + u * ls + v * lc]
+        let (u, v) = if out_at(j) { (u, v) } else { (u * 1.3, v * 0.75) };
+        // Only the escapes get out past 1.3 r.
+        let (u, v) = { let l = (u * u + v * v).sqrt(); let most = if out_at(j) { f32::INFINITY } else { 1.3 * r }; if l > most { (u * most / l, v * most / l) } else { (u, v) } };
+        let o = wander(j as u32);
+        [centre[0] + o[0] + u * lc - v * ls, centre[1] + o[1] + u * ls + v * lc]
     }).collect()
+}
+/// A knot about `centre`: a tangle of one thin line, the curve (`curve`, 15°) through `n` control points
+/// that each turn about the centre from the last: 55 % of the steps 1.9–2.8 radians (across the knot), 30 %
+/// 0.5–1.3 (round it, making loops), 15 % 2.9–3.4 (back the way it came, a narrow loop); most at
+/// `r × (0.25–1)` from it, `escape` of them set out so the curve gets to `r × (1.5–2.2)`; the centre itself wandering within
+/// `0.25 r`; the whole stretched along a hashed way (1.3 against 0.75). Eased between one second's key
+/// and the next, so it moves without jumps.
+pub fn tangle(centre: [f32; 2], r: f32, n: usize, escape: usize, seed: u32, t: f32) -> Vec<[f32; 2]> {
+    curve(&tangle_ctrl(centre, r, n, escape, seed, t), 15.0)
 }
 
 /// One knot of a thread: the rest vertex it hangs from, its radius (device px, before looseness), how many
@@ -469,6 +726,7 @@ pub fn knot_plan(rest: &Rest, fx: &StrandFx, c: &Ctx, field: &dyn Fn(f32, f32) -
         let fall = [1.0, fx.knot_fall, fx.knot_fall.powf(1.75)][rank.min(2)];
         let hn = hash(c.seed ^ (i as u32).wrapping_mul(0x632B_E5AB));
         let pts = (knots(fx.knot, energy[i], k) as f32 * (0.64 + 0.36 * hn)).round() as usize;
+        if pts < MIN_KNOT { continue; }
         let side = if rank.is_multiple_of(2) { up } else { -up };
         let off = [(hash(c.seed ^ 0x1D8E_4E27 ^ i as u32) - 0.5) * 0.4 * big, side * (0.5 + 0.4 * hn) * big];
         out.push(KnotAt { at: i, r: big * fall, n: pts, off });
@@ -480,28 +738,34 @@ fn in_box(p: [f32; 2], boxes: &[[f32; 4]]) -> bool { boxes.iter().any(|b| p[0] >
 const R: f32 = std::f32::consts::FRAC_1_SQRT_2;
 const COMPASS: [[f32; 2]; 8] = [[1.0, 0.0], [R, R], [0.0, 1.0], [-R, R], [-1.0, 0.0], [-R, -R], [0.0, -1.0], [R, -R]];
 
-/// A strand from `from` along `dir`, `len` long at full looseness: straight pieces with `turns` gentle
-/// bends between them (each 12–25°, at about even places along it, one way then the other, so it never
-/// strays more than 25° from `dir`), every point scaled
-/// toward `from` by `k`. 16 points after `from`, every one on the bent line, so it turns only at the bends.
+/// A strand from `from` along `dir`, `len` long at full looseness: a long, slowly bending curve. Its bends
+/// (`turns` of them, each 12–25°, at about even places along it, one way then the other) are the control
+/// points of a `curve`, and a hand's wavering runs across it (0.6–1.5 % of its length, rising and
+/// falling two or three times); it never strays more than 25° from `dir`. 24–32 points after `from`,
+/// evenly along it (more of them the more bends it has), every one scaled toward `from` by `k`.
 pub fn strand_path(from: [f32; 2], dir: [f32; 2], len: f32, k: f32, seed: u32, t: f32, turns: usize) -> Vec<[f32; 2]> {
     let turns = turns.min(8);
     let (kt, ft) = (t.floor() as i32, smooth(0.0, 1.0, t - t.floor()));
     let h = |m: u32, salt: u32, key: i32| hash(seed.wrapping_mul(0x2C1B_3C6D) ^ m.wrapping_mul(0x297A_2D39) ^ salt ^ (key as u32).wrapping_mul(0x7FEB_352D));
     let eased = |m: u32, salt: u32| h(m, salt, kt) + (h(m, salt, kt + 1) - h(m, salt, kt)) * ft;
-    // The bends: where along (fractions) and by how much (radians).
+    // The wavering: how far (a share of the length), how many rises and falls, from where.
+    let (amp, bumps) = (0.006 + 0.009 * eased(0, 0x3d4f), 2.0 + eased(0, 0x5e2a));
+    let lean = (std::f32::consts::PI * amp * bumps).atan().to_degrees();
+    // The bends' headings stay within 25° of `dir` less what the wavering adds.
+    let most = (25.0 - lean - 0.5).to_radians();
     let first = if h(0, 0x1b56, 0) < 0.5 { -1.0 } else { 1.0 };
     let (mut heading, mut bends) = (0.0f32, Vec::with_capacity(turns));
     for m in 1..=turns as u32 {
         let f = (m as f32 + 0.6 * (eased(m, 0x5bd1) - 0.5)) / (turns as f32 + 1.0);
-        // One way then the other: the heading stays within 25° of `dir`.
+        // One way then the other.
         let side = if heading == 0.0 { first } else { -heading.signum() };
-        let a = side * (12.0 + 13.0 * eased(m, 0x2f6b)).to_radians();
-        let a = (heading + a).clamp(-25f32.to_radians(), 25f32.to_radians()) - heading;
+        // Many bends are each gentler, so the curve turns as slowly however many it has.
+        let a = side * (12.0 + 13.0 * eased(m, 0x2f6b)).min(100.0 / (turns as f32 + 1.0)).to_radians();
+        let a = (heading + a).clamp(-most, most) - heading;
         heading += a;
         bends.push((f.clamp(0.05, 0.95), a));
     }
-    // The bent line's vertices.
+    // The bent line's vertices: the curve's control points.
     let mut line = vec![[0.0f32, 0.0f32]];
     let (mut d, mut at, mut done) = (dir, [0.0f32, 0.0f32], 0.0f32);
     for &(f, a) in &bends {
@@ -513,14 +777,29 @@ pub fn strand_path(from: [f32; 2], dir: [f32; 2], len: f32, k: f32, seed: u32, t
     }
     let l = (1.0 - done).max(0.0) * len;
     line.push([at[0] + d[0] * l, at[1] + d[1] * l]);
-    // 16 points along it: the bends themselves, and the rest evenly spaced.
-    let total = length(&line);
-    let mut cum = vec![0.0f32];
-    for w in line.windows(2) { cum.push(cum.last().expect("a length") + d2(w[0], w[1]).sqrt()); }
-    let even = 16 - turns;
-    let mut at_s: Vec<f32> = (1..=even).map(|j| total * j as f32 / even as f32).chain(cum[1..cum.len() - 1].iter().copied()).collect();
-    at_s.sort_by(f32::total_cmp);
-    at_s.into_iter().map(|sv| { let p = at_length(&line, sv); [from[0] + k * p[0], from[1] + k * p[1]] }).collect()
+    let pad = padded(&line);
+    let spans = pad.len() - 3;
+    let fine: Vec<[f32; 2]> = (0..=spans * 64).map(|j| spline_at(&pad, j as f32 / 64.0)).collect();
+    let total = length(&fine).max(1e-3);
+    // Evenly along it (more points the more it bends), each point moved across `dir` by the wavering.
+    let m = (24 + turns + (3.0 * h(0, 0x71c3, 0)).floor() as usize).min(32);
+    let across = [-dir[1], dir[0]];
+    let mut cum = 0.0f32;
+    let mut j = 1;
+    let mut out = Vec::with_capacity(m);
+    for i in 1..fine.len() {
+        let l = d2(fine[i - 1], fine[i]).sqrt();
+        while j <= m && cum + l >= total * j as f32 / m as f32 - 1e-4 {
+            let sv = total * j as f32 / m as f32;
+            let p = lerp2(fine[i - 1], fine[i], ((sv - cum) / l.max(1e-6)).clamp(0.0, 1.0));
+            let w = amp * len * (std::f32::consts::PI * bumps * sv / total).sin();
+            out.push([from[0] + k * (p[0] + across[0] * w), from[1] + k * (p[1] + across[1] * w)]);
+            j += 1;
+        }
+        cum += l;
+    }
+    while out.len() < m { let p = fine[fine.len() - 1]; out.push([from[0] + k * p[0], from[1] + k * p[1]]); }
+    out
 }
 /// A tail from `from` (drawn) along `dir`, at least `len` long and long enough to reach the scope's
 /// edge, cut where it leaves the scope (the last piece on its edge) and before a box of text to read.
@@ -554,125 +833,248 @@ fn tail_from(from: [f32; 2], dir: [f32; 2], len: f32, k: f32, seed: u32, turns: 
     pts
 }
 
-/// The thread for a rest path: at most `max` pieces, one connected line (when the full line would
-/// need more, the knots lose points first, then every n-th vertex is kept, never pieces dropped at
-/// random). `field(x, y)` gives the map's energy and flow at a device point.
+/// The thread for a rest path: at most `max` pieces, one connected line. When the full line would need
+/// more, the curves are sampled more coarsely first (30° a piece), then the knots lose control points
+/// (a knot left with fewer than `MIN_KNOT` is not drawn: never a star), then every n-th vertex of the line
+/// is kept; pieces are never dropped at random. No piece enters a box of `Ctx::calm` grown by 4 px.
+/// `field(x, y)` gives the map's energy and flow at a device point.
 pub fn thread(rest: &Rest, fx: &StrandFx, c: &Ctx, field: &dyn Fn(f32, f32) -> (f32, [f32; 2]), max: usize) -> Vec<Seg> {
     let k = c.k.clamp(0.0, 1.0);
     let n = rest.pts.len();
     if k <= 0.0 || n < 2 || max == 0 || rest.keep.len() != n { return vec![]; }
     let s = c.scale;
-    let (at, sl) = pose(rest, fx, c, field);
+    let (mut at, sl) = pose(rest, fx, c, field);
+    // A vertex that would sit in text to read is put on the nearest edge of its box.
+    for p in &mut at { *p = off_boxes(*p, c.calm, 0.0); }
     let inside = |p: [f32; 2]| [p[0].clamp(c.scope[0], c.scope[2]), p[1].clamp(c.scope[1], c.scope[3])];
     let plan = knot_plan(rest, fx, c, field);
-    let mut anchors: Vec<(usize, usize)> = plan.iter().map(|kn| (kn.at, kn.n)).collect();
+    // Each knot's centre and radius, kept clear of text to read: moved away from it by up to three
+    // radii, then made smaller; too small, and it is not drawn.
+    let placed: Vec<Option<([f32; 2], f32)>> = plan.iter().map(|p| {
+        let centre = inside([at[p.at][0] + p.off[0] * k, at[p.at][1] + p.off[1] * k]);
+        clear_of(centre, p.r * k, c.calm, 6.0 * s, 12.0 * s, &inside)
+    }).collect();
     let turns = fx.tail_turns.round().clamp(1.0, 6.0) as usize;
     let ends = [0, n - 1];
-    let kept: Vec<usize> = (0..n).filter(|&i| sl[i] < 1.0 || ends.contains(&i) || anchors.iter().any(|a| a.0 == i)).collect();
-    let tail_n = if fx.tail > 0.0 { 16 } else { 0 };
-    let cut = fx.angular < 1.0;
-    let per = if cut { 2 } else { 1 };
-    // Within the budget: fewer knot points first, then every n-th vertex.
-    let need = |every: usize, an: &[(usize, usize)]| (kept.len().div_ceil(every) + an.iter().map(|a| a.1 + 1).sum::<usize>() + 2 * tail_n) * per;
-    let mut every = 1;
-    while need(every, &anchors) > max {
-        if let Some(a) = anchors.iter_mut().filter(|a| a.1 > 0).max_by_key(|a| a.1) { a.1 -= 1; continue; }
+    let kept: Vec<usize> = (0..n).filter(|&i| sl[i] < 1.0 || ends.contains(&i) || plan.iter().any(|a| a.at == i)).collect();
+    // The tails (worked out once: the budget does not change them).
+    let (head, tail) = if fx.tail > 0.0 { tails(rest, &at, fx, c, field, turns) } else { (vec![], vec![]) };
+    let esc = fx.escape.round().max(0.0) as usize;
+    let blend = (1.0 - fx.angular.clamp(0.0, 1.0)) * smooth(0.3, 0.7, k);
+    let build = |every: usize, counts: &[usize], turn: f32| -> Vec<([f32; 2], Kind)> {
+        let mut pts: Vec<([f32; 2], Kind)> = head.iter().map(|p| (*p, Kind::Tail)).collect();
+        let mut last = 0;
+        for (m, &i) in kept.iter().enumerate() {
+            let knot = plan.iter().position(|p| p.at == i);
+            if m % every != 0 && i != n - 1 && knot.is_none() { continue; }
+            // A bridge that the dropped vertices skipped still arrives as a bridge.
+            let bridged = i > 0 && (last + 1..=i).any(|j| rest.bridge[j]);
+            let kind = if m == 0 { if head.is_empty() { Kind::Line } else { Kind::Tail } } else if bridged { Kind::Bridge } else { Kind::Line };
+            pts.push((at[i], kind));
+            last = i;
+            let Some(j) = knot else { continue };
+            let (Some((centre, r)), true) = (placed[j], counts[j] >= MIN_KNOT) else { continue };
+            let mut ctrl = vec![at[i]];
+            ctrl.extend(tangle_ctrl(centre, r, counts[j], esc, c.seed ^ (i as u32).wrapping_mul(0x9E37), c.t));
+            ctrl.push(at[i]);
+            for q in curve(&ctrl, turn).into_iter().skip(1) { pts.push((inside(q), Kind::Knot)); }
+        }
+        // The piece from the start tail into the line is the tail's (set above); out from the end.
+        pts.extend(tail.iter().map(|p| (*p, Kind::Tail)));
+        pts.dedup_by(|b, a| d2(a.0, b.0) <= 1e-6);
+        // Past a third loose, the whole line bends into a curve, by `1 − angular`.
+        if blend > 0.0 && pts.len() > 2 {
+            // Its corners are what it bends through: the vertices still sliding onto their chords lie
+            // nearly on them, and a curve through those would keep every corner. So the line is first
+            // simplified (to 2 px as it bends), then curved through what is left.
+            let line: Vec<[f32; 2]> = pts.iter().map(|p| p.0).collect();
+            let keep = simplified(&line, 2.0 * s * smooth(0.3, 0.7, k));
+            let corners: Vec<[f32; 2]> = keep.iter().map(|&j| line[j]).collect();
+            pts = bend_line(&corners, blend, turn).into_iter().map(|(q, j)| (q, pts[keep[j]].1)).collect();
+        }
+        let mut pts = detour(pts, c.calm, 5.0 * s);
+        pts.dedup_by(|b, a| d2(a.0, b.0) <= 1e-6);
+        pts
+    };
+    // Within the budget: coarser curves, then fewer knot points, then every n-th vertex.
+    let mut counts: Vec<usize> = plan.iter().map(|p| p.n).collect();
+    let (mut every, mut turn) = (1, 15.0);
+    let pts = loop {
+        let pts = build(every, &counts, turn);
+        if pts.len().saturating_sub(1) <= max { break pts; }
+        if turn < 30.0 { turn = 30.0; continue; }
+        if let Some(j) = (0..counts.len()).filter(|&j| counts[j] >= MIN_KNOT).max_by_key(|&j| counts[j]) {
+            counts[j] -= (counts[j] / 6).max(1);
+            if counts[j] < MIN_KNOT { counts[j] = 0; }
+            continue;
+        }
         // At the last, the line is cut short (still one piece).
-        if every >= kept.len() { break; }
-        every += 1;
-    }
-    let mut pts: Vec<([f32; 2], Kind)> = Vec::with_capacity(need(every, &anchors) / per);
-    let mut last = 0;
-    for (m, &i) in kept.iter().enumerate() {
-        let anchor = anchors.iter().find(|a| a.0 == i);
-        if m % every != 0 && i != n - 1 && anchor.is_none() { continue; }
-        // A bridge that the dropped vertices skipped still arrives as a bridge.
-        let bridged = i > 0 && (last + 1..=i).any(|j| rest.bridge[j]);
-        pts.push((at[i], if bridged { Kind::Bridge } else { Kind::Line }));
-        last = i;
-        if let Some(&(_, kn)) = anchor {
-            if kn == 0 { continue; }
-            let p = plan.iter().find(|p| p.at == i).expect("planned");
-            let centre = inside([at[i][0] + p.off[0] * k, at[i][1] + p.off[1] * k]);
-            let esc = (fx.escape.round().max(0.0) as usize).min(kn / 4);
-            for q in star(centre, p.r * k, kn, esc, c.seed ^ (i as u32).wrapping_mul(0x9E37), c.t) { pts.push((inside(q), Kind::Knot)); }
-            pts.push((at[i], Kind::Knot));
+        if every >= kept.len() { break pts; }
+        every += (every / 2).max(1);
+    };
+    pts.windows(2).map(|w| Seg { a: w[0].0, b: w[1].0, kind: w[1].1 }).take(max).collect()
+}
+
+/// The two tails of a thread whose line is at `at`: in from the scope's edge to the line's start
+/// (ending just before it) and out from its end. Out from the end along the flow as far as it is free
+/// (or the longest free way), in from the start along the way that gets farthest other than the end's;
+/// neither back across the middle of its own word, and a way that would pass within 24 px of text to read
+/// is worth a third as much. Directions are read at the rest points, so every tail point moves in
+/// proportion to `k` and they draw back in a straight way.
+fn tails(rest: &Rest, at: &[[f32; 2]], fx: &StrandFx, c: &Ctx, field: &dyn Fn(f32, f32) -> (f32, [f32; 2]), turns: usize) -> (Vec<[f32; 2]>, Vec<[f32; 2]>) {
+    let (k, s, n) = (c.k.clamp(0.0, 1.0), c.scale, rest.pts.len());
+    let sc = c.scope;
+    let full = (fx.tail * s).max(0.6 * (sc[2] - sc[0]).max(sc[3] - sc[1]));
+    // How far a whole tail from a rest point would get that way, a third as far near text to read.
+    let reach = |from: [f32; 2], dir: [f32; 2], seed: u32| {
+        let t = tail_from(from, dir, full, 1.0, seed, turns, c);
+        let far = t.last().map_or(0.0, |p| d2(*p, from).sqrt());
+        let close = t.iter().any(|p| c.calm.iter().any(|b| box_dist(*p, b) < 24.0 * s));
+        if close { far * 0.3 } else { far }
+    };
+    // Out of the word, not back across it: a way that does not cross the middle half of the line's box.
+    let bb = rest.pts.iter().fold([f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY], |a, p| [a[0].min(p[0]), a[1].min(p[1]), a[2].max(p[0]), a[3].max(p[1])]);
+    let (qw, qh) = ((bb[2] - bb[0]) * 0.25, (bb[3] - bb[1]) * 0.25);
+    let core = [bb[0] + qw, bb[1] + qh, bb[2] - qw, bb[3] - qh];
+    let span = (bb[2] - bb[0]) + (bb[3] - bb[1]);
+    let away = |from: [f32; 2], d: &[f32; 2]| span_in(from, [from[0] + d[0] * span, from[1] + d[1] * span], &core).is_none();
+    let best = |from: [f32; 2], skip: Option<[f32; 2]>, seed: u32| -> [f32; 2] {
+        let ok = |d: &[f32; 2]| skip.is_none_or(|e| d[0] * e[0] + d[1] * e[1] < 0.9);
+        let pick = |out: bool| COMPASS.iter().filter(|d| ok(d) && (!out || away(from, d))).map(|d| (*d, reach(from, *d, seed))).max_by(|a, b| a.1.total_cmp(&b.1)).map(|b| b.0);
+        pick(true).or_else(|| pick(false)).unwrap_or([1.0, 0.0])
+    };
+    let (e0, e1) = (rest.pts[0], rest.pts[n - 1]);
+    let (_, fl) = field(e1[0], e1[1]);
+    let fl_len = (fl[0] * fl[0] + fl[1] * fl[1]).sqrt();
+    // With a flow, the way that goes farthest weighed by how close it is to the flow (the flow itself
+    // and 30° and 60° either side of it among them); without, the farthest of eight.
+    let end_dir = if fl_len > 0.05 {
+        let f = [fl[0] / fl_len, fl[1] / fl_len];
+        let turn = |a: f32| [f[0] * a.cos() - f[1] * a.sin(), f[0] * a.sin() + f[1] * a.cos()];
+        let ways: Vec<[f32; 2]> = [0.0f32, 30.0, -30.0, 60.0, -60.0].iter().map(|d| turn(d.to_radians())).chain(COMPASS).collect();
+        let score = |d: &[f32; 2]| reach(e1, *d, c.seed ^ 0x77) * (0.4 + 0.6 * (d[0] * f[0] + d[1] * f[1]).max(0.0));
+        let pick = |out: bool| ways.iter().filter(|d| !out || away(e1, d)).map(|d| (*d, score(d))).max_by(|a, b| a.1.total_cmp(&b.1)).map(|b| b.0);
+        pick(true).or_else(|| pick(false)).unwrap_or(f)
+    } else { best(e1, None, c.seed ^ 0x77) };
+    let start_dir = best(e0, Some(end_dir), c.seed ^ 0x51);
+    let head: Vec<[f32; 2]> = tail_from(at[0], start_dir, full, k, c.seed ^ 0x51, turns, c).into_iter().rev().collect();
+    let end = tail_from(at[n - 1], end_dir, full, k, c.seed ^ 0x77, turns, c);
+    (head, end)
+}
+
+/// How far `p` is from box `b` (0 inside it).
+fn box_dist(p: [f32; 2], b: &[f32; 4]) -> f32 {
+    let (dx, dy) = ((b[0] - p[0]).max(p[0] - b[2]).max(0.0), (b[1] - p[1]).max(p[1] - b[3]).max(0.0));
+    (dx * dx + dy * dy).sqrt()
+}
+fn grow(b: &[f32; 4], m: f32) -> [f32; 4] { [b[0] - m, b[1] - m, b[2] + m, b[3] + m] }
+/// `p`, or where it is inside a box grown by `m`, the nearest point on that box's edge.
+fn off_boxes(p: [f32; 2], boxes: &[[f32; 4]], m: f32) -> [f32; 2] {
+    let mut p = p;
+    for b in boxes.iter().map(|b| grow(b, m)) {
+        if p[0] > b[0] && p[1] > b[1] && p[0] < b[2] && p[1] < b[3] {
+            let d = [p[0] - b[0], b[2] - p[0], p[1] - b[1], b[3] - p[1]];
+            let i = (0..4).min_by(|&x, &y| d[x].total_cmp(&d[y])).unwrap_or(0);
+            p = match i { 0 => [b[0], p[1]], 1 => [b[2], p[1]], 2 => [p[0], b[1]], _ => [p[0], b[3]] };
         }
     }
-    // The tails: out from the end along the flow as far as it is free (or the longest free way), in
-    // from the start along the way that gets farthest other than the end's; neither back across the
-    // middle of its own word. Directions are read at the rest points, so
-    // every tail point moves in proportion to `k` and they draw back in a straight way.
-    if tail_n > 0 {
-        let sc = c.scope;
-        let full = (fx.tail * s).max(0.6 * (sc[2] - sc[0]).max(sc[3] - sc[1]));
-        // How far a whole tail from a rest point would get that way.
-        let reach = |from: [f32; 2], dir: [f32; 2], seed: u32| tail_from(from, dir, full, 1.0, seed, turns, c).last().map_or(0.0, |p| d2(*p, from).sqrt());
-        // Out of the word, not back across it: a way that does not cross the middle half of the
-        // line's box.
-        let bb = rest.pts.iter().fold([f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY], |a, p| [a[0].min(p[0]), a[1].min(p[1]), a[2].max(p[0]), a[3].max(p[1])]);
-        let (qw, qh) = ((bb[2] - bb[0]) * 0.25, (bb[3] - bb[1]) * 0.25);
-        let core = [bb[0] + qw, bb[1] + qh, bb[2] - qw, bb[3] - qh];
-        let span = (bb[2] - bb[0]) + (bb[3] - bb[1]);
-        let away = |from: [f32; 2], d: &[f32; 2]| span_in(from, [from[0] + d[0] * span, from[1] + d[1] * span], &core).is_none();
-        let best = |from: [f32; 2], skip: Option<[f32; 2]>, seed: u32| -> [f32; 2] {
-            let ok = |d: &[f32; 2]| skip.is_none_or(|e| d[0] * e[0] + d[1] * e[1] < 0.9);
-            let pick = |out: bool| COMPASS.iter().filter(|d| ok(d) && (!out || away(from, d))).map(|d| (*d, reach(from, *d, seed))).max_by(|a, b| a.1.total_cmp(&b.1)).map(|b| b.0);
-            pick(true).or_else(|| pick(false)).unwrap_or([1.0, 0.0])
-        };
-        let (e0, e1) = (rest.pts[0], rest.pts[n - 1]);
-        let (_, fl) = field(e1[0], e1[1]);
-        let fl_len = (fl[0] * fl[0] + fl[1] * fl[1]).sqrt();
-        // With a flow, the way that goes farthest weighed by how close it is to the flow (the flow
-        // itself and 30° and 60° either side of it among them); without, the farthest of eight.
-        let end_dir = if fl_len > 0.05 {
-            let f = [fl[0] / fl_len, fl[1] / fl_len];
-            let turn = |a: f32| [f[0] * a.cos() - f[1] * a.sin(), f[0] * a.sin() + f[1] * a.cos()];
-            let ways: Vec<[f32; 2]> = [0.0f32, 30.0, -30.0, 60.0, -60.0].iter().map(|d| turn(d.to_radians())).chain(COMPASS).collect();
-            let score = |d: &[f32; 2]| reach(e1, *d, c.seed ^ 0x77) * (0.4 + 0.6 * (d[0] * f[0] + d[1] * f[1]).max(0.0));
-            let pick = |out: bool| ways.iter().filter(|d| !out || away(e1, d)).map(|d| (*d, score(d))).max_by(|a, b| a.1.total_cmp(&b.1)).map(|b| b.0);
-            pick(true).or_else(|| pick(false)).unwrap_or(f)
-        } else { best(e1, None, c.seed ^ 0x77) };
-        let start_dir = best(e0, Some(end_dir), c.seed ^ 0x51);
-        let mut head: Vec<([f32; 2], Kind)> = tail_from(at[0], start_dir, full, k, c.seed ^ 0x51, turns, c).into_iter().rev().map(|p| (p, Kind::Tail)).collect();
-        // The piece from the start tail into the line is the tail's too.
-        if !head.is_empty() && let Some(first) = pts.first_mut() { first.1 = Kind::Tail; }
-        head.append(&mut pts);
-        pts = head;
-        let end = pts.last().expect("a point").0;
-        for p in tail_from(end, end_dir, full, k, c.seed ^ 0x77, turns, c) { pts.push((p, Kind::Tail)); }
+    p
+}
+/// A knot's centre and radius clear of the boxes (grown by `pad`): moved away from the nearest one it
+/// would reach (its circle is `2.2 r`) by up to `3 r` in all, then its radius made small enough; `None`
+/// when that is less than `least`.
+fn clear_of(centre: [f32; 2], r: f32, boxes: &[[f32; 4]], pad: f32, least: f32, inside: &dyn Fn([f32; 2]) -> [f32; 2]) -> Option<([f32; 2], f32)> {
+    let grown: Vec<[f32; 4]> = boxes.iter().map(|b| grow(b, pad)).collect();
+    let (mut c, mut moved) = (centre, 0.0f32);
+    for _ in 0..12 {
+        let Some(b) = grown.iter().filter(|b| box_dist(c, b) < 2.2 * r).min_by(|x, y| box_dist(c, x).total_cmp(&box_dist(c, y))) else { break };
+        let near = [c[0].clamp(b[0], b[2]), c[1].clamp(b[1], b[3])];
+        let mut d = [c[0] - near[0], c[1] - near[1]];
+        if d[0].abs() + d[1].abs() < 1e-3 {
+            // Inside it: out the nearest side.
+            let e = [c[0] - b[0], b[2] - c[0], c[1] - b[1], b[3] - c[1]];
+            d = [[-1.0, 0.0], [1.0, 0.0], [0.0, -1.0], [0.0, 1.0]][(0..4).min_by(|&x, &y| e[x].total_cmp(&e[y])).unwrap_or(2)];
+            let l = e.iter().copied().fold(f32::INFINITY, f32::min);
+            d = [d[0] * (1.0 + l), d[1] * (1.0 + l)];
+        }
+        let l = (d[0] * d[0] + d[1] * d[1]).sqrt().max(1e-6);
+        let step = (2.2 * r - box_dist(c, b) + 0.5).min(3.0 * r - moved);
+        if step <= 0.0 { break; }
+        let next = inside([c[0] + d[0] / l * step, c[1] + d[1] / l * step]);
+        moved += step;
+        if d2(next, c) < 1e-6 { break; }
+        c = next;
     }
-    // Corners cut by 1 − angular (one pass of corner cutting; 1 is the plain polyline).
-    if cut && pts.len() > 2 {
-        let q = 0.25 * (1.0 - fx.angular.clamp(0.0, 1.0));
-        let mut out = Vec::with_capacity(pts.len() * 2);
+    let room = grown.iter().map(|b| box_dist(c, b)).fold(f32::INFINITY, f32::min) / 2.2;
+    let r = r.min(room);
+    (r >= least).then_some((c, r))
+}
+/// The line `pts` kept out of the boxes grown by `m`: a point inside one goes to its nearest edge, and a
+/// piece that would cross one goes round its edge instead, the shorter way.
+fn detour(pts: Vec<([f32; 2], Kind)>, boxes: &[[f32; 4]], m: f32) -> Vec<([f32; 2], Kind)> {
+    if boxes.is_empty() || pts.len() < 2 { return pts; }
+    let round: Vec<[f32; 4]> = boxes.iter().map(|b| grow(b, m)).collect();
+    let test: Vec<[f32; 4]> = boxes.iter().map(|b| grow(b, m - 0.5)).collect();
+    let mut pts: Vec<([f32; 2], Kind)> = pts.into_iter().map(|(p, kd)| (off_boxes(p, &round, 0.0), kd)).collect();
+    for _ in 0..4 {
+        let mut changed = false;
+        let mut out = Vec::with_capacity(pts.len());
         out.push(pts[0]);
         for w in pts.windows(2) {
-            let ((a, _), (b, kb)) = (w[0], w[1]);
-            out.push((lerp2(a, b, q), kb));
-            out.push((lerp2(a, b, 1.0 - q), kb));
+            let (a, (b, kb)) = (w[0].0, w[1]);
+            if let Some(j) = (0..test.len()).find(|&j| span_in(a, b, &test[j]).is_some()) {
+                for q in around(a, b, &round[j]) { out.push((q, kb)); }
+                changed = true;
+            }
+            out.push((b, kb));
         }
-        out.push(*pts.last().expect("points"));
+        out.dedup_by(|b, a| d2(a.0, b.0) <= 1e-6);
         pts = out;
+        if !changed { break; }
     }
-    // Points on top of the last one dropped first, so the pieces left still join end to end.
-    pts.dedup_by(|b, a| d2(a.0, b.0) <= 1e-6);
-    pts.windows(2).map(|w| Seg { a: w[0].0, b: w[1].0, kind: w[1].1 }).take(max).collect()
+    pts
+}
+/// The way round box `b` from `a` to `b2` (both outside it): the nearest point of its edge to each, and
+/// the corners between, the shorter way.
+fn around(a: [f32; 2], b2: [f32; 2], b: &[f32; 4]) -> Vec<[f32; 2]> {
+    let (w, h) = (b[2] - b[0], b[3] - b[1]);
+    let per = 2.0 * (w + h);
+    let onto = |p: [f32; 2]| [p[0].clamp(b[0], b[2]), p[1].clamp(b[1], b[3])];
+    // Where on the edge, clockwise from the top left corner.
+    let at = |p: [f32; 2]| {
+        let d = [(p[1] - b[1]).abs(), (p[0] - b[2]).abs(), (p[1] - b[3]).abs(), (p[0] - b[0]).abs()];
+        match (0..4).min_by(|&x, &y| d[x].total_cmp(&d[y])).unwrap_or(0) { 0 => p[0] - b[0], 1 => w + p[1] - b[1], 2 => w + h + b[2] - p[0], _ => 2.0 * w + h + b[3] - p[1] }
+    };
+    let (pa, pb) = (onto(a), onto(b2));
+    let (ua, ub) = (at(pa), at(pb));
+    let fwd = (ub - ua).rem_euclid(per);
+    let corners = [(0.0, [b[0], b[1]]), (w, [b[2], b[1]]), (w + h, [b[2], b[3]]), (2.0 * w + h, [b[0], b[3]])];
+    let mut way: Vec<(f32, [f32; 2])> = if fwd <= per * 0.5 {
+        corners.iter().map(|&(u, q)| ((u - ua).rem_euclid(per), q)).filter(|(d, _)| *d > 1e-4 && *d < fwd - 1e-4).collect()
+    } else {
+        corners.iter().map(|&(u, q)| ((ua - u).rem_euclid(per), q)).filter(|(d, _)| *d > 1e-4 && *d < per - fwd - 1e-4).collect()
+    };
+    way.sort_by(|x, y| x.0.total_cmp(&y.0));
+    let mut out = vec![pa];
+    out.extend(way.into_iter().map(|w| w.1));
+    out.push(pb);
+    out
 }
 
 /// A drawn tangle for a page to show as content (DESIGN.md §4.4): a knot of radius `r` and a long
 /// strand through it, `above` long up from the knot and `below` long down from it, made by the same knot
 /// and tails as the thread at its default shape (`ThreadShape`), with a fixed seed. Points about the knot's
-/// centre (logical px). The knot is within `2 r` of the centre.
+/// centre (logical px). The knot, its escapes aside, is within `2.5 r` of the centre.
 pub fn figure(seed: u32, r: f32, above: f32, below: f32) -> Vec<[f32; 2]> {
     let sh = ThreadShape::default();
     let turns = sh.tail_turns as usize;
     let mut up = strand_path([0.0, 0.0], [0.0, -1.0], above, 1.0, seed ^ 0x0A, 0.0, turns);
     up.reverse();
     let mut pts = up;
-    pts.push([0.0, 0.0]);
-    pts.extend(star([0.0, 0.0], r, 22, sh.escape as usize, seed, 0.0));
-    pts.push([0.0, 0.0]);
+    let mut ctrl = vec![[0.0, 0.0]];
+    ctrl.extend(tangle_ctrl([0.0, 0.0], r, 36, sh.escape as usize, seed, 0.0));
+    ctrl.push([0.0, 0.0]);
+    pts.extend(curve(&ctrl, 15.0));
     pts.extend(strand_path([0.0, 0.0], [0.0, 1.0], below, 1.0, seed ^ 0x0B, 0.0, turns));
     pts
 }
@@ -860,37 +1262,94 @@ mod tests {
     }
 
     #[test]
-    fn knots_are_few_large_stars_and_everything_stays_in_scope() {
+    fn knots_are_few_tangles_and_everything_stays_in_scope() {
         let r = join(&[box_outline([100.0, 100.0, 500.0, 60.0], 8.0, [0.0; 4], 2.0)]);
         let fx = StrandFx { angular: 1.0, tail: 0.0, ..StrandFx::default() };
         // Energy peaks at x 150 and 450.
         let hot = |x: f32, _: f32| ((1.0 - ((x - 150.0) / 120.0).powi(2)).max(0.0).max(1.0 - ((x - 450.0) / 120.0).powi(2)), [0.0, 0.0]);
         let segs = thread(&r, &fx, &ctx(1.0), &hot, 100_000);
-        assert_eq!(knots(0.6, 1.0, 1.0), 22);
+        assert_eq!(knots(0.6, 1.0, 1.0), 36);
+        assert_eq!(knots(0.6, 1.0, 0.1), 0);
         let knot: Vec<&Seg> = segs.iter().filter(|s| s.kind == Kind::Knot).collect();
         // Runs of knot pieces: one per knot.
         let runs = segs.windows(2).filter(|w| w[0].kind != Kind::Knot && w[1].kind == Kind::Knot).count();
         assert!((1..=3).contains(&runs), "{runs} knots");
-        assert!(knot.len() >= 12 * runs, "{} knot pieces", knot.len());
-        let mut lens: Vec<f32> = knot.iter().map(|s| d2(s.a, s.b).sqrt()).collect();
-        lens.sort_by(f32::total_cmp);
-        assert!(lens[lens.len() / 2] >= 0.5 * fx.knot_r, "median knot piece {}", lens[lens.len() / 2]);
-        // Crossings within the knots.
-        let cross = |a: &Seg, b: &Seg| {
-            let o = |p: [f32; 2], q: [f32; 2], r: [f32; 2]| (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
-            o(a.a, a.b, b.a) * o(a.a, a.b, b.b) < 0.0 && o(b.a, b.b, a.a) * o(b.a, b.b, a.b) < 0.0
-        };
-        let n: usize = (0..knot.len()).map(|i| (i + 2..knot.len()).filter(|&j| cross(knot[i], knot[j])).count()).sum();
-        assert!(n >= 20 * runs, "{n} crossings in {runs} knots");
-        // Half loose, a knot is still at least half its radius.
-        let half = thread(&r, &fx, &ctx(0.5), &hot, 100_000);
-        let far = half.iter().filter(|s| s.kind == Kind::Knot).map(|s| d2(s.a, s.b).sqrt()).fold(0.0, f32::max);
-        assert!(far >= 0.4 * fx.knot_r, "half loose, the widest knot piece is {far}");
+        let pieces: Vec<([f32; 2], [f32; 2])> = knot.iter().map(|s| (s.a, s.b)).collect();
+        assert!(crossings(&pieces).len() >= 30 * runs, "{} crossings in {runs} knots", crossings(&pieces).len());
+        // Half loose, a knot is still at least half its radius across.
+        let half = thread(&r, &fx, &ctx(0.6), &hot, 100_000);
+        let kp: Vec<[f32; 2]> = half.iter().filter(|s| s.kind == Kind::Knot).map(|s| s.b).collect();
+        let wide = kp.iter().flat_map(|a| kp.iter().map(move |b| d2(*a, *b).sqrt())).fold(0.0, f32::max);
+        assert!(wide >= 0.8 * fx.knot_r, "half loose, the widest knot is {wide} across");
         // Everything in scope, tails too.
         let sc = [90.0, 60.0, 640.0, 200.0];
         let c = Ctx { scope: sc, ..ctx(1.0) };
         let segs = thread(&r, &StrandFx { tail: 400.0, ..fx }, &c, &|_, _| (1.0, [1.0, 0.0]), 100_000);
-        for s in segs { for p in [s.a, s.b] { assert!(p[0] >= sc[0] && p[1] >= sc[1] && p[0] <= sc[2] && p[1] <= sc[3], "{p:?} outside the scope"); } }
+        for s in segs { for p in [s.a, s.b] { assert!(p[0] >= sc[0] - 1e-3 && p[1] >= sc[1] - 1e-3 && p[0] <= sc[2] + 1e-3 && p[1] <= sc[3] + 1e-3, "{p:?} outside the scope"); } }
+    }
+
+    /// Where a run of pieces crosses itself: for each crossing, the arc length along the run between the
+    /// two passes.
+    fn crossings(p: &[([f32; 2], [f32; 2])]) -> Vec<f32> {
+        let o = |p: [f32; 2], q: [f32; 2], r: [f32; 2]| (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
+        let cross = |a: &([f32; 2], [f32; 2]), b: &([f32; 2], [f32; 2])| o(a.0, a.1, b.0) * o(a.0, a.1, b.1) < 0.0 && o(b.0, b.1, a.0) * o(b.0, b.1, a.1) < 0.0;
+        let mut cum = vec![0.0f32];
+        for q in p { cum.push(cum.last().expect("a length") + d2(q.0, q.1).sqrt()); }
+        let mut out = vec![];
+        for i in 0..p.len() { for j in i + 2..p.len() { if cross(&p[i], &p[j]) { out.push(cum[j] - cum[i + 1]); } } }
+        out
+    }
+    /// The share of neighbouring pieces that turn by more than `deg` degrees, and the largest turn.
+    fn sharp(p: &[[f32; 2]], deg: f32) -> (f32, f32) {
+        let turns: Vec<f32> = p.windows(3).map(|w| angle([w[1][0] - w[0][0], w[1][1] - w[0][1]], [w[2][0] - w[1][0], w[2][1] - w[1][1]])).collect();
+        (turns.iter().filter(|a| **a > deg).count() as f32 / turns.len().max(1) as f32, turns.iter().copied().fold(0.0, f32::max))
+    }
+
+    #[test]
+    fn a_curve_bends_smoothly_from_its_first_point_to_its_last() {
+        let (mut over, mut all, mut most) = (0usize, 0usize, 0.0f32);
+        for set in 0..100u32 {
+            let n = 4 + (hash(set ^ 0x51) * 30.0) as usize;
+            let ctrl: Vec<[f32; 2]> = (0..n as u32).map(|j| [400.0 * hash(set.wrapping_mul(977) ^ j.wrapping_mul(31)), 300.0 * hash(set.wrapping_mul(613) ^ j.wrapping_mul(57) ^ 0x9e37)]).collect();
+            let c = curve(&ctrl, 15.0);
+            assert_eq!(c[0], ctrl[0], "set {set}: it leaves the first control point");
+            assert_eq!(*c.last().expect("points"), ctrl[n - 1], "set {set}: it arrives at the last");
+            assert_eq!(c, curve(&ctrl, 15.0), "the same input, the same output");
+            // Shorter than 1.5 px only where it turns sharply (the tip of a narrow loop).
+            for (i, w) in c.windows(2).enumerate().skip(1).take(c.len().saturating_sub(3)) {
+                if d2(w[0], w[1]).sqrt() >= 1.5 - 1e-3 { continue; }
+                let turn = |a: usize| angle([c[a][0] - c[a - 1][0], c[a][1] - c[a - 1][1]], [c[a + 1][0] - c[a][0], c[a + 1][1] - c[a][1]]);
+                assert!(turn(i).max(turn(i + 1)) > 2.0, "set {set}: a piece {} long where the curve is gentle", d2(w[0], w[1]).sqrt());
+            }
+            let turns = c.windows(3).map(|w| angle([w[1][0] - w[0][0], w[1][1] - w[0][1]], [w[2][0] - w[1][0], w[2][1] - w[1][1]]));
+            for a in turns { all += 1; if a > 20.0 { over += 1; } most = most.max(a); }
+        }
+        eprintln!("curves: {over} of {all} turns over 20°, the largest {most:.1}°");
+        assert!(over * 100 < all * 3, "{over} of {all} turns over 20°");
+        assert!(most <= 60.0, "a turn of {most}°");
+    }
+
+    #[test]
+    fn a_knot_is_a_tangle_of_loops_in_loops() {
+        let r = 48.0;
+        let mut fails = vec![];
+        for seed in 0..10u32 {
+            let p = tangle([0.0, 0.0], r, 36, 2, seed, 0.0);
+            let (over, most) = sharp(&p, 20.0);
+            let pieces: Vec<([f32; 2], [f32; 2])> = p.windows(2).map(|w| (w[0], w[1])).collect();
+            let x = crossings(&pieces);
+            let loops = x.iter().filter(|l| **l < 3.0 * r).count();
+            // Dense in the middle, with a few long escapes out past 1.4 r and back.
+            let total = length(&p);
+            let mid = pieces.iter().map(|q| (lerp2(q.0, q.1, 0.5), d2(q.0, q.1).sqrt())).fold(([0.0f32; 2], 0.0f32), |(c, w), (m, l)| ([c[0] + m[0] * l, c[1] + m[1] * l], w + l));
+            let g = [mid.0[0] / mid.1, mid.0[1] / mid.1];
+            let near: f32 = pieces.iter().filter(|q| d2(lerp2(q.0, q.1, 0.5), g).sqrt() <= 0.5 * r).map(|q| d2(q.0, q.1).sqrt()).sum();
+            let out: Vec<bool> = p.iter().map(|q| d2(*q, g).sqrt() > 1.4 * r).collect();
+            let escapes = out.windows(2).filter(|w| w[0] && !w[1]).count();
+            eprintln!("seed {seed}: {:.1} % of turns over 20° (largest {most:.0}°), {} crossings, {loops} small loops, {:.0} % within r / 2, {escapes} escapes", over * 100.0, x.len(), near / total * 100.0);
+            if !(over < 0.03 && x.len() >= 40 && loops >= 6 && near >= 0.35 * total && escapes >= 2) { fails.push(seed); }
+        }
+        assert!(fails.is_empty(), "seeds {fails:?} are not tangles (see above)");
     }
 
     #[test]
@@ -910,8 +1369,9 @@ mod tests {
         assert!(reach >= 300.0, "the end's tail reaches {reach}");
         let edge = (b[0] - sc[0]).min(sc[2] - b[0]).min(b[1] - sc[1]).min(sc[3] - b[1]);
         assert!(edge < 8.0, "it stops {edge} px from the edge: {a:?} → {b:?}");
+        // A long curve: no sharp turn anywhere along it.
         let turns = bends(&tail.iter().map(|s| (s.a, s.b)).collect::<Vec<_>>());
-        assert!((1..=3).contains(&turns.len()), "{} turns", turns.len());
+        assert!(turns.is_empty(), "turns over 10°: {turns:?}");
         let start = d2(head[0].a, head[head.len() - 1].b).sqrt();
         assert!(start >= reach * 0.5, "the start's tail is {start} against {reach}");
         for s in &segs { for p in [s.a, s.b] { assert!(!in_box(p, &calm), "{p:?} in text to read"); } }
@@ -954,8 +1414,11 @@ mod tests {
         assert_eq!(f, figure(7, 72.0, 175.0, 285.0));
         let (lo, hi) = f.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(a, b), p| (a.min(p[1]), b.max(p[1])));
         assert!(hi - lo >= 0.9 * 460.0, "{}", hi - lo);
-        let near = f.windows(2).filter(|w| d2(w[0], [0.0; 2]).sqrt() <= 2.0 * 72.0 + 1e-3 && d2(w[1], [0.0; 2]).sqrt() <= 2.0 * 72.0 + 1e-3).count();
-        assert!((18..=48).contains(&near), "{near} pieces in the knot");
+        // Every piece joins the next without a sharp turn; the knot has many loops.
+        let (over, _) = sharp(&f, 20.0);
+        assert!(over < 0.03, "{:.1} % of turns over 20°", over * 100.0);
+        let near: Vec<([f32; 2], [f32; 2])> = f.windows(2).filter(|w| d2(w[0], [0.0; 2]).sqrt() <= 2.5 * 72.0 && d2(w[1], [0.0; 2]).sqrt() <= 2.5 * 72.0).map(|w| (w[0], w[1])).collect();
+        assert!(crossings(&near).len() >= 40, "{} crossings in the knot", crossings(&near).len());
     }
 
     #[test]
@@ -1014,41 +1477,38 @@ mod tests {
             if w[1].kind == Kind::Knot { if w[0].kind != Kind::Knot { runs.push(vec![]); } runs.last_mut().expect("a run").push(w[1].a); }
         }
         assert_eq!(runs.len(), plan.len());
-        for (kn, run) in plan.iter().zip(&runs) {
-            assert!((14..=22).contains(&kn.n), "{} points", kn.n);
-            let centre = [at[kn.at][0] + kn.off[0], at[kn.at][1] + kn.off[1]];
-            let mut d: Vec<f32> = run[1..].iter().map(|p| d2(*p, centre).sqrt()).collect();
-            d.sort_by(f32::total_cmp);
-            let (med, most) = (d[d.len() / 2], d[d.len() - 1]);
-            assert!(most / med >= 1.8, "longest chord {most:.0} against the median {med:.0}");
-        }
+        for kn in &plan { assert!((MIN_KNOT..=36).contains(&kn.n), "{} control points", kn.n); }
+        let _ = at;
     }
 
     #[test]
-    fn a_tail_is_long_and_bends_only_a_few_times_gently() {
+    fn a_tail_is_one_long_slow_curve() {
+        let dir = [R, R];
         for seed in 0..40u32 {
             for turns in [1usize, 2, 3, 6] {
-                let p = strand_path([10.0, 20.0], [R, R], 600.0, 1.0, seed, seed as f32 * 0.37, turns);
-                assert_eq!(p.len(), 16);
+                let p = strand_path([10.0, 20.0], dir, 600.0, 1.0, seed, seed as f32 * 0.37, turns);
+                assert!((24..=32).contains(&p.len()), "{} points", p.len());
                 let mut all = vec![[10.0, 20.0]];
                 all.extend(&p);
-                let pieces: Vec<([f32; 2], [f32; 2])> = all.windows(2).map(|w| (w[0], w[1])).collect();
-                let b = bends(&pieces);
-                assert!(b.len() <= turns, "seed {seed}: {} bends for {turns}: {b:?}", b.len());
-                assert!(b.iter().all(|a| *a <= 25.0 + 1e-3), "seed {seed}: {b:?}");
-                assert!(d2(all[0], all[16]).sqrt() >= 0.8 * 600.0, "it goes a long way");
+                let (_, most) = sharp(&all, 0.0);
+                assert!(most <= 8.0, "seed {seed}, {turns} turns: neighbouring pieces turn by {most:.1}°");
+                for w in all.windows(2) {
+                    let off = angle([w[1][0] - w[0][0], w[1][1] - w[0][1]], dir);
+                    assert!(off <= 25.0, "seed {seed}, {turns} turns: a piece {off:.1}° off its way");
+                }
+                assert!(d2(all[0], *all.last().expect("points")).sqrt() >= 0.8 * 600.0, "it goes a long way");
             }
         }
-        // And in a thread: each tail, as drawn without corner cutting.
+        // And in a thread: each tail, as drawn without the line's curve.
         let r = join(&[box_outline([20.0, 30.0, 280.0, 40.0], 8.0, [0.0; 4], 2.0)]);
         let c = Ctx { scope: [0.0, 0.0, 900.0, 700.0], ..ctx(1.0) };
         let fx = StrandFx { knot: 0.0, angular: 1.0, ..StrandFx::default() };
         let segs = thread(&r, &fx, &c, &still, 100_000);
-        let head: Vec<([f32; 2], [f32; 2])> = segs.iter().take_while(|s| s.kind == Kind::Tail).map(|s| (s.a, s.b)).collect();
-        let end: Vec<([f32; 2], [f32; 2])> = segs.iter().rev().take_while(|s| s.kind == Kind::Tail).map(|s| (s.b, s.a)).collect();
+        let head: Vec<[f32; 2]> = segs.iter().take_while(|s| s.kind == Kind::Tail).map(|s| s.a).collect();
+        let end: Vec<[f32; 2]> = segs.iter().rev().take_while(|s| s.kind == Kind::Tail).map(|s| s.b).collect();
         for t in [head, end] {
-            let b = bends(&t[..t.len().saturating_sub(1)]);
-            assert!(!t.is_empty() && b.len() <= fx.tail_turns as usize && b.iter().all(|a| *a <= 25.0 + 1e-3), "{b:?}");
+            let (_, most) = sharp(&t, 0.0);
+            assert!(t.len() > 8 && most <= 8.0, "{} points, turning {most:.1}°", t.len());
         }
     }
 

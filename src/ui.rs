@@ -3371,7 +3371,11 @@ impl<S, M: Clone> Ui<S, M> {
                     let c = strand::Ctx { k: kp, t, seed: (ni as u32).wrapping_mul(7919), scale: s, drift, scope, calm: &calm, lh };
                     let map = &self.fmap;
                     let field = |x: f32, y: f32| (map.energy_at(x / s, y / s), map.flow_at(x / s, y / s));
-                    let want = (rest.pts.len() + 3 * (1 + strand::knots(fx.knot, 1.0, k)) + 32) * 2;
+                    // Knots and tails belong to text: an element of shapes only (a rule, a box, a ground)
+                    // comes apart into a line that wavers gently and reaches half as far.
+                    let shapes = idx.iter().all(|&i| self.scene.instances[i].paint[3] == SHAPE);
+                    let fx = if shapes { strand::StrandFx { knot: 0.0, tail: 0.0, reach: fx.reach * 0.5, ..fx } } else { fx };
+                    let want = ((rest.pts.len() + 6 * strand::knots(fx.knot, 1.0, k) + 64) * 3).min(2400);
                     let got = crate::budget::grant(want);
                     strand::thread(&rest, &fx, &c, &field, got)
                 }
