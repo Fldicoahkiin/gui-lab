@@ -954,9 +954,17 @@ them with `Ui::on_commands(fn(&mut S) -> Vec<Cmd>)` before each layout (a flow n
 the layout). `Cmd::Morph { from, to, spec }` (two keys) and `Cmd::Flow(FlowSpec)`. `Ui::morph(from, to, spec)`
 can also be called directly. `Ui::morph_from_last(to, spec)` (or a `MorphSpec` with `from_last: Some(key)`) takes the
 source from the frame drawn last rather than from an element on the page, so a title flies from where it was across a
-route change even though its old element is gone: the instances drawn for `key` last frame are kept, and the morph
-starts after the new layout, from them to `to`, with the target not loosened. `MorphSpec` is `Clone`, not `Copy`, for
-this field. A subtree with `El::hidden_until_morphed(true)` is laid out as usual but not
+route change even though its old element is gone: the glyphs drawn for `key` last frame are kept, and after the new
+layout each flies, whole, to the glyph of `to` in the same place in order. In every material, plain too: the unit is
+the glyph, its edges clear all the way, never a copy at each end fading over (a material draws its own marks of it as
+it goes, so the dots or characters travel with it). Each goes in a straight line, eased in and out (cubic), its size
+and colour going from the old glyph's to the new one's (drawn as the old glyph for the first half, as the new for the
+second); each starts 30 ms after the one before, the whole stagger at most 40 % of `duration_ms`, and the last lands
+at `duration_ms`. The frame at `duration_ms` is the new page as drawn directly, byte for byte; nothing tightens after.
+Glyphs only one side has fade where they are, the old over the first 30 %, the new over the last 30 %; the rest of the
+new page is in place from the first frame, and the flying glyphs stir nothing. With less motion nothing flies: the old
+title fades out where it was and the new one in where it is, 150 ms each. `MorphSpec` is `Clone`, not `Copy`, for
+this field; of its other fields this morph reads only `duration_ms`. A subtree with `El::hidden_until_morphed(true)` is laid out as usual but not
 drawn, takes no input and can't be hit until a morph reveals it; after the morph, the view decides again.
 
 #### Particles
