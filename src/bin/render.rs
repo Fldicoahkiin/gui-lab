@@ -9,10 +9,12 @@
 //! `--events` is a JSON list such as `[{"at_ms": 200, "kind": "press", "target": "button/live"},
 //! {"at_ms": 260, "kind": "release", "target": "button/live"}]` (kinds: press, release, move, key, wheel,
 //! text; see `amenui::drive::Input`). Problems in the view (duplicate keys…) are printed; `--strict` makes
-//! them an error.
-use amenui::drive::{RenderSpec, parse_events, render};
+//! them an error. `--audit` measures the frame (`amenui::audit`: text cut off, contrast, glyphs over each
+//! other, text too small, a page that never settles) and prints the findings, most serious first;
+//! with `--strict`, a P0 or P1 finding is an error too.
+use amenui::drive::{RenderSpec, audit, parse_events};
 
-const USAGE: &str = "usage: render --page <recipe-name> [--size 1280x800] [--scale 1] [--material <id>] [--theme <id>] [--locale en|zh-Hans] [--at <ms>] [--events <file.json>] [--out out.png] [--tree out.json] [--strict]";
+const USAGE: &str = "usage: render --page <recipe-name> [--size 1280x800] [--scale 1] [--material <id>] [--theme <id>] [--locale en|zh-Hans] [--at <ms>] [--events <file.json>] [--out out.png] [--tree out.json] [--audit] [--strict]";
 
 fn fail(msg: impl std::fmt::Display) -> ! {
     eprintln!("render: {msg}");
@@ -22,11 +24,12 @@ fn fail(msg: impl std::fmt::Display) -> ! {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut spec = RenderSpec { page: String::new(), w: 1280, h: 800, scale: 1.0, material: None, theme: None, at_ms: 1000.0, events: vec![], locale: None };
-    let (mut out, mut tree, mut strict) = ("out.png".to_owned(), None, false);
+    let (mut out, mut tree, mut strict, mut audited) = ("out.png".to_owned(), None, false, false);
     let mut i = 0;
     while i < args.len() {
         let flag = args[i].as_str();
         if flag == "--strict" { strict = true; i += 1; continue; }
+        if flag == "--audit" { audited = true; i += 1; continue; }
         if flag == "--help" || flag == "-h" { println!("{USAGE}"); return; }
         let Some(v) = args.get(i + 1).cloned() else { fail(format!("`{flag}` needs a value.\n{USAGE}")) };
         match flag {
@@ -53,13 +56,19 @@ fn main() {
     }
     if spec.page.is_empty() { fail(format!("`--page` is required.\n{USAGE}")); }
     let faces = amenui::text::load_bundled(concat!(env!("CARGO_MANIFEST_DIR"), "/assets")).unwrap_or_else(|e| fail(e));
-    let r = render(&spec, faces, None).unwrap_or_else(|e| fail(e));
+    let (r, findings) = if audited { audit(&spec, faces, None) } else { amenui::drive::render(&spec, faces, None).map(|r| (r, vec![])) }.unwrap_or_else(|e| fail(e));
     for p in &r.problems { eprintln!("render: problem: {p}"); }
+    if audited {
+        // The view's problems are in the problems above; the audit lists them too, so leave them out here.
+        let measured: Vec<_> = findings.iter().filter(|f| f.kind != amenui::audit::Kind::Structure).collect();
+        if measured.is_empty() { println!("audit: {}: nothing found", spec.page); }
+        for f in &measured { println!("{f}  [{:.2} / {:.2}]", f.measured, f.limit); }
+    }
     std::fs::write(&out, &r.png).unwrap_or_else(|e| fail(format!("`--out {out}` could not be written ({e}).")));
     if let Some(t) = tree {
         let json = serde_json::to_string_pretty(&r.tree).unwrap_or_else(|e| fail(e));
         std::fs::write(&t, json).unwrap_or_else(|e| fail(format!("`--tree {t}` could not be written ({e}).")));
     }
     eprintln!("render: {} {}x{} at {} ms -> {out}", spec.page, spec.w, spec.h, spec.at_ms);
-    if strict && !r.problems.is_empty() { std::process::exit(1); }
+    if strict && (!r.problems.is_empty() || amenui::audit::fails(&findings)) { std::process::exit(1); }
 }
