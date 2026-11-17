@@ -105,7 +105,7 @@ let mut cmds: Vec<Cmd> = vec![];
 cmds.push(Cmd::Morph { from: "a".into(), to: "b".into(), spec: MorphSpec::default() });
 cmds.push(Cmd::Flow(FlowSpec::default()));     // before a page change: shared `.flow(id)` parts move
 cmds.push(Cmd::Press { key: "go".into() });    // press an element as a person would (not counted as input)
-cmds.push(Cmd::Commit { x: 400.0, y: 300.0 });  // keep the frame, play the new look's transition from here
+cmds.push(Cmd::Commit { x: 400.0, y: 300.0, scope: None });  // keep the frame, play the new look's transition from here
 cmds.push(Cmd::Focus { key: "go".into() });     // focus an element after this layout
 cmds.push(Cmd::Scrub(Some(0.5)));               // hold the morph in progress half way (None: let it go on)
 assert_eq!(cmds.len(), 6);
