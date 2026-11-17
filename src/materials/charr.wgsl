@@ -9,11 +9,15 @@ fn m_charr(p: vec2f) -> vec3f {
   let s = u.res.z;
   let a0 = mp(SELF, 0);
   let P0 = clamp(round(a0.x * s), CHAR_MIN, CHAR_MAX);
-  let levels = clamp(round(a0.y), 2.0, 16.0);
   let coarse = floor(lat(p) / P0);
   let kc = kt_loose((coarse + 0.5) * P0 - anc);
   if (kc <= 0.0 && kt_loose(p) <= 0.0) { return exact(p); }
-  let P = select(P0, max(CHAR_MIN, round(P0 * 0.5)), kc < 0.6);
+  // One cell size for the whole element at a time, by its own looseness, and a clean jump between
+  // them: half the pitch first, the pitch from 0.3, one and a half times it from 0.7; from there the
+  // levels fall to half, so the characters go on getting coarser to the end.
+  let kl = clamp((loose_t(p) + u.rip.y) * loose_scale(), 0.0, u.rip.x);
+  let levels = clamp(round(mix(round(a0.y), round(a0.y) * 0.5, smoothstep(0.7, 1.0, kl))), 2.0, 16.0);
+  let P = select(select(P0, min(CHAR_MAX, round(P0 * 1.5)), kl >= 0.7), max(CHAR_MIN, round(P0 * 0.5)), kl < 0.3);
   let cell = floor(lat(p) / P);
   // Characters only where the ink is really loose: text held at the cap stays as it is.
   if (kt_loose((cell + 0.5) * P - anc) <= 0.1 + 0.4 * h1(cell + 1.3)) { return exact(p); }

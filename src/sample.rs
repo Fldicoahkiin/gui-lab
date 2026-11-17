@@ -91,6 +91,11 @@ pub struct Sheet {
     /// the page at rest (looseness 0) in the same material: how far the title has come apart. The
     /// arrival cells have `None`.
     pub changed: Vec<Option<f32>>,
+    /// For each looseness cell after the first, the share of the pixels in the title's ink box that
+    /// differ from the cell before it: how much the title changes over that step (a measure that does
+    /// not saturate once the title has come apart, as `changed` does). The first cell and the arrival
+    /// cells have `None`.
+    pub moved: Vec<Option<f32>>,
 }
 
 /// The title's ink on a page (its glyphs' boxes without the spread), device px.
@@ -109,21 +114,24 @@ fn share_changed(a: &[u8], b: &[u8], r: [u32; 4]) -> f32 {
 }
 
 /// `sheet` at `n + 1` evenly spaced loosenesses from 0 to 1 (`sheet --sweep <n>`): how a material
-/// comes apart, with `Sheet::changed` saying how much of the title has changed at each step.
+/// comes apart, with `Sheet::changed` saying how much of the title has changed at each step. The title
+/// is not stirred here (in `sheet` a stir runs through it, for scribblr's knots), so each cell shows the
+/// looseness it is labelled with.
 pub fn sweep(o: &mut Offscreen, faces: &dyn Fn() -> Vec<crate::text::Face>, material: Material, n: usize, theme: usize) -> Result<Sheet, SampleError> {
     let n = n.max(1);
     let loose: Vec<f32> = (0..=n).map(|i| i as f32 / n as f32).collect();
-    sheet(o, faces, material, &loose, theme, false)
+    // Without the stir through the title the sheet's other cells have: the looseness alone.
+    cells(o, faces, material, &loose, theme, false, false)
 }
 
 /// Whether `material` draws its rest as plain does, byte for byte (`scribblr`; the others have a look of
 /// their own at rest: a ground, a grain, bands).
 pub fn rests_as_plain(material: Material) -> bool { matches!(material, Material::Plain | Material::Scribblr) }
 
-fn page(faces: Vec<crate::text::Face>, k: f32, label: String, look: Look) -> Ui<Sample, ()> {
+fn page(faces: Vec<crate::text::Face>, k: f32, label: String, look: Look, stir: bool) -> Ui<Sample, ()> {
     // Loose cells stir the field map through the title, as a pointer passing would: the knots form where it
     // has energy.
-    let cmds = if k > 0.0 { vec![crate::morph::Cmd::Stir { at: crate::morph::StirAt::Key("title".into()), v: [1.0, 0.15], energy: 1.0, radius: 200.0, scope: crate::el::Scope::Global }] } else { vec![] };
+    let cmds = if k > 0.0 && stir { vec![crate::morph::Cmd::Stir { at: crate::morph::StirAt::Key("title".into()), v: [1.0, 0.15], energy: 1.0, radius: 200.0, scope: crate::el::Scope::Global }] } else { vec![] };
     let mut ui = Ui::new(Sample { k, label, look, cmds }, view, |_, _| {}, faces, CELL.0, CELL.1, 1.0).on_look(|s| s.look).on_commands(|s| std::mem::take(&mut s.cmds));
     ui.relayout();
     ui
@@ -133,27 +141,32 @@ fn page(faces: Vec<crate::text::Face>, k: f32, label: String, look: Look) -> Ui<
 /// `arrival`, three more cells: plain, then 120 ms and 300 ms after the material is ready (each element
 /// condensing from its cap, as after the warm-up). Checks what the sheet should show (`SampleError`).
 pub fn sheet(o: &mut Offscreen, faces: &dyn Fn() -> Vec<crate::text::Face>, material: Material, loose: &[f32], theme: usize, arrival: bool) -> Result<Sheet, SampleError> {
+    cells(o, faces, material, loose, theme, arrival, true)
+}
+#[allow(clippy::too_many_arguments)]
+fn cells(o: &mut Offscreen, faces: &dyn Fn() -> Vec<crate::text::Face>, material: Material, loose: &[f32], theme: usize, arrival: bool, stir: bool) -> Result<Sheet, SampleError> {
     let name = material.name().to_owned();
     let look = Look { material, theme: THEMES[theme.min(THEMES.len() - 1)], ..Look::default() };
     let plain = crate::render::plain(&look);
     let mut frames: Vec<(u32, u32, Vec<u8>)> = vec![];
     let mut cells = vec![];
     let mut changed = vec![];
+    let mut moved = vec![];
     // The page at rest in this material, to measure the title against (labelled as the cell at 0 is).
     let settle = |ui: &mut Ui<Sample, ()>| { let mut t = 0.0; while t < 0.5 { t += 1.0 / 60.0; ui.tick(t); } };
-    let mut rest_ui = page(faces(), 0.0, format!("{name} · loose {:.2}", 0.0), look);
+    let mut rest_ui = page(faces(), 0.0, format!("{name} · loose {:.2}", 0.0), look, stir);
     settle(&mut rest_ui);
     let rest = o.render(&mut rest_ui, &look);
     let tb = title_box(&rest_ui);
     for &k in loose {
-        let mut ui = page(faces(), k, format!("{name} · loose {k:.2}"), look);
+        let mut ui = page(faces(), k, format!("{name} · loose {k:.2}"), look, stir);
         // A while after the stir, frame by frame: what is held loose is held, the map still warm.
         let mut t = 0.0;
         while t < 0.5 { t += 1.0 / 60.0; ui.tick(t); }
         let px = o.render(&mut ui, &look);
         if k >= 1.0 && material == Material::Scribblr && ui.strands().iter().all(|s| s.2.is_empty()) { return Err(SampleError::NoThread { material: name, k }); }
         if k <= 0.0 && rests_as_plain(material) {
-            let mut p = page(faces(), k, format!("{name} · loose {k:.2}"), plain);
+            let mut p = page(faces(), k, format!("{name} · loose {k:.2}"), plain, stir);
             let mut t = 0.0;
             while t < 0.5 { t += 1.0 / 60.0; p.tick(t); }
             let ppx = o.render(&mut p, &plain);
@@ -162,17 +175,19 @@ pub fn sheet(o: &mut Offscreen, faces: &dyn Fn() -> Vec<crate::text::Face>, mate
         }
         if let (Some((_, _, prev)), Some(Some(pk))) = (frames.last(), cells.last()) && *prev == px { return Err(SampleError::Same { material: name, a: *pk, b: k }); }
         changed.push(Some(share_changed(&px, &rest, tb)));
+        moved.push(match (frames.last(), cells.last()) { (Some((_, _, prev)), Some(Some(_))) => Some(share_changed(&px, prev, tb)), _ => None });
         frames.push((CELL.0, CELL.1, px));
         cells.push(Some(k));
     }
     if arrival {
         // Plain until ready; then everything condenses into the material from its cap.
-        let mut ui = page(faces(), 0.0, format!("{name} · plain, before it is ready"), look);
+        let mut ui = page(faces(), 0.0, format!("{name} · plain, before it is ready"), look, stir);
         ui.tick(3.0);
         frames.push((CELL.0, CELL.1, o.render(&mut ui, &plain)));
         let plain_px = frames.last().map(|f| f.2.clone()).unwrap_or_default();
         cells.push(None);
         changed.push(None);
+        moved.push(None);
         // The label says the first stage before the material arrives, so its own change of text has
         // settled by the first frame.
         ui.state.label = format!("{name} · ready +120 ms");
@@ -194,9 +209,10 @@ pub fn sheet(o: &mut Offscreen, faces: &dyn Fn() -> Vec<crate::text::Face>, mate
             frames.push((CELL.0, CELL.1, px));
             cells.push(None);
             changed.push(None);
+            moved.push(None);
         }
     }
     let cols = frames.len().min(if arrival { 4 } else { 5 });
     let (w, h, px) = crate::offscreen::sheet(&frames, cols);
-    Ok(Sheet { w, h, px, cells, changed })
+    Ok(Sheet { w, h, px, cells, changed, moved })
 }
