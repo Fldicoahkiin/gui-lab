@@ -2,14 +2,17 @@
 //! the pointer, touch, wheel, keys, typed text, the input method and the system clipboard (arboard) to
 //! the runtime, and draws a frame only when the runtime needs one; between frames the event loop sleeps
 //! until input or the runtime's next timed wake. Screen readers get the accessibility mirror through
-//! AccessKit (`app::access`).
-use super::{App, Window};
+//! AccessKit (`app::access`). Files dropped on the window and the system's light or dark appearance go
+//! to [`App`]; when the GPU device is lost (a driver reset, a GPU unplugged) the shell builds a new one
+//! and carries on.
+use super::{App, Appearance, Dropped, Window};
 use crate::el::{Cursor, Key, Mods};
 use crate::error::{SurfaceError, WindowError};
 use crate::render::Renderer;
 use crate::text::Face;
 use crate::ui::{PointerKind, Ui};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, LogicalSize};
@@ -20,30 +23,34 @@ use winit::window::WindowId;
 
 /// Open a window and run the application until the window closes.
 ///
-/// `setup` is called once with the renderer before the first frame (to register pictures and meshes);
+/// `setup` is called with the renderer before the first frame (to register pictures and meshes), and
+/// again with a new one if the GPU device is lost;
 /// `make` builds the `Ui` from the bundled faces, the window's size in device px and its scale. The
 /// window then opens `window.route` through [`App::route`], if there is one.
 pub fn run<S: App + 'static, M: Clone + 'static>(
     window: Window,
-    setup: impl FnOnce(&mut Renderer) + 'static,
+    setup: impl Fn(&mut Renderer) + 'static,
     make: impl FnOnce(Vec<Face>, u32, u32, f32) -> Ui<S, M> + 'static,
 ) -> Result<(), WindowError> {
     let el = EventLoop::<accesskit_winit::Event>::with_user_event().build().map_err(|e| WindowError::NoEventLoop(e.to_string()))?;
     let mut shell = Shell {
-        proxy: el.create_proxy(), display: el.owned_display_handle(), opts: window, start: Instant::now(), run: None, made: Some((Box::new(setup), Box::new(make))),
+        proxy: el.create_proxy(), display: el.owned_display_handle(), opts: window, start: Instant::now(), run: None, setup: Box::new(setup), make: Some(Box::new(make)),
         failed: None, mods: ModifiersState::empty(), composing: false, cursor: (0.0, 0.0), reported: 0.0,
     };
     el.run_app(&mut shell).map_err(|e| WindowError::EventLoop(e.to_string()))?;
     shell.failed.map_or(Ok(()), Err)
 }
 
-type Setup = Box<dyn FnOnce(&mut Renderer)>;
+type Setup = Box<dyn Fn(&mut Renderer)>;
 type Make<S, M> = Box<dyn FnOnce(Vec<Face>, u32, u32, f32) -> Ui<S, M>>;
 
 struct Running<S, M> {
     window: Arc<winit::window::Window>,
     access: accesskit_winit::Adapter,
+    instance: wgpu::Instance,
     surface: wgpu::Surface<'static>,
+    /// Set by the device's lost callback; the next redraw builds a new device and renderer.
+    lost: Arc<AtomicBool>,
     config: wgpu::SurfaceConfiguration,
     r: Renderer,
     ui: Ui<S, M>,
@@ -58,7 +65,8 @@ struct Shell<S, M> {
     opts: Window,
     start: Instant,
     run: Option<Running<S, M>>,
-    made: Option<(Setup, Make<S, M>)>,
+    setup: Setup,
+    make: Option<Make<S, M>>,
     failed: Option<WindowError>,
     mods: ModifiersState,
     /// An input method is composing (its keys are its own).
@@ -79,7 +87,7 @@ impl<S: App, M: Clone> Shell<S, M> {
     }
 
     fn open(&mut self, el: &ActiveEventLoop) -> Result<Running<S, M>, WindowError> {
-        let (setup, make) = self.made.take().ok_or_else(|| WindowError::Create("the window was already opened".into()))?;
+        let make = self.make.take().ok_or_else(|| WindowError::Create("the window was already opened".into()))?;
         let attrs = winit::window::Window::default_attributes().with_title(self.opts.title.clone()).with_inner_size(LogicalSize::new(self.opts.size.0, self.opts.size.1))
             // Shown once the accessibility adapter is attached (AccessKit needs it before the first show).
             .with_visible(false);
@@ -88,32 +96,72 @@ impl<S: App, M: Clone> Shell<S, M> {
         window.set_visible(true);
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle(Box::new(self.display.clone())));
         let surface = instance.create_surface(window.clone()).map_err(|e| WindowError::Surface(e.to_string()))?;
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions { compatible_surface: Some(&surface), ..Default::default() }))
-            .map_err(|_| SurfaceError::NoAdapter)?;
-        let info = adapter.get_info();
-        if self.opts.report { eprintln!("adapter: {} ({:?}, {:?})", info.name, info.backend, info.device_type); }
-        let (device, queue) = pollster::block_on(adapter.request_device(&Default::default())).map_err(|e| SurfaceError::Device(e.to_string()))?;
-        let size = window.inner_size();
-        let caps = surface.get_capabilities(&adapter);
-        // A linear format: the material writes the colours it means (it encodes for sRGB surfaces itself).
-        let format = caps.formats.iter().copied().find(|f| !f.is_srgb()).or_else(|| caps.formats.first().copied())
-            .ok_or_else(|| WindowError::Surface("the surface offers no format".into()))?;
-        let mut config = surface.get_default_config(&adapter, size.width.max(1), size.height.max(1)).ok_or_else(|| WindowError::Surface("not supported by the adapter".into()))?;
-        config.format = format;
-        surface.configure(&device, &config);
-        let mut r = Renderer::new(device, queue, format, config.width, config.height);
-        r.set_particle_tier(crate::render::particle_tier(&adapter));
-        setup(&mut r);
+        let lost = Arc::new(AtomicBool::new(false));
+        let (r, config, info) = gpu(&instance, &surface, window.inner_size(), &lost, self.opts.report)?;
+        let mut r = r;
+        (self.setup)(&mut r);
         let mut faces = crate::text::load_bundled(crate::text::ASSETS)?;
         // Scripts the bundled faces lack come from the system's fonts.
         faces.push(Face::system());
         let mut ui = make(faces, config.width, config.height, window.scale_factor() as f32);
         ui.perf_mut().backend = format!("{:?}", info.backend);
         ui.perf_mut().adapter = info.name.clone();
-        if let Some(p) = &self.opts.route && ui.state.route(p) { ui.relayout(); }
+        let dark = window.theme() == Some(winit::window::Theme::Dark);
+        let mut relayout = ui.state.set_appearance(Appearance { dark, high_contrast: false });
+        if let Some(p) = &self.opts.route { relayout |= ui.state.route(p); }
+        if relayout { ui.relayout(); }
         ui.restart(self.now());
-        Ok(Running { window, access, surface, config, r, ui, frames: 0, skipped: 0 })
+        Ok(Running { window, access, instance, surface, lost, config, r, ui, frames: 0, skipped: 0 })
     }
+
+    /// The device was lost: a new adapter, device and renderer on the same surface, with the
+    /// application's pictures and meshes registered again and the glyph atlas uploaded again.
+    fn recover(&mut self) -> Result<(), WindowError> {
+        let Some(s) = self.run.as_mut() else { return Ok(()) };
+        if self.opts.report { eprintln!("the GPU device was lost; starting a new one"); }
+        let lost = Arc::new(AtomicBool::new(false));
+        let (mut r, config, info) = gpu(&s.instance, &s.surface, s.window.inner_size(), &lost, self.opts.report)?;
+        (self.setup)(&mut r);
+        s.r = r;
+        s.config = config;
+        s.lost = lost;
+        s.ui.perf_mut().backend = format!("{:?}", info.backend);
+        s.ui.perf_mut().adapter = info.name;
+        s.ui.text_mut().dirty = true;
+        s.ui.resize(s.config.width, s.config.height, s.window.scale_factor() as f32);
+        s.ui.invalidate();
+        s.window.request_redraw();
+        Ok(())
+    }
+}
+
+/// An adapter and device for the surface, the surface configured for it, and a renderer. The device
+/// sets `lost` when it is lost.
+fn gpu(instance: &wgpu::Instance, surface: &wgpu::Surface<'static>, size: winit::dpi::PhysicalSize<u32>, lost: &Arc<AtomicBool>, report: bool)
+    -> Result<(Renderer, wgpu::SurfaceConfiguration, wgpu::AdapterInfo), WindowError> {
+    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions { compatible_surface: Some(surface), ..Default::default() }))
+        .map_err(|_| SurfaceError::NoAdapter)?;
+    let info = adapter.get_info();
+    if report { eprintln!("adapter: {} ({:?}, {:?})", info.name, info.backend, info.device_type); }
+    let (device, queue) = pollster::block_on(adapter.request_device(&Default::default())).map_err(|e| SurfaceError::Device(e.to_string()))?;
+    let flag = lost.clone();
+    device.set_device_lost_callback(move |reason, msg| {
+        // Dropping the device on purpose (closing, or replacing it) is not a loss.
+        if reason != wgpu::DeviceLostReason::Destroyed {
+            eprintln!("GPU device lost ({reason:?}): {msg}");
+            flag.store(true, Ordering::Release);
+        }
+    });
+    let caps = surface.get_capabilities(&adapter);
+    // A linear format: the material writes the colours it means (it encodes for sRGB surfaces itself).
+    let format = caps.formats.iter().copied().find(|f| !f.is_srgb()).or_else(|| caps.formats.first().copied())
+        .ok_or_else(|| WindowError::Surface("the surface offers no format".into()))?;
+    let mut config = surface.get_default_config(&adapter, size.width.max(1), size.height.max(1)).ok_or_else(|| WindowError::Surface("not supported by the adapter".into()))?;
+    config.format = format;
+    surface.configure(&device, &config);
+    let mut r = Renderer::new(device, queue, format, config.width, config.height);
+    r.set_particle_tier(crate::render::particle_tier(&adapter));
+    Ok((r, config, info))
 }
 
 /// A winit key as the runtime's keys (a character key can produce several characters).
@@ -212,6 +260,19 @@ impl<S: App, M: Clone> ApplicationHandler<accesskit_winit::Event> for Shell<S, M
                 s.ui.wheel_xy(self.cursor.0, self.cursor.1, dx, dy);
             }
             WindowEvent::ModifiersChanged(m) => self.mods = m.state(),
+            WindowEvent::ThemeChanged(t) => {
+                if s.ui.state.set_appearance(Appearance { dark: t == winit::window::Theme::Dark, high_contrast: false }) { s.ui.relayout(); }
+                s.window.request_redraw();
+            }
+            // winit reports one event per file; each goes to the application as it comes.
+            WindowEvent::HoveredFile(_) => { if s.ui.state.files_hovering(true) { s.ui.relayout(); } s.window.request_redraw(); }
+            WindowEvent::HoveredFileCancelled => { if s.ui.state.files_hovering(false) { s.ui.relayout(); } s.window.request_redraw(); }
+            WindowEvent::DroppedFile(path) => {
+                s.ui.tick(now);
+                let changed = s.ui.state.files_hovering(false) | s.ui.state.files_dropped(vec![Dropped::path(path)]);
+                if changed { s.ui.relayout(); }
+                s.window.request_redraw();
+            }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
                 s.ui.tick(now);
                 let cmd = if cfg!(target_os = "macos") { self.mods.super_key() } else { self.mods.control_key() };
@@ -241,6 +302,10 @@ impl<S: App, M: Clone> ApplicationHandler<accesskit_winit::Event> for Shell<S, M
                 for k in keys(&event.logical_key) { s.ui.key_up(k); }
             }
             WindowEvent::RedrawRequested => {
+                if s.lost.load(Ordering::Acquire) {
+                    if let Err(e) = self.recover() { self.failed = Some(e); el.exit(); }
+                    return;
+                }
                 s.ui.tick(now);
                 self.report(now);
                 let Some(s) = self.run.as_mut() else { return };

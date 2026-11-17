@@ -802,8 +802,20 @@ leaving; fingers have no hover).
 
 ### 1.9 Platforms
 
-- Native: a winit window (the website's `window`, Metal on macOS); off-screen rendering to PNG (`shot`,
-  `pages`) for acceptance.
+- Native: a winit window (`app::native::run`, Metal on macOS, Vulkan elsewhere); off-screen rendering to
+  PNG (`shot`, `pages`) for acceptance.
+- Both shells tell the application (`app::App`) about the system's appearance (`set_appearance`: dark,
+  and more contrast where the platform says so: the web's `prefers-contrast: more`; winit has no such
+  setting, so native windows report `false`), at start and on every change, and about files dragged over
+  and dropped (`files_hovering`, `files_dropped`: a path natively, the name and bytes on the web, which
+  reads every file of a drop before handing them over together; winit reports one file per event).
+- Native: when the GPU device is lost (a driver reset or update, an external GPU unplugged), the device's
+  lost callback marks it and the next redraw requests a new adapter and device on the same surface,
+  builds a new renderer, runs the application's `setup` again (so `setup` is `Fn`), and marks the glyph
+  atlas for upload; mesh buffers and particle tiles upload again because the new renderer's counters start
+  at zero. The `Ui`, and with it the state, focus and scroll positions, is untouched. A device dropped on
+  purpose (`DeviceLostReason::Destroyed`) is not a loss. The web shell does not recover yet: a lost WebGPU
+  device leaves the canvas still until the page reloads.
 - Web: one canvas, drawn only when needed (§1.11). The web page only forwards pointer, wheel (both
   directions) and keyboard events and `location.hash`: at start-up it hands the hash to the application, on
   `hashchange` (links, back) it switches to that page, and after every input it writes the current page's

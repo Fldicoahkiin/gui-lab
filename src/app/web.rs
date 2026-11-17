@@ -6,7 +6,7 @@
 //! pointer, wheel, key, text, composition, clipboard and resize events and calls `frame(t)` from its
 //! animation frame loop while `frame` asks for one. Positions are CSS (logical) px, sizes device px,
 //! times seconds on the page's clock (`performance.now() / 1000`).
-use super::App;
+use super::{App, Appearance, Dropped};
 use crate::el::{Key, Mods};
 use crate::render::Renderer;
 use crate::text::Face;
@@ -27,6 +27,8 @@ pub struct Host<S, M> {
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     started: bool,
+    /// Files of a drop the page is still reading.
+    dropping: Vec<Dropped>,
 }
 
 /// A pointer kind from the page: 0 mouse, 1 touch, 2 pen (DESIGN.md §1.8.2).
@@ -64,7 +66,7 @@ impl<S: App, M: Clone> Host<S, M> {
         if !hash.trim_start_matches('#').is_empty() && ui.state.route(hash) { ui.relayout(); }
         ui.perf_mut().backend = backend_name(adapter.get_info().backend).into();
         ui.perf_mut().adapter = adapter.get_info().name;
-        Ok(Self { ui, r, surface, config, started: false })
+        Ok(Self { ui, r, surface, config, started: false, dropping: vec![] })
     }
 
     /// `w`, `h` device px.
@@ -111,6 +113,21 @@ impl<S: App, M: Clone> Host<S, M> {
         if let Some(l) = crate::i18n::Locale::from_tag(tag) && self.ui.state.set_locale(l) { self.ui.relayout(); }
     }
     pub fn set_reduced_motion(&mut self, on: bool) { self.ui.state.set_reduced_motion(on); self.ui.set_reduced_motion(on); }
+    /// `prefers-color-scheme: dark` and `prefers-contrast: more`, at start and when they change.
+    pub fn set_appearance(&mut self, dark: bool, high_contrast: bool) {
+        if self.ui.state.set_appearance(Appearance { dark, high_contrast }) { self.ui.relayout(); }
+    }
+    /// Files dragged over the canvas, or gone without a drop.
+    pub fn files_hovering(&mut self, on: bool) { if self.ui.state.files_hovering(on) { self.ui.relayout(); } }
+    /// One file of a drop (the page reads them one by one), then [`Host::drop_done`].
+    pub fn drop_file(&mut self, name: &str, bytes: Vec<u8>) { self.dropping.push(Dropped::bytes(name, bytes)); }
+    /// The drop's files have all been read: they go to the application together.
+    pub fn drop_done(&mut self, t: f32) {
+        self.ui.tick(t);
+        let files = std::mem::take(&mut self.dropping);
+        let changed = self.ui.state.files_hovering(false) | (!files.is_empty() && self.ui.state.files_dropped(files));
+        if changed { self.ui.relayout(); }
+    }
     /// Assistive technology focused or activated a mirrored element.
     pub fn a11y_focus(&mut self, key: &str, t: f32) { self.ui.tick(t); self.ui.focus_key(key); }
     pub fn a11y_activate(&mut self, key: &str, t: f32) -> bool { self.ui.tick(t); self.ui.activate(key) }
@@ -223,6 +240,14 @@ macro_rules! web_app {
             pub fn set_locale(tag: &str) { host(|s| s.set_locale(tag)); }
             #[wasm_bindgen(wasm_bindgen = $crate::app::web::__rt::wasm_bindgen)]
             pub fn set_reduced_motion(on: bool) { host(|s| s.set_reduced_motion(on)); }
+            #[wasm_bindgen(wasm_bindgen = $crate::app::web::__rt::wasm_bindgen)]
+            pub fn set_appearance(dark: bool, high_contrast: bool) { host(|s| s.set_appearance(dark, high_contrast)); }
+            #[wasm_bindgen(wasm_bindgen = $crate::app::web::__rt::wasm_bindgen)]
+            pub fn files_hovering(on: bool) { host(|s| s.files_hovering(on)); }
+            #[wasm_bindgen(wasm_bindgen = $crate::app::web::__rt::wasm_bindgen)]
+            pub fn drop_file(name: &str, bytes: Vec<u8>) { host(|s| s.drop_file(name, bytes)); }
+            #[wasm_bindgen(wasm_bindgen = $crate::app::web::__rt::wasm_bindgen)]
+            pub fn drop_done(t: f32) { host(|s| s.drop_done(t)); }
             #[wasm_bindgen(wasm_bindgen = $crate::app::web::__rt::wasm_bindgen)]
             pub fn a11y_update() -> String { host(|s| s.a11y_update()).unwrap_or_else(|| "[]".into()) }
             #[wasm_bindgen(wasm_bindgen = $crate::app::web::__rt::wasm_bindgen)]

@@ -24,6 +24,10 @@ Newest first. The acceptance checks for each part are in [DESIGN.md §7](docs/DE
   right-to-left direction by language or script, and its own `locale.name` and `locale.date`. Arabic ships
   (`Locale::AR`, `assets/i18n/ar.txt`). `Locale::ALL` lists the three shipped locales;
   `i18n::installed()` lists the application's. `Locale::name` returns a `String`.
+- `App::set_appearance` (`Appearance { dark, high_contrast }`), `App::files_hovering` and
+  `App::files_dropped` (`Dropped` with a path natively, name and bytes on the web), from both shells.
+- The native window recovers from a lost GPU device: new device and renderer, `setup` again, the `Ui`
+  untouched. `native::run`'s `setup` is now `Fn`.
 - `web/amenui.js`, the `amenui` npm package: the page side of the web entry (`mount`, `stage`, `css`).
 - `offscreen::read_back`: one frame drawn into a texture of a given format and read back.
 - `error::WindowError`.
