@@ -1,0 +1,12 @@
+{
+  "name": "amenui",
+  "version": "0.0.1",
+  "description": "The web shell for amenui applications: one canvas, input, text, clipboard and the accessibility mirror.",
+  "type": "module",
+  "main": "amenui.js",
+  "exports": { ".": "./amenui.js" },
+  "files": ["amenui.js", "README.md"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/amenui-dev/amenui.git", "directory": "web" },
+  "keywords": ["gui", "webgpu", "wasm", "canvas", "rust"]
+}

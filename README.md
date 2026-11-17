@@ -104,9 +104,27 @@ Copy components into your own project:
 cargo run --release --bin amenui -- add button dialog --to src/widgets
 ```
 
-The framework does not ship a window runner yet. The native window (winit) and the web shell
-(wasm-bindgen) live in the [website repository](https://github.com/amenui-dev/website), in
-`src/bin/window.rs` and `src/lib.rs` with `web/page.html`, and are the reference for hosting a `Ui`.
+Run it in a native window (the `window` feature, on by default):
+
+```rust,no_run
+# use amenui::el::{El, col};
+# #[derive(Clone)] enum Msg {}
+# struct Counter;
+# fn view(_: &Counter) -> El<Msg> { col() }
+# fn update(_: &mut Counter, _: Msg) {}
+impl amenui::app::App for Counter {}
+
+fn main() -> Result<(), amenui::error::WindowError> {
+    let window = amenui::app::Window::new("Counter").size(400.0, 300.0).from_args();
+    amenui::app::native::run(window, |_| {}, |faces, w, h, scale| {
+        amenui::ui::Ui::new(Counter, view, update, faces, w, h, scale)
+    })
+}
+```
+
+On the web, `amenui::web_app!(Counter, Msg, setup, make)` in the crate built as a `cdylib` generates
+the module's exports, and [`web/amenui.js`](web/) (the `amenui` npm package) is the page side: one
+canvas, input, text and the input method, the clipboard and the accessibility mirror.
 
 ## Documentation
 
