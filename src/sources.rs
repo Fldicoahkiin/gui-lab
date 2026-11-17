@@ -98,3 +98,17 @@ pub mod widget {
     /// The source of `src/widgets/<file>` (`button.rs`), if there is such a component.
     pub fn get(file: &str) -> Option<&'static str> { ALL.iter().find(|w| w.0 == file).map(|w| w.1) }
 }
+
+/// The source of a file `amenui add` copies, by its path in the repository (`src/widgets/button.rs`,
+/// `src/el.rs`): the components and the framework files they need, compiled in so the command works
+/// wherever it was installed.
+pub fn file(path: &str) -> Option<&'static str> {
+    match path {
+        "src/el.rs" => Some(include_str!("el.rs")),
+        "src/gesture.rs" => Some(include_str!("gesture.rs")),
+        "src/mesh.rs" => Some(include_str!("mesh.rs")),
+        "src/morph.rs" => Some(MORPH),
+        "src/widgets/mod.rs" => Some(include_str!("widgets/mod.rs")),
+        _ => path.strip_prefix("src/widgets/").and_then(widget::get),
+    }
+}

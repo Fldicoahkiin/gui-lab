@@ -35,6 +35,13 @@ jobs:
         run: cargo doc --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
+      # What crates.io would get: it packs, and stays under its 10 MiB limit.
+      - name: Package
+        run: |
+          cargo package --no-verify
+          size=$(stat -c %s target/package/amenui-*.crate)
+          echo "packed: $size bytes"
+          test "$size" -lt 10485760
 
   test:
     runs-on: ubuntu-latest

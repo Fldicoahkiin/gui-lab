@@ -2,7 +2,16 @@
 name = "amenui"
 version = "0.0.1"
 edition = "2024"
+description = "A self-drawn interface framework in Rust: every glyph, shape and picture has a true outline that can loosen, morph and come back together"
 license = "MIT"
+readme = "README.md"
+keywords = ["gui", "ui", "wgpu", "accessibility", "wasm"]
+categories = ["gui", "graphics", "rendering", "wasm"]
+# The toolchain CI builds and tests with.
+rust-version = "1.97"
+# The crate carries what the library compiles in (assets, docs, examples, registry.json, web/) and the
+# tests; CI stays in the repository.
+exclude = [".github/", "target/"]
 repository = "https://github.com/amenui-dev/amenui"
 homepage = "https://github.com/amenui-dev/amenui"
 # The files in examples/ are the recipes (docs/recipes/): compiled into the library as `amenui::recipes`.

@@ -135,8 +135,6 @@ pub enum WindowError {
     Surface(String),
     #[error(transparent)]
     Gpu(#[from] SurfaceError),
-    #[error(transparent)]
-    Font(#[from] FontError),
     #[error("the event loop stopped with an error: {0}")]
     EventLoop(String),
 }

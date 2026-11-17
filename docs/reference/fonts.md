@@ -5,7 +5,10 @@ kind: reference
 # Fonts
 
 The fonts in `assets/` are all under the SIL Open Font License 1.1. Their licenses are in
-`assets/licenses/`. `text::load_bundled(text::ASSETS)` loads them.
+`assets/licenses/`. `text::embedded()` returns them compiled into the binary (about 14 MB, what a
+native application ships with; the native window uses it); `text::load_bundled(dir)` reads them from a
+folder instead, such as `text::ASSETS` in a checkout. The web build fetches the three main faces and
+compiles in only Geist Pixel and the serif.
 
 | File | Face | Source | Used as |
 | --- | --- | --- | --- |
