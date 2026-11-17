@@ -67,7 +67,8 @@ pub struct Node<M> {
     shed: Option<crate::motes::Shed>,
     flow_field: Option<crate::motes::FlowField>,
     stirr: Option<crate::el::Stirr>,
-    trace: Option<crate::strand::Trace>,
+    /// A long path it draws (`El::trace`), in its own box.
+    pub trace: Option<crate::strand::Trace>,
     /// The nearest flow id at or above this node, and the node that carries it.
     flow: Option<(Rc<str>, usize)>,
     /// The material override of this subtree as the instance code (0 = none, see `style::override_code`).
@@ -2433,6 +2434,9 @@ impl<S, M: Clone> Ui<S, M> {
             let nk = { use std::hash::{Hash, Hasher}; let mut h = std::hash::DefaultHasher::new(); n.key.hash(&mut h); h.finish() };
             let text_born = self.text_births.get(&nk).copied();
             let drawn = matches!(n.content, Content::Canvas(_));
+            // Under scribblr, text to read and controls hold where they are: the map's flow never carries
+            // them (DESIGN.md §1.30).
+            let in_place = n.legible && self.timing.material == crate::style::Material::Scribblr.id();
             let mut put = |sink: &mut Sink, mut inst: Instance, id: u64, glyph: Option<u32>| {
                 inst.clip = clip;
                 // A negative push marks what fronts pass by whatever its element says (the caret, a
@@ -2441,7 +2445,7 @@ impl<S, M: Clone> Ui<S, M> {
                 inst.look[2] = reads;
                 // A picture or a 3D view loosens where the map is, in place: its flow never carries it
                 // off its own box (so a trail never shows the page under a picture, §1.29).
-                inst.look[3] = if inst.paint[3] == PICTURE || inst.paint[3] == MESH { 1.0 } else { 0.0 };
+                inst.look[3] = if in_place || inst.paint[3] == PICTURE || inst.paint[3] == MESH { 1.0 } else { 0.0 };
                 inst.paint[2] *= dim;
                 inst.extra[2] = loose;
                 // Hidden instances are kept for sampling only: they get no birth time, so a view that
@@ -2979,7 +2983,19 @@ impl<S, M: Clone> Ui<S, M> {
         // their elements loosen as plain does (no thread).
         let running = self.run.is_some();
         let (grain_k, atlas) = (if crate::budget::usage().scale < 0.5 { 2.0 } else { 1.0 }, &self.text.pixels);
-        let calm: Vec<[f32; 4]> = self.field.calm.iter().filter(|r| r[2] > r[0]).copied().collect();
+        // What the tails keep out of: calm boxes and the boxes of text to read and controls (not pictures).
+        let mut calm: Vec<[f32; 4]> = self.field.calm.iter().filter(|r| r[2] > r[0]).copied().collect();
+        // Each one's ink: its instances' boxes (a glyph's without the spread around it), within its clip.
+        let spread = crate::text::SPREAD as f32;
+        for (ni, idx) in own.iter().enumerate() {
+            let n = &self.nodes[ni];
+            if idx.is_empty() || !n.legible || n.hidden { continue; }
+            let b = idx.iter().map(|&i| { let r = self.scene.instances[i].rect; let p = if self.scene.instances[i].paint[3] == GLYPH { spread } else { 0.0 }; [r[0] + p, r[1] + p, r[0] + r[2] - p, r[1] + r[3] - p] })
+                .fold([f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY], |a, r| [a[0].min(r[0]), a[1].min(r[1]), a[2].max(r[2]), a[3].max(r[3])]);
+            let c = [n.clip.x * s, n.clip.y * s, n.clip.right() * s, n.clip.bottom() * s];
+            let b = [b[0].max(c[0]), b[1].max(c[1]), b[2].min(c[2]), b[3].min(c[3])];
+            if b[2] > b[0] && b[3] > b[1] { calm.push(b); }
+        }
         // A transition's Loosen steps loosen everything, on the CPU as the material pass does (render.rs).
         let tr_k = match &self.split {
             Some(sp) if self.timing.transition > 0.0 && self.split_alive(sp, now) =>
@@ -2991,8 +3007,9 @@ impl<S, M: Clone> Ui<S, M> {
         for (ni, idx) in own.iter().enumerate() {
             if idx.is_empty() { continue; }
             let n = &self.nodes[ni];
-            if n.hidden || matches!(n.content, Content::Canvas(_)) || self.recomps.contains_key(&n.key) || self.decodes.contains_key(&n.key) || (running && self.roles[ni] != 0) || idx.iter().any(|&i| self.flows.contains_key(&self.owners[i].1)) { continue; }
-            let k = idx.iter().map(|&i| self.inst_loose(i, now)).fold(if n.legible { tr_k.min(self.timing.legible_cap) } else { tr_k }, f32::max).clamp(0.0, 1.0);
+            // Text to read and controls hold: no thread, no fade, not carried by the map (DESIGN.md §1.30).
+            if n.legible || n.hidden || matches!(n.content, Content::Canvas(_)) || self.recomps.contains_key(&n.key) || self.decodes.contains_key(&n.key) || (running && self.roles[ni] != 0) || idx.iter().any(|&i| self.flows.contains_key(&self.owners[i].1)) { continue; }
+            let k = idx.iter().map(|&i| self.inst_loose(i, now)).fold(tr_k, f32::max).clamp(0.0, 1.0);
             if k <= 0.0 { continue; }
             let f = strand::fill(k);
             for &i in idx { fades.push((i, self.scene.instances[i].paint[2], f)); }
@@ -3033,21 +3050,14 @@ impl<S, M: Clone> Ui<S, M> {
                     }
                     let rest = strand::join(&loops);
                     let scope = self.stir_scope(Some(ni), &Scope::Container(None)).map_or(screen, |b| [b[0] * s, b[1] * s, b[2] * s, b[3] * s]);
-                    // Text to read and controls (capped at `legible_cap`) have no bridges, knots or tail:
-                    // only the outline, leaving the glyph by at most a logical pixel (at the cap) and a word
-                    // at a time, so the text reads as itself with a live line on its edge, not a doubled
-                    // copy. Decoration passing through the same looseness is not quiet (no jump at the cap).
-                    let quiet = n.legible;
-                    let cap = self.timing.legible_cap.max(1e-3);
-                    let fx_n = if quiet { crate::strand::StrandFx { knot: 0.0, tail: 0.0, reach: fx.reach.min(1.0 / cap), ..fx } } else { fx };
-                    let c = strand::Ctx { k, t, seed: (ni as u32).wrapping_mul(7919) ^ beat as u32, scale: s, drift, scope, calm: &calm, window: screen, fine: if quiet { 0.0 } else { 1.0 } };
+                    // The line height the line is simplified by: a text's line, a shape's short side.
+                    let lh = match &n.content { Content::Text { line, .. } => *line, _ => n.rect.w.min(n.rect.h) } * s;
+                    let c = strand::Ctx { k, t, seed: (ni as u32).wrapping_mul(7919), scale: s, drift, scope, calm: &calm, lh };
                     let map = &self.fmap;
                     let field = |x: f32, y: f32| (map.energy_at(x / s, y / s), map.flow_at(x / s, y / s));
-                    let want = rest.pts.len() * (1 + strand::knots(fx_n.knot, 1.0, k)) * 2 + 32;
+                    let want = (rest.pts.len() + 3 * (1 + strand::knots(fx.knot, 1.0, k)) + 32) * 2;
                     let got = crate::budget::grant(want);
-                    let mut segs = strand::thread(&rest, &fx_n, &c, &field, got);
-                    if quiet { segs.retain(|g| g.kind == Kind::Line); }
-                    segs
+                    strand::thread(&rest, &fx, &c, &field, got)
                 }
             };
             if hold > 0.0 { self.strand_hold.insert(n.key.clone(), (beat, k, segs.clone())); keep_hold.push(n.key.clone()); }
@@ -3719,7 +3729,9 @@ impl<S, M: Clone> Ui<S, M> {
             if g.has(kinds::FRAME) {
                 let len = (10.0f32 * s).min(w * 0.3).min(h * 0.3).max(t * 2.0) * p;
                 let len = len.round();
-                for (cx, cy, sx, sy) in [(x0, y0, 1.0, 1.0), (x1, y0, -1.0, 1.0), (x0, y1, 1.0, -1.0), (x1, y1, -1.0, -1.0)] {
+                // Set 6 px out from the rect, so a corner never lies on the element's own ink.
+                let g = dev(6.0);
+                for (cx, cy, sx, sy) in [(x0 - g, y0 - g, 1.0, 1.0), (x1 + g, y0 - g, -1.0, 1.0), (x0 - g, y1 + g, 1.0, -1.0), (x1 + g, y1 + g, -1.0, -1.0)] {
                     let bx = if sx > 0.0 { cx } else { cx - len };
                     let by = if sy > 0.0 { cy } else { cy - t };
                     bar(&mut out, bx, by, len, t, 1.0, false);

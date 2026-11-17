@@ -9,16 +9,17 @@
 - 尾迹：`El::stirr` 的元素动了就沿走过的路搅一下，`Cmd::Stir` 可以搅一点、一个元素或一条路径的一段；浮动窗口、底部面板、卡片叠默认带尾迹，强弱由预设定（Normcore 没有）。Trails: `El::stirr` and `Cmd::Stir`, on by default for the floating window, the sheet and the card stack.
 - 读场图：第一遍里它是一份松开度（照样受可读上限和响应管），会被推的实例顺着流向漂开（图片和三维元素在原地松开）；dot 的底点和 glitch 的底读它；`Ui::looseness` 用同一个值。留尾迹而有底色的元素画在上面一层，经过的松开的装饰不会透过它。Reading the map in both passes and on the CPU.
 - 页面 `#stirr`（概念一组），十二个数都是数字控件；F2 读数加一行；`check` 第 19 条（原来的第 19 条“效果”改为第 17 条）、`bench … map`、`craft <目录> stirr`。The `#stirr` page, check 19, a bench row and samples.
-- 线的材质 `scribblr`（`src/strand.rs`）：静止时和 plain 逐字节相同；松开时填充淡下去，墨变成一根连续的细线，沿字的真实轮廓走、用桥连成一笔，再松就游走、打结、甩出顺着流向的线头，收回时倒着来。可读的字只有贴着轮廓的线。八个数在材质参数里，`Look::hold_ms` 让线一拍一换姿势。The `scribblr` material: loose ink becomes one continuous thread that knots and trails off with the flow, and writes itself back.
+- 线的材质 `scribblr`（`src/strand.rs`）：静止时和 plain 逐字节相同；松开时填充淡下去，墨变成一根连续的细线，先沿字的真实轮廓走、用桥连成一笔（干净的空心字），再松就一步步去掉顶点，合成跨几个字的长折线、各自游走开，能量最高的一到三处缠成星形的大结，两根长线头一根从范围的边进来、一根走到另一条边，收回时倒着来。要读的字和控件不出线、不淡、不动。八个数在材质参数里（`reach` 40、`knot_r` 48、`tail` 480、`angular` 0.9），`Look::hold_ms` 让线一拍一换姿势。The `scribblr` material: loose ink becomes one wandering polyline with a few big knots and two long tails, and writes itself back; text to read holds.
 - 长路径 `El::trace`：按进度画出的长折线，可以是虚线（`dash`、`gap`，按弧长从起点算），被流向推歪，头经过处搅动场图；`#stirr` 页的“Draw a line”。The long-path element with dashes.
-- 线从第一遍画出来的轮廓起头（加上场图推开实例的那一段），要读的字的线离轮廓最多一个像素、整词一起偏；结是缠的圈，不是刺；线头出范围时切在边上。The thread starts on the outline as drawn; text to read keeps a tight line; knots tangle; the tail is cut at the scope's edge.
+- 线从第一遍画出来的轮廓起头（加上场图推开实例的那一段）；顶点按一遍 Ramer–Douglas–Peucker 排好，滑到弦上再去掉，跟着弦走，收回时没有跳点；结是穿过中心的长弦；线头出范围时切在边上，不进要读的字。`strand::figure` 按固定种子画一个线团给页面当内容。The thread starts on the outline as drawn, loses vertices onto chords without jumps; knots are stars of chords; tails stop at the scope's edge and before text to read; `strand::figure`.
 - 页面 `#material-scribblr`；`check` 第 20 条、`bench … strand`、`craft <目录> scribblr`、`tests/strand.rs`。The page, check 20, a bench row, samples and tests.
 - 字距 `El::tracking`；小声的字 `El::whisper()`：小写、字距 0.6 em、衬线体（Source Serif 4 的 8 pt 光学尺寸，只留西文，82 KB，OFL）。Tracking and `El::whisper()` in a small serif.
 - 标注层的三种新读数：边注 `EDGE`（范围右边的细线、刻度、指针记号，竖排写着范围大小、指针坐标、材质和主题、最松的元素、场图的结点数）、波形 `OSC`（一行结点的能量，一个设备像素粗的折线）、电平条 `LEVEL`（平均能量）；标注层认实例的变换，只用来把边注转 90 度；导出的树多了 `field: { level, nonzero }`。Edge notes, a waveform and a level bar read the runtime and the field map.
-- 第十个预设 Loose Thread：黑底白线（或纸白），一种强调色，`scribblr`，悬停时只有边注和角标，场图蜿蜒、沿墨爬，线一拍二，700 ms 的过渡先松成线再画轮廓；风格页是一页短文、一张图、三个控件。The tenth preset, Loose Thread, and its page.
-- 收尾的一遍加了“只用黑白”（`binary`：黑白调色板、不抖动、线宽取整）和“翻转”（`invert`：最后 `1 − 颜色`）两个开关。Black and white only, and invert, in the finishing pass.
+- 第十个预设 Loose Thread：黑底白线（或纸白），一种强调色，`scribblr`，悬停时只有边注和角标，场图蜿蜒、沿墨爬、两秒的寿命（指针扫过的标题松到 0.8 以上，慢慢收回，三秒内回到 0），线一拍二，700 ms 的过渡先松成线再画轮廓；风格页只用英文：小写的衬线标题、一张图、一句正文、页脚一行小字的三个控件，静止时有一个画好的线团。The tenth preset, Loose Thread, and its page: English only, a lowercase serif title, controls as a line of small type, a drawn tangle at rest.
+- 收尾的一遍加了“只用黑白”（`binary`：黑白调色板、不抖动、线宽取整；字、线和标注按覆盖率取阈值，不看颜色多亮，图片是两级的有序抖动）和“翻转”（`invert`：最后 `1 − 颜色`）两个开关。Black and white only (thresholds by coverage, pictures dithered), and invert, in the finishing pass.
+- 标注的角标在元素矩形外 6 像素，不压元素自己的字。Corner marks sit 6 px outside the rect, off the ink.
 - 修了 `THEME_IDS` 和风格页说明里删掉的主题、风格留下的错位。Fixed theme ids and style descriptions that had drifted out of line.
-- `check` 第 7.2、7.3 条（边注、波形、电平条、1080p 的边注）、第 20.6、20.7 条（只用黑白、翻转），`tests/gaze.rs` 的两个测试，`craft <目录> loose-thread`。Checks, tests and samples.
+- `check` 第 7.2、7.3 条（边注、波形、电平条、1080p 的边注）、第 20.6、20.7 条（只用黑白、翻转），`tests/gaze.rs` 的三个测试，`tests/i18n.rs` 的 Loose Thread 页，`craft <目录> loose-thread`、`craft <目录> thread-ref`。Checks, tests and samples.
 
 ## 16 — 基础的收尾、实验室的墙、形体 · Foundation leftovers, the Lab as a wall, Body
 

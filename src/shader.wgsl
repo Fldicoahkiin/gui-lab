@@ -339,6 +339,8 @@ fn near_of(i: VOut) -> vec4f {
   if (i.paint.w < 0.5) { a = textureSampleLevel(tex0, samp, i.uv, 0.0).r; }
   a *= i.paint.z;
   var c = mix(i.look.rgb, u.bg.rgb, i.paint.y);
+  // Black and white only: the marks are ink where they cover half the pixel (as text is, shade_new).
+  if (u.post[4].y > 0.5) { a = step(0.5, a); c = mix(u.fg.rgb, u.bg.rgb, i.paint.y); }
   if (u.fd.y > 0.5) { c = pow(c, vec3f(2.2)); }
   return vec4f(c * a, a);
 }
@@ -1141,8 +1143,25 @@ fn shade_new(pf: vec2f) -> vec3f {
     }
     col = scroll_trace(col, p, m, sc);
   }
+  // Black and white only (post.binary), where the ink is drawn as it is (plain, scribblr): text, lines
+  // and shapes are ink where they cover at least half the pixel, however light their tone; pictures are
+  // a two-level ordered dither of their light. The finishing pass's palette then takes the two colours.
+  if (u.post[4].y > 0.5 && (m == PLAIN || m == SCRIBBLR)) { col = binary_px(p, col, is_pic); }
   if (u.fd.y > 0.5) { col = pow(col, vec3f(2.2)); }
   return col;
+}
+fn binary_px(p: vec2f, col: vec3f, is_pic: bool) -> vec3f {
+  let g = gnd(p);
+  let ink = u.fg.rgb;
+  let lum = vec3f(0.30, 0.59, 0.11);
+  if (is_pic) {
+    let f = (dot(col, lum) - dot(g, lum)) / select(dot(ink, lum) - dot(g, lum), 1e-3, abs(dot(ink, lum) - dot(g, lum)) < 1e-3);
+    return select(g, ink, clamp(f, 0.0, 1.0) > bayer_t(p, 4u, 2u));
+  }
+  let d = dec(p);
+  // Faint fills (a panel in the ground's tone) stay ground.
+  let tone = length(d.rgb - g) / max(length(ink - g), 1e-3);
+  return select(g, ink, d.a >= 0.5 && tone > 0.2);
 }
 
 /// The final colour: the new frame, or during a commit the old one beyond the front travelling out from

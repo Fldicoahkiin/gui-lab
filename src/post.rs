@@ -186,7 +186,7 @@ impl Post {
     pub fn active(&self) -> bool {
         self.bloom_on() || self.chroma_on() || self.scanlines_on() || self.grain_on() || self.vignette_on() || self.curvature_on() || self.dither_on() || self.palette_on() || self.invert
     }
-    /// The uniform form (device px where lengths): six vec4s (the fifth's x is `invert`), then the
+    /// The uniform form (device px where lengths): six vec4s (the fifth's x is `invert`, y `binary`), then the
     /// palette's sixteen.
     pub fn pack(&self, scale: f32) -> ([[f32; 4]; 6], [[f32; 4]; PALETTE_MAX]) {
         let f = |b: bool| if b { 1.0 } else { 0.0 };
@@ -196,7 +196,7 @@ impl Post {
         p[1] = [if self.bloom_on() { self.bloom.strength } else { 0.0 }, self.bloom.threshold, self.bloom.radius * scale, d.strength.clamp(0.0, 1.0)];
         p[2] = [self.chroma.offset * scale, if self.scanlines_on() { self.scanlines.strength.clamp(0.0, 1.0) } else { 0.0 }, self.scanlines.period.max(1.0) * scale, self.grain.amount.max(0.0)];
         p[3] = [self.vignette.strength.clamp(0.0, 1.0), self.vignette.radius.clamp(0.0, 1.5), self.curvature.amount, (self.grain.size.max(0.25) * scale).max(1.0)];
-        p[4] = [f(self.invert), 0.0, 0.0, 0.0];
+        p[4] = [f(self.invert), f(self.binary), 0.0, 0.0];
         let mut pal = [[0.0; 4]; PALETTE_MAX];
         for (i, c) in self.colors.iter().take(self.count as usize).enumerate() { pal[i] = [c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0, 1.0]; }
         (p, pal)
