@@ -59,7 +59,7 @@ pub enum CmdSpec {
     /// `Cmd::Press`: press an element as a person would.
     Press { key: String },
     /// `Cmd::Commit`: play the look's transition from (x, y).
-    Commit { x: f32, y: f32 },
+    Commit { x: f32, y: f32, #[serde(default)] scope: Option<String> },
     /// `Cmd::Hold`: stop the beat clock for this many steps.
     Hold(u8),
     /// `Cmd::Retrigger`: play the current step again.
@@ -88,7 +88,7 @@ impl CmdSpec {
                 Cmd::Stir { at, v, energy, radius, scope: crate::el::Scope::Global }
             }
             CmdSpec::Press { key } => Cmd::Press { key },
-            CmdSpec::Commit { x, y } => Cmd::Commit { x, y },
+            CmdSpec::Commit { x, y, scope } => Cmd::Commit { x, y, scope },
             CmdSpec::Hold(n) => Cmd::Hold(n),
             CmdSpec::Retrigger => Cmd::Retrigger,
             CmdSpec::Rewind(b) => Cmd::Rewind(b),
