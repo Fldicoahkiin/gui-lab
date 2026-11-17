@@ -302,3 +302,25 @@ pub enum WindowError {
     /// The event loop failed.
     EventLoop(String),
 }
+
+/// A material file's header could not be read (`materials::header`).
+#[derive(Clone, Debug, Error, PartialEq)]
+pub enum MaterialError {
+    #[error("the material file does not begin with its name. Its first line is `// @material <name>`, then one `// @param` line for each of its numbers.")]
+    /// The first line is not `// @material <name>`.
+    NoName,
+    #[error("line {line} of the material file, `// @param {text}`, is not a number's description. Write `// @param <label> <min> <max> <step> <decimals> <unit, or -> <default>`, such as `// @param grain 0 1 0.05 2 - 0.6`.")]
+    /// A `@param` line does not have its seven fields.
+    Param {
+        /// The line, counted from 1.
+        line: usize,
+        /// What follows `@param`.
+        text: String,
+    },
+    #[error("the material file describes {count} numbers; a material has at most eight.")]
+    /// More than eight numbers.
+    TooMany {
+        /// How many there are.
+        count: usize,
+    },
+}

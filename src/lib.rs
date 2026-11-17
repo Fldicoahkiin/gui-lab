@@ -19,6 +19,7 @@ pub mod gesture;
 pub mod hit;
 pub mod i18n;
 pub mod markdown;
+pub mod materials;
 pub mod marks;
 pub mod mesh;
 pub mod morph;

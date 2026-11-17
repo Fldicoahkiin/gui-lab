@@ -290,7 +290,7 @@ impl Renderer {
     /// The pipelines that plain needs (ink, nearness, the material pass, annotations, the copy out),
     /// the textures and buffers: enough to draw a frame.
     fn core(device: wgpu::Device, queue: wgpu::Queue, out_format: wgpu::TextureFormat, w: u32, h: u32) -> Self {
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: None, source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()) });
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: None, source: wgpu::ShaderSource::Wgsl(crate::materials::shader().into()) });
         let tex_entry = |binding| wgpu::BindGroupLayoutEntry {
             binding, visibility: wgpu::ShaderStages::FRAGMENT, count: None,
             ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
