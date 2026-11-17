@@ -119,13 +119,14 @@ fn the_cracks_run_out_from_the_press_and_the_pieces_leave_whole() {
         }
         sizes.push(size);
     }
-    // At 0.6 few pieces are on their way: whole (under 15 % gone) or gone (over 85 %).
-    let f6 = at_progress(0.6);
+    // Past the middle few pieces are on their way: whole (under 15 % gone) or gone (over 85 %). The
+    // pieces start to leave at 0.28, so this is 0.53.
+    let f6 = at_progress(0.53);
     let mut gone = vec![0usize; sizes.len()];
     for i in 0..n { if id[i] != usize::MAX && new(f6, i) { gone[id[i]] += 1; } }
     let pieces: Vec<f32> = sizes.iter().zip(&gone).filter(|(s, _)| **s >= 200).map(|(s, g)| *g as f32 / *s as f32).collect();
     let between = pieces.iter().filter(|f| **f > 0.15 && **f < 0.85).count();
-    eprintln!("{} pieces, {between} on their way at 0.6", pieces.len());
+    eprintln!("{} pieces, {between} on their way at 0.53", pieces.len());
     assert!(pieces.len() >= 6, "only {} pieces", pieces.len());
-    assert!(between * 4 <= pieces.len(), "{between} of {} pieces are partly gone at 0.6", pieces.len());
+    assert!(between * 4 <= pieces.len(), "{between} of {} pieces are partly gone at 0.53", pieces.len());
 }
