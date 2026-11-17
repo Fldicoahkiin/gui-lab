@@ -1,6 +1,7 @@
 extern crate self as amenui;
 
 pub mod add;
+pub mod app;
 pub mod budget;
 pub mod decode;
 pub mod dirty;

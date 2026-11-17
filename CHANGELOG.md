@@ -2,6 +2,20 @@
 
 Newest first. The acceptance checks for each part are in [DESIGN.md §7](docs/DESIGN.md).
 
+## Running applications
+
+- `amenui::app`: the framework runs applications itself. `app::native::run` opens a winit window
+  (feature `window`, on by default) with the system clipboard, the input method, touch, frames on
+  demand, and `--shot` / `--exit-after` for checks under Xvfb. `app::web::Host` and the `web_app!`
+  macro generate a wasm module's exports from an application's state and message types. The `App`
+  trait is how a shell routes, reads the route, takes clipboard requests, and sets the look, the
+  language and reduced motion; every method has a default.
+- `web/amenui.js`, the `amenui` npm package: the page side of the web entry (`mount`, `stage`, `css`).
+- `offscreen::read_back`: one frame drawn into a texture of a given format and read back.
+- `error::WindowError`.
+- CI: clippy for native and web, rustdoc, the tests on lavapipe, and the website's tests against each
+  framework commit.
+
 ## The framework and the website in two repositories
 
 - The site (the gallery shell and its pages, the skeleton demo, Body and the Lab, the site documentation,

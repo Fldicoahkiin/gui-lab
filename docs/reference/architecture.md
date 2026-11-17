@@ -78,6 +78,7 @@ A press or the pointer lens puts energy into the wave field; commands in the sta
 | [`tree`](../../src/tree.rs) | The laid-out tree as data (`Ui::export_tree`) |
 | [`drive`](../../src/drive.rs) | Scripted input on a fixed 60 Hz clock, behind the `render` tool and the tests |
 | [`offscreen`](../../src/offscreen.rs) | Rendering without a window, for the native tools |
+| [`app`](../../src/app/mod.rs) | Running an application: `app::native::run` (winit, feature `window`), `app::web::Host` and `web_app!` (wasm), the `App` hooks |
 | [`recipes`](../../src/recipes.rs) | The recipes in `examples/`, compiled into the library |
 | [`sources`](../../src/sources.rs) | `AGENTS.md`, `llms.txt`, `registry.json`, the changelog and widget sources, compiled in |
 | [`pictures`](../../src/pictures.rs) | Sample pictures computed in code |

@@ -61,6 +61,37 @@ impl Offscreen {
     }
 }
 
+/// Draw one frame of `ui` into a new texture of `format` (a window's surface format) and read it back as
+/// RGBA8 rows, `w` × `h` (a window's `--shot`).
+pub fn read_back<S, M: Clone>(r: &mut Renderer, ui: &mut Ui<S, M>, look: &Look, format: wgpu::TextureFormat, w: u32, h: u32) -> Result<Vec<u8>, String> {
+    let device = r.device().clone();
+    let tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: None, size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,
+        dimension: wgpu::TextureDimension::D2, format, usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC, view_formats: &[],
+    });
+    let view = tex.create_view(&Default::default());
+    r.draw(&view, ui, look);
+    let row = (w * 4).div_ceil(256) * 256;
+    let buf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (row * h) as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
+    let mut enc = device.create_command_encoder(&Default::default());
+    enc.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo { texture: &tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+        wgpu::TexelCopyBufferInfo { buffer: &buf, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(h) } },
+        wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 });
+    r.queue().submit([enc.finish()]);
+    buf.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+    device.poll(wgpu::PollType::wait_indefinitely()).map_err(|e| e.to_string())?;
+    let data = buf.slice(..).get_mapped_range().map_err(|e| format!("{e:?}"))?;
+    let bgra = matches!(format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb);
+    let mut px = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        for p in data[(y * row) as usize..(y * row + w * 4) as usize].chunks(4) {
+            if bgra { px.extend_from_slice(&[p[2], p[1], p[0], 255]); } else { px.extend_from_slice(&[p[0], p[1], p[2], 255]); }
+        }
+    }
+    Ok(px)
+}
+
 /// The part of an RGBA8 frame `w` px wide inside device rect (x0, y0, x1, y1), clamped to the frame.
 pub fn crop(px: &[u8], w: u32, h: u32, r: [u32; 4]) -> (u32, u32, Vec<u8>) {
     let (x0, y0, x1, y1) = (r[0].min(w), r[1].min(h), r[2].min(w), r[3].min(h));

@@ -123,3 +123,20 @@ pub enum AddError {
     #[error("{path}: {msg}")]
     Io { path: String, msg: String },
 }
+
+/// A native window could not be opened (`app::native::run`).
+#[derive(Debug, Error)]
+pub enum WindowError {
+    #[error("no window system here ({0}). On Linux, run under X11 or Wayland (or `xvfb-run` for a virtual display); on a server without a display, draw off-screen with `offscreen::Offscreen` or the `render` tool instead.")]
+    NoEventLoop(String),
+    #[error("the window could not be created: {0}")]
+    Create(String),
+    #[error("the window's surface could not be made or configured: {0}")]
+    Surface(String),
+    #[error(transparent)]
+    Gpu(#[from] SurfaceError),
+    #[error(transparent)]
+    Font(#[from] FontError),
+    #[error("the event loop stopped with an error: {0}")]
+    EventLoop(String),
+}

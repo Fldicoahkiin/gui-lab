@@ -9,9 +9,11 @@ homepage = "https://github.com/amenui-dev/amenui"
 autoexamples = false
 
 [features]
-default = ["gltf"]
+default = ["gltf", "window"]
 # A small glTF 2.0 reader (`mesh::load_gltf`): positions, normals, indices and node transforms.
 gltf = []
+# The native window (`app::native::run`): winit, and the system clipboard through arboard.
+window = ["dep:winit", "dep:arboard"]
 
 [dependencies]
 wgpu = { version = "30", default-features = false, features = ["wgsl", "webgl", "webgpu", "vulkan", "std"] }
@@ -32,13 +34,20 @@ unic-langid = "0.9"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 png = "0.17"
+winit = { version = "0.30", optional = true }
+# X11 through x11rb, no C libraries.
+arboard = { version = "3", default-features = false, optional = true }
 
 # macOS draws through Metal (Vulkan is not there without a translation layer).
 [target.'cfg(target_os = "macos")'.dependencies]
 wgpu = { version = "30", default-features = false, features = ["metal"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-web-sys = { version = "0.3", features = ["Window", "Performance"] }
+web-sys = { version = "0.3", features = ["Window", "Performance", "HtmlCanvasElement"] }
+# The web entry (`app::web`, `web_app!`): the exports the page calls.
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+console_error_panic_hook = "0.1"
 
 [profile.release]
 opt-level = "s"
