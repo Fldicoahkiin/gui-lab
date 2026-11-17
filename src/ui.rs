@@ -1,5 +1,6 @@
 //! Runtime: state, view, layout, hit-testing, focus, scrolling and instance birth times. No GPU here,
 //! so all of it can be tested headless.
+#![warn(missing_docs)]
 use crate::el::{Content, Cursor, Drag, El, Font, Key, Modal, Mods, OnDrag, OnKey, OnText, Paint, Phase, Response, Role, Scope, TextInput};
 use crate::morph::{self, Cmd, Ease, FlowSpec, MorphSpec, Particle};
 use crate::scene::{EVERYWHERE, Field, GLYPH, Instance, MESH, PICTURE, SHAPE, Scene};
@@ -13,24 +14,42 @@ use taffy::prelude::*;
 
 /// Logical px.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Rect { pub x: f32, pub y: f32, pub w: f32, pub h: f32 }
+pub struct Rect {
+    /// Left edge.
+    pub x: f32,
+    /// Top edge.
+    pub y: f32,
+    /// Width.
+    pub w: f32,
+    /// Height.
+    pub h: f32,
+}
 impl Rect {
+    /// A rectangle from its left, top, width and height.
     pub const fn new(x: f32, y: f32, w: f32, h: f32) -> Self { Self { x, y, w, h } }
+    /// Its right edge.
     pub fn right(&self) -> f32 { self.x + self.w }
+    /// Its bottom edge.
     pub fn bottom(&self) -> f32 { self.y + self.h }
+    /// Its centre.
     pub fn center(&self) -> (f32, f32) { (self.x + self.w * 0.5, self.y + self.h * 0.5) }
+    /// Whether the point is inside (left and top edges in, right and bottom out).
     pub fn contains(&self, x: f32, y: f32) -> bool { x >= self.x && x < self.right() && y >= self.y && y < self.bottom() }
+    /// Where it overlaps `o` (empty, at the nearest corner, when they do not).
     pub fn intersect(&self, o: &Rect) -> Rect {
         let (x0, y0) = (self.x.max(o.x), self.y.max(o.y));
         let (x1, y1) = (self.right().min(o.right()), self.bottom().min(o.bottom()));
         Rect::new(x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0))
     }
+    /// Moved in by `l`, `t`, `r`, `b` from each side (never below zero size).
     pub fn inset(&self, l: f32, t: f32, r: f32, b: f32) -> Rect { Rect::new(self.x + l, self.y + t, (self.w - l - r).max(0.0), (self.h - t - b).max(0.0)) }
 }
 
 /// One laid-out element. Kept in paint order (parents before children).
 pub struct Node<M> {
+    /// Its key (the view's, or one derived from its path).
     pub key: String,
+    /// Its parent's place in `Ui::nodes`.
     pub parent: Option<usize>,
     /// Border box, absolute, after scrolling.
     pub rect: Rect,
@@ -38,9 +57,11 @@ pub struct Node<M> {
     pub clip: Rect,
     /// Content box: rect minus border and padding.
     pub inner: Rect,
+    /// Scrolls its children.
     pub scroll: bool,
     /// Scrolls along x rather than y.
     pub horizontal: bool,
+    /// Can take focus.
     pub focusable: bool,
     /// `El::tab_order`.
     pub tab_order: i32,
@@ -52,6 +73,7 @@ pub struct Node<M> {
     pub disabled: bool,
     /// For scroll nodes: length of what they hold along their axis, so offsets can be clamped.
     pub extent: f32,
+    /// What it shows.
     pub content: Content,
     fill: Option<Paint>,
     border: Option<(f32, Paint)>,
@@ -81,29 +103,33 @@ pub struct Node<M> {
     pub mat: f32,
     /// Looseness held for the whole subtree (inherited).
     pub loosen: f32,
-    /// An explicit callout for the annotation layer; whether this subtree is what it looks at.
+    /// An explicit callout for the annotation layer.
     pub annotate: Option<String>,
+    /// This subtree is what the annotation layer looks at (`El::gaze_scope`).
     pub scope: bool,
     anchor: Option<String>,
     pub(crate) clips: bool,
     calm: bool,
     on_text: Option<OnText<M>>,
-    /// A multi-line text field; text that can be selected (read-only); the pointer's shape here.
+    /// A multi-line text field.
     pub multiline: bool,
+    /// Text that can be selected (read-only).
     pub selectable: bool,
+    /// The pointer's shape here.
     pub cursor: Option<Cursor>,
     /// A virtual list: its row count, row height and selected row.
     pub virt: Option<(usize, f32, Option<usize>)>,
     /// What it is to assistive technology, as the view said.
     pub access: Option<crate::el::Access>,
-    /// How it answers fronts, the lens and pulls; whether it is text to read or a control (capped by
-    /// `Look::legible_cap`); what a press in it sends a front to (`None`: a control's own subtree, nothing
-    /// for plain ground); whether fronts from inside with `Scope::Container(None)` stop at its box;
-    /// whether a change of its string recomposes (DESIGN.md §1.15, §1.16).
+    /// How it answers fronts, the lens and pulls (DESIGN.md §1.15).
     pub respond: Response,
+    /// Text to read or a control: field effects loosen it at most `Look::legible_cap`.
     pub legible: bool,
+    /// What a press in it sends a front to (`None`: a control's own subtree, nothing for plain ground).
     pub ripple: Option<Scope>,
+    /// Fronts from inside with `Scope::Container(None)` stop at its box.
     pub ripple_scope: bool,
+    /// A change of its string recomposes (DESIGN.md §1.16).
     pub recompose: bool,
     /// It asked to recompose itself (`.recompose(true)` on the text): it recomposes even across a page
     /// change with a flow, where keyed text is otherwise replaced (a title that changes word to word).
@@ -122,13 +148,15 @@ pub struct Node<M> {
     decode: Option<crate::decode::Decode>,
     /// Drawn as a skeleton (`El::skeleton`, inherited).
     pub skeleton: bool,
-    /// Posed glyphs on a form (`El::form`); its own turn (`El::turn`) and the turn of its subtree as
-    /// drawn (about each turned ancestor's centre, logical px; `hit::Affine`); how clips take its text
-    /// away; whether it moves on purpose (`El::ongoing`, inherited).
+    /// Posed glyphs on a form (`El::form`).
     pub form: Option<crate::form::FormFx>,
+    /// Its own turn (`El::turn`).
     pub turn: f32,
+    /// The turn of its subtree as drawn, about each turned ancestor's centre (logical px; `hit::Affine`).
     pub xf: Option<crate::hit::Affine>,
+    /// How clips take its text away.
     pub reveal_by: crate::el::Reveal,
+    /// It moves on purpose (`El::ongoing`, inherited).
     pub ongoing: bool,
     /// The box layout gave it, relative to its parent (scrolling does not change it).
     local: taffy::Layout,
@@ -137,7 +165,9 @@ pub struct Node<M> {
 impl<M> Node<M> {
     /// The nearest flow id at or above this node (`El::flow`).
     pub fn flow(&self) -> Option<&str> { self.flow.as_ref().map(|f| &*f.0) }
+    /// Its text, if it is a text element.
     pub fn text(&self) -> Option<&str> { if let Content::Text { s, .. } = &self.content { Some(s) } else { None } }
+    /// It has a press handler.
     pub fn pressable(&self) -> bool { self.on_press.is_some() }
     /// What the annotation layer calls this element.
     pub fn kind(&self) -> &'static str {
@@ -169,7 +199,20 @@ struct Capture<M> { key: String, handler: OnDrag<M>, start: (f32, f32), rect: Re
 
 /// The frame as it was when a commit (theme, material) was pressed, and where: the renderer shows it
 /// beyond a front travelling out from `at` (device px) from time `t`.
-pub struct Split { pub id: u32, pub scene: Scene, pub field: Field, pub at: [f32; 2], pub t: f32, /** The look it was drawn in. */ pub look: Look }
+pub struct Split {
+    /// Unique to this commit.
+    pub id: u32,
+    /// The old frame's scene.
+    pub scene: Scene,
+    /// The old frame's field.
+    pub field: Field,
+    /// Where the press was, device px.
+    pub at: [f32; 2],
+    /// When, seconds.
+    pub t: f32,
+    /// The look it was drawn in.
+    pub look: Look,
+}
 
 /// The four accent corners that frame the hovered or focused element. They are on their target in the
 /// frame the target changes (the pointer's frame); the only easing is `MARKS_SETTLE`, a cosmetic close
@@ -222,37 +265,52 @@ fn next_run() -> u32 {
 pub struct MorphRun {
     /// Changes when there are new elements to draw (a new morph); `upload` when the tiles change.
     pub id: u32,
+    /// Changes when the tiles change.
     pub upload: u32,
-    /// The element that loosens and hands over, and the one the tiles become.
+    /// The element that loosens and hands over.
     pub from: String,
+    /// The element the tiles become.
     pub to: String,
+    /// How the morph runs.
     pub spec: MorphSpec,
     /// The source is drawn (by the morph) until this time, with this looseness.
     pub src_until: f32,
+    /// The source's looseness ramp (`ramp`).
     pub src_ramp: [f32; 4],
     /// While the tiles fly: start and end.
     pub flight: Option<[f32; 2]>,
     /// The target is drawn from this time on, with this looseness.
     pub dst_from: f32,
+    /// The target's looseness ramp.
     pub dst_ramp: [f32; 4],
+    /// When the morph is over.
     pub end: f32,
+    /// The tiles, on the CPU path.
     pub particles: Vec<Particle>,
     /// On the GPU path: the grid the GPU simulates (and `particles` is empty).
     pub grid: Option<morph::Grid>,
     /// Tile size, device px, and the instances of the source and the target (looseness 1).
     pub tile: f32,
+    /// The source's instances.
     pub src: Vec<Instance>,
+    /// The target's instances.
     pub dst: Vec<Instance>,
     /// 3D elements on either side: their tiles start (or land) on points of the mesh surface, projected
     /// again every frame and hidden while they are behind the mesh. `tags` says, per tile, which point
     /// of which emitter its source and target are (`emitter << 24 | point`, or `morph::NO_TAG`).
     pub emit: Vec<Emitter>,
+    /// Per tile, its source's and target's emitter point.
     pub tags: Vec<[u32; 2]>,
     /// Held at this point of the flight (`Cmd::Scrub`), if it is.
     pub scrub: Option<f32>,
 }
 /// A `scene3d` element that emits (or takes in) a morph's tiles: its key and the surface points.
-pub struct Emitter { pub key: String, pub points: Vec<crate::mesh::SurfacePoint> }
+pub struct Emitter {
+    /// The element's key.
+    pub key: String,
+    /// The points on its mesh's surface.
+    pub points: Vec<crate::mesh::SurfacePoint>,
+}
 impl MorphRun {
     /// Seconds into the flight, while the tiles are flying.
     pub fn clock(&self, now: f32) -> Option<f32> {
@@ -261,11 +319,15 @@ impl MorphRun {
     }
     fn phase(&self, now: f32) -> u8 { (now >= self.src_until) as u8 | (self.clock(now).is_some() as u8) << 1 | ((now >= self.dst_from) as u8) << 2 }
 }
+/// A looseness ramp `[k0, t0, k1, t1]` at time `t`: `k0` until `t0`, `k1` from `t1`, straight between.
 pub fn ramp(r: [f32; 4], t: f32) -> f32 {
     if r[3] <= r[1] { return if t >= r[3] { r[2] } else { r[0] }; }
     r[0] + (r[2] - r[0]) * ((t - r[1]) / (r[3] - r[1])).clamp(0.0, 1.0)
 }
+/// The runtime: the application's state, its view and update, the laid-out tree, focus, input, the
+/// field and everything the renderer needs to draw a frame (DESIGN.md §1).
 pub struct Ui<S, M> {
+    /// The application's state (the view reads it, update changes it).
     pub state: S,
     view: fn(&S) -> El<M>,
     update: fn(&mut S, M),
@@ -409,6 +471,7 @@ pub struct Ui<S, M> {
     virt_views: HashMap<String, f32>,
     virt_made: HashMap<String, (usize, usize)>,
     // ── Touch (DESIGN.md §1.8.2) ──
+    /// How touch scrolling behaves.
     pub scrolling: Scrolling,
     touch: Option<Touch>,
     touches: HashSet<u64>,
@@ -482,47 +545,80 @@ pub struct Ui<S, M> {
 /// One element of the accessibility mirror (DESIGN.md §1.14): what a screen reader is told about it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct A11yNode {
+    /// The element's key.
     pub key: String,
     /// The nearest ancestor that is in the mirror.
     pub parent: Option<String>,
+    /// Its role.
     pub role: Role,
+    /// Its accessible name.
     pub name: String,
+    /// A slider's value, minimum and maximum.
     pub value: Option<(f32, f32, f32)>,
+    /// A text box's text.
     pub text: Option<String>,
+    /// On or off.
     pub checked: Option<bool>,
+    /// Selected.
     pub selected: Option<bool>,
+    /// A heading's level (0: none).
     pub level: u8,
+    /// Open or closed.
     pub expanded: Option<bool>,
+    /// Read after the name.
     pub description: Option<String>,
+    /// How its changes are announced.
     pub live: Option<crate::el::Live>,
+    /// Its value is not accepted.
     pub invalid: bool,
+    /// It must be filled.
     pub required: bool,
+    /// A modal layer.
     pub modal: bool,
+    /// Takes no input.
     pub disabled: bool,
+    /// Can take focus.
     pub focusable: bool,
     /// Where it is (logical px).
     pub rect: Rect,
 }
 /// A change to the mirror since it was last sent.
 #[derive(Clone, Debug, PartialEq)]
-pub enum A11yOp { Set(A11yNode), Remove(String), Focus(Option<String>) }
+pub enum A11yOp {
+    /// A node is new or changed.
+    Set(A11yNode),
+    /// The node with this key is gone.
+    Remove(String),
+    /// Focus moved here (`None`: nowhere).
+    Focus(Option<String>),
+}
 
 /// The kind of pointer: a mouse and a pen hover; a finger does not, and drags scroll.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PointerKind { Mouse, Touch, Pen }
+pub enum PointerKind {
+    /// A mouse or trackpad.
+    Mouse,
+    /// A finger.
+    Touch,
+    /// A pen or stylus.
+    Pen,
+}
 
 /// How touch scrolling behaves (logical px, seconds).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Scrolling {
     /// After the finger lifts the content keeps going and slows: velocity × e^(−friction · t).
     pub friction: f32,
+    /// The fastest a fling starts, logical px a second.
     pub max_velocity: f32,
     /// A finger must move this far before a press becomes a scroll.
     pub slop: f32,
     /// Past the end the content does not move; the pull (`rubber` of the finger's movement, less as it
     /// grows, at most `max_over`) shows as looseness at that edge and springs back at `spring` per second.
     pub rubber: f32,
+    /// The furthest the pull goes, logical px.
     pub max_over: f32,
+    /// How fast it springs back, per second.
     pub spring: f32,
 }
 impl Default for Scrolling {
@@ -561,23 +657,46 @@ enum TouchMode { Pending, Scroll(String), Direct, Cancelled }
 /// any override) has a time term that moves loose things.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Timing {
-    pub wave_life: f32, pub wave_speed: f32, pub enter: f32, pub material: u8, pub overlay: u8,
-    /// The field numbers the CPU's model of looseness needs, and the ripple and recomposition settings.
-    pub fx: crate::scene::Fx, pub legible_cap: f32, pub loose_max: f32, pub recompose: crate::morph::Recompose,
-    /// The preset's interaction character (DESIGN.md §4.1): a press's burst (s), the default responses of
-    /// text and controls and of everything else, and how long a commit's transition lasts (s; 0: the front).
-    pub press: f32, pub roles: [Response; 2], pub transition: f32,
+    /// How long a front lives, seconds.
+    pub wave_life: f32,
+    /// How fast a front travels, logical px a second.
+    pub wave_speed: f32,
+    /// How long new instances take to condense, seconds.
+    pub enter: f32,
+    /// The global material's id.
+    pub material: u8,
+    /// The performance readout (`Look::overlay`).
+    pub overlay: u8,
+    /// The field numbers the CPU's model of looseness needs.
+    pub fx: crate::scene::Fx,
+    /// `Look::legible_cap`.
+    pub legible_cap: f32,
+    /// `Look::loose_max`.
+    pub loose_max: f32,
+    /// How changed glyphs recompose.
+    pub recompose: crate::morph::Recompose,
+    /// The preset's interaction character (DESIGN.md §4.1): how long a press's burst lasts, seconds.
+    pub press: f32,
+    /// What text and controls, and everything else, do when nothing says.
+    pub roles: [Response; 2],
+    /// How long a commit's transition lasts, seconds (0: the front).
+    pub transition: f32,
     /// How scrolling looks (DESIGN.md §1.8.3): the speeds the trace eases in between and how it settles.
     pub scroll: crate::style::Scroll,
     /// The field map's numbers (DESIGN.md §1.29).
     pub map: crate::fieldmap::MapFx,
     /// scribblr's numbers and how long its line holds a pose (DESIGN.md §1.30).
-    pub strand: crate::strand::StrandFx, pub hold_ms: f32, pub binary: bool,
+    pub strand: crate::strand::StrandFx,
+    /// How long scribblr's line holds a pose, ms.
+    pub hold_ms: f32,
+    /// The finishing pass is one-bit (`post::Post::binary`).
+    pub binary: bool,
 }
 impl Default for Timing {
     fn default() -> Self { Self::of(&Look::default()) }
 }
 impl Timing {
+    /// The numbers `l` gives.
     pub fn of(l: &Look) -> Self {
         Self { wave_life: l.fx.wave_life, wave_speed: l.fx.wave_speed, enter: l.fx.enter, material: l.material.id(), overlay: l.overlay,
                fx: l.fx, legible_cap: l.legible_cap, loose_max: l.loose_max, recompose: l.recompose,
@@ -619,6 +738,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// Read the locale from the state (DESIGN.md §1.20): before every view it becomes the current one
     /// (`i18n::current`), which widgets and `i18n::tr` use for their own text.
     pub fn on_locale(mut self, f: fn(&S) -> crate::i18n::Locale) -> Self { self.locale_of = Some(f); self.relayout(); self }
+    /// Read the look (theme, material and their numbers) from the state.
     pub fn on_look(mut self, f: fn(&S) -> Look) -> Self { self.look_of = Some(f); self.timing = Timing::of(&f(&self.state)); self }
     /// Ask the state, after every tick, when it next wants one (`Some(now)`: every frame; a later time:
     /// a timed wake; `None`: only on input). Without it, `on_tick` subscribers only tick when something
@@ -678,25 +798,36 @@ impl<S, M: Clone> Ui<S, M> {
     }
 
     // ── Queries ──────────────────────────────────────────────────────────────────────────────────
+    /// The laid-out tree, parents before children.
     pub fn nodes(&self) -> &[Node<M>] { &self.nodes }
+    /// The node with `key`.
     pub fn node(&self, key: &str) -> Option<&Node<M>> { self.nodes.iter().find(|n| n.key == key) }
+    /// How far the scroll node `key` is scrolled, logical px.
     pub fn scroll_offset(&self, key: &str) -> f32 { self.scroll.get(key).copied().unwrap_or(0.0) }
+    /// The focused element's key.
     pub fn focus(&self) -> Option<&str> { self.focus.as_deref() }
+    /// The hovered element's key.
     pub fn hover(&self) -> Option<&str> { self.hover.as_deref() }
     /// The element whose `El::on_move` hears the pointer now (a menu, a chart that scrubs), if any.
     pub fn move_over(&self) -> Option<&str> { self.move_over.as_deref() }
+    /// The scene last built for drawing.
     pub fn scene(&self) -> &Scene { &self.scene }
     /// The key of the element that drew page instance `i` of the scene, for checks.
     pub fn owner_key(&self, i: usize) -> Option<&str> { (i < self.page_len).then(|| self.owners.get(i)).flatten().map(|o| self.nodes[o.0].key.as_str()) }
+    /// The field (fronts, the lens, bursts) as it is now.
     pub fn field(&self) -> &Field { &self.field }
     /// The field map (DESIGN.md §1.29): energy and flow on a coarse grid, logical px.
     pub fn fieldmap(&self) -> &crate::fieldmap::FieldMap { &self.fmap }
     /// The viewer asked for less motion (the web page's `prefers-reduced-motion`): the field map keeps
     /// its energy but puts in no flow, and lives half as long.
     pub fn set_reduced_motion(&mut self, on: bool) { self.fmap.reduced = on; }
+    /// The text system, to change (mark the atlas for upload after a new device).
     pub fn text_mut(&mut self) -> &mut Text { &mut self.text }
+    /// Device px per logical px.
     pub fn scale(&self) -> f32 { self.scale }
+    /// The runtime's clock at the last tick, seconds.
     pub fn now(&self) -> f32 { self.now }
+    /// The window's size, logical px.
     pub fn logical_size(&self) -> (f32, f32) { self.size }
     /// Device px.
     pub fn device_size(&self) -> (u32, u32) { ((self.size.0 * self.scale).round() as u32, (self.size.1 * self.scale).round() as u32) }
@@ -704,11 +835,13 @@ impl<S, M: Clone> Ui<S, M> {
     pub fn modal(&self) -> Option<&str> { self.modal_key.as_deref() }
     /// The last commit's frame, kept for the renderer.
     pub fn split(&self) -> Option<&Split> { self.split.as_ref() }
+    /// The key of the element being dragged.
     pub fn dragging(&self) -> Option<&str> { self.capture.as_ref().map(|c| c.key.as_str()) }
     /// The morph in progress, if any.
     pub fn morph_run(&self) -> Option<&MorphRun> { self.run.as_ref() }
     /// Whether morphs with many tiles may run on the GPU (the renderer sets it; headless runs are CPU).
     pub fn set_particle_gpu(&mut self, on: bool) { self.particle_gpu = on; }
+    /// Whether morphs run on the GPU.
     pub fn particle_gpu(&self) -> bool { self.particle_gpu }
     /// Every mesh `scene3d` elements can draw (DESIGN.md §1.18).
     pub fn meshes(&self) -> &crate::mesh::Library { &self.meshes }
@@ -748,6 +881,7 @@ impl<S, M: Clone> Ui<S, M> {
     }
     /// The glyph atlas the instances sample (coverage and signed distance per texel), for `morph::cells`.
     pub fn atlas(&self) -> &[u8] { &self.text.pixels }
+    /// The drawn instances of `key` and everything inside it (none while it is not drawn).
     pub fn instances_of(&self, key: &str) -> Vec<Instance> {
         let Some(root) = self.nodes.iter().position(|n| n.key == key) else { return vec![] };
         (0..self.page_len).filter(|&i| within(&self.nodes, self.owners[i].0, root)).map(|i| self.scene.instances[*self.lifted.get(&i).unwrap_or(&i)]).collect()
@@ -934,6 +1068,7 @@ impl<S, M: Clone> Ui<S, M> {
     pub fn frame_drawn(&mut self) { self.dirty = false; }
     /// Frame times and work counters (the renderer closes each frame with `perf_mut().frame(..)`).
     pub fn perf(&self) -> &crate::perf::Perf { &self.perf }
+    /// The performance counters, to change (a shell sets the backend and adapter names).
     pub fn perf_mut(&mut self) -> &mut crate::perf::Perf { &mut self.perf }
     /// The work counters (layout passes, paragraphs shaped, views, scenes).
     pub fn counters(&self) -> crate::perf::Counters { let mut c = self.perf.counters; c.shaped = self.text.shaped(); c }
@@ -953,6 +1088,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// The ground clock (the dot ground's drift): it runs only while something moves the whole window
     /// (a commit, a front that reaches everywhere, a morph, a flow, a fling or a pull).
     pub fn ground_clock(&self) -> f32 { self.gclock }
+    /// Set the ground clock (a check that needs one exact frame).
     pub fn set_ground_clock(&mut self, t: f32) { self.gclock = t; self.dirty = true; }
     /// Set the material clock (for tools that compare two runtimes whose pasts differ, such as `check`).
     pub fn set_material_clock(&mut self, t: f32) { self.mclock = t; self.dirty = true; }
@@ -1079,6 +1215,7 @@ impl<S, M: Clone> Ui<S, M> {
     }
 
     // ── Input ────────────────────────────────────────────────────────────────────────────────────
+    /// The window is `w` × `h` device px at `scale` device px per logical px: lay out again.
     pub fn resize(&mut self, w: u32, h: u32, scale: f32) {
         self.dirty = true;
         self.scale = scale;
@@ -1416,6 +1553,7 @@ impl<S, M: Clone> Ui<S, M> {
         let Some(c) = &self.capture else { return };
         if let Some(m) = (c.handler)(d) { self.send(m); }
     }
+    /// The pointer left the window.
     pub fn pointer_leave(&mut self) {
         self.dirty = true;
         self.field.pointer = [-1e5, -1e5, 0.0, 0.0];
@@ -1428,6 +1566,7 @@ impl<S, M: Clone> Ui<S, M> {
         self.field.burst(Some([r.x * s, r.y * s, r.right() * s, r.bottom() * s]), self.now, strength, secs);
     }
 
+    /// A mouse press at (`x`, `y`), logical px.
     pub fn press(&mut self, x: f32, y: f32) { self.press_with(x, y, false); }
     /// A press with Shift held or not (Shift extends a text selection).
     pub fn press_with(&mut self, x: f32, y: f32, shift: bool) {
@@ -1497,6 +1636,7 @@ impl<S, M: Clone> Ui<S, M> {
         }
     }
 
+    /// The mouse button came up at (`x`, `y`).
     pub fn release(&mut self, x: f32, y: f32) {
         self.dirty = true;
         if let Some(k) = self.text_capture.take() && self.field_at().is_some_and(|f| self.nodes[f].key == k)
