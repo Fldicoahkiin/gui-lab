@@ -198,6 +198,29 @@ fn clipped<S, M: Clone>(ui: &mut Ui<S, M>, out: &mut Vec<Finding>) {
     }
 }
 
+/// How many pixels of a frame (`px`, RGBA, `w` px wide) are in no colour the theme can make: every
+/// pixel outside `skip` (pictures, drawings with their own colours; device px boxes) should be the
+/// ground (anywhere between `ground` and `ground2`) mixed toward the ink or one of the accents, as the
+/// materials mix them, within `tol` (0..255 per channel). A field or a debug layer drawn in its own
+/// colour onto the frame is counted.
+pub fn off_palette(px: &[u8], w: u32, theme: &crate::style::Theme, skip: &[[f32; 4]], tol: f32) -> usize {
+    let c = |v: [f32; 3]| v.map(|x| x * 255.0);
+    let grounds: Vec<[f32; 3]> = (0..=8).map(|i| { let t = i as f32 / 8.0; std::array::from_fn(|k| c(theme.ground)[k] + (c(theme.ground2)[k] - c(theme.ground)[k]) * t) }).collect();
+    let tops = [c(theme.ink), c(theme.accent), c(theme.second), c(theme.third)];
+    let seg = |p: [f32; 3], a: [f32; 3], b: [f32; 3]| {
+        let ab: [f32; 3] = std::array::from_fn(|k| b[k] - a[k]);
+        let l2: f32 = ab.iter().map(|v| v * v).sum();
+        let t = if l2 > 0.0 { ((0..3).map(|k| (p[k] - a[k]) * ab[k]).sum::<f32>() / l2).clamp(0.0, 1.0) } else { 0.0 };
+        (0..3).map(|k| (p[k] - a[k] - ab[k] * t).abs()).fold(0.0, f32::max)
+    };
+    px.chunks_exact(4).enumerate().filter(|(i, q)| {
+        let (x, y) = ((*i as u32 % w) as f32 + 0.5, (*i as u32 / w) as f32 + 0.5);
+        if skip.iter().any(|b| x >= b[0] && y >= b[1] && x < b[0] + b[2] && y < b[1] + b[3]) { return false; }
+        let p = [q[0] as f32, q[1] as f32, q[2] as f32];
+        !grounds.iter().any(|g| tops.iter().any(|t| seg(p, *g, *t) <= tol))
+    }).count()
+}
+
 /// Relative luminance of an sRGB colour (WCAG 2).
 pub fn luminance(c: [u8; 3]) -> f32 {
     let f = |v: u8| { let v = v as f32 / 255.0; if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) } };
