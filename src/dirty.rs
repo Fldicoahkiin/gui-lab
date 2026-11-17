@@ -61,7 +61,7 @@ pub fn reach(m: Material, look: &Look, s: f32) -> f32 {
     let p = |i: usize| look.params[m as usize].0[i];
     let base = 2.0 + 10.0 * s; // the dot ground's cells read the nearness at their centre
     base + match m {
-        Material::Plain | Material::Near => 4.0 * s,
+        Material::Plain | Material::Near | Material::Scribblr => 4.0 * s,
         Material::Dot => 2.0 * look.fx.pitch * s + 40.0 * look.fx.glitch * s,
         Material::Halftone => 2.0 * p(0) * s + p(2) * s,
         Material::Ascii => 2.0 * p(0) * s,

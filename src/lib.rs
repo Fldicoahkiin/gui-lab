@@ -11,6 +11,7 @@ pub mod error;
 pub mod experiment;
 pub mod field;
 pub mod fieldmap;
+pub mod strand;
 pub mod gallery;
 pub mod gaze;
 pub mod gesture;

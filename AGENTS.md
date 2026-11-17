@@ -167,6 +167,14 @@ fill (a ground-toned panel too), `ink_at` only ink that shows. The lens touches 
 no handler operates. The landing page and first scene, Body (`examples/body.rs`, `#body`), is written the same way: one posed text element (the
 skin, its glyph count conserved), drawings for its volume, reflection, dust and the instrument markings, springs for `gather`
 and the opening, a signed-distance form sampled to a spiral of surface points (DESIGN.md §6.2). `Pose::hue` picks a glyph's accent.
+The field map (DESIGN.md §1.29, `lab::fieldmap`) is a coarse grid of energy and flow over the window that settles to exactly zero:
+an element with `.stirr(Stirr::default())` stirs it behind itself as it moves (floating, bottom sheet and card stack do by default;
+`Look::map` / a preset's `interaction.map` set how strong), `Cmd::Stir { at: StirAt::Point | Key | Path, .. }` stirs it from the state,
+and it loosens and drifts what may loosen as fronts do (caps and responses unchanged; `Ui::looseness` reads it too). The `scribblr`
+material (DESIGN.md §1.30, `lab::strand`) is plain at rest; loosened, an element's ink becomes one thread of constant width that knots
+where the map has energy and trails off along its flow, then writes itself back (`Ui::strands()` lists the threads drawn; `Look::hold_ms`
+holds its pose for a beat). `El::trace(Trace { points, progress, weight, dash, gap, pull, stir, paint })` draws a long path by progress
+under any material, solid or dashed by arc length, pushed by the map and stirring it at its head.
 Text flows around true outlines with `.around(Around::new(vec![Silhouette::circle(..)], gap))`; a piece of a line
 beside an obstacle is justified so both its edges are flush, adding at most `Around::justify_max` ems per gap
 (default 0.25; inter-character next to CJK, inter-word at spaces, between Latin letters only with

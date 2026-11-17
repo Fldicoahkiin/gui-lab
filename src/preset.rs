@@ -105,9 +105,12 @@ pub struct Interaction {
     /// The field map: how strong the trails of moving things are, how they spread and settle (DESIGN.md §1.29).
     #[serde(default)]
     pub map: crate::fieldmap::MapFx,
+    /// How long `scribblr`'s line holds each pose, ms (0: every frame; DESIGN.md §1.30).
+    #[serde(default)]
+    pub hold_ms: f32,
 }
 impl Default for Interaction {
-    fn default() -> Self { Self { press_ms: 350.0, front_speed: 760.0, front_width: 26.0, front_life: 1.4, text: Response::Nudge, decoration: Response::Loosen, recompose: Recompose::default(), scroll: crate::style::Scroll::default(), map: crate::fieldmap::MapFx::default() } }
+    fn default() -> Self { Self { press_ms: 350.0, front_speed: 760.0, front_width: 26.0, front_life: 1.4, text: Response::Nudge, decoration: Response::Loosen, recompose: Recompose::default(), scroll: crate::style::Scroll::default(), map: crate::fieldmap::MapFx::default(), hold_ms: 0.0 } }
 }
 
 /// A style preset as data.
@@ -157,6 +160,7 @@ impl Preset {
         l.roles = [i.text, i.decoration];
         l.scroll = i.scroll;
         l.map = i.map;
+        l.hold_ms = i.hold_ms;
         l.transition = self.transition;
         l.post = self.post.look();
         l.marks = self.marks;

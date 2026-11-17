@@ -150,14 +150,20 @@ pub struct PostSpec {
     #[serde(default)] pub curvature: Curvature,
     #[serde(default)] pub dither: Dither,
     #[serde(default)] pub palette: Palette,
+    /// Two colours only (DESIGN.md §1.21): the 1-bit palette with no dither, whatever `dither` and
+    /// `palette` say, and scribblr's threads a whole number of device px wide.
+    #[serde(default)] pub binary: bool,
+    /// The whole frame turned to its negative (`1 − colour`, in sRGB), the very last thing done.
+    #[serde(default)] pub invert: bool,
 }
 impl PostSpec {
     /// The fixed-size form the look carries.
     pub fn look(&self) -> Post {
-        let cols = self.palette.resolved();
+        let cols = if self.binary { PaletteKind::OneBit.colors().to_vec() } else { self.palette.resolved() };
         let mut colors = [[0u8; 3]; PALETTE_MAX];
         for (i, c) in cols.iter().enumerate() { colors[i] = *c; }
-        Post { bloom: self.bloom, chroma: self.chroma, scanlines: self.scanlines, grain: self.grain, vignette: self.vignette, curvature: self.curvature, dither: self.dither, colors, count: cols.len() as u8 }
+        let dither = if self.binary { Dither { kind: DitherKind::None, ..self.dither } } else { self.dither };
+        Post { bloom: self.bloom, chroma: self.chroma, scanlines: self.scanlines, grain: self.grain, vignette: self.vignette, curvature: self.curvature, dither, colors, count: cols.len() as u8, binary: self.binary, invert: self.invert }
     }
 }
 
@@ -165,7 +171,7 @@ impl PostSpec {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Post {
     pub bloom: Bloom, pub chroma: Chroma, pub scanlines: Scanlines, pub grain: Grain, pub vignette: Vignette, pub curvature: Curvature,
-    pub dither: Dither, pub colors: [[u8; 3]; PALETTE_MAX], pub count: u8,
+    pub dither: Dither, pub colors: [[u8; 3]; PALETTE_MAX], pub count: u8, pub binary: bool, pub invert: bool,
 }
 impl Post {
     pub fn bloom_on(&self) -> bool { self.bloom.strength > 0.0 && self.bloom.radius > 0.0 }
@@ -178,9 +184,10 @@ impl Post {
     pub fn palette_on(&self) -> bool { self.count > 0 }
     /// Whether the finishing pass runs at all (otherwise the frame is copied out unchanged).
     pub fn active(&self) -> bool {
-        self.bloom_on() || self.chroma_on() || self.scanlines_on() || self.grain_on() || self.vignette_on() || self.curvature_on() || self.dither_on() || self.palette_on()
+        self.bloom_on() || self.chroma_on() || self.scanlines_on() || self.grain_on() || self.vignette_on() || self.curvature_on() || self.dither_on() || self.palette_on() || self.invert
     }
-    /// The uniform form (device px where lengths): six vec4s, then the palette's sixteen.
+    /// The uniform form (device px where lengths): six vec4s (the fifth's x is `invert`), then the
+    /// palette's sixteen.
     pub fn pack(&self, scale: f32) -> ([[f32; 4]; 6], [[f32; 4]; PALETTE_MAX]) {
         let f = |b: bool| if b { 1.0 } else { 0.0 };
         let d = &self.dither;
@@ -189,6 +196,7 @@ impl Post {
         p[1] = [if self.bloom_on() { self.bloom.strength } else { 0.0 }, self.bloom.threshold, self.bloom.radius * scale, d.strength.clamp(0.0, 1.0)];
         p[2] = [self.chroma.offset * scale, if self.scanlines_on() { self.scanlines.strength.clamp(0.0, 1.0) } else { 0.0 }, self.scanlines.period.max(1.0) * scale, self.grain.amount.max(0.0)];
         p[3] = [self.vignette.strength.clamp(0.0, 1.0), self.vignette.radius.clamp(0.0, 1.5), self.curvature.amount, (self.grain.size.max(0.25) * scale).max(1.0)];
+        p[4] = [f(self.invert), 0.0, 0.0, 0.0];
         let mut pal = [[0.0; 4]; PALETTE_MAX];
         for (i, c) in self.colors.iter().take(self.count as usize).enumerate() { pal[i] = [c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0, 1.0]; }
         (p, pal)
