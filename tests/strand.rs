@@ -419,3 +419,60 @@ fn on_the_loose_thread_page_no_piece_enters_text_to_read_and_the_tails_keep_clea
     }
     assert!(seen > 100, "{seen} pieces: the title did not come apart");
 }
+
+/// A piece of a line: its kind, where it starts and ends.
+type Piece = (Kind, [f32; 2], [f32; 2]);
+/// The longest run of six or more pieces that each turn from the last by under half a degree, and the
+/// sharpest turn between two neighbouring pieces 1.5 px long or more, of one line (pieces shorter than a
+/// hundredth of a pixel are skipped).
+fn straight_and_turn(segs: &[Piece]) -> (f32, f32, [f32; 2], [f32; 2]) {
+    let dir = |a: [f32; 2], b: [f32; 2]| (b[1] - a[1]).atan2(b[0] - a[0]);
+    let turn = |x: f32, y: f32| { let d = (y - x).rem_euclid(std::f32::consts::TAU); d.min(std::f32::consts::TAU - d).to_degrees() };
+    let len = |s: &Piece| ((s.2[0] - s.1[0]).powi(2) + (s.2[1] - s.1[1]).powi(2)).sqrt();
+    let segs: Vec<_> = segs.iter().filter(|s| len(s) > 0.01).collect();
+    let (mut worst_run, mut worst_turn, mut at_run, mut at_turn) = (0.0f32, 0.0f32, [0.0; 2], [0.0; 2]);
+    let mut run: (usize, f32) = (1, segs.first().map_or(0.0, |s| ((s.2[0] - s.1[0]).powi(2) + (s.2[1] - s.1[1]).powi(2)).sqrt()));
+    for w in segs.windows(2) {
+        let a = turn(dir(w[0].1, w[0].2), dir(w[1].1, w[1].2));
+        let l = ((w[1].2[0] - w[1].1[0]).powi(2) + (w[1].2[1] - w[1].1[1]).powi(2)).sqrt();
+        // A turn between two pieces 1.5 px long or more: shorter ones are where the curve itself turns
+        // tighter than a piece that long can show (the tip of a narrow loop, under a pixel across).
+        if a > worst_turn && len(w[0]) >= 1.5 && len(w[1]) >= 1.5 { worst_turn = a; at_turn = w[1].1; }
+        if a < 0.5 { run = (run.0 + 1, run.1 + l); } else { run = (1, l); }
+        if run.0 >= 6 && run.1 > worst_run { worst_run = run.1; at_run = w[1].2; }
+    }
+    (worst_run, worst_turn, at_run, at_turn)
+}
+
+#[test]
+fn on_the_loose_thread_page_the_lines_bend_and_never_run_straight() {
+    // At looseness 1, 0.7 and 0.5 (the pointer through the title, then away): in every line, no
+    // straight run of six pieces or more is longer than 24 px, and no two neighbouring pieces turn by
+    // more than 25° (the line is moved by its control points and curved, never pressed flat).
+    let mut ui = Ui::new(loose_page::P { at: None }, loose_page::view, |s, m: loose_page::At| s.at = m.0, fonts(), 1000, 640, 1.0).on_look(|_| loose_page::look());
+    let mut t = 0.0;
+    let step = |ui: &mut Ui<loose_page::P, loose_page::At>, t: &mut f32| { *t += 1.0 / 60.0; ui.tick(*t); ui.frame_drawn(); };
+    for _ in 0..90 { step(&mut ui, &mut t); }
+    let comp = ui.node("comp").expect("comp").rect;
+    let title = ui.node("title").expect("title").rect;
+    let mut want = vec![1.0f32, 0.7, 0.5];
+    let mut checked = vec![];
+    for i in 0..=200 {
+        if i <= 40 { let k = (i.min(30)) as f32 / 30.0; ui.pointer_move(comp.x + 10.0 + (title.w + 40.0) * k, title.y + title.h * 0.5 + 220.0 * k * k); }
+        if i == 41 { ui.pointer_leave(); }
+        step(&mut ui, &mut t);
+        let Some(k) = ui.strands().iter().find(|s| s.0 == "title").map(|s| s.1) else { continue };
+        let Some(&w) = want.first() else { break };
+        if (w == 1.0 && k < 0.995) || (w < 1.0 && (i <= 41 || k > w)) { continue; }
+        want.remove(0);
+        checked.push(k);
+        let mut lines: Vec<(String, Vec<Piece>)> = ui.strands().iter().map(|(key, _, segs)| (key.clone(), segs.iter().map(|s| (s.kind, s.a, s.b)).collect())).collect();
+        lines.extend(ui.traces().iter().map(|(key, pts)| (key.clone(), pts.windows(2).map(|w| (Kind::Line, w[0], w[1])).collect())));
+        for (key, segs) in &lines {
+            let (run, turn, at_run, at_turn) = straight_and_turn(segs);
+            assert!(run <= 24.0, "loose {k:.2}: `{key}` runs straight for {run:.1} px, to {at_run:?}");
+            assert!(turn <= 25.0, "loose {k:.2}: `{key}` turns by {turn:.1}° at {at_turn:?}");
+        }
+    }
+    assert_eq!(checked.len(), 3, "looseness reached: {checked:?}");
+}
