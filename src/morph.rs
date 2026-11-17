@@ -189,6 +189,10 @@ pub enum Cmd {
     Front { x: f32, y: f32, strength: f32 },
     /// A front from the centre of the element `key` as laid out by this update.
     FrontAt { key: String, strength: f32 },
+    /// Stir the field map (DESIGN.md §1.29) at a point, at an element's centre, or along a path: `energy`
+    /// (0..1) and flow `v` (logical px are not involved: a direction whose length is how much; along a
+    /// path `v` is [along the path, across it]) over `radius` logical px, on what `scope` reaches.
+    Stir { at: StirAt, v: [f32; 2], energy: f32, radius: f32, scope: crate::el::Scope },
     /// Press the element `key` as a person would (its message, its front, its condensing): for scripted
     /// demonstrations and tests. It does not count as a person's input (`Ui::on_input` is not told).
     Press { key: String },
@@ -203,6 +207,12 @@ pub enum Cmd {
     /// or let it run on from where it is held (`None`).
     Scrub(Option<f32>),
 }
+
+/// Where a `Cmd::Stir` stirs: a point (logical px), the centre of an element, or a polyline (logical
+/// px) from `from` to `to` of its arc length (0..1), a stir every half cell, so a path drawn by progress
+/// stirs the part drawn since the last command.
+#[derive(Clone, Debug, PartialEq)]
+pub enum StirAt { Point([f32; 2]), Key(String), Path { points: std::rc::Rc<Vec<[f32; 2]>>, from: f32, to: f32 } }
 
 /// What a tile is in the pairing.
 pub mod kind {

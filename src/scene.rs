@@ -26,8 +26,9 @@ pub struct Instance {
     /// Pictures carry their `PicFx` slot in `paint[1]`.
     pub extra: [f32; 4],
     /// Material override code (0 = the global material; else `128 + level × 16 + id`, see
-    /// `style::override_code`), accent hue (0, 1, 2), and the box the material's height treatments
-    /// measure against: top and height, device px (a text line, or the shape itself).
+    /// `style::override_code`), accent hue (0, 1, 2), whether it reads the field map (1; 0 for a
+    /// stirring element's own subtree, what a morph shows, flying tiles, motes; DESIGN.md §1.29), and
+    /// whether the map's flow leaves it in place (1 for pictures and 3D views, else 0).
     pub look: [f32; 4],
     /// How the field may move it (DESIGN.md §1.15): the most looseness fronts may add (0 for `Ignore`
     /// and `Nudge`, `Look::legible_cap` for legible `Loosen`, else 1); how fronts push it (0: not at all,

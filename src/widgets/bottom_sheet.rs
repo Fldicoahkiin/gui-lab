@@ -152,6 +152,8 @@ pub fn bottom_sheet<M: Clone + 'static>(key: &str, s: &Sheet, title: &str, body:
         .radius(RADIUS * 3.0).fill(Paint::GROUND).border(LINE, Paint::DIM).align(AlignItems::START)
         .role(Role::Dialog).label(title).focusable(true).unframed()
         .shift(0.0, h - s.shown())
+        // Rising, dragged or springing, its edge stirs the field map (DESIGN.md §1.29).
+        .stirr(crate::el::Stirr::default())
         .on_drag_with(move |d| Some(a(SheetMsg::Drag(d))))
         .on_key(move |k, _| (k == Key::Escape).then(|| b(SheetMsg::Key(k))))
         .child(handle).child(head).child(body);

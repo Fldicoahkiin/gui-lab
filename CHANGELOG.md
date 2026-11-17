@@ -2,6 +2,14 @@
 
 按 DESIGN.md §7 的步骤记。Each step of DESIGN.md §7.
 
+## 17 — 场图和尾迹、线、小字 · The field map and trails, the line, small type
+
+- 形体这一页只用英文，不论界面是什么语言；语言标记写 `LANGUAGE  EN / ZH`，按下换的是 gallery 其余页的语言。Body is English only.
+- 场图（`src/fieldmap.rs`）：整窗一张粗网格，每个结点有能量和流向，固定 1/60 秒一步，摊开、按寿命衰减、蜿蜒（`meander`）、沿着墨爬（`creep`），有限时间里正好回到 0，静止时不要帧。The field map: energy and flow on a coarse grid, back to exactly zero within a bound.
+- 尾迹：`El::stirr` 的元素动了就沿走过的路搅一下，`Cmd::Stir` 可以搅一点、一个元素或一条路径的一段；浮动窗口、底部面板、卡片叠默认带尾迹，强弱由预设定（Normcore 没有）。Trails: `El::stirr` and `Cmd::Stir`, on by default for the floating window, the sheet and the card stack.
+- 读场图：第一遍里它是一份松开度（照样受可读上限和响应管），会被推的实例顺着流向漂开（图片和三维元素在原地松开）；dot 的底点和 glitch 的底读它；`Ui::looseness` 用同一个值。留尾迹而有底色的元素画在上面一层，经过的松开的装饰不会透过它。Reading the map in both passes and on the CPU.
+- 页面 `#stirr`（概念一组），十二个数都是数字控件；F2 读数加一行；`check` 第 19 条（原来的第 19 条“效果”改为第 17 条）、`bench … map`、`craft <目录> stirr`。The `#stirr` page, check 19, a bench row and samples.
+
 ## 16 — 基础的收尾、实验室的墙、形体 · Foundation leftovers, the Lab as a wall, Body
 
 - 取样看变换：`morph::cover_at` 把点按实例自己的变换反算回盒子里，`cells`、`ink_bounds` 用转过的外接框，摆了姿态、转过的字从它画在的地方松开，遮罩和解码也在那里。Sampling honours `xf` and glyph poses.
