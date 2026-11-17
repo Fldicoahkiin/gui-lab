@@ -46,6 +46,7 @@ pub mod widget {
     pub const SELECT: &str = include_str!("widgets/select.rs");
     pub const SHEET: &str = include_str!("widgets/sheet.rs");
     pub const SKELETON: &str = include_str!("widgets/skeleton.rs");
+    pub const SKIP_LINK: &str = include_str!("widgets/skip_link.rs");
     pub const SLIDER: &str = include_str!("widgets/slider.rs");
     pub const SWITCH: &str = include_str!("widgets/switch.rs");
     pub const TABLE: &str = include_str!("widgets/table.rs");
@@ -54,7 +55,7 @@ pub mod widget {
     pub const TOGGLE: &str = include_str!("widgets/toggle.rs");
     pub const TOOLTIP: &str = include_str!("widgets/tooltip.rs");
     /// (file name, source) of every component.
-    pub const ALL: [(&str, &str); 39] = [
+    pub const ALL: [(&str, &str); 40] = [
         ("accordion.rs", ACCORDION),
         ("avatar.rs", AVATAR),
         ("badge.rs", BADGE),
@@ -87,6 +88,7 @@ pub mod widget {
         ("select.rs", SELECT),
         ("sheet.rs", SHEET),
         ("skeleton.rs", SKELETON),
+        ("skip_link.rs", SKIP_LINK),
         ("slider.rs", SLIDER),
         ("switch.rs", SWITCH),
         ("table.rs", TABLE),

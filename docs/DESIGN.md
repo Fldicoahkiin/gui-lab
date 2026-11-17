@@ -494,6 +494,14 @@ finds the nearest scrolling ancestor.
 - The wheel goes to the nearest scrolling ancestor first, and to the next one out once that has reached
   its end. When focus moves to a control outside a scroll area's view, the area scrolls to show it.
 - A number control that loses focus while being typed in behaves as if Esc were pressed.
+- **Tab order**: `El::tab_order` puts positive numbers first, lowest first, then everything at 0 (the
+  default) in document order; a negative number keeps an element out of Tab while a press, a skip link or
+  `Ui::focus_key` can still focus it (as HTML's `tabindex`). **Skip links**: activating an element with
+  `El::skip_to(target)` (Enter, Space, a press, assistive technology's activation) moves focus to
+  `target`, or the first element inside it that takes focus, and scrolls it into view.
+  `El::focus_shown` draws an element and its subtree only while focus is on it or inside it; it stays in
+  the accessibility mirror and takes focus and presses. `widgets::skip_link` is the two together.
+  Acceptance: `tests/focus.rs`.
 - **Dragging**: pressing an element with `on_drag` makes the runtime record its handler and the press
   position (capture); later moves and the release go to it wherever the pointer is. A new press ends an old
   capture that was never released. Because the handler is the one from the press, the values in it are

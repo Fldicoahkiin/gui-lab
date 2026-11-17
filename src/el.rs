@@ -245,6 +245,14 @@ pub struct El<M> {
     /// Sent when focus leaves this element.
     pub on_blur: Option<M>,
     pub focusable: bool,
+    /// Where Tab puts it: positive numbers first, lowest first; 0 (the default) in document order after
+    /// them; negative never (it still takes focus from a press, a skip link or `Ui::focus_key`).
+    pub tab_order: i32,
+    /// Activating it moves focus to the element with this key, or the first one inside it that takes
+    /// focus (a skip link).
+    pub skip_to: Option<String>,
+    /// Drawn only while it or something inside it has focus (it stays in the accessibility mirror).
+    pub focus_shown: bool,
     /// Scrolls its children and clips them: vertically, or horizontally when `horizontal`.
     pub scroll: bool,
     pub horizontal: bool,
@@ -413,7 +421,7 @@ impl<M> El<M> {
     fn new(style: Style, content: Content) -> Self {
         // Nothing shrinks unless asked: fixed sizes stay fixed inside columns and scroll areas.
         let style = Style { flex_shrink: 0.0, ..style };
-        Self { key: String::new(), style, content, fill: None, border: None, radius: 0.0, on_press: None, on_key: None, on_drag: None, on_blur: None, focusable: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, modal: None, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, shift: (0.0, 0.0), shed: None, flow_field: None, stirr: None, trace: None, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, clips: false, calm: false, on_text: None, multiline: false, selectable: false, cursor: None, virt: None, access: None, ripple: Ripple::default(), on_pick: None, on_wheel: None, on_move: None, guide: None, skeleton: false, rtl: None, on_visible: None, on_outline: None, decode: None, form: None, turn: 0.0, reveal_by: Reveal::Glyph, ongoing: false, children: vec![] }
+        Self { key: String::new(), style, content, fill: None, border: None, radius: 0.0, on_press: None, on_key: None, on_drag: None, on_blur: None, focusable: false, tab_order: 0, skip_to: None, focus_shown: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, modal: None, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, shift: (0.0, 0.0), shed: None, flow_field: None, stirr: None, trace: None, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, clips: false, calm: false, on_text: None, multiline: false, selectable: false, cursor: None, virt: None, access: None, ripple: Ripple::default(), on_pick: None, on_wheel: None, on_move: None, guide: None, skeleton: false, rtl: None, on_visible: None, on_outline: None, decode: None, form: None, turn: 0.0, reveal_by: Reveal::Glyph, ongoing: false, children: vec![] }
     }
     pub fn key(mut self, k: impl Into<String>) -> Self { self.key = k.into(); self }
     pub fn gap(mut self, g: f32) -> Self { self.style.gap = Size { width: length(g), height: length(g) }; self }
@@ -500,6 +508,17 @@ impl<M> El<M> {
     pub fn on_drag_with(mut self, f: impl Fn(Drag) -> Option<M> + 'static) -> Self { self.on_drag = Some(Rc::new(f)); self }
     /// Whether Tab and presses can give this element focus (pressable elements are by default).
     pub fn focusable(mut self, f: bool) -> Self { self.focusable = f; self }
+    /// Its place in the Tab order: positive numbers come first, lowest first; 0 (the default) keeps
+    /// document order after them; a negative number leaves it out of Tab, though a press, a skip link
+    /// or `Ui::focus_key` can still focus it.
+    pub fn tab_order(mut self, order: i32) -> Self { self.tab_order = order; self }
+    /// Make it a skip link: Enter, Space, a press or assistive technology's activation moves focus to
+    /// the element `target`, or the first element inside it that takes focus, and scrolls it into view.
+    /// It takes focus itself.
+    pub fn skip_to(mut self, target: impl Into<String>) -> Self { self.skip_to = Some(target.into()); self.focusable = true; self }
+    /// Draw it and what it holds only while focus is on it or inside it (a skip link that appears when
+    /// Tab reaches it). Screen readers still find it, and it still takes focus and presses.
+    pub fn focus_shown(mut self) -> Self { self.focus_shown = true; self }
     pub fn disabled(mut self, d: bool) -> Self { self.disabled = d; self }
     pub fn commit(mut self) -> Self { self.commit = true; self }
     pub fn reveal(mut self, r: bool) -> Self { self.reveal = r; self }
@@ -643,7 +662,7 @@ impl<M> El<M> {
 
     /// The same tree sending other messages: lets one application embed another's view.
     pub fn map<N: 'static>(self, f: Rc<dyn Fn(M) -> N>) -> El<N> where M: 'static {
-        let El { key, style, content, fill, border, radius, on_press, on_key, on_drag, on_blur, focusable, scroll, horizontal, bar, reveal, disabled, commit, modal, fonts, loose, wipe, flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, on_text, multiline, selectable, cursor, virt, access, ripple, on_pick, on_wheel, on_move, guide, skeleton, rtl, on_visible, on_outline, decode, form, turn, reveal_by, ongoing, children } = self;
+        let El { key, style, content, fill, border, radius, on_press, on_key, on_drag, on_blur, focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, commit, modal, fonts, loose, wipe, flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, on_text, multiline, selectable, cursor, virt, access, ripple, on_pick, on_wheel, on_move, guide, skeleton, rtl, on_visible, on_outline, decode, form, turn, reveal_by, ongoing, children } = self;
         let virt = virt.map(|v| { let f = f.clone(); let b = v.build; Virtual { count: v.count, row_h: v.row_h, overscan: v.overscan, selected: v.selected, build: Rc::new(move |i: usize| b(i).map(f.clone())) as Rc<dyn Fn(usize) -> El<N>> } });
         let on_key = on_key.map(|k| { let f = f.clone(); Rc::new(move |key: Key, shift: bool| k(key, shift).map(|m| f(m))) as OnKey<N> });
         let on_text = on_text.map(|t| { let f = f.clone(); Rc::new(move |i: TextInput| t(i).map(|m| f(m))) as OnText<N> });
@@ -655,7 +674,7 @@ impl<M> El<M> {
         let on_outline = on_outline.map(|o| { let f = f.clone(); let g = o.f; Outline { cols: o.cols, rows: o.rows, f: Rc::new(move |x: Rc<crate::field::Grid>| g(x).map(|m| f(m))) } });
         El {
             key, style, content, fill, border, radius, on_press: on_press.map(|m| f(m)), on_key, on_drag, on_blur: on_blur.map(|m| f(m)),
-            focusable, scroll, horizontal, bar, reveal, disabled, commit, modal: modal.map(|m| Modal { dismiss: f(m.dismiss), beneath: m.beneath }),
+            focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, commit, modal: modal.map(|m| Modal { dismiss: f(m.dismiss), beneath: m.beneath }),
             fonts, loose, wipe, flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, on_text, multiline, selectable, cursor, virt, access, ripple, on_pick, on_wheel, on_move, guide, skeleton, rtl, on_visible, on_outline, decode, form, turn, reveal_by, ongoing, children: children.into_iter().map(|c| c.map(f.clone())).collect(),
         }
     }

@@ -54,6 +54,8 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
   right-to-left direction by language or script, and its own `locale.name` and `locale.date`. Arabic ships
   (`Locale::AR`, `assets/i18n/ar.txt`). `Locale::ALL` lists the three shipped locales;
   `i18n::installed()` lists the application's. `Locale::name` returns a `String`.
+- Focus: `El::tab_order` (positive first, 0 in document order, negative out of Tab), `El::skip_to`
+  and `El::focus_shown`, and the `skip_link` component.
 - `App::set_appearance` (`Appearance { dark, high_contrast }`), `App::files_hovering` and
   `App::files_dropped` (`Dropped` with a path natively, name and bytes on the web), from both shells.
 - The native window draws with the bundled faces compiled in (`text::embedded`), so a shipped binary
