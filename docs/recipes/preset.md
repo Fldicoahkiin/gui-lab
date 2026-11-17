@@ -1,6 +1,6 @@
 # A custom preset
 
-A style preset is plain data (`amenui::preset::Preset`): theme, material and its numbers, faces, annotation, the interaction character (press feedback, fronts, default responses, recomposition) and a transition. Start from one of the twelve and change what you want, or read one from JSON (`Preset::from_json`; the gallery's 风格切换 page exports any preset). `Preset::apply` gives the look; when a commit applies it, its transition plays between the frame as it was and the new one — here rows that reveal from the top. A second press in the middle goes on from what is on the screen.
+A style preset is plain data (`amenui::preset::Preset`): theme, material and its numbers, faces, annotation, the interaction character (press feedback, fronts, default responses, recomposition) and a transition. Start from one of the twelve and change what you want, or read one from JSON (`Preset::from_json`; the website's styles page exports any preset). `Preset::apply` gives the look; when a commit applies it, its transition plays between the frame as it was and the new one — here rows that reveal from the top. A second press in the middle goes on from what is on the screen.
 
 A preset also carries `post`, the finishing pass (`amenui::post::PostSpec`: bloom → chromatic offset → scanlines → grain → vignette → curvature, then a dither and a palette, each off by default), and `marks` (`depth_scale`, `depth_dim`) for 3D elements. They are numbers like the rest: `p.set_number("post.scanlines.strength", 0.2)`, and they travel in the `look:v1:` recipe.
 
@@ -33,10 +33,10 @@ pub fn custom() -> Preset {
 
 pub fn view(s: &App) -> El<Msg> {
     col().key("page").pad(32.0, 28.0).gap(16.0)
-        .child(text(if s.on { "自己的风格" } else { "原来的样子" }, 28.0, Paint::INK).key("title"))
-        .child(text("按下按钮：新的样子按自己的过渡出现。", 15.0, Paint::DIM))
+        .child(text(if s.on { "A style of its own" } else { "As it was" }, 28.0, Paint::INK).key("title"))
+        .child(text("Press the button: the new look arrives through its own transition.", 15.0, Paint::DIM))
         // A commit: the frame as it was stays, and the preset's transition reveals the new one.
-        .child(button_as("switch", "切换", Variant::Accent, Msg::Switch).commit())
+        .child(button_as("switch", "Switch", Variant::Accent, Msg::Switch).commit())
 }
 
 pub fn update(s: &mut App, m: Msg) {

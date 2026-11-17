@@ -12,11 +12,11 @@ pub struct Shapes { pub showing_b: bool, pub cmds: Vec<Cmd> }
 pub enum Msg { Swap }
 
 pub fn view(s: &Shapes) -> El<Msg> {
-    let a = text("山", 120.0, Paint::INK).font(Font::Display).key("a").hidden_until_morphed(s.showing_b);
+    let a = text("A", 120.0, Paint::INK).font(Font::Display).key("a").hidden_until_morphed(s.showing_b);
     let b = space(160.0, 160.0).radius(80.0).fill(Paint::ACCENT).key("b").hidden_until_morphed(!s.showing_b);
     col().key("stage").pad(32.0, 28.0).gap(20.0)
         .child(stack([a, b]).width(240.0).height(220.0))
-        .child(button_as("swap", "变形", Variant::Default, Msg::Swap))
+        .child(button_as("swap", "Morph", Variant::Default, Msg::Swap))
 }
 
 pub fn update(s: &mut Shapes, m: Msg) {

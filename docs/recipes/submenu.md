@@ -21,7 +21,7 @@ pub enum Msg { Menu(MenuMsg) }
 pub fn view(s: &App) -> El<Msg> {
     col().key("page").pad(24.0, 24.0).gap(16.0)
         .child(nested_menu("menu", &s.menu, Msg::Menu))
-        .child(text(format!("选中：{}", s.chosen), 14.0, Paint::DIM).key("chosen"))
+        .child(text(format!("Chosen: {}", s.chosen), 14.0, Paint::DIM).key("chosen"))
 }
 
 pub fn update(s: &mut App, m: Msg) {
@@ -36,7 +36,7 @@ pub fn update(s: &mut App, m: Msg) {
 
 pub fn ui(faces: Vec<Face>, w: u32, h: u32, scale: f32) -> Ui<App, Msg> {
     let sub = |name: &str, n: usize| MenuItem::sub(name, (1..=n).map(|i| MenuItem::leaf(format!("{name} {i}"))).collect());
-    let mut menu = Menu::new(vec![sub("新建", 4), sub("打开最近", 5), sub("排列", 3), MenuItem::leaf("关闭")]);
+    let mut menu = Menu::new(vec![sub("New", 4), sub("Open recent", 5), sub("Arrange", 3), MenuItem::leaf("Close")]);
     menu.show_safe_zone = true;
     Ui::new(App { menu, chosen: "—".into(), now: 0.0 }, view, update, faces, w, h, scale)
         .on_tick(|s, t| { s.now = t; s.menu.step(t) })

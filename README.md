@@ -1,86 +1,136 @@
+<div align="center">
+
 # amenui
 
-一个自绘界面框架。Rust + wgpu，同一份代码跑原生和网页（WebGPU，没有时用 WebGL2）。设计见 `docs/DESIGN.md`。许可证 MIT。
+**A self-drawn interface framework in Rust. Every glyph, shape and picture has a true outline that can loosen, morph and come back together.**
 
-这个仓库只放框架：引擎、组件（`src/widgets/` 和 `registry.json`，`amenui add` 拷进项目）、配方（`examples/`、`docs/recipes/`）、示例图片（`amenui::pictures`）、设计文档和给模型的 `AGENTS.md`、`llms.txt`。官网（首页的形体、实验室、展示场景、每个组件和材质的页面、文档）在 [amenui-dev/website](https://github.com/amenui-dev/website)，它用的就是这个仓库的 main。
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-给模型的入口是 `AGENTS.md` 和 `llms.txt`：
+</div>
 
-- 界面是一棵由普通值组成的树（`src/el.rs`）。视图是 `fn(&状态) -> 树`，更新是 `fn(&mut 状态, 消息)`。
-- 每次更新用 taffy 重新布局；文字由 parley 排版，字号任意，不要求等宽。每个节点得到绝对矩形和裁剪矩形。
-- 运行时（`src/ui.rs`）不依赖显卡：命中、悬停、焦点（Tab / Shift-Tab 轮转，Enter 和空格触发）、滚轮滚动、每个实例的出生时间。悬停和焦点由四个角标框出，角标在目标之间平滑移动。
-- 屏幕上的东西都是实例：字形、形状（填充或边框）、图片，画两遍。第一遍画进两张中间图（「这里有什么」和「离最近的墨有多近」，按真实轮廓）；第二遍由材质着色器决定最终像素。波、凝结、透镜的参数全部在 `Fx` 里，可以在界面上精确设置。
-- 图片松开时是图片自己变成记号（设计文档 §1.6.1）：先变成无缝的色块，再在每一格里按亮度换记号。记号表有十二张（字符、抖动、像素画、马赛克、积木、圆点、十字、斜线、菱形、横线、光点、笔触），启动时在 CPU 上生成；字符按实际量出的墨量排序。可以限色（六种调色板，含两色和三色）、浮雕、分区、让记号顺着图像的形体转、按指针做视差、发光。每张图片选八组参数里的一组，每个参数都是精确的数字。记号之间露出的是图片自己的暗部或黑，从来不是页面底色。
-- 对比擦除：图片上一条可以拖动的竖线，一侧是原图，一侧是完全松开的样子。
-- 像素字：Fusion Pixel 12 像素（中文）和 Departure Mono 11 像素（西文），只按整数倍字号、整像素位置、不抗锯齿地画，边缘只有墨色和底色。任何字体也可以通过材质印成像素（`.print(点距)`）。
-- 主题是数据（颜色、三种字体角色、字号阶、线宽），有暗、明、像素三个；材质有 `plain` 和 `dot` 两个，运行时切换。
-- 字符记号按显示的点距绘制：每个设备点距（4 到 40 像素）各切一套字符块，直接按像素读，点距 8 到 10 时字符仍然清楚；每个点距按量出的墨量挑 16 个字符，暗处落到黑底。
-- 组件是普通函数，每个一个文件（`src/widgets/`），以源码分发，`registry.json` 列出文件和依赖：按钮（默认、安静、强调，以及不可用）、数字控件、输入框、开关、滑块、标签页、选项（`choice` 和分段的 `segmented`）、列表、卡片、对话框、图片、分隔线、滚动区。
-  - 数字控件：获得焦点后直接键入，回车确认，Esc 取消；上下方向键按步长改，Shift 乘 10；在数值上横向拖动可以连续调（每 6 像素一步）。
-  - 输入框和多行输入：选区、输入法、剪贴板、撤销，见下面“文字输入”一条。
-  - 对话框：打开时只有它响应操作，焦点留在里面，下面的页面保持部分松开；Esc 或关闭按钮关闭，焦点回到打开它的按钮。
-- 运行时加了：拖动时捕获指针、文字插入点、对话框那种层、不可用状态、横向滚动和滚动位置细条、按键后把选中的行滚进视野、提交（切主题和材质时保留旧画面，新旧两种状态以波前为界）。
-- 变换（设计文档 §1.10）：任何东西（字、图、形状、整个控件）都能按材质的点阵散成粒子，飞过去变成别的东西：先松开，粒子在完全相同的位置接手，飞行时成群地走弧线、错开出发，再由目标以松开的样子接手、合拢。飞行中可以反向，粒子从当前位置原路返回。粒子照常画进两张中间图，所以每种材质都适用。换页时两页共有的部分（同一个流动 id）从旧位置移到新位置，途中稍微松开；旧页其余的部分松开、淡出。`update` 通过放在状态里的命令（`Cmd::Morph`、`Cmd::Flow`）请运行时做这两件事。
-- 材质（设计文档 §1.6.2）有八种：plain、dot、halftone（旋转网屏，可以分三色）、ascii（字符）、print（纸纹、套印错位、复印斑点、洇墨）、lino（刀刻的边和刀痕）、glitch（行错位、通道分离、悬停时短暂地错位）、near（把中间图的近度画成等距线）。每个参数都是数字；静止时除 near 和 print 的纸纹外，正文和 plain 一模一样。`El::material(id)` 让一棵子树用另一种材质。
-- 标注层（§1.7）：在材质之上按真实的排版结果画角标、框、编号、类型、尺寸、引线（标签互不重叠）、刻度尺、十字线和网格，四种模式（关、悬停、全部、焦点路径），元素出现时框线画出来，数字数上去。`El::annotate(说明)` 加明确的说明，`El::gaze_scope()` 限定范围。
-- 十二个风格预设（§4）：主题 × 材质 × 参数 × 标注 × 字体，顶栏的“风格”菜单一次切换；每个风格有自己的一页构图。
-- 七个展示场景（设计文档 §6，`#scenes`）：开场（点聚成标题、再拼出一页，然后一台“机器”按节拍操作它：一个带坐标的指针样记号成串地飞到每个控件、动手处放一道波前，底部一行字说它在做什么；按下或键入任何东西就由你接手，“继续演示”接着走）、读一篇文章（正文绕着可以拖动的剪影图片和圆的真实轮廓重排）、一张图的印法（一张铺满舞台的图切成五个窗口，各用一种记号，分界线可拖，透镜里是这一块完整的记号；或者只用一种记号，用数字调记号、点距、调色板，和原图对比）、变形（粗重的大字→图→记号→能用的小界面→回到字，可以按步骤跳、← →、循环）、透视（按住空格，界面拆成画面、轮廓、中间图三层，标注层框出部件）、声音（程序生成的节拍信号推动整页，频谱散成点；参数条和控件不受节拍影响，强度为 0 时完全静止）、十二种风格（同一个界面在预设之间切换，从按下处传开）。每个场景都有参数条和“重置”，Esc 回到列表。
-- 只在有变化时画（设计文档 §1.11）：运行时回答“现在要不要画”（`needs_frame`、`next_wake`）——有输入、场景变了、波前还活着、在凝结、变形或流动、角标在滑、标注在画出、时间材质下有松开的东西时要画；插入点闪烁、出发牌这样的时钟是定时唤醒。网页只在需要时跑 `requestAnimationFrame`，原生窗口用 `ControlFlow::Wait / WaitUntil`。静止的页面一帧也不画。
-- 帧时间读数（§1.12）：顶栏“性能”菜单或 F2，标注层在右下角写出最近一秒画了几帧、更新加布局 / 建场景 / 提交 GPU 各自最近、平均、最大的毫秒、实例数、粒子数、字形图集用了多少、画了和跳过的帧、后端（WebGPU、WebGL2、Vulkan、Metal）和设备像素比。材质可以在 1、0.75、0.5 倍分辨率下画（`Look::quality`，或自动），静止的像素总是全分辨率，所以静止的字和 1 倍逐像素相同。
-- 文字输入（§1.8.1）：点击放插入点、拖动选择、双击选词、三击全选、Shift 加方向、按词跳、Ctrl / ⌘ 加 A、C、X、V、Z（至少 50 步撤销）、输入法（组字画在插入点上带下划线；网页是放在插入点的隐藏 textarea，原生是 winit 的 `Ime`）、长的一行在框里横向滚动、多行的 `textarea`。源码和文章正文可以选中复制。选区按字形的轮廓画（外圈），不画方框。
-- 增量更新和长列表（§1.13）：taffy 树在两次布局之间保留，按 key 比较只改变了的地方，什么尺寸都没变时不重新布局；排版结果缓存，没变的字不重排；滚动只移动，不布局、不排版；看不见的行不生成实例。`list_virtual` 只造看得见的行（官网的“一万行”）。
-- 指针、触摸、滚轮（§1.8.2）：鼠标、笔、手指统一；手指滚动有惯性，到头时不弹出方框，而是那一边的东西松开；第二根手指作废；最小命中范围 28 像素；手指没有悬停；指针形状（文字、手指、抓、抓住、`col-resize`）。
-- 无障碍镜像（§1.14，网页）：一棵看不见的 DOM 树，角色、名字、值和界面一致，焦点双向，读屏的“按下”走同一个消息。
-- 绕开轮廓排字（`src/wrap.rs`）：文字元素 `.around(Around)` 时，每一行只占用这一条带子里没有被障碍物（圆、圆角矩形、按 alpha 取的图片剪影）挡住的部分，留出 `gap` 像素；一行被挡成两段时左右各排一行。
-- 字重：`El::weight(px)` 按近度把字形的轮廓往外（或往里）移，没有粗体字体也能加重标题。
-- 官网（[amenui-dev/website](https://github.com/amenui-dev/website)）是主应用：顶栏切主题、材质、恢复默认；左栏分组件、记号、材质、标注、风格、变换、排版、场景八组（窄窗口时变成一行可以横向滚动的标签）；每个组件一页，有预览、全部变体、它自己的参数和源码；每张记号表一页；粒子页（一个舞台和七种可以变成的东西，每个参数都能设置）和换页页（卡片列表和打开的详情）；一页字号与字体。骨架的演示（`src/demo.rs`）是其中一页。网页版的每一页有自己的地址（`#button`、`#marks-chars`…）。
+amenui draws every pixel itself on wgpu, so the same code runs in a native window (Vulkan, Metal) and on
+the web (WebGPU, or WebGL2 where WebGPU is missing). You write a view, a function from state to a tree of
+plain values, and an update, a function from state and a message to the next state. The runtime does
+layout, input, animation and drawing.
 
-- 涟漪规则（§1.15）：一道波前只到它的范围（按下的控件自己、标了 `ripple_scope` 的一块、或整个窗口；按在空白处什么也不放）；每个元素有自己的响应（忽略、轻推、松开）；要读的字和控件最多松开到可读上限（0.15）；同一个元素的波前不叠加，连点也不会让字一直散着。
-- 内容重组（§1.16）：带 key 的字换了字串时，只有变了的字簇重新组合：旧字形的像素一格格飞到新字形上，没变的留着或滑到新位置；交接到真正的字形时逐像素没有差别（`check` 第 13 条）。输入框里打字不重组。
-- 给模型用的一面（§1.17）：`render` 出确定的一帧（同样的参数、同样的字节）和整棵树的 JSON（key、类型、角色、矩形、文字、材质、响应、焦点、滚动、松开度），可以带一串脚本化的事件；公开路径上的错误说清哪里错了、该怎么写；八个配方（`docs/recipes/`，代码在 `examples/`，测试保证文档和代码一致）；每个组件文件开头写明用途、参数、状态、消息和用法。
-- 三维（§1.18，`#three`）：`El::mesh` / `scene3d` 是又一种实例：程序生成的网格（立方体、球、二十面体、环面、圆柱、圆锥、平面）和 glTF 子集，`MeshInstances` 一次画两千份，一个相机一盏光，平面着色。网格画进一张离屏图（明暗、法线、深度、编号），再解算成和文字一样的墨与近度：轮廓和棱都是边，所以每种材质都能画它（ascii 还按投影法线画笔画）。会松开、变形，可以按到（悬停和按下带着第几份），`orbit` 组件拖动环绕、滚轮推拉、方向键，带惯性。
-- GPU 上的粒子（§1.10，`#particles`）：格子多时变形在显卡上模拟（WebGPU 和原生是计算着色器，WebGL2 是浮点目标的片元乒乓，都不行时留在 CPU），旋度噪声、指针、波前推动，交接和落地仍然逐像素不变；可以到一百万格。
-- 只画变了的部分（§1.19）：两遍都裁剪到变了的框里，框外是上一帧，和整帧画的逐字节相同（`check` 第 15 条）。
-- 预设是数据（§4.1，`#styles`）：主题、材质、字体、标注、交互的性格和一段过渡，可以导出导入 JSON；十二个风格各有自己的过渡（逐行点阵、错位带、复印光条、刻、分层、先画轮廓、检测框、融化、色块、撕纸、淡入、无），切风格和进入风格的页面都用目标的过渡，可以中途再切。
+What sets it apart is that nothing on screen is a flat bitmap. Text, shapes, pictures and 3D meshes are
+instances with real outlines, drawn first into a coverage buffer and a signed distance field, then
+shaded by a material. That lets a press send a ripple through a page, a picture dissolve into ASCII or
+halftone marks, and one element break into particles that fly onto the shape of another, while text you
+need to read stays legible.
 
-## 运行
+## Features
 
-测试（不需要显卡）：
+- **Elm-style views.** A view is `fn(&State) -> El<Msg>`, an update is `fn(&mut State, Msg)`. Layout is
+  [taffy](https://github.com/DioxusLabs/taffy) (flexbox and grid), text is shaped by
+  [parley](https://github.com/linebender/parley) at any size, and the layout is kept between updates so
+  only what changed is laid out again.
+- **Materials.** `plain`, `dot`, `halftone`, `ascii`, `print`, `lino`, `glitch`, `scribblr` and a
+  debugging view of the distance field. At rest, body text in every material is identical to `plain`;
+  a material shows when something loosens. Any subtree can use its own.
+- **Themes and style presets as data.** A theme is colors, three type roles, a type scale and line
+  widths. A preset bundles a theme, a material and its numbers, the annotation layer, interaction
+  character and a transition, and exports to JSON.
+- **Transforms.** Any element can break into particles and re-form as another (`Cmd::Morph`), and the
+  parts two pages share move to their new places when the page changes (`Cmd::Flow`). Large morphs run
+  on the GPU, up to a million particles.
+- **Components as source.** Widgets from buttons and text fields to menus, tables, dialogs and a
+  command palette. `amenui add` copies a widget's file and what it depends on into your project,
+  shadcn-style, so you own and edit the code.
+- **Text input.** Selection by click, drag, double and triple click; word jumps; clipboard; at least
+  50 steps of undo; input method composition drawn at the caret; multi-line fields.
+- **Pointer, touch and keyboard.** Mouse, pen and touch share one pointer model with momentum scrolling.
+  Focus moves with Tab and Shift-Tab, Enter and Space activate, and widgets handle their arrow keys.
+- **Accessibility mirror.** The runtime derives roles, names, values and states from the tree. On the
+  web they become a hidden DOM tree that screen readers use, with focus kept in sync both ways.
+- **Languages.** Message catalogs with CLDR plural rules, number and date formatting, right-to-left
+  rows, and text that flows around the true outline of a picture or shape. English and Simplified
+  Chinese ship with the framework, and applications install their own catalogs.
+- **Draws only when needed.** The runtime says when the next frame is due. A still page draws no frames,
+  and when only part of the page changes, only that part is drawn.
+- **Built to be checked by models.** The `render` tool plays scripted input on a fixed clock and writes
+  a PNG and the laid-out tree as JSON. The same arguments always give the same bytes.
 
-```bash
-cargo test
+## Install
+
+amenui is not on crates.io yet. Depend on the repository:
+
+```toml
+[dependencies]
+amenui = { git = "https://github.com/amenui-dev/amenui" }
 ```
 
-一帧和它的树（给模型和脚本用；页名是配方 `recipe-<名字>`，官网仓库的同名工具还能打开官网的每一页）：
+It needs a recent stable Rust (edition 2024).
 
-```bash
-cargo run --release --bin render -- --page recipe-form --size 1280x800 --at 1000 --out out.png --tree out.json
+## Quick start
+
+A counter, driven without a window or a GPU:
+
+```rust
+use amenui::el::{El, Paint, col, text};
+use amenui::widgets::button;
+
+#[derive(Clone)]
+enum Msg { Inc }
+struct Counter { n: u32 }
+
+fn view(s: &Counter) -> El<Msg> {
+    col().pad(24.0, 24.0).gap(12.0)
+        .child(text(s.n.to_string(), 32.0, Paint::INK).key("count"))
+        .child(button("inc", "Add one", Msg::Inc))
+}
+
+fn update(s: &mut Counter, m: Msg) {
+    match m { Msg::Inc => s.n += 1 }
+}
+
+let faces = amenui::text::load_bundled(amenui::text::ASSETS).expect("bundled fonts");
+let mut ui = amenui::ui::Ui::new(Counter { n: 0 }, view, update, faces, 400, 300, 1.0);
+let (x, y) = ui.node("inc").unwrap().rect.center();
+ui.press(x, y);
+ui.release(x, y);
+assert_eq!(ui.export_tree().find("count").unwrap().text.as_deref(), Some("1"));
 ```
 
-每张记号表、每种调色板、浮雕、分区、方向跟随、辉光、视差和对比擦除各出一张样张，另有记号图集本身和原图：
+Render one frame of a recipe and its tree:
 
-```bash
-cargo run --release --bin sheet -- sheets
+```sh
+cargo run --release --bin render -- --page recipe-counter --size 1280x800 --at 1000 --out out.png --tree out.json
 ```
 
-把组件拷进自己的项目：
+Copy components into your own project:
 
-```bash
+```sh
 cargo run --release --bin amenui -- add button dialog --to src/widgets
 ```
 
-原生窗口、网页版、官网各页的样张、GPU 验收（`check`）和计时（`bench`）都在官网仓库，见它的 README。
+The framework does not ship a window runner yet. The native window (winit) and the web shell
+(wasm-bindgen) live in the [website repository](https://github.com/amenui-dev/website), in
+`src/bin/window.rs` and `src/lib.rs` with `web/page.html`, and are the reference for hosting a `Ui`.
 
-## 还没有
+## Documentation
 
-原生窗口的无障碍（留了 AccessKit 的接口，没有实现）；原生的剪贴板和输入法只编译过、没有在真实的输入法和第二个程序上验证；没有触摸屏，原生的触摸没有实际试过。和设计文档不一样的地方记在 `docs/DESIGN.md` §9。
+- [Writing interfaces](AGENTS.md): the mental model, the ten things you write, the rules, and how to
+  verify. Written for coding agents and just as useful to people.
+- [Recipes](docs/recipes/): small complete applications, one file each in `examples/`.
+- [Development](docs/guides/development.md): building, testing, and the tools in this repository.
+- [Architecture](docs/reference/architecture.md): the pipeline and what each module owns.
+- [Design](docs/DESIGN.md): the design contract, with every number and its acceptance check.
+- [Documentation index](docs/README.md): guides, references and design records.
+- [Changelog](CHANGELOG.md)
 
-## 字体
+The [website](https://github.com/amenui-dev/website) shows every component, mark set, material and style,
+with a documentation site in English and Simplified Chinese.
 
-都是 SIL Open Font License 1.1，许可证在 `assets/licenses/`：
+## Limitations
 
-- Noto Sans SC。
-- Departure Mono 1.500（Helena Zhang），取自它的发布包。
-- Fusion Pixel 12px 比例宽度简体中文版（TakWolf，上游版本 2026.08.11），由 npm 包 `@vp-tw/cjk-web-fonts-fusion-pixel-font` 里按 Unicode 区块切开的 WOFF2 合并回一个 OTF（这里连不上 GitHub 的发布下载）。它包含的上游字体 Ark Pixel、Cubic 11、Galmuri 的许可证也一并收了。
-- Geist Pixel（Vercel 与 basement.studio）的五种形状：Square、Grid、Circle、Triangle、Line，取自 npm 包 `geist` 1.9.2（许可证字段 “SIL OPEN FONT LICENSE”）里的 WOFF2，用 fontTools 只换成 OTF 容器（不改字形、不改名字），许可证在 `assets/licenses/geist-pixel/OFL.txt`。只有西文，是选得到的像素字面（`text::GEIST_PIXEL`）。
-- Source Serif 4（Frank Grießhammer，Adobe），取自 Google Fonts 仓库里的可变字体 `SourceSerif4[opsz,wght].ttf`：用 fontTools 定在 8 pt 的光学尺寸和 400 的字重（为小字号设计的那一档，笔画够实），只留西文（基本拉丁、拉丁补充一和常用标点，82 KB），不改字形，许可证在 `assets/licenses/source-serif/OFL.txt`（没有保留字体名）。它是 `Font::Whisper`：宽字距的小写小字和边注（`text::SERIF`）。
+- No accessibility in the native window yet. The web mirror works; AccessKit is planned.
+- Native clipboard and input methods are built but not yet verified with a real input method and a
+  second application. Native touch has not been tried on a touch screen.
+- Only the bundled fonts are used, so scripts they don't cover don't render yet: Arabic, Hebrew, Thai,
+  Devanagari and emoji, and Hangul outside the pixel face.
+
+## License
+
+amenui is licensed under [MIT](LICENSE). The bundled fonts are under the SIL Open Font License 1.1;
+see [fonts](docs/reference/fonts.md).

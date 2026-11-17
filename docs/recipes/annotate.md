@@ -16,12 +16,12 @@ pub struct Panel;
 
 pub fn view(_: &Panel) -> El<()> {
     let panel = col().key("panel").gaze_scope().pad(20.0, 18.0).gap(12.0).border(1.0, Paint::FAINT).width(360.0)
-        .child(text("电源", 18.0, Paint::INK).key("panel/title").annotate("标题"))
+        .child(text("Power", 18.0, Paint::INK).key("panel/title").annotate("Title"))
         .child(row().gap(12.0)
-            .child(space(80.0, 48.0).fill(Paint::ACCENT).key("panel/switch").annotate("主开关"))
-            .child(space(120.0, 48.0).fill(Paint::hue(1)).key("panel/meter").annotate("电量表")));
+            .child(space(80.0, 48.0).fill(Paint::ACCENT).key("panel/switch").annotate("Main switch"))
+            .child(space(120.0, 48.0).fill(Paint::hue(1)).key("panel/meter").annotate("Battery meter")));
     col().key("page").pad(32.0, 28.0).gap(16.0)
-        .child(text("面板外的字不标注。", 14.0, Paint::DIM))
+        .child(text("Text outside the panel is not annotated.", 14.0, Paint::DIM))
         .child(panel)
 }
 

@@ -24,10 +24,10 @@ pub fn custom() -> Preset {
 
 pub fn view(s: &App) -> El<Msg> {
     col().key("page").pad(32.0, 28.0).gap(16.0)
-        .child(text(if s.on { "自己的风格" } else { "原来的样子" }, 28.0, Paint::INK).key("title"))
-        .child(text("按下按钮：新的样子按自己的过渡出现。", 15.0, Paint::DIM))
+        .child(text(if s.on { "A style of its own" } else { "As it was" }, 28.0, Paint::INK).key("title"))
+        .child(text("Press the button: the new look arrives through its own transition.", 15.0, Paint::DIM))
         // A commit: the frame as it was stays, and the preset's transition reveals the new one.
-        .child(button_as("switch", "切换", Variant::Accent, Msg::Switch).commit())
+        .child(button_as("switch", "Switch", Variant::Accent, Msg::Switch).commit())
 }
 
 pub fn update(s: &mut App, m: Msg) {

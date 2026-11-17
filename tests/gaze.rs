@@ -13,7 +13,7 @@ fn view(_: &S) -> El<()> {
     col().key("root").pad(20.0, 20.0).gap(10.0)
         .child(row().key("bar").width(400.0).height(40.0).fill(Paint::FAINT).child(space(60.0, 20.0).key("chip").fill(Paint::ACCENT)))
         .child(col().key("scope").gaze_scope().width(500.0).pad(10.0, 10.0).gap(8.0)
-            .child(space(200.0, 50.0).key("a").fill(Paint::INK).annotate("电源开关"))
+            .child(space(200.0, 50.0).key("a").fill(Paint::INK).annotate("Power switch"))
             .child(space(100.0, 30.0).key("b").fill(Paint::INK).on_press(()))
             .child(text("说明文字", 14.0, Paint::TEXT).key("c")))
 }
@@ -33,7 +33,7 @@ fn records_follow_the_layout() {
     for r in a { assert_eq!(r.rect, u.node(&r.key).unwrap().rect, "{} is framed at its real rect", r.key); }
     let ra = &a[1];
     assert_eq!((ra.rect.w, ra.rect.h), (200.0, 50.0));
-    assert_eq!(ra.label.as_deref(), Some("电源开关"));
+    assert_eq!(ra.label.as_deref(), Some("Power switch"));
     assert_eq!(a[2].kind, "control");
     assert_eq!(a[3].kind, "text");
     assert_eq!(ra.kind, "shape");

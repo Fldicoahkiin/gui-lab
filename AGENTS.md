@@ -29,7 +29,7 @@ struct S { n: u32 }
 fn view(s: &S) -> El<Msg> {
     col().pad(24.0, 24.0).gap(12.0)
         .child(text(format!("{}", s.n), 32.0, Paint::INK).key("count"))
-        .child(button("inc", "加一", Msg::Inc))
+        .child(button("inc", "Add one", Msg::Inc))
 }
 fn update(s: &mut S, m: Msg) { match m { Msg::Inc => s.n += 1 } }
 let _ = (view(&S { n: 0 }), update as fn(&mut S, Msg));
@@ -53,7 +53,7 @@ assert_eq!(ui.export_tree().find("count").unwrap().text.as_deref(), Some("1"));
 ```rust
 use amenui::el::{El, Paint, row, col, space, text};
 let bar: El<()> = row().fill_width().pad(16.0, 8.0).gap(12.0)
-    .child(text("标题", 18.0, Paint::INK).grow(1.0))
+    .child(text("Title", 18.0, Paint::INK).grow(1.0))
     .child(space(80.0, 30.0).radius(4.0).fill(Paint::ACCENT));
 let page: El<()> = col().fill_width().fill_height().child(bar).child(col().grow(1.0).scroll());
 let _ = page;
@@ -62,7 +62,7 @@ let _ = page;
 4. Keys: give every element you will look up, animate, or that holds state a stable key:
 ```rust
 use amenui::el::{El, Paint, col, text};
-let rows: El<()> = (0..3).fold(col(), |c, i| c.child(text(format!("第 {i} 行"), 14.0, Paint::TEXT).key(format!("row/{i}"))));
+let rows: El<()> = (0..3).fold(col(), |c, i| c.child(text(format!("Row {i}"), 14.0, Paint::TEXT).key(format!("row/{i}"))));
 let _ = rows;
 ```
 
@@ -73,7 +73,7 @@ use amenui::widgets::{Edit, Spec, number};
 #[derive(Clone)] enum Msg { Width(Edit) }
 const W: Spec = Spec { min: 0.0, max: 64.0, step: 1.0, decimals: 0, unit: "px" };
 let draft: Option<String> = None;
-let n: El<Msg> = number("width", "宽度", 12.0, W, draft.as_deref(), Msg::Width).width(320.0);
+let n: El<Msg> = number("width", "Width", 12.0, W, draft.as_deref(), Msg::Width).width(320.0);
 let _ = n;
 ```
 
@@ -82,8 +82,8 @@ let _ = n;
 use amenui::el::El;
 use amenui::widgets::{TextEdit, input};
 #[derive(Clone)] enum Msg { Name(TextEdit) }
-let name = TextEdit::new("林");
-let field: El<Msg> = input("name", &name, "名称", 280.0, 40, Msg::Name);
+let name = TextEdit::new("Lin");
+let field: El<Msg> = input("name", &name, "Name", 280.0, 40, Msg::Name);
 let _ = field;
 ```
 
@@ -92,7 +92,7 @@ let _ = field;
 use amenui::el::{El, Paint, Response, Scope, row, space};
 use amenui::widgets::button;
 let area: El<()> = row().key("area").ripple_scope().gap(16.0)
-    .child(button("go", "按下", ()).ripple(Scope::Container(None)))
+    .child(button("go", "Press", ()).ripple(Scope::Container(None)))
     .child(space(60.0, 40.0).fill(Paint::ACCENT).respond(Response::Loosen))
     .child(space(60.0, 40.0).fill(Paint::hue(1)).respond(Response::Ignore));
 let _ = area;
@@ -116,7 +116,7 @@ assert_eq!(cmds.len(), 6);
 use amenui::el::{El, Paint, text};
 use amenui::style::{Look, Material, LIGHT};
 let look = Look { theme: LIGHT, material: Material::Dot, legible_cap: 0.15, ..Look::default() };
-let card: El<()> = text("半色调", 20.0, Paint::INK).material(Material::Halftone.id());
+let card: El<()> = text("Halftone", 20.0, Paint::INK).material(Material::Halftone.id());
 let _ = (look, card);
 ```
 
@@ -201,7 +201,7 @@ hyphenate the next word (`Around::hyphenate`, on by default); a piece that would
 ## How to verify
 
 ```sh
-cargo run --release --bin render -- --page button --size 1280x800 --at 1000 --out out.png --tree out.json
+cargo run --release --bin render -- --page recipe-form --size 1280x800 --at 1000 --out out.png --tree out.json
 cargo run --release --bin render -- --page recipe-counter --events inc.json --at 300 --out c.png --tree c.json
 ```
 
@@ -216,13 +216,14 @@ rect, text, material, response, legibility, focus / hover / press, scroll offset
 
 ```sh
 cargo test                                   # everything that needs no GPU (and a few that use one if present)
-cargo clippy --all-targets                   # no warnings allowed
-cargo run --release --bin check              # pixel acceptance on the GPU (lavapipe works)
+cargo clippy --all-targets -- -D warnings    # no warnings allowed
 cargo run --release --bin render -- --help   # one frame + tree
-cargo run --release --bin film -- out ripple # filmstrips of ripples and recomposition
-cargo run --release --bin window -- button   # a native window
+cargo run --release --bin sheet -- sheets    # contact sheets of the picture marks
 cargo run --release --bin amenui -- add dialog --to ../my-app   # copy a component (and what it needs) into a project
 ```
+
+The native window (`window`), the GPU pixel acceptance (`check`, lavapipe works), filmstrips (`film`) and
+the benchmarks (`bench`) are binaries of the website repository, https://github.com/amenui-dev/website.
 
 ## Where things live
 

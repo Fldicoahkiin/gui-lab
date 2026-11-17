@@ -33,6 +33,10 @@ pub mod sources;
 #[cfg(doctest)]
 #[doc = include_str!("../AGENTS.md")]
 pub mod agents {}
+/// README.md, so its quick start is compiled and run.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+pub mod readme {}
 pub mod render;
 pub mod scene;
 pub mod style;

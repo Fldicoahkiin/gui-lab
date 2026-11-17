@@ -17,10 +17,10 @@ pub struct Files { pub picked: Option<usize> }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Msg { Pick(usize) }
 
-const ROWS: [(&str, &str); 6] = [("草图.png", "2.1 MB"), ("提纲.md", "4 KB"), ("预算.csv", "18 KB"), ("封面.jpg", "860 KB"), ("录音.m4a", "12 MB"), ("合同.pdf", "320 KB")];
+const ROWS: [(&str, &str); 6] = [("sketch.png", "2.1 MB"), ("outline.md", "4 KB"), ("budget.csv", "18 KB"), ("cover.jpg", "860 KB"), ("recording.m4a", "12 MB"), ("contract.pdf", "320 KB")];
 
 pub fn view(s: &Files) -> El<Msg> {
-    let picked = s.picked.map_or("没有选中".to_owned(), |i| format!("选中：{}", ROWS[i].0));
+    let picked = s.picked.map_or("Nothing selected".to_owned(), |i| format!("Selected: {}", ROWS[i].0));
     col().key("files").pad(32.0, 28.0).gap(14.0)
         .child(list("files/list", &ROWS, s.picked, 36.0, 220.0, Msg::Pick).width(360.0))
         .child(text(picked, 14.0, Paint::DIM).key("files/picked"))
