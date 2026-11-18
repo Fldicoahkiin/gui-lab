@@ -79,3 +79,35 @@ fn a_motion_that_ends_between_two_frames_still_gets_its_settled_frame() {
     let again = frame(&mut ui, &mut o, t);
     assert!(settled == again, "the frame drawn is the page at rest");
 }
+
+mod held {
+    use amenui::el::{El, Paint, col, text};
+    pub struct S { pub hold: f32 }
+    pub fn view(s: &S) -> El<()> {
+        let d = amenui::decode::Decode { hold: Some(s.hold), ..Default::default() };
+        col().key("page").fill_width().fill_height().pad(20.0, 20.0)
+            .child(col().key("card").width(200.0).height(120.0).fill(Paint::FAINT).decode(d).child(text("Held", 20.0, Paint::INK)))
+            .child(amenui::widgets::button("next", "Next", ()))
+    }
+}
+
+#[test]
+fn a_decode_held_at_a_step_asks_for_no_frames_at_rest() {
+    let Ok(mut o) = Offscreen::try_new(320, 200) else { eprintln!("no GPU adapter here: skipped"); return };
+    let mut ui = amenui::ui::Ui::new(held::S { hold: 0.4 }, held::view, |s, _| s.hold = 0.7, fonts(), 320, 200, 1.0);
+    let look = amenui::style::Look { material: amenui::style::Material::Plain, ..amenui::style::Look::default() };
+    let mut t = 0.0;
+    let mut step = |ui: &mut amenui::ui::Ui<held::S, ()>, o: &mut Offscreen, n: u32| -> u32 {
+        let mut asked = 0;
+        for _ in 0..n { t += 1.0 / 60.0; ui.tick(t); if ui.needs_frame(t) { asked += 1; let _ = o.render(ui, &look); ui.frame_drawn(); } }
+        asked
+    };
+    step(&mut ui, &mut o, 60);
+    assert_eq!(step(&mut ui, &mut o, 120), 0, "a held decode at rest draws nothing");
+    // A new step is drawn, then the page rests again.
+    assert!(ui.activate("next"));
+    assert!(step(&mut ui, &mut o, 10) > 0, "the new step is drawn");
+    // The button's own press settles too.
+    step(&mut ui, &mut o, 300);
+    assert_eq!(step(&mut ui, &mut o, 120), 0, "and then nothing");
+}

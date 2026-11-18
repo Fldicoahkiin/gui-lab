@@ -3276,7 +3276,7 @@ impl<S, M: Clone> Ui<S, M> {
             let key = nodes[i].key.clone();
             match self.decodes.get_mut(&key) {
                 Some(r) if !r.reverse => { r.spec.hold = spec.hold; }
-                _ if !self.decode_last.contains_key(&key) => { self.decodes.insert(key.clone(), DecodeRun { start: now, reverse: false, spec: spec.clone(), plan: None, ghost: vec![], clip: None }); }
+                _ if !self.decode_last.contains_key(&key) => { self.decodes.insert(key.clone(), DecodeRun { start: now, reverse: false, spec: spec.clone(), plan: None, ghost: vec![], clip: None, drawn: None }); }
                 _ => {}
             }
             if let Some(r) = self.decodes.get_mut(&key) && r.plan.is_none() && !insts.is_empty() {
@@ -3298,7 +3298,7 @@ impl<S, M: Clone> Ui<S, M> {
             let (fine, atlas) = (spec.tiers.last().copied().unwrap_or(4.0) * s, &self.text.pixels);
             let cells: Vec<(f32, f32)> = morph::outline_cells(&ghost, fine.round().max(1.0), atlas).into_iter().filter(|c| c.cover > 0.02).map(|c| (c.x, c.y)).collect();
             let plan = spec.plan(&cells, s);
-            self.decodes.insert(k, DecodeRun { start: now, reverse: true, spec: Decode { hold: None, ..spec }, plan: Some(plan), ghost, clip: Some(clip) });
+            self.decodes.insert(k, DecodeRun { start: now, reverse: true, spec: Decode { hold: None, ..spec }, plan: Some(plan), ghost, clip: Some(clip), drawn: None });
         }
         self.decode_last = present;
     }
@@ -3309,6 +3309,13 @@ impl<S, M: Clone> Ui<S, M> {
         if self.decodes.is_empty() { return; }
         let screen = [0.0, 0.0, self.size.0 * self.scale, self.size.1 * self.scale];
         let mut pushed = vec![];
+        // A decode that runs needs the next frame; one held at a step needs one only when the step
+        // changed since it was last drawn.
+        let mut again = false;
+        for r in self.decodes.values_mut() {
+            again |= r.spec.hold.is_none() || r.drawn != r.spec.hold;
+            r.drawn = r.spec.hold;
+        }
         for (key, r) in &self.decodes {
             let Some(plan) = &r.plan else { continue };
             let p = ((now - r.start) / (r.spec.duration_ms / 1000.0).max(1e-3)).clamp(0.0, 1.0);
@@ -3324,7 +3331,7 @@ impl<S, M: Clone> Ui<S, M> {
             }
         }
         for i in pushed { self.scene.push(i); }
-        self.dirty = true;
+        if again { self.dirty = true; }
     }
 
     /// Whether motes are moving: shed marks in flight, or a flow field with speed.
@@ -4930,7 +4937,7 @@ const IGNORE: [f32; 4] = [0.0, -1.0, 0.0, 0.0];
 pub const REDUCED_FADE: f32 = 0.15;
 
 
-struct DecodeRun { start: f32, reverse: bool, spec: crate::decode::Decode, plan: Option<crate::decode::Plan>, ghost: Vec<Instance>, clip: Option<[f32; 4]> }
+struct DecodeRun { start: f32, reverse: bool, spec: crate::decode::Decode, plan: Option<crate::decode::Plan>, ghost: Vec<Instance>, clip: Option<[f32; 4]>, drawn: Option<f32> }
 /// What a decoded element showed in the last frame: its instances, its own spec and its clip (device
 /// px), so it goes as it came, inside the box it was seen in.
 struct Shown { insts: Vec<Instance>, spec: crate::decode::Decode, clip: [f32; 4] }
