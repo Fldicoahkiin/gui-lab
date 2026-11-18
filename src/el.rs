@@ -214,6 +214,38 @@ pub enum Content {
     Scene3d(Rc<crate::mesh::Scene3d>),
     /// Marks in their own space, scaled to the element's width (`el::canvas`, DESIGN.md §1.26).
     Canvas(Rc<crate::draw::Drawing>),
+    /// Character marks over a picture at a pitch of its own (`el::cells`, DESIGN.md §1.6.1).
+    Cells(Rc<Cells>),
+}
+
+/// The picture beneath an element as character marks (`el::cells`, DESIGN.md §1.6.1): the element's box
+/// cut into cells of `pitch` (logical px, width × height, each a whole number of device px), each cell one
+/// character of `ramp` by the brightness of the picture under it, in the cell's own colour mixed `mix`
+/// toward `ink`. Between the characters the picture shows as it is. The GPU reads the picture: the
+/// element is one instance and one draw however many cells it has, and moving it lays nothing out.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Cells {
+    /// The key of the picture element it reads (`el::picture`), drawn before it.
+    pub over: String,
+    /// The cell, logical px: width, height.
+    pub pitch: [f32; 2],
+    /// The characters, least ink first, up to 63 of them. A cell takes character `n` of `N` when it is in
+    /// the `n`th of `N` equal bands of brightness, dark to light, or light to dark with `light_dense`. Put
+    /// a character twice to give it two bands; leave the blank out for a grid that is full everywhere.
+    pub ramp: String,
+    /// Their size, logical px, and their face. Each is drawn whole into its cell, centred.
+    pub size: f32,
+    /// Their face.
+    pub font: Font,
+    /// What the cells' colours are mixed toward, and how far (0: the picture's own colour, 1: the ink).
+    pub ink: Paint,
+    /// How far toward `ink`.
+    pub mix: f32,
+    /// Brighter cells take the later (denser) characters: for light marks over a dark picture.
+    pub light_dense: bool,
+}
+impl Default for Cells {
+    fn default() -> Self { Self { over: String::new(), pitch: [7.0, 14.0], ramp: ".:-=+*#".into(), size: 11.0, font: Font::Mono, ink: Paint::INK, mix: 0.62, light_dense: false } }
 }
 
 /// Where one laid-out glyph is, for a pose: its number in the text and how many there are, its centre
@@ -1223,6 +1255,12 @@ impl<M: Clone + 'static> El<M> {
 /// proportions make it; its marks are shapes with true outlines. Pointer handlers on it get points in
 /// the drawing's space.
 pub fn canvas<M>(d: crate::draw::Drawing) -> El<M> { El::new(Style { size: Size { width: percent(1.0), height: auto() }, ..Default::default() }, Content::Canvas(Rc::new(d))) }
+/// The picture `c.over` beneath it as character marks (`Cells`), `cols` × `rows` cells: the box is
+/// exactly that many cells at the pitch. Place it over the picture (`absolute`) and move it freely.
+pub fn cells<M>(c: Cells, cols: u32, rows: u32) -> El<M> {
+    let (w, h) = (cols as f32 * c.pitch[0], rows as f32 * c.pitch[1]);
+    El::new(Style { size: Size { width: length(w), height: length(h) }, ..Default::default() }, Content::Cells(Rc::new(c)))
+}
 /// One mesh at the origin, with the default camera and light (`mesh::Scene3d::single`).
 pub fn mesh<M>(id: crate::mesh::MeshId) -> El<M> { scene3d(crate::mesh::Scene3d::single(id)) }
 /// Every child over the one before, each starting at the top left of the same box: the box is the

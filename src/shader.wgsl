@@ -214,6 +214,11 @@ fn inst(i: VOut) -> vec4f {
     let pic = i.extra.x > 0.5 && sil > 0.0;
     return vec4f(clamp(sil + 0.5, 0.0, 1.0), clamp(0.5 + face / (2.0 * u.fd.z), 0.0, 1.0), select(0.0, 1.0, pic), -face);
   }
+  if (kind > 1.5 && i.extra.x > 0.5) {
+    // Character marks over a picture (`el::Cells`): ink only where a character is.
+    let c = cells_of(i);
+    return vec4f(c.a, 0.5 + 0.5 * c.a, select(0.0, 1.0, c.a > 0.0), 0.5 - c.a);
+  }
   if (kind > 1.5) {
     // A picture with an alpha channel (a cut-out) has its true outline: outside it, nothing is there.
     var d = box_d(i.local, i.size, 0.0);
@@ -237,6 +242,45 @@ fn inst(i: VOut) -> vec4f {
   return vec4f(clamp(0.5 - d, 0.0, 1.0), near, 0.0, d);
 }
 
+/// Character marks over a picture (`el::Cells`, DESIGN.md §1.6.1): the colour of this pixel's cell and
+/// how much of the pixel its character covers. Packed by ui.rs: extra.x = characters + 64 × (cell width
+/// + 256 × cell height), device px, plus a quarter when bright cells are dense; look.y = the ink's hue + 4
+/// × (the strip's atlas texel x + 2048 × y); paint.x = mix + 256 × tone + 65536 × accent, in 255ths; uv the
+/// box in the picture's coordinates.
+fn cells_of(i: VOut) -> vec4f {
+  let e = floor(i.extra.x);
+  let light = i.extra.x - e > 0.1;
+  let n = e % 64.0; let wh = floor(e / 64.0);
+  let pc = vec2f(wh % 256.0, floor(wh / 256.0));
+  let at = floor(i.look.y / 4.0);
+  let hue = i.look.y - at * 4.0;
+  let org = vec2f(at % 2048.0, floor(at / 2048.0));
+  let grid = floor(i.size / pc + 1e-3);
+  let cell = floor(i.local / pc);
+  if (cell.x < 0.0 || cell.y < 0.0 || cell.x >= grid.x || cell.y >= grid.y || n < 1.0) { return vec4f(0.0); }
+  // The cell's colour: the picture at four points of it.
+  let c0 = cell * pc;
+  var acc = vec3f(0.0);
+  for (var j = 0; j < 2; j++) {
+    for (var k = 0; k < 2; k++) {
+      let lp = c0 + (vec2f(f32(k), f32(j)) + 0.5) * pc * 0.5;
+      let uv = i.uvr.xy + lp / i.size * (i.uvr.zw - i.uvr.xy);
+      acc += textureSampleLevel(tex1, samp, clamp(uv, vec2f(0.0), vec2f(1.0)), 0.0).rgb;
+    }
+  }
+  let c = acc * 0.25;
+  let l = clamp(lum(c), 0.0, 1.0);
+  let lev = clamp(floor(select(1.0 - l, l, light) * n), 0.0, n - 1.0);
+  let t = floor(i.local - c0);
+  let cov = textureLoad(tex0, vec2i(i32(org.x + lev * pc.x + t.x), i32(org.y + t.y)), 0).r;
+  let pk = i.paint.x;
+  let m = (pk % 256.0) / 255.0;
+  let tone = (floor(pk / 256.0) % 256.0) / 255.0;
+  let ac = floor(pk / 65536.0) / 255.0;
+  let r = tone * (1.0 - ac);
+  let ink = gnd(i.pos.xy) * max(1.0 - r - ac, 0.0) + u.fg.rgb * r + hue_col(hue) * ac;
+  return vec4f(mix(c, ink, m), cov);
+}
 /// A 3D element's resolved nearness here (tex0 is its resolve for mesh batches).
 fn mesh_near(i: VOut) -> vec4f { return textureSampleLevel(tex0, samp, clamp(i.uv, vec2f(0.0), vec2f(1.0)), 0.0); }
 /// A 3D element's colour texel here, nearest (tex1 is its colour image): shade, tone, accent and
@@ -312,6 +356,7 @@ fn ink_of(i: VOut, solid: bool) -> vec4f {
     }
     return vec4f(r * a, g * a, code * a, a);
   }
+  if (i.paint.w > 1.5 && i.extra.x > 0.5) { return vec4f(cells_of(i).rgb * a, a); }
   if (i.paint.w > 1.5) { return vec4f(textureSampleLevel(tex1, samp, clamp(i.uv, vec2f(0.0), vec2f(1.0)), 0.0).rgb * a, a); }
   // Over a picture the pixel is read as the picture's colours (its flag is in the near image), so text
   // and shapes there are written as their own colour, straight, as the material shows them at rest: an

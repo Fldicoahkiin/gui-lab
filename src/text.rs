@@ -232,6 +232,8 @@ pub struct Text {
     /// Device px per logical px: pixel faces snap their size in device px.
     scale: f32,
     slots: HashMap<(u64, u32, u32, u8), Option<Slot>>,
+    /// Character ramps cut into cells (`ramp`): where each strip is in the atlas.
+    ramps: HashMap<(u8, String, u32, u32, u32), Option<(u32, u32)>>,
     /// A glyph did not fit: the atlas is full (`Text::refill`).
     full: bool,
     /// Layout asks for the same paragraph at the same width many times; keyed by text, face, size bits,
@@ -278,7 +280,7 @@ impl Text {
         Self {
             fonts: FontContext { collection, source_cache: Default::default() },
             layouts: LayoutContext::new(), scaler: ScaleContext::new(), dots: HashMap::new(), families, scale: 1.0,
-            slots: HashMap::new(), full: false, measured: HashMap::new(), cache: [HashMap::new(), HashMap::new()], pieces: [HashMap::new(), HashMap::new()], reveals: 0, pixels: vec![0; (ATLAS * ATLAS * 2) as usize], dirty: true, pen: (1, 1, 0), shaped: 0, shape_ms: 0.0, log_shapes: false, shape_log: vec![], asked: Default::default(),
+            slots: HashMap::new(), ramps: HashMap::new(), full: false, measured: HashMap::new(), cache: [HashMap::new(), HashMap::new()], pieces: [HashMap::new(), HashMap::new()], reveals: 0, pixels: vec![0; (ATLAS * ATLAS * 2) as usize], dirty: true, pen: (1, 1, 0), shaped: 0, shape_ms: 0.0, log_shapes: false, shape_log: vec![], asked: Default::default(),
         }
     }
 
@@ -291,6 +293,7 @@ impl Text {
     /// before point at the old atlas and must be made again.
     pub fn refill(&mut self) {
         self.slots.clear();
+        self.ramps.clear();
         self.pixels.iter_mut().for_each(|p| *p = 0);
         self.pen = (1, 1, 0);
         self.full = false;
@@ -743,6 +746,31 @@ impl Text {
         let mut data = img.data;
         if pixel { for c in &mut data { *c = if *c >= 128 { 255 } else { 0 }; } }
         Some(Raster { data, w: img.placement.width, h: img.placement.height, left: img.placement.left, top: img.placement.top, advance, ascent: m.ascent, descent: m.descent })
+    }
+
+    /// `chars` drawn at `px` (device px) into cells of `w` × `h` texels side by side, each centred in its
+    /// cell on the face's line box, in one strip of the atlas (`el::Cells`): the texel where the strip's
+    /// first cell starts. A part of a glyph outside its cell is cut off. Made once per face, characters,
+    /// size and cell.
+    pub fn ramp(&mut self, face: u8, chars: &[char], px: f32, w: u32, h: u32) -> Option<(u32, u32)> {
+        let key = (face, chars.iter().collect::<String>(), px.to_bits(), w, h);
+        if let Some(r) = self.ramps.get(&key) { return *r; }
+        let n = chars.len() as u32;
+        let mut strip = vec![0u8; (n * w * h) as usize];
+        for (k, &ch) in chars.iter().enumerate() {
+            let Some(g) = self.raster(face, ch, px) else { continue };
+            let base = ((h as f32 - (g.ascent + g.descent)) * 0.5 + g.ascent).round() as i32;
+            let ox = ((w as f32 - g.advance) * 0.5).round() as i32 + g.left;
+            for y in 0..g.h as i32 { for x in 0..g.w as i32 {
+                let (tx, ty) = (ox + x, base - g.top + y);
+                if tx < 0 || ty < 0 || tx >= w as i32 || ty >= h as i32 { continue; }
+                strip[(ty as u32 * n * w + k as u32 * w + tx as u32) as usize] = g.data[(y as u32 * g.w + x as u32) as usize];
+            } }
+        }
+        let made = if n == 0 { None } else { store(&mut self.pixels, &mut self.pen, &strip, n * w, h, 0, 0).map(|sl| (sl.x + SPREAD as u32, sl.y + SPREAD as u32)) };
+        if made.is_none() && n > 0 { self.full = true; } else { self.dirty = true; }
+        self.ramps.insert(key, made);
+        made
     }
 
     /// Call `out` once per visible glyph with its instance (device px) and glyph id. `origin` is

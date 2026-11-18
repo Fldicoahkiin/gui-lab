@@ -329,6 +329,17 @@ darkness, how strongly orientation follows the gradient, depth, and glow.
 
 Text and shapes have no ground of their own; when they loosen, the page shows through, which is right.
 
+**Character marks over a part of a picture** (`el::cells`). An element over a picture can draw the
+picture beneath it as characters at a pitch of its own, rectangular or square (7 × 14 px by default):
+its box is cut into whole cells from its top left corner, each cell takes one character of a ramp the
+caller gives (least ink first; a character given twice takes two bands of brightness; a ramp without a
+blank is a grid full everywhere), by the brightness of the picture under the cell in equal bands, dark
+to light or light to dark (`light_dense`), and the character is drawn in the cell's own colour mixed
+toward an ink (`mix`, 0.62 by default). Between the characters the picture shows as it is. The GPU reads
+the picture and picks the characters: the element is one instance and one draw whatever its number of
+cells, the characters are cut once per face, ramp, size and cell into the glyph atlas, and moving the
+element lays nothing out. Still, it costs nothing.
+
 **Ink over a picture.** A pixel where a picture is drawn is shown from the picture's colours, so text and
 shapes drawn over a picture are written there as their own colour, the colour the material shows them in
 at rest. Their antialiased edges then blend with the picture by their coverage, and a see-through group

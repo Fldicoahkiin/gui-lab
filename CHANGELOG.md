@@ -14,6 +14,10 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
   opacity, in the page and in a layer (DESIGN.md §1.6.1). Before, their edges (or the whole text, in the page's
   own layer) were read as the picture's colours and showed red; a site no longer needs a layer of its own for ink
   over a picture. Text to read over a picture stays as it is while the picture loosens.
+- `el::cells(Cells, cols, rows)` draws the picture under it as character marks at a pitch of its own (7 × 14 px by
+  default) from a ramp the caller gives, each cell in its own colour mixed toward an ink: one instance and one draw,
+  nothing laid out when it moves, nothing drawn while it is still (DESIGN.md §1.6.1). `Content` has `Cells`, so
+  exhaustive matches need the new arm.
 
 ## Fitting, clamping, faces that come later and plates
 

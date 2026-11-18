@@ -1201,10 +1201,11 @@ impl Renderer {
         for (k, i) in scene.instances.iter().enumerate() {
             if i.paint[2] < 0.01 { continue; }
             let pic = i.paint[3] == crate::scene::PICTURE;
-            if k < layer && pic {
+            // Character marks over a picture (`el::Cells`) are ink over it, not a picture of their own.
+            if k < layer && pic && i.extra[0] <= 0.5 {
                 let code = (i.paint[1] + 1.0) / 8.0 - if i.resp[1] > 1.5 { 1.0 / 32.0 } else { 0.0 };
                 holds.push(Instance { paint: [-1.0, code, 1.0, i.paint[3]], ..*i });
-            } else if k >= layer && (pic || i.paint[3] == crate::scene::SHAPE) {
+            } else if k >= layer && ((pic && i.extra[0] <= 0.5) || i.paint[3] == crate::scene::SHAPE) {
                 holds.push(Instance { paint: [-2.0, 0.0, 1.0, i.paint[3]], ..*i });
             }
         }

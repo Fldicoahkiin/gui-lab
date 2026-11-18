@@ -198,6 +198,7 @@ impl<M> Node<M> {
             Content::Picture { .. } => "image",
             Content::Scene3d(_) => "mesh",
             Content::Canvas(_) => "drawing",
+            Content::Cells(_) => "image",
             Content::None if self.focusable || self.on_press.is_some() || self.on_drag.is_some() => "control",
             Content::None if self.fill.is_some() || self.border.is_some() => "shape",
             Content::None => "box",
@@ -2151,7 +2152,7 @@ impl<S, M: Clone> Ui<S, M> {
             let a = n.access.clone().unwrap_or_default();
             let role = a.role.or_else(|| match &n.content {
                 Content::Text { .. } if !spoken => Some(Role::Text),
-                Content::Picture { .. } | Content::Scene3d(_) | Content::Canvas(_) => Some(Role::Img),
+                Content::Picture { .. } | Content::Scene3d(_) | Content::Canvas(_) | Content::Cells(_) => Some(Role::Img),
                 Content::None if n.on_press.is_some() && n.focusable && !spoken => Some(Role::Button),
                 _ => None,
             });
@@ -3453,7 +3454,7 @@ impl<S, M: Clone> Ui<S, M> {
                             put(&mut sink, block(bar, h * 0.5), ident(&n.key, u32::MAX - 32 - k as u32, 0), None);
                         }
                     },
-                    Content::Picture { .. } | Content::Scene3d(_) | Content::Canvas(_) => { put(&mut sink, block(n.inner, n.radius.max(4.0)), ident(&n.key, u32::MAX - 22, 0), None); }
+                    Content::Picture { .. } | Content::Scene3d(_) | Content::Canvas(_) | Content::Cells(_) => { put(&mut sink, block(n.inner, n.radius.max(4.0)), ident(&n.key, u32::MAX - 22, 0), None); }
                     Content::None => {}
                 }
                 continue;
@@ -3591,6 +3592,29 @@ impl<S, M: Clone> Ui<S, M> {
                     sink.scene.meshes.push(crate::scene::MeshDraw { scene: sc.clone(), rect: r });
                     let inst = Instance { rect: r, uv: [0.0, 0.0, 1.0, 1.0], paint: [sc.spec.outline.max(0.0) * s, sc.picture.unwrap_or(0) as f32, 1.0, MESH], clip, extra: [sc.picture.map_or(0.0, |_| 1.0), k as f32, 0.0, 0.0], look: [mat, 0.0, r[1], r[3].max(1.0)], resp, xf: [0.0; 4] };
                     put(&mut sink, inst, ident(&n.key, u32::MAX - 5, 0), None);
+                }
+                Content::Cells(c) => {
+                    // One instance over the whole box: the picture it reads is bound as for the picture
+                    // itself, and the cells, the ramp and the ink are packed into its spare numbers
+                    // (scene.rs `Instance`, "cells").
+                    let Some(pic) = self.nodes.iter().find(|p| p.key == c.over && matches!(p.content, Content::Picture { .. })) else { continue };
+                    let Content::Picture { id, fx, .. } = pic.content else { continue };
+                    let pr = pic.inner;
+                    let (cw, ch) = ((c.pitch[0] * s).round().clamp(1.0, 255.0), (c.pitch[1] * s).round().clamp(1.0, 255.0));
+                    let face = c.font.resolve([0; 3]);
+                    let ramp: Vec<char> = c.ramp.chars().take(63).collect();
+                    let Some((ax, ay)) = self.text.ramp(face, &ramp, c.size * s, cw as u32, ch as u32) else { continue };
+                    let r = dev(n.inner);
+                    // The cells are whole device px from the box's corner: the box starts on a pixel.
+                    let r = [r[0].round(), r[1].round(), r[2], r[3]];
+                    let uv = [(r[0] / s - pr.x) / pr.w.max(1e-3), (r[1] / s - pr.y) / pr.h.max(1e-3), (r[0] / s + r[2] / s - pr.x) / pr.w.max(1e-3), (r[1] / s + r[3] / s - pr.y) / pr.h.max(1e-3)];
+                    let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round();
+                    let packed_ink = q(c.mix) + 256.0 * q(c.ink.tone) + 65536.0 * q(c.ink.accent);
+                    let hue = c.ink.hue.min(2) as f32;
+                    let inst = Instance { rect: r, uv, paint: [packed_ink, fx as f32, c.ink.alpha, PICTURE], clip,
+                        extra: [ramp.len() as f32 + 64.0 * (cw + 256.0 * ch) + if c.light_dense { 1.0 / 4.0 } else { 0.0 }, id as f32, 0.0, 0.0],
+                        look: [mat, hue + 4.0 * (ax as f32 + 2048.0 * ay as f32), 0.0, 1.0], resp, xf: [0.0; 4] };
+                    put(&mut sink, inst, ident(&n.key, u32::MAX - 2, id), None);
                 }
                 Content::Canvas(d) => {
                     // Each mark a shape with its true outline, in the drawing's space scaled to the box.
@@ -5837,7 +5861,7 @@ fn measure_key(c: &Content) -> u64 {
         }
         Content::Picture { ratio, .. } => ratio.to_bits().hash(&mut h),
         // Sized by its style alone.
-        Content::Scene3d(_) => 3u8.hash(&mut h),
+        Content::Scene3d(_) | Content::Cells(_) => 3u8.hash(&mut h),
         Content::Canvas(d) => (d.h / d.w.max(1e-3)).to_bits().hash(&mut h),
         Content::None => 0u8.hash(&mut h),
     }
@@ -5868,6 +5892,7 @@ fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], of
     inh.preview |= preview;
     if inh.skeleton { on_press = None; on_key = None; on_drag = None; on_blur = None; on_text = None; on_pick = None; on_wheel = None; on_move = None; focusable = false; commit = false; }
     if let Content::Text { font, .. } = &mut content { *font = Font::Face(font.resolve(roles)); }
+    if let Content::Cells(c) = &mut content { let f = Font::Face(c.font.resolve(roles)); if c.font != f { Rc::make_mut(c).font = f; } }
     let i = nodes.len();
     let flow = own_flow.map(|f| (Rc::from(f.as_str()), i)).or(flow);
     // A material override nests: a deeper one gets a higher level, so it wins where both draw.
