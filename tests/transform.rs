@@ -274,6 +274,12 @@ mod pages {
             .child(text("the old page's body", 14.0, Paint::TEXT).key("a/body").absolute(Some(40.0), Some(300.0), None, None))
     }
     pub fn dotted(_: &S) -> Look { Look { material: Material::Dottr, ..Look::default() } }
+    /// The same title, the same size, straight down the page: going square to the text.
+    pub fn down(s: &S) -> El<()> {
+        let y = if s.second { 200.0 } else { 40.0 };
+        col().key(if s.second { "b" } else { "a" }).fill_width().fill_height()
+            .child(text("Index", 18.0, Paint::INK).key("title").absolute(Some(40.0), Some(y), None, None))
+    }
 }
 
 /// The box of what is not the ground in the top part of the frame (where the titles are).
@@ -306,11 +312,14 @@ fn ink_mass(px: &[u8], ground: &[u8], w: u32) -> (f32, [f32; 2]) {
 /// the time of the last frame.
 type FromLast = (Vec<u8>, Vec<Vec<u8>>, Vec<Vec<[f32; 4]>>, f32);
 fn from_last(o: &mut amenui::offscreen::Offscreen, look: fn(&pages::S) -> amenui::style::Look, reduced: bool) -> FromLast {
+    from_last_in(o, pages::view, look, reduced)
+}
+fn from_last_in(o: &mut amenui::offscreen::Offscreen, view: fn(&pages::S) -> El<()>, look: fn(&pages::S) -> amenui::style::Look, reduced: bool) -> FromLast {
     let (w, h) = (560u32, 380u32);
     amenui::budget::set(amenui::budget::MAX_MARKS, 1.0);
     let spec = MorphSpec { duration_ms: 600.0, tighten_ms: 200.0, ..Default::default() };
     o.r.partial = false;
-    let mut ui = Ui::new(pages::S { second: false }, pages::view, |_, _| {}, fonts(), w, h, 1.0).on_look(look);
+    let mut ui = Ui::new(pages::S { second: false }, view, |_, _| {}, fonts(), w, h, 1.0).on_look(look);
     ui.set_reduced_motion(reduced);
     let mut t = 0.0;
     while t < 1.5 { t += 1.0 / 60.0; ui.tick(t); let look = ui.look(); let _ = o.render(&mut ui, &look); }
@@ -422,6 +431,25 @@ fn the_title_flies(look: fn(&pages::S) -> amenui::style::Look, name: &str) {
 
 #[test]
 fn a_morph_from_the_last_frame_flies_the_old_title_to_the_new_one() { the_title_flies(pages::look, "plain"); }
+
+#[test]
+fn a_title_going_straight_down_moves_as_one_with_no_stagger() {
+    let Ok(mut o) = amenui::offscreen::Offscreen::try_new(560, 380) else { eprintln!("no GPU adapter here: skipped"); return };
+    let (_, _, glyphs, _) = from_last_in(&mut o, pages::down, pages::look, false);
+    let first = &glyphs[0];
+    assert_eq!(first.len(), 5, "the title's five glyphs");
+    let mut moved = 0.0f32;
+    for (f, g) in glyphs.iter().enumerate().take(40) {
+        assert_eq!(g.len(), first.len(), "frame {f}");
+        let d: Vec<[f32; 2]> = g.iter().zip(first).map(|(b, a)| [b[0] - a[0], b[1] - a[1]]).collect();
+        for (k, dk) in d.iter().enumerate() {
+            assert!((dk[0] - d[0][0]).abs() <= 0.5 && (dk[1] - d[0][1]).abs() <= 0.5,
+                "frame {f}: glyph {k} has moved {dk:?}, glyph 0 {:?}: they go together", d[0]);
+        }
+        moved = moved.max(d[0][1]);
+    }
+    assert!(moved > 150.0, "the title went down {moved} px of 160");
+}
 
 #[test]
 fn in_dottr_the_title_flies_too() { the_title_flies(pages::dotted, "dottr"); }

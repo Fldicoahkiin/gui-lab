@@ -961,7 +961,11 @@ it goes, loosened by `0.6 × sin(π × p)` at its own progress `p`, so it comes 
 way and is whole at both ends). Each goes in a straight line, eased in and out on a
 sine (`p = 0.5 − 0.5 × cos(π × t)`), its size and colour going from the old glyph's to the new one's (drawn as the old
 glyph for the first half, as the new for the second); in the word's order from the end that faces the way it goes
-(the glyph in front leaves first, so the word opens out a little rather than running into itself), each starts 12 ms
+(the glyph in front leaves first, so the word opens out a little rather than running into itself): the way, from the
+old glyphs' centre to the new ones', projected onto the text's direction (the old word's first glyph to its last); going
+on along it the last glyph leaves first, going back the first does. Where that projection is under 10 % of the way's
+length (near square to the text, as a title going straight down the page), no end is in front and there is no stagger:
+all glyphs go together, each for the whole `duration_ms`. Otherwise each starts 12 ms
 after the one before, the whole stagger at
 most 15 % of `duration_ms`, each flying for `duration_ms` less the whole stagger, so the last lands at `duration_ms`
 and the word moves as a word. The frame at `duration_ms` is the new page as drawn directly, byte for byte; nothing tightens after.
