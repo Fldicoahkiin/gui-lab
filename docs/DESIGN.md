@@ -574,9 +574,14 @@ host reads it after each frame or page change and fetches them (the framework fe
 bytes)` adds one: everything that came in one frame changes at the next tick together, in one layout. Each line then
 sweeps over from its start to its end in 240 ms (`ui::SWEEP`): a glyph changes when the sweep passes it, from the
 stand-in's glyph for the same character, moved to where the new one stands, to the new face's; within 60 ms of its
-change (`SWEEP_LOOSE`) it is loosened on a sine up to the legibility cap, so at every moment the title has one set of
+change (`SWEEP_LOOSE`) it is loosened by the material on a sine up to the legibility cap (0.6 for a heading), so at
+every moment the title has one set of
 glyphs, changed ones left of unchanged ones, and its ink never under 80 % of the lesser face's. 300 ms after the bytes
-came the page is byte for byte the page that had the face from the start, and it rests. With less motion both glyphs
+came the page is byte for byte the page that had the face from the start, and it rests. scribblr draws one thread per
+element, so a line whose face is changing becomes a thread as loose as its glyphs are on average, and nothing keeps
+out of it meanwhile; it is text again when the sweep has passed. Measured: with dottr and scribblr each frame of the
+sweep differs from plain's in the text's box by 0.30–2.6 of the title's ink beyond what the material draws at rest,
+and by 0 from 300 ms (`tests/faces.rs`, `with_a_material_each_glyph_comes_apart_as_it_changes_face`). With less motion both glyphs
 are drawn where the new one is, the new fading in over 150 ms. A face added before the first frame is never seen
 standing in. Bytes that are not a font are refused (`FontError::Bad`): the face keeps its stand-in for good, is no
 longer wanted, and nothing on screen changes.

@@ -539,6 +539,8 @@ pub struct Ui<S, M> {
     arriving: HashMap<u8, (f32, crate::text::FaceDecl)>,
     /// The last paint swept a face along a line on screen.
     sweeping: bool,
+    /// The text nodes that last paint swept (their glyphs loosen as they change face, scribblr's too).
+    swept_nodes: Vec<usize>,
     /// Faces changed: the next layout measures every text again.
     remeasure: bool,
     /// The plates (DESIGN.md §1.33): each slot's element, when its ink was last drawn and how long it
@@ -921,7 +923,7 @@ impl<S, M: Clone> Ui<S, M> {
             gaze_of: None, gaze_seen: HashMap::new(), annots: vec![], readout: gaze::Readout::default(), hovered: None, pointer_of: None, scripted: false, ticked: None, warm: None, warmed: None, owed: false, unused_key: None, shortcut: None, scrolled_of: None, released: None, input: None,
             dirty: true, look_of: None, locale_of: None, timing: Timing::default(), wake_of: None, latest_birth: f32::NEG_INFINITY, gaze_until: f32::NEG_INFINITY,
             marks_moving: false, caret: None, caret_on: true, static_loose: false, mclock: 0.0, moving: false, gclock: 0.0, ground_moving: false,
-            perf: crate::perf::Perf { quality: 1.0, ..Default::default() }, span: 0, painting: false, overlay: 0, overlay_at: 0.0, overlay_box: None, fade_s: REDUCED_FADE, came: vec![], arriving: HashMap::new(), sweeping: false, remeasure: false, plate_slots: Default::default(), plate_clear: vec![], plate_over: vec![], pclock: 0.0, plate_frame: f32::NEG_INFINITY, assets: HashMap::new(), assets_asked: Default::default(), shape_seen: 0.0, hud_idle: false, rebuilt: 0,
+            perf: crate::perf::Perf { quality: 1.0, ..Default::default() }, span: 0, painting: false, overlay: 0, overlay_at: 0.0, overlay_box: None, fade_s: REDUCED_FADE, came: vec![], arriving: HashMap::new(), sweeping: false, swept_nodes: vec![], remeasure: false, plate_slots: Default::default(), plate_clear: vec![], plate_over: vec![], pclock: 0.0, plate_frame: f32::NEG_INFINITY, assets: HashMap::new(), assets_asked: Default::default(), shape_seen: 0.0, hud_idle: false, rebuilt: 0,
             text_capture: None, sel: None, sel_drag: false, clicks: (f32::NEG_INFINITY, 0.0, 0.0, 0), a11y_sent: HashMap::new(), a11y_focus: None,
             tree: TaffyTree::new(), tids: HashMap::new(), mkeys: HashMap::new(), virt_views: HashMap::new(), virt_made: HashMap::new(),
             scrolling: Scrolling::default(), touch: None, touches: HashSet::new(), touching: false, fling: None, over: HashMap::new(), motion: HashMap::new(), scroll_paint: false, event_t: None, ev: 0.0,
@@ -3162,6 +3164,7 @@ impl<S, M: Clone> Ui<S, M> {
         if self.defer > 0 { self.stale_paint = true; self.dirty = true; return; }
         self.stale_paint = false;
         self.sweeping = false;
+        self.swept_nodes.clear();
         self.paint_once();
         // The glyph atlas filled up (many sizes over a long run): start it over and paint again, so every
         // glyph on the page is in the new one. What was kept from before (tiles, ghosts) is dropped.
@@ -3402,6 +3405,7 @@ impl<S, M: Clone> Ui<S, M> {
                         None => self.text.emit_in(para, n.origin(), proto, s, rows, |mut inst, glyph| { inst.extra[0] = wpx; glyphs.push((inst, glyph)); }),
                         Some((t0, d)) => {
                             self.sweeping = true;
+                            self.swept_nodes.push(i);
                             let heading = n.access.as_ref().is_some_and(|a| a.role == Some(crate::el::Role::Heading));
                             let cap = if self.timing.material == crate::style::Material::Plain.id() || self.fmap.reduced { 0.0 } else if heading { 0.6 } else { self.timing.legible_cap };
                             for (mut inst, glyph, l) in sweep_glyphs(&mut self.text, para, n.origin(), proto, s, rows, (now - t0, d), self.fmap.reduced, cap) {
@@ -3956,7 +3960,8 @@ impl<S, M: Clone> Ui<S, M> {
         let spread = crate::text::SPREAD as f32;
         for (ni, idx) in own.iter().enumerate() {
             let n = &self.nodes[ni];
-            if idx.is_empty() || !n.legible || n.hidden { continue; }
+            // A line whose face is changing comes apart itself as the sweep passes: nothing keeps out of it.
+            if idx.is_empty() || !n.legible || n.hidden || self.swept_nodes.contains(&ni) { continue; }
             let b = idx.iter().map(|&i| { let r = self.scene.instances[i].rect; let p = if self.scene.instances[i].paint[3] == GLYPH { spread } else { 0.0 }; [r[0] + p, r[1] + p, r[0] + r[2] - p, r[1] + r[3] - p] })
                 .fold([f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY], |a, r| [a[0].min(r[0]), a[1].min(r[1]), a[2].max(r[2]), a[3].max(r[3])]);
             let c = [n.clip.x * s, n.clip.y * s, n.clip.right() * s, n.clip.bottom() * s];
@@ -4029,10 +4034,14 @@ impl<S, M: Clone> Ui<S, M> {
         for (ni, idx) in own.iter().enumerate() {
             if idx.is_empty() { continue; }
             let n = &self.nodes[ni];
-            // Text to read and controls hold: no thread, no fade, not carried by the map (DESIGN.md §1.30).
-            if n.legible || n.hidden || modal.is_some_and(|l| idx[0] < l) || matches!(n.content, Content::Canvas(_)) || self.recomps.contains_key(&n.key) || self.decodes.contains_key(&n.key) || (running && self.roles[ni] != 0) || idx.iter().any(|&i| self.flows.contains_key(&self.owners[i].1)) { continue; }
+            // Text to read and controls hold: no thread, no fade, not carried by the map (DESIGN.md §1.30),
+            // except as their face changes (DESIGN.md §1.6.5).
+            if (n.legible && !self.swept_nodes.contains(&ni)) || n.hidden || modal.is_some_and(|l| idx[0] < l) || matches!(n.content, Content::Canvas(_)) || self.recomps.contains_key(&n.key) || self.decodes.contains_key(&n.key) || (running && self.roles[ni] != 0) || idx.iter().any(|&i| self.flows.contains_key(&self.owners[i].1)) { continue; }
             // As the thread shows it: through 0.15–0.4 quickly (`strand::shown`).
-            let k = strand::shown(idx.iter().map(|&i| self.inst_loose(i, now)).fold(tr_k, f32::max));
+            // A line whose face is changing is one thread: as loose as its glyphs are on average, so it
+            // comes apart a little as the sweep passes and is whole again after it.
+            let k = if self.swept_nodes.contains(&ni) { idx.iter().map(|&i| self.inst_loose(i, now)).sum::<f32>() / idx.len() as f32 } else { idx.iter().map(|&i| self.inst_loose(i, now)).fold(0.0, f32::max) };
+            let k = strand::shown(k.max(tr_k));
             if k <= 0.0 { continue; }
             let f = strand::fill(k);
             for &i in idx { fades.push((i, self.scene.instances[i].paint[2], f)); }

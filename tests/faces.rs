@@ -22,7 +22,7 @@ fn builtin() -> Vec<Face> { amenui::text::load_bundled(DIR).expect("fonts") }
 struct S { m: Material, title: u8, body: u8, body2: Option<u8> }
 fn view(s: &S) -> El<()> {
     let mut page = col().key("page").fill_width().fill_height().pad(24.0, 20.0).gap(12.0)
-        .child(text("Arrival of a face", 30.0, Paint::INK).font(Font::Face(s.title)).key("title"))
+        .child(text("Arrival of a face", 30.0, Paint::INK).font(Font::Face(s.title)).key("title").heading(1))
         .child(text("Body text set in its stand-in until the face comes, then swept over line by line.", 15.0, Paint::TEXT).font(Font::Face(s.body)).width(360.0).key("body"));
     if let Some(b) = s.body2 { page = page.child(text("A second face on the same page", 15.0, Paint::TEXT).font(Font::Face(b)).key("body2")); }
     page
@@ -111,6 +111,43 @@ fn a_face_arriving_sweeps_each_line_in_240_ms_and_then_the_page_is_as_built_in()
             if let (Some(a), Some(b)) = (changed.iter().cloned().reduce(f32::max), not.iter().cloned().reduce(f32::min)) { assert!(a < b + 1.0, "frame {f}: a changed glyph at {a} right of one not changed at {b}"); }
         }
     }
+}
+
+/// The pixels of `a` and `b` in `r` (device px) that differ.
+fn differ(a: &[u8], b: &[u8], r: amenui::ui::Rect) -> usize {
+    let mut n = 0;
+    for y in r.y.max(0.0) as u32..(r.bottom() as u32).min(H) { for x in r.x.max(0.0) as u32..(r.right() as u32).min(W) {
+        let i = ((y * W + x) * 4) as usize;
+        if (0..3).any(|c| (a[i + c] as i32 - b[i + c] as i32).abs() > 2) { n += 1; }
+    } }
+    n
+}
+
+#[test]
+fn with_a_material_each_glyph_comes_apart_as_it_changes_face() {
+    let Ok(mut o) = Offscreen::try_new(W, H) else { eprintln!("no GPU adapter here: skipped"); return };
+    let (plain, ..) = arrival(&mut o, Material::Plain, false);
+    let ui = mk(page(Material::Plain), declared());
+    let (t, b) = (ui.node("title").unwrap().rect, ui.node("body").unwrap().rect);
+    let text = amenui::ui::Rect::new(t.x.min(b.x), t.y, t.right().max(b.right()) - t.x.min(b.x), b.bottom() - t.y);
+    let title = ui.node("title").unwrap().rect;
+    // The title's ink: what it changes on the page at rest.
+    let bare = { let mut b = Ui::new(page(Material::Plain), |_: &S| col().key("page").fill_width().fill_height(), |_, _| {}, declared(), W, H, 1.0).on_look(look); b.tick(1.0); frame(&mut o, &mut b, 2.0) };
+    let ink = differ(plain.last().unwrap(), &bare, title) as f32;
+    let mut bad = vec![];
+    for m in [Material::Dottr, Material::Scribblr] {
+        let (px, ..) = arrival(&mut o, m, false);
+        // What the material draws on the page at rest anyway (the field's dots), in the text's box.
+        let base = differ(px.last().unwrap(), plain.last().unwrap(), text);
+        for (f, (a, b)) in px.iter().zip(&plain).enumerate() {
+            let more = differ(a, b, text).saturating_sub(base) as f32;
+            let ms = (f + 1) as f32 * 1000.0 / 60.0;
+            eprintln!("{m:?} {ms:.0} ms: {more} px more than at rest ({:.3} of the title's ink)", more / ink);
+            if ms <= 240.0 && more < 0.03 * ink { bad.push(format!("{m:?} {ms:.0} ms: {more} px apart, {:.0} is 3 % of the title's ink", 0.03 * ink)); }
+            if ms > 300.0 && more > 0.0 { bad.push(format!("{m:?} {ms:.0} ms: {more} px still apart")); }
+        }
+    }
+    assert!(bad.is_empty(), "{}", bad.join("\n"));
 }
 
 #[test]
