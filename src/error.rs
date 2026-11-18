@@ -209,6 +209,16 @@ pub enum ViewProblem {
         /// The container's key.
         container: String,
     },
+    #[error("`{key}` fits its subtree into its box, but it would need a scale of {need:.2} and the least is {min:.2}: it is drawn at {min:.2} and clipped. Make the box larger, the subtree smaller, or `Fit::min` lower.")]
+    /// A box marked `El::fit` cannot hold its subtree at the least scale.
+    FitShort {
+        /// The box.
+        key: String,
+        /// The scale it would need.
+        need: f32,
+        /// The least scale (`Fit::min`).
+        min: f32,
+    },
 }
 
 /// A glTF file could not be read into a mesh (`mesh::load_gltf`).

@@ -328,3 +328,71 @@ fn an_absolute_element_is_pinned_by_all_four_insets_to_its_parent() {
     } } } }
 }
 
+/// A box of `w` × `h` with one of three subtrees fitted into it (`El::fit`), or the same subtree
+/// zoomed by hand by `hand` (scale, left, top).
+mod fitted {
+    use amenui::el::{El, Fit, Paint, col, row, space, text};
+    pub struct S { pub w: f32, pub h: f32, pub which: usize, pub hand: Option<(f32, f32, f32)>, pub max: f32 }
+    pub fn subtree(which: usize) -> El<()> {
+        match which {
+            // A stage of a fixed size.
+            0 => col().key("stage").width(1440.0).height(900.0).pad(60.0, 50.0).gap(24.0).fill(Paint::FAINT).radius(18.0)
+                .child(text("A stage at its own size", 64.0, Paint::INK).key("stage/t"))
+                .child(row().gap(20.0).child(space(300.0, 200.0).fill(Paint::ACCENT).radius(12.0)).child(space(200.0, 200.0).fill(Paint::INK).shift(12.0, -8.0))),
+            // A column as large as its content.
+            1 => col().key("stage").pad(16.0, 12.0).gap(8.0).fill(Paint::FAINT)
+                .child(text("Fitted by its content", 28.0, Paint::INK)).child(text("A second line of body text, longer than the first", 15.0, Paint::TEXT)),
+            // A wide, short strip.
+            _ => row().key("stage").width(900.0).height(120.0).gap(10.0).child(space(400.0, 120.0).fill(Paint::ACCENT)).child(text("strip", 40.0, Paint::INK)),
+        }
+    }
+    pub fn view(s: &S) -> El<()> {
+        let b = col().key("box").width(s.w).height(s.h).border(1.0, Paint::DIM);
+        let b = match s.hand {
+            None => b.fit(Fit { max: s.max, ..Fit::default() }).child(subtree(s.which)),
+            Some((k, x, y)) => b.clip().child(subtree(s.which).zoom(k).absolute(Some(x), Some(y), None, None)),
+        };
+        col().key("page").fill_width().fill_height().pad(10.0, 10.0).child(b)
+    }
+}
+
+#[test]
+fn a_fitted_subtree_fills_its_box_in_two_layouts_and_grows_with_it() {
+    use fitted::{S, view};
+    let mk = |w: f32, h: f32, which: usize, hand: Option<(f32, f32, f32)>, max: f32| { let mut ui = amenui::ui::Ui::new(S { w, h, which, hand, max }, view, |_, _| {}, fonts(), 1500, 960, 1.0); ui.tick(1.0); ui };
+    let sizes: Vec<(f32, f32)> = (0..20).map(|i| (160.0 + 1280.0 * i as f32 / 19.0, 120.0 + 780.0 * ((i * 7) % 20) as f32 / 19.0)).collect();
+    for which in 0..3 {
+        for &(w, h) in &sizes {
+            let mut ui = mk(w.round(), h.round(), which, None, 8.0);
+            let (b, c) = (ui.node("box").unwrap().inner, ui.node("stage").unwrap().rect);
+            let k = ui.fitted("box").expect("a scale");
+            // At `min` it is drawn at `min` and clipped (the audit reports it).
+            if k <= 0.25 { assert!(ui.problems().iter().any(|p| matches!(p, amenui::error::ViewProblem::FitShort { .. })), "{which} in {w} x {h}: short and not reported"); continue; }
+            assert!(c.x >= b.x - 0.5 && c.y >= b.y - 0.5 && c.right() <= b.right() + 0.5 && c.bottom() <= b.bottom() + 0.5, "{which} in {w} x {h}: {c:?} is outside {b:?} (k {k})");
+            let fill = (c.w / b.w).max(c.h / b.h);
+            { assert!(fill >= 0.97, "{which} in {w} x {h}: fills {fill:.3}"); }
+            // One more layout of the same state lays out twice at most.
+            let before = ui.counters().layouts;
+            ui.relayout();
+            assert!(ui.counters().layouts - before <= 2, "{which}: {} layouts", ui.counters().layouts - before);
+        }
+        // A wider box never gets a smaller scale.
+        let mut last = 0.0f32;
+        for w in (160..=1440).step_by(7) {
+            let k = mk(w as f32, 600.0, which, None, 1.0).fitted("box").unwrap();
+            assert!(k >= last - 1e-6, "{which}: at {w} px k {k} after {last}");
+            last = k;
+        }
+    }
+    // The same as zoomed by hand.
+    let Ok(mut o) = Offscreen::try_new(1500, 960) else { eprintln!("no GPU adapter here: skipped"); return };
+    let look = amenui::style::Look { material: amenui::style::Material::Dottr, ..amenui::style::Look::default() };
+    for which in 0..3 { for &(w, h) in &[(420.0f32, 300.0f32), (900.0, 500.0), (1300.0, 880.0)] {
+        let mut a = mk(w, h, which, None, 1.0);
+        let k = a.fitted("box").unwrap();
+        let (b, c) = (a.node("box").unwrap().rect, a.node("stage").unwrap().rect);
+        // The box's border is 1 px: insets are from inside it.
+        let mut hand = mk(w, h, which, Some((k, c.x - b.x - 1.0, c.y - b.y - 1.0)), 1.0);
+        assert!(o.render(&mut a, &look) == o.render(&mut hand, &look), "{which} in {w} x {h}: fitted and zoomed by hand by {k} differ");
+    } }
+}

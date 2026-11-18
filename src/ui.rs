@@ -166,6 +166,8 @@ pub struct Node<M> {
     pub opacity_all: f32,
     /// Commits within it stay in its box (`El::commit_scope`).
     pub commit_scope: bool,
+    /// Its subtree is zoomed to fit its box (`El::fit`).
+    pub fit: Option<crate::el::Fit>,
     /// The box layout gave it, relative to its parent (scrolling does not change it).
     local: taffy::Layout,
     tid: NodeId,
@@ -410,6 +412,11 @@ pub struct Ui<S, M> {
     focus: Option<String>,
     /// The element that had the focus when it was cleared (`clear_focus`): Tab goes on from it.
     after_focus: Option<String>,
+    /// Boxes marked `El::fit` that could not hold their subtree at the least scale: key, the scale it
+    /// would need, the least.
+    fit_short: Vec<(String, f32, f32)>,
+    /// The scale each box marked `El::fit` gave its subtree in the last layout.
+    fit_k: HashMap<String, f32>,
     pressed: Option<String>,
     /// The element being dragged, if its press started a drag.
     capture: Option<Capture<M>>,
@@ -877,7 +884,7 @@ impl<S, M: Clone> Ui<S, M> {
         let mut ui = Self {
             state, view, update, text: Text::new(faces), size: (0.0, 0.0), scale, clock: 0.0, wall: 0.0, bclock: crate::beat::Clock::default(), sent: vec![], sets: vec![], nodes: vec![], scene: Scene::default(),
             owners: vec![], page_len: 0, field: Field::default(), scroll: HashMap::new(), births: HashMap::new(), ramp: None, text_births: HashMap::new(),
-            hover: None, focus: None, after_focus: None, pressed: None, capture: None, modal_at: None, modal_key: None, return_focus: None, split: None, splits: 0,
+            hover: None, focus: None, after_focus: None, fit_short: vec![], fit_k: HashMap::new(), pressed: None, capture: None, modal_at: None, modal_key: None, return_focus: None, split: None, splits: 0,
             keyboard: false, marks: Marks::default(), sized: None, commands: None, unseen: vec![], base: vec![], tags: vec![], roles: vec![],
             run: None, painted_phase: 0, flows: HashMap::new(), ghosts: vec![], body_len: 0, animating: false, lifted: HashMap::new(),
             gaze_of: None, gaze_seen: HashMap::new(), annots: vec![], readout: gaze::Readout::default(), hovered: None, pointer_of: None, scripted: false, ticked: None, warm: None, warmed: None, owed: false, unused_key: None, shortcut: None, scrolled_of: None, released: None, input: None,
@@ -1135,6 +1142,7 @@ impl<S, M: Clone> Ui<S, M> {
                 out.push(P::UnknownContainer { key: n.key.clone(), container: c.clone() });
             }
         }
+        for (key, need, min) in &self.fit_short { out.push(P::FitShort { key: key.clone(), need: *need, min: *min }); }
         out
     }
 
@@ -2006,6 +2014,8 @@ impl<S, M: Clone> Ui<S, M> {
         self.dirty = true;
         if self.node(key).is_some_and(|n| n.focusable) { self.keyboard = true; self.set_focus(Some(key.to_owned())); }
     }
+    /// The scale the box `key` (marked `El::fit`) zoomed its subtree by in the last layout.
+    pub fn fitted(&self, key: &str) -> Option<f32> { self.fit_k.get(key).copied() }
     /// Take the focus away (`Cmd::ClearFocus`): nothing has it, what is shown only with focus inside it
     /// folds away, the caret and the input method go, and the corners leave as they do when the focus
     /// moves on. The next Tab goes on from the element that had it. Nothing when nothing has the focus.
@@ -2541,7 +2551,25 @@ impl<S, M: Clone> Ui<S, M> {
         if self.look_of.is_some() { self.timing = Timing::of(&self.look()); }
         self.perf.counters.views += 1;
         if let Some(f) = self.locale_of { crate::i18n::set_current(f(&self.state)); }
-        let el = (self.view)(&self.state);
+        let mut el = (self.view)(&self.state);
+        // Boxes a subtree is fitted into (`El::fit`): the subtree is first laid out on its own at 1 to
+        // find its natural size, then the view is made again and the subtree zoomed to fit.
+        self.fit_short.clear();
+        if !has_fit(&el) { self.fit_k.clear(); }
+        if has_fit(&el) {
+            fit_probe(&mut el);
+            let probe = self.lay_pass(el);
+            let ks = self.fit_scales(&probe);
+            self.perf.counters.views += 1;
+            el = (self.view)(&self.state);
+            fit_apply(&mut el, &ks);
+        }
+        let mut nodes = self.lay_pass(el);
+        self.finish_layout(&mut nodes);
+    }
+    /// One layout pass of a view: lifted layers, the flattened nodes, the taffy tree brought up to date
+    /// and laid out (when anything it depends on changed); each node's local box set.
+    fn lay_pass(&mut self, el: El<M>) -> Vec<Node<M>> {
         let mut nodes = Vec::new();
         // The root is the window, whatever its contents would like.
         let mut el = el;
@@ -2655,14 +2683,62 @@ impl<S, M: Clone> Ui<S, M> {
             };
             let space = Size { width: AvailableSpace::Definite(self.size.0), height: AvailableSpace::Definite(self.size.1) };
             self.perf.counters.layouts += 1;
-            if self.tree.compute_layout_with_measure(root, space, measure).is_err() { return; }
+            if self.tree.compute_layout_with_measure(root, space, measure).is_err() { return nodes; }
         } else {
             self.perf.counters.layouts_skipped += 1;
         }
+        self.rebuilt = touched;
         for n in nodes.iter_mut() { if let Ok(l) = self.tree.layout(n.tid) { n.local = *l; } }
+        nodes
+    }
+    /// How much each box marked `El::fit` zooms its subtree, in the order they come in the view, from
+    /// the pass that laid the subtree out on its own: the scale, and where the zoomed subtree goes in
+    /// the box (left and top insets, logical px). A box that cannot hold its subtree at the least scale
+    /// is told in `Ui::problems`.
+    fn fit_scales(&mut self, probe: &[Node<M>]) -> Vec<(f32, f32, f32)> {
+        let mut out = vec![];
+        self.fit_k.clear();
+        for (i, n) in probe.iter().enumerate() {
+            let Some(f) = n.fit else { continue };
+            let l = n.local;
+            // Insets are from the padding box (inside the border); the content box is the padding in.
+            let (pl, pt) = (l.padding.left, l.padding.top);
+            let (cw, ch) = ((l.size.width - l.border.left - l.border.right - pl - l.padding.right).max(0.0), (l.size.height - l.border.top - l.border.bottom - pt - l.padding.bottom).max(0.0));
+            // The subtree is in the holder `fit_probe` put it in.
+            let Some(c) = probe.iter().position(|m| m.parent == Some(i)).and_then(|h| probe.iter().position(|m| m.parent == Some(h))) else { out.push((1.0, pl, pt)); continue };
+            let (nw, nh) = (probe[c].local.size.width.max(1e-3), probe[c].local.size.height.max(1e-3));
+            // Text does not scale exactly with its size (advances and line heights snap): room of a
+            // pixel at the scale is kept so the zoomed subtree is never larger than the box.
+            let by = |w: f32, h: f32| match f.mode {
+                crate::el::FitMode::Contain => (w / nw).min(h / nh),
+                crate::el::FitMode::Width => w / nw,
+                crate::el::FitMode::Height => h / nh,
+            };
+            let room = by(cw, ch).max(1.0);
+            let raw = by((cw - room).max(0.0), (ch - room).max(0.0));
+            let mut k = raw.clamp(f.min, f.max.max(f.min));
+            if raw < f.min { self.fit_short.push((n.key.clone(), raw, f.min)); }
+            // Pixel faces are drawn at whole multiples of their native size: the scale goes down to the
+            // largest that keeps every pixel text in the subtree on one, so it never overflows.
+            let s = self.scale;
+            for m in probe.iter().enumerate().skip(c).take_while(|(j, _)| within(probe, *j, c)).map(|(_, m)| m) {
+                let Some(p) = m.para() else { continue };
+                let Some(native) = self.text.native(p.face) else { continue };
+                let d = p.size * s;
+                let mult = (k * d / native + 1e-4).floor().max(1.0);
+                k = k.min(mult * native / d);
+            }
+            let (ax, ay) = f.align;
+            self.fit_k.insert(n.key.clone(), k);
+            // On whole pixels, as the layout puts boxes.
+            out.push((k, (pl + ax.clamp(0.0, 1.0) * (cw - k * nw)).round(), (pt + ay.clamp(0.0, 1.0) * (ch - k * nh)).round()));
+        }
+        out
+    }
+    fn finish_layout(&mut self, nodes: &mut Vec<Node<M>>) {
+        let nodes = std::mem::take(nodes);
         self.forget_gone(&nodes);
         self.nodes = nodes;
-        self.rebuilt = touched;
         self.place();
         self.modal_at = self.nodes.iter().rposition(|n| n.modal.is_some());
         self.layer_changed();
@@ -5171,6 +5247,42 @@ fn ident(key: &str, part: u32, glyph: u32) -> u64 {
     h.finish()
 }
 
+/// Whether a view has a box marked `El::fit`.
+fn has_fit<M>(el: &El<M>) -> bool { el.fit.is_some() || el.children.iter().any(has_fit) }
+/// For the pass that finds natural sizes: each fitted subtree out of the flow, at the box's top left,
+/// as large as it would be on its own.
+fn fit_probe<M>(el: &mut El<M>) {
+    // The subtree is measured at its own size: in a wide holder at the box's corner, where nothing
+    // narrower than its content makes it wrap.
+    if el.fit.is_some() && let Some(c) = el.children.first_mut() {
+        let mut holder = crate::el::col();
+        holder.style.position = taffy::Position::Absolute;
+        holder.style.inset = taffy::Rect { left: length(0.0), top: length(0.0), right: auto(), bottom: auto() };
+        holder.style.size.width = length(1.0e5);
+        holder.style.align_items = AlignItems::START;
+        *c = holder.child(std::mem::replace(c, crate::el::space(0.0, 0.0)));
+    }
+    for c in &mut el.children { fit_probe(c); }
+}
+/// Each fitted subtree zoomed by its scale and put where it goes in its box (`Ui::fit_scales`, in the
+/// same order).
+fn fit_apply<M>(el: &mut El<M>, ks: &[(f32, f32, f32)]) {
+    fn go<M>(el: &mut El<M>, ks: &[(f32, f32, f32)], at: &mut usize) {
+        if el.fit.is_some() {
+            let (k, x, y) = ks.get(*at).copied().unwrap_or((1.0, 0.0, 0.0));
+            *at += 1;
+            if let Some(c) = el.children.first_mut() {
+                let mut z = std::mem::replace(c, crate::el::space(0.0, 0.0)).zoom(k);
+                z.style.position = taffy::Position::Absolute;
+                z.style.inset = taffy::Rect { left: length(x), top: length(y), right: auto(), bottom: auto() };
+                *c = z;
+            }
+        }
+        for c in &mut el.children { go(c, ks, at); }
+    }
+    let mut at = 0;
+    go(el, ks, &mut at);
+}
 /// Take every modal element out of the tree (they are laid over the window instead).
 fn hoist<M>(el: &mut El<M>, out: &mut Vec<El<M>>) {
     let kids = std::mem::take(&mut el.children);
@@ -5229,7 +5341,7 @@ fn measure_key(c: &Content) -> u64 {
 /// A virtual list's rows are built here, for what its viewport shows.
 #[allow(clippy::too_many_arguments)]
 fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], off: (bool, bool), flow: Option<(Rc<str>, usize)>, inh: Inherit, vx: &mut VirtCtx, built: &mut Built, nodes: &mut Vec<Node<M>>) -> usize {
-    let El { key, style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, mut on_text, multiline, selectable, cursor, virt, access, ripple, mut on_pick, mut on_wheel, mut on_move, guide, skeleton, rtl, on_visible, on_outline, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview: _, mut children } = el;
+    let El { key, style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, mut on_text, multiline, selectable, cursor, virt, access, ripple, mut on_pick, mut on_wheel, mut on_move, guide, skeleton, rtl, on_visible, on_outline, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview: _, fit, mut children } = el;
     let mut style = style;
     let mut inh = inh;
     if let Some(r) = rtl { inh.rtl = r; }
@@ -5294,7 +5406,7 @@ fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], of
         content, fill, border, radius, on_press, on_key, on_drag, on_blur, loose, wipe, bar, reveal, commit, modal, hidden, shift, shed, flow_field, stirr, trace, flow: flow.clone(),
         mat: inh.code(), loosen: inh.loosen, annotate, scope: gaze_scope, anchor, clips, calm, on_text, multiline, selectable: inh.select, cursor,
         virt: virt_info, access, respond, legible, ripple: inh.scope.clone(), ripple_scope: ripple.container || commit_scope, recompose, recompose_always: is_text && ripple.recompose == Some(true), unframed: ripple.unframed, keyed,
-        on_pick, on_wheel, on_move, guide, on_visible, on_outline, decode, skeleton: inh.skeleton, form, turn, xf: None, reveal_by, ongoing: ongoing || parent.is_some_and(|p| nodes[p].ongoing), pass, opacity, opacity_all: opacity * parent.map_or(1.0, |p| nodes[p].opacity_all), commit_scope, local: taffy::Layout::new(), tid: placeholder,
+        on_pick, on_wheel, on_move, guide, on_visible, on_outline, decode, skeleton: inh.skeleton, form, turn, xf: None, reveal_by, ongoing: ongoing || parent.is_some_and(|p| nodes[p].ongoing), pass, opacity, opacity_all: opacity * parent.map_or(1.0, |p| nodes[p].opacity_all), commit_scope, fit, local: taffy::Layout::new(), tid: placeholder,
     });
     let mut style = style;
     crate::el::snap_style(&mut style);
