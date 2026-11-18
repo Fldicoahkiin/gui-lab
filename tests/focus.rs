@@ -91,3 +91,25 @@ fn the_corners_leave_a_cleared_focus_as_they_leave_any_focus_and_the_page_is_as_
     assert!(by_call == by_cmd, "the method and the command leave the same way");
     assert!(by_call.last() == never.last(), "once the corners have gone the page is as never focused");
 }
+
+/// A page whose skip link comes first, as `widgets::skip_link` is meant to be used, with no tab order
+/// of its own; `preview` puts the same page in a preview box.
+fn first_view(preview: bool) -> El<M> {
+    let page = col().key("pg").child(skip_link("skip", "Skip to content", "main"))
+        .child(col().child(button("a", "A", M::Go)).child(button("b", "B", M::Go)))
+        .child(col().key("main").child(button("d", "D", M::Go)));
+    if preview { col().child(button("before", "Before", M::Go)).child(col().key("box").width(400.0).height(300.0).preview(true).child(page)) } else { page }
+}
+
+/// Outside a preview the skip link stays first in tab order: drawing focus-shown elements last in a
+/// preview (so they cover what is under them) changes nothing else.
+#[test]
+fn a_skip_link_written_first_is_the_first_tab_stop() {
+    let mut ui = Ui::new((), |_: &()| first_view(false), |_: &mut (), _| {}, fonts(), 600, 400, 1.0);
+    ui.tick(1.0);
+    assert_eq!(tabs(&mut ui, 4, false), ["skip", "a", "b", "d"]);
+    // In a preview it is still the first stop inside the box.
+    let mut pv = Ui::new((), |_: &()| first_view(true), |_: &mut (), _| {}, fonts(), 600, 400, 1.0);
+    pv.tick(1.0);
+    assert_eq!(tabs(&mut pv, 5, false), ["before", "skip", "a", "b", "d"]);
+}

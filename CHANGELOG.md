@@ -25,7 +25,7 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
   `min` what overflows starts at the box's start, and only what is cut is reported); `El::clamp(lines)` ends text in
   the face's own ellipsis (three full stops where the face's floats off the baseline), copies what it shows without
   it, and brings the rest in from the next frame when the clamp is taken away, keeping the ellipsis until the text after it has come, with `Ui::clamped`; `El::preview(true)` draws sheets, menus and dialogs where they are written, without a
-  layer (a skip link over what is beneath it, a docked sheet inside the border); `Ui::line_inks` reads each line's box and ink; `Ui::clear_focus` and `Cmd::ClearFocus` take the focus off.
+  layer (a skip link over what is beneath it and still where it is written in Tab order, a docked sheet inside the border); `Ui::line_inks` reads each line's box and ink; `Ui::clear_focus` and `Cmd::ClearFocus` take the focus off.
 - Faces that come later (§1.6.5): `Ui::declare_face`, `text::with_declared`, `Ui::add_face`, `Ui::faces_wanted`;
   resources by name with `Ui::add_asset`, `Ui::asset`, `Ui::assets_wanted`. Text stands in until the face comes, then
   each line sweeps over in 240 ms; with a material each glyph comes apart a little as it changes (a heading up to 0.6). The web module carries only the three main faces; `web/amenui.js` takes

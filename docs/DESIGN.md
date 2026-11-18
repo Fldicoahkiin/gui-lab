@@ -179,10 +179,12 @@ more than half its ink, so the end of the line always shows one or the other. Wi
 written, laid out and clipped by the preview, without a layer: nothing beneath it is held loose, focus is not kept
 inside, a press outside or Esc sends no dismiss, input elsewhere is not blocked and the mirror does not call it
 modal. What is drawn only with focus (`focus_shown`, a skip link) is always drawn, over its siblings as when it has
-focus, so its fill covers the ink beneath it. The preview clips a pixel inside its border, so a sheet docked to its
+focus, so its fill covers the ink beneath it; Tab still reaches it in the order it is written, so a skip link written first
+is the first stop, in a preview and outside one. The preview clips a pixel inside its border, so a sheet docked to its
 edges draws no second line along the border. (Any element that clips, clips inside its border.) For galleries and
 documents. `tests/menu.rs`
-(`in_a_preview_a_skip_link_covers_what_is_under_it_and_a_sheet_keeps_inside_the_border`).
+(`in_a_preview_a_skip_link_covers_what_is_under_it_and_a_sheet_keeps_inside_the_border`), `tests/focus.rs`
+(`a_skip_link_written_first_is_the_first_tab_stop`).
 
 ### 1.3 The scene (`scene.rs`)
 
@@ -591,12 +593,16 @@ host reads it after each frame or page change and fetches them (the framework fe
 bytes)` adds one: everything that came in one frame changes at the next tick together, in one layout. Each line then
 sweeps over from its start to its end in 240 ms (`ui::SWEEP`): a glyph changes when the sweep passes it, from the
 stand-in's glyph for the same character, moved to where the new one stands, to the new face's; within 60 ms of its
-change (`SWEEP_LOOSE`) it is loosened by the material on a sine up to the legibility cap (0.6 for a heading), so at
-every moment the title has one set of
+change (`SWEEP_LOOSE`) it is loosened by the material on a sine up to the legibility cap. Only a heading
+(`El::heading(level)`, the heading role) goes up to 0.6: a large title that is not marked as one stays within the
+cap (`Look::legible_cap`, 0.15 by default) and barely comes apart. So at every moment the title has one set of
 glyphs, changed ones left of unchanged ones, and its ink never under 80 % of the lesser face's. 300 ms after the bytes
 came the page is byte for byte the page that had the face from the start, and it rests. scribblr draws one thread per
 element, so a line whose face is changing becomes a thread as loose as its glyphs are on average, and nothing keeps
-out of it meanwhile; it is text again when the sweep has passed. Measured: with dottr and scribblr each frame of the
+out of it meanwhile; it is text again when the sweep has passed. The thread's looseness starts and ends at 0, rises to at most 0.6 for
+a heading and the cap for other text, and moves by at most 0.15 a frame (`tests/faces.rs`,
+`under_scribblr_a_changing_line_is_a_thread_within_its_limits`; measured peaks 0.144 for the heading, 0.034 for body
+text, steps of at most 0.075). Measured: with dottr and scribblr each frame of the
 sweep differs from plain's in the text's box by 0.30–2.6 of the title's ink beyond what the material draws at rest,
 and by 0 from 300 ms (`tests/faces.rs`, `with_a_material_each_glyph_comes_apart_as_it_changes_face`). With less motion both glyphs
 are drawn where the new one is, the new fading in over 150 ms. A face added before the first frame is never seen
@@ -2596,7 +2602,8 @@ good) is the soft way.
   it, and costs the same: a plate that has held no ink since it was made or cleared is not laid on (no extra pass).
 - What is on a plate is ink, not something to read or press. Text to read and controls go beside the plate or over
   it, as its siblings, not its children; one inside a plate's subtree is reported (`OnPlate` in `Ui::problems`, P1 in
-  the audit).
+  the audit). A label meant to stay readable must not rely on ink that fades: with `fade_s` set, what a plate holds
+  goes, so a label drawn onto it (or strokes that make a label) is gone too; it belongs over the plate, as a sibling.
 - Cost, as regression lines on lavapipe at 1440 × 900 (a whole-window plate, the fifth set's measurement: keeping ink
   12.3 → 15.0 ms, ageing 49 → 57.5 ms): a frame keeping ink at most 125 % of the same page without a plate, an ageing
   frame at most 120 %. On a real GPU a whole-window plate may add at most 0.6 ms a frame; that measurement is still to

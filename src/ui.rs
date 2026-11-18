@@ -69,6 +69,9 @@ pub struct Node<M> {
     pub skip_to: Option<String>,
     /// `El::focus_shown`.
     pub focus_shown: bool,
+    /// Its place among its siblings as written. It is also its place in the tree except in a preview,
+    /// where what is shown only with focus is drawn after its siblings; Tab follows the written order.
+    pub written: usize,
     /// `El::preview`: it clips a pixel inside its border, so what is docked to its edges in it does not
     /// draw a second line along the border.
     pub preview: bool,
@@ -2491,7 +2494,9 @@ impl<S, M: Clone> Ui<S, M> {
         // While a modal layer is open, focus goes round inside it only.
         // Positive tab orders first, lowest first; then 0 in document order; negative ones never.
         let mut order: Vec<usize> = (self.modal_at.unwrap_or(0)..self.nodes.len()).filter(|&i| self.nodes[i].focusable && self.nodes[i].tab_order >= 0).collect();
-        order.sort_by_key(|&i| match self.nodes[i].tab_order { 0 => i32::MAX, t => t });
+        // Document order is the order as written (`Node::written`, from the root down).
+        let written = |mut i: usize| { let mut at = vec![]; loop { match self.nodes[i].parent { Some(p) => { at.push(self.nodes[i].written); i = p; } None => { at.push(i); break; } } } at.reverse(); at };
+        order.sort_by_cached_key(|&i| (match self.nodes[i].tab_order { 0 => i32::MAX, t => t }, written(i)));
         if order.is_empty() { return; }
         // After `clear_focus`, Tab goes on from the element that had it.
         let cur = self.focus.as_deref().or(self.after_focus.as_deref()).and_then(|f| order.iter().position(|&i| self.nodes[i].key == f));
@@ -5374,10 +5379,12 @@ struct Inherit {
     rtl: bool,
     /// Drawn as a skeleton (`El::skeleton`).
     skeleton: bool,
+    /// Inside a preview (`El::preview`).
+    preview: bool,
 }
 impl Default for Inherit {
     fn default() -> Self {
-        Self { level: 0, mat: None, loosen: 0.0, select: false, respond: None, legible: None, scope: None, recompose: None, control: false, field: false, roles: [Response::Nudge, Response::Loosen], rtl: false, skeleton: false }
+        Self { level: 0, mat: None, loosen: 0.0, select: false, respond: None, legible: None, scope: None, recompose: None, control: false, field: false, roles: [Response::Nudge, Response::Loosen], rtl: false, skeleton: false, preview: false }
     }
 }
 impl Inherit {
@@ -5722,14 +5729,9 @@ fn hoist<M>(el: &mut El<M>, out: &mut Vec<El<M>>) {
 /// A preview's subtree (`El::preview`): its modal elements stay where they are written, as ordinary
 /// elements (no layer, nothing held loose beneath, no dismiss, no trapped focus, not modal to assistive
 /// technology), and what is shown only with focus is always shown.
+/// (What is shown only with focus is drawn over its siblings there: `flatten`.)
 fn in_preview<M>(el: &mut El<M>) {
     el.modal = None;
-    el.focus_shown = false;
-    // What is drawn only with focus is drawn over its siblings, as when it has focus: its fill covers
-    // the ink beneath it.
-    let (over, kids): (Vec<El<M>>, Vec<El<M>>) = std::mem::take(&mut el.children).into_iter().partition(|c| c.focus_shown);
-    el.children = kids;
-    el.children.extend(over);
     for c in &mut el.children { in_preview(c); }
 }
 
@@ -5782,6 +5784,10 @@ fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], of
     if off || hidden { on_press = None; on_key = None; on_drag = None; on_blur = None; on_text = None; on_pick = None; on_wheel = None; on_move = None; focusable = false; commit = false; }
     // A skeleton takes no input (and is not drawn faint, as a disabled subtree is).
     inh.skeleton |= skeleton;
+    // In a preview what is shown only with focus is always shown (and drawn over its siblings, below).
+    let in_pv = inh.preview;
+    let focus_shown = focus_shown && !in_pv && !preview;
+    inh.preview |= preview;
     if inh.skeleton { on_press = None; on_key = None; on_drag = None; on_blur = None; on_text = None; on_pick = None; on_wheel = None; on_move = None; focusable = false; commit = false; }
     if let Content::Text { font, .. } = &mut content { *font = Font::Face(font.resolve(roles)); }
     let i = nodes.len();
@@ -5831,7 +5837,7 @@ fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], of
     }
     let placeholder = NodeId::from(0u64);
     nodes.push(Node {
-        key, parent, rect: Rect::default(), clip: Rect::default(), inner: Rect::default(), scroll, horizontal, focusable, tab_order, skip_to, focus_shown, preview, disabled: off, extent: 0.0,
+        key, parent, rect: Rect::default(), clip: Rect::default(), inner: Rect::default(), scroll, horizontal, focusable, tab_order, skip_to, focus_shown, written: 0, preview, disabled: off, extent: 0.0,
         content, fill, border, radius, on_press, on_key, on_drag, on_blur, loose, wipe, bar, reveal, commit, modal, hidden, shift, shed, flow_field, stirr, trace, flow: flow.clone(),
         mat: inh.code(), loosen: inh.loosen, annotate, scope: gaze_scope, anchor, clips, calm, on_text, multiline, selectable: inh.select, cursor,
         virt: virt_info, access, respond, legible, ripple: inh.scope.clone(), ripple_scope: ripple.container || commit_scope, recompose, recompose_always: is_text && ripple.recompose == Some(true), unframed: ripple.unframed, keyed,
@@ -5843,9 +5849,15 @@ fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], of
     if style.position == taffy::Position::Static { style.position = taffy::Position::Relative; }
     built.styles.push(style);
     built.kids.push(vec![]);
-    for (n, c) in children.into_iter().enumerate() {
+    // In a preview what is shown only with focus is drawn over its siblings, as when it has focus (its
+    // fill covers the ink beneath it): it is laid out and drawn after them, and keeps its written place
+    // for Tab (`Node::written`).
+    let mut kids: Vec<(usize, El<M>)> = children.into_iter().enumerate().collect();
+    if inh.preview { kids.sort_by_key(|(_, c)| c.focus_shown); }
+    for (n, c) in kids {
         let p = format!("{}/{n}", nodes[i].key);
         let k = flatten(c, Some(i), p, roles, (off, hidden), flow.clone(), inh.clone(), vx, built, nodes);
+        nodes[k].written = n;
         built.kids[i].push(k);
     }
     i

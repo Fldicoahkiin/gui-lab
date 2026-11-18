@@ -150,6 +150,33 @@ fn with_a_material_each_glyph_comes_apart_as_it_changes_face() {
     assert!(bad.is_empty(), "{}", bad.join("\n"));
 }
 
+/// Under scribblr a line whose face is changing is one thread (DESIGN.md §1.6.5): its looseness starts
+/// and ends at 0, rises to at most 0.6 for a heading and the legibility cap for other text, and moves by
+/// at most 0.15 a frame.
+#[test]
+fn under_scribblr_a_changing_line_is_a_thread_within_its_limits() {
+    let Ok(mut o) = Offscreen::try_new(W, H) else { eprintln!("no GPU adapter here: skipped"); return };
+    let mut ui = mk(S { body2: Some(amenui::text::GEIST_PIXEL[1]), ..page(Material::Scribblr) }, declared());
+    let cap = Look::default().legible_cap;
+    let mut t = 1.0;
+    for _ in 0..10 { t += 1.0 / 60.0; frame(&mut o, &mut ui, t); }
+    let thread = |ui: &Ui<S, ()>, key: &str| ui.strands().iter().find(|s| s.0 == key && !s.2.is_empty()).map_or(0.0, |s| s.1);
+    let mut seen: Vec<[f32; 2]> = vec![[thread(&ui, "title"), thread(&ui, "body2")]];
+    ui.add_face(SERIF_FILE, read(SERIF_FILE)).expect("a font");
+    ui.add_face(GEIST_FILES[1], read(GEIST_FILES[1])).expect("a font");
+    for _ in 0..30 { t += 1.0 / 60.0; frame(&mut o, &mut ui, t); seen.push([thread(&ui, "title"), thread(&ui, "body2")]); }
+    let mut bad = vec![];
+    for (j, (key, limit)) in [("title", 0.6f32), ("body2", cap)].into_iter().enumerate() {
+        let k: Vec<f32> = seen.iter().map(|v| v[j]).collect();
+        eprintln!("{key}: {k:.3?}");
+        if k[0] != 0.0 || *k.last().unwrap() != 0.0 { bad.push(format!("{key}: starts at {} and ends at {}", k[0], k.last().unwrap())); }
+        let peak = k.iter().cloned().fold(0.0, f32::max);
+        if peak <= 0.0 || peak > limit + 1e-3 { bad.push(format!("{key}: peak {peak:.3}, the limit is {limit}")); }
+        for (f, w) in k.windows(2).enumerate() { if (w[1] - w[0]).abs() > 0.15 + 1e-3 { bad.push(format!("{key} frame {f}: {:.3} to {:.3}", w[0], w[1])); } }
+    }
+    assert!(bad.is_empty(), "{}", bad.join("\n"));
+}
+
 #[test]
 fn two_faces_in_one_frame_change_in_one_layout_together() {
     let Ok(mut o) = Offscreen::try_new(W, H) else { eprintln!("no GPU adapter here: skipped"); return };
