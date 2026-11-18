@@ -149,7 +149,9 @@ pub fn region(prev: &Inputs, cur: &Inputs, scale: f32) -> Region {
     if let Some(mb) = map_box {
         let drift = look.map.drift * s + 1.0;
         for i in a.iter().chain(b) {
-            if i.look[2] > 0.5 && i.resp[0] + i.resp[1] > 0.0 && !is_empty(meet(mb, i.bounds(pad + drift))) { st1 = union(st1, i.bounds(pad + drift)); }
+            // A blade bends wherever the map changed under its reach.
+            let reads = i.blade() || (i.look[2] > 0.5 && i.resp[0] + i.resp[1] > 0.0);
+            if reads && !is_empty(meet(mb, i.bounds(pad + drift))) { st1 = union(st1, i.bounds(pad + drift)); }
         }
     }
     // Stage 2: what stage 1 changed, as far as the materials read around it, and the field on the ground.

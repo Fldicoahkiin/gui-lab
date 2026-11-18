@@ -92,6 +92,77 @@ pub struct Stir {
 /// A scope over everything.
 pub const EVERYWHERE: [f32; 4] = [-1e6, -1e6, 1e6, 1e6];
 
+/// A gust (`Cmd::Gust`, DESIGN.md §1.29): a band `width` logical px wide that travels along `dir` at
+/// `speed` logical px a second from the line through `from` across its scope, flow along `dir` in it and
+/// a little energy, and behind its trailing edge for `wake_s` seconds a wake of flow the other way. It is
+/// worked out from the time at every node and laid over the map each step, never put into it: where it
+/// has been the map is as it was, and once it has left its scope it asks for nothing.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Gust {
+    /// A point on the line its leading edge starts from, logical px.
+    pub from: [f32; 2],
+    /// Which way it travels (made a unit).
+    pub dir: [f32; 2],
+    /// How fast, logical px a second.
+    pub speed: f32,
+    /// How wide the band is along `dir`, logical px.
+    pub width: f32,
+    /// How far the far side of its scope lags behind the near side, logical px: across `dir`, at a
+    /// share `n` (0..1) of the scope's extent, the band is `slant × n^curve` behind.
+    pub slant: f32,
+    /// The power of that lag.
+    pub curve: f32,
+    /// How strong: the flow at the band's middle, times the look's `MapFx::flow`.
+    pub strength: f32,
+    /// The energy at the band's middle, times `strength`.
+    pub energy: f32,
+    /// The wake's flow at its middle, a share of `strength`, the other way.
+    pub wake: f32,
+    /// How long the wake lasts behind the trailing edge, s.
+    pub wake_s: f32,
+}
+impl Default for Gust {
+    fn default() -> Self { Self { from: [0.0, 0.0], dir: [1.0, 0.0], speed: 240.0, width: 330.0, slant: 0.0, curve: 1.0, strength: 1.0, energy: 0.2, wake: 0.105, wake_s: 0.5 } }
+}
+impl Gust {
+    /// Its energy and flow at `p` (logical px), `t` s after it started, in a scope `b` (x0, y0, x1, y1):
+    /// zero outside the scope, before the band and after the wake.
+    pub fn at(&self, p: [f32; 2], t: f32, b: [f32; 4]) -> (f32, [f32; 2]) {
+        if p[0] < b[0] || p[1] < b[1] || p[0] >= b[2] || p[1] >= b[3] { return (0.0, [0.0; 2]); }
+        let d = self.unit();
+        let perp = [-d[1], d[0]];
+        let (lo, hi) = Self::extent(b, perp);
+        let n = ((p[0] * perp[0] + p[1] * perp[1] - lo) / (hi - lo).max(1e-3)).clamp(0.0, 1.0);
+        let lag = self.slant * n.powf(self.curve.max(1e-3));
+        let a = (p[0] - self.from[0]) * d[0] + (p[1] - self.from[1]) * d[1];
+        // How far behind the leading edge the point is.
+        let s = self.speed * t - lag - a;
+        let w = self.width.max(1e-3);
+        let wl = (self.wake_s * self.speed).max(0.0);
+        if (0.0..w).contains(&s) {
+            let k = 0.5 * (1.0 - (std::f32::consts::TAU * s / w).cos());
+            let f = self.strength * k;
+            (self.energy * f, [d[0] * f, d[1] * f])
+        } else if s >= w && s < w + wl {
+            let u = (s - w) / wl;
+            let f = -self.strength * self.wake * (std::f32::consts::PI * u).sin().powi(2);
+            (0.0, [d[0] * f, d[1] * f])
+        } else { (0.0, [0.0; 2]) }
+    }
+    /// Whether it has passed the whole of scope `b` (its wake too) `t` s after it started.
+    pub fn gone(&self, t: f32, b: [f32; 4]) -> bool {
+        let d = self.unit();
+        let (_, far) = Self::extent([b[0] - self.from[0], b[1] - self.from[1], b[2] - self.from[0], b[3] - self.from[1]], d);
+        self.speed * t - self.slant.max(0.0) - far >= self.width + (self.wake_s * self.speed).max(0.0)
+    }
+    fn unit(&self) -> [f32; 2] { let l = (self.dir[0] * self.dir[0] + self.dir[1] * self.dir[1]).sqrt(); if l > 0.0 { [self.dir[0] / l, self.dir[1] / l] } else { [1.0, 0.0] } }
+    /// The least and most of `dot(corner, v)` over the box's corners.
+    fn extent(b: [f32; 4], v: [f32; 2]) -> (f32, f32) {
+        let c = [b[0] * v[0] + b[1] * v[1], b[2] * v[0] + b[1] * v[1], b[0] * v[0] + b[3] * v[1], b[2] * v[0] + b[3] * v[1]];
+        (c.iter().copied().fold(f32::MAX, f32::min), c.iter().copied().fold(f32::MIN, f32::max))
+    }
+}
+
 /// The map's bytes as the renderer and `dirty` see them: nodes across and down, the cell (logical px)
 /// and RGBA8 per node (r = energy × 255, g and b = 128 + 127 × flow), shared so a frame's copy is free.
 #[derive(Clone, Debug, PartialEq)]
@@ -149,6 +220,11 @@ pub struct FieldMap {
     pub reduced: bool,
     /// Whether anything was ever put in (tests: a preset with no trail writes nothing).
     pub written: bool,
+    /// Boxes (logical px) whose nodes keep their energy and flow for lives of their own, s (`El::map_life`).
+    pub lives: Vec<([f32; 4], f32, f32)>,
+    /// The gusts going on: each, when it started on the map's clock, its scope (logical px), and how much
+    /// of its flow the look takes (`MapFx::flow`).
+    gusts: Vec<(Gust, f32, [f32; 4], f32)>,
     snap: Snapshot,
     /// Buffers kept between steps.
     scratch: [Vec<f32>; 4],
@@ -167,7 +243,7 @@ impl FieldMap {
         let cell = cell.max(1.0).max(w / (MAX_NODES - 2) as f32).max(h / (MAX_NODES - 2) as f32);
         let (cols, rows) = ((w / cell).floor() as usize + 2, (h / cell).floor() as usize + 2);
         let n = cols * rows;
-        let mut m = Self { cols, rows, cell, e: vec![0.0; n], u: vec![0.0; n], v: vec![0.0; n], ink: vec![0.0; n], acc: 0.0, clock: 0.0, calm: vec![], reduced: false, written: false, snap: Snapshot::default(), scratch: Default::default() };
+        let mut m = Self { cols, rows, cell, e: vec![0.0; n], u: vec![0.0; n], v: vec![0.0; n], ink: vec![0.0; n], acc: 0.0, clock: 0.0, calm: vec![], reduced: false, written: false, lives: vec![], gusts: vec![], snap: Snapshot::default(), scratch: Default::default() };
         m.encode();
         m
     }
@@ -196,7 +272,11 @@ impl FieldMap {
         if any { self.encode(); }
     }
     /// Whether anything is in the map now (or it breathes): the runtime keeps asking for frames.
-    pub fn moving(&self, fx: &MapFx) -> bool { self.snap.nonzero || self.breathes(fx) }
+    pub fn moving(&self, fx: &MapFx) -> bool { self.snap.nonzero || self.breathes(fx) || !self.gusts.is_empty() }
+    /// Start a gust now, over scope `b` (logical px), its flow times `flow` (the look's `MapFx::flow`).
+    pub fn gust(&mut self, g: Gust, b: [f32; 4], flow: f32) { self.gusts.push((g, self.clock, b, flow)); self.written = true; self.encode(); }
+    /// How many gusts are going on.
+    pub fn gusts(&self) -> usize { self.gusts.len() }
     fn breathes(&self, fx: &MapFx) -> bool { fx.breath > 0.0 && !self.reduced }
     /// How many nodes are not zero (the readout's line).
     pub fn nonzero(&self) -> usize { self.snap.bytes.chunks_exact(4).filter(|p| p[0] != 0 || p[1] != 128 || p[2] != 128).count() }
@@ -287,13 +367,15 @@ impl FieldMap {
 
     /// Let `dt` seconds pass: as many fixed steps as are owed. Whether the bytes changed.
     pub fn advance(&mut self, dt: f32, fx: &MapFx) -> bool {
-        if !self.snap.nonzero && !self.breathes(fx) && self.e.iter().all(|x| *x == 0.0) { self.acc = 0.0; return false; }
+        if !self.snap.nonzero && !self.breathes(fx) && self.gusts.is_empty() && self.e.iter().all(|x| *x == 0.0) { self.acc = 0.0; return false; }
         self.acc += dt.max(0.0) as f64;
         let before = self.snap.bytes.clone();
         while self.acc >= STEP as f64 - 1e-7 {
             self.acc -= STEP as f64;
             self.step(fx);
         }
+        let now = self.clock;
+        self.gusts.retain(|(g, t0, b, _)| !g.gone(now - t0, *b));
         self.encode();
         *before != *self.snap.bytes
     }
@@ -358,6 +440,8 @@ impl FieldMap {
         }
         let ke = (-dt / le).exp();
         let kf = (-dt / lf).exp();
+        // Boxes with lives of their own (`El::map_life`): a node takes the first box it is in.
+        let own: Vec<([f32; 4], f32, f32)> = self.lives.iter().map(|&(b, e, f)| (b, (-dt / life(e.clamp(0.1, 30.0))).exp(), (-dt / life(f.clamp(0.1, 30.0))).exp())).collect();
         let turn = fx.meander.clamp(0.0, 1.0) * 40f32.to_radians() * dt;
         let t = self.clock;
         let c = self.cell;
@@ -373,6 +457,7 @@ impl FieldMap {
             for i in i0..=i1 {
                 let k = j * cols + i;
                 let (x, y) = (i as f32 * c, j as f32 * c);
+                let (ke, kf) = own.iter().find(|(b, _, _)| x >= b[0] && y >= b[1] && x < b[2] && y < b[3]).map_or((ke, kf), |o| (o.1, o.2));
                 self.e[k] = (self.e[k] * ke - FLOOR * dt).max(0.0).max(floor(x, y));
                 let (u, v) = (self.u[k], self.v[k]);
                 let l = (u * u + v * v).sqrt();
@@ -404,13 +489,29 @@ impl FieldMap {
         let n = self.cols * self.rows;
         let mut b = Vec::with_capacity(n * 4);
         let mut nonzero = false;
+        // The gusts going on, laid over what the map holds: the larger energy, and of each flow component
+        // the larger in size, its sign kept (a wake's is the other way).
+        let (cols, c, now, flow) = (self.cols, self.cell, self.clock, if self.reduced { 0.0 } else { 1.0 });
+        let over = |k: usize, e: f32, u: f32, v: f32| -> (f32, f32, f32) {
+            let p = [(k % cols) as f32 * c, (k / cols) as f32 * c];
+            let (mut e, mut u, mut v) = (e, u, v);
+            for (g, t0, b, fl) in &self.gusts {
+                let (ge, gf) = g.at(p, now - t0, *b);
+                let (gu, gv) = (gf[0] * flow * fl, gf[1] * flow * fl);
+                e = e.max(ge);
+                if gu.abs() > u.abs() { u = gu; }
+                if gv.abs() > v.abs() { v = gv; }
+            }
+            (e, u, v)
+        };
         for k in 0..n {
-            let px = [q8(self.e[k]), qf(self.u[k]), qf(self.v[k]), 0];
+            let (e, u, v) = if self.gusts.is_empty() { (self.e[k], self.u[k], self.v[k]) } else { over(k, self.e[k], self.u[k], self.v[k]) };
+            let px = [q8(e), qf(u), qf(v), 0];
             nonzero |= px[0] != 0 || px[1] != 128 || px[2] != 128;
             b.extend_from_slice(&px);
         }
         // Values below a byte are gone: what no byte shows is let go, so the map ends exactly at zero.
-        if !nonzero { self.e.iter_mut().for_each(|x| *x = 0.0); self.u.iter_mut().for_each(|x| *x = 0.0); self.v.iter_mut().for_each(|x| *x = 0.0); }
+        if !nonzero && self.gusts.is_empty() { self.e.iter_mut().for_each(|x| *x = 0.0); self.u.iter_mut().for_each(|x| *x = 0.0); self.v.iter_mut().for_each(|x| *x = 0.0); }
         if *self.snap.bytes != b || self.snap.cols != self.cols || self.snap.rows != self.rows || self.snap.cell != self.cell {
             self.snap = Snapshot { cols: self.cols, rows: self.rows, cell: self.cell, bytes: Rc::new(b), nonzero };
         }

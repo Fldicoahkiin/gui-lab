@@ -2157,6 +2157,26 @@ So the foundation changed in five places, with no special cases in the effect pa
   condense (their birth time is long past). Pointer handlers on a canvas (`on_move`, `on_drag`, and
   `El::on_point`, which combines move, press-drag and leave in one handler, fingers included) report coordinates
   in the canvas's space.
+- **Blades** (`Mark::Blade`, `Drawing::blade`): a rooted stroke that the field map (§1.29) bends, for a field of
+  grass. `root`, `len`, `width` (at the root, 1.5 by default; the tip is half of it, 0.5 px at least), its own
+  `lean` (0), `max_lean` (57°), `stiff` (0.5), `paint`, `lean_paint` and an optional `head` glyph. Its lean is
+  `lean + max_lean · clamp(flow.x / drift, −1, 1)` with the flow read at the root, so vertical flow never lays
+  it down; its colour is `mix(paint, lean_paint, |lean| / max_lean)`. The lean is the angle of the chord from
+  root to tip. The shape (`Blade::shape`, the same in the shader) keeps the length (it is walked by arc length
+  in 18 steps), stays upright for the first 4 px (8 % of the blade when it is shorter than 50 px) and never turns
+  its tip past 85°. One parameter goes from straight to bent: up to its middle, an arc above the stiff part
+  (the lower `0.6 · stiff` of the blade) grows until its tip turns 85°; past it, the arc starts lower, down to
+  the foot, and bends harder at its start (its angle `85° · (1 − (1 − s)^k)`, `k` from 1 to 10). Every angle only
+  grows along the way, so the chord's angle does too and a bisection finds the lean. `stiff` 0 is one even arc
+  (above the foot); 1 keeps the lower 60 % straight as long as the lean allows (about 16°; past that the bend
+  moves down). An 80 px blade reaches 74°, one of 50 px or less 72.9°. It is drawn as 6 segments when it is
+  longer than 24 logical px and as 2 otherwise: strokes with round ends, tapering, the first and last pulled in
+  by half their width so the blade runs exactly from root to tip. The head's ink box has its bottom middle on
+  the tip and its up along the tip's tangent; the stem ends there. All of it is worked out in the vertex stage
+  from the map at the root (`blade_seg`, `blade_head`): while only the map moves, nothing is laid out, painted
+  or built on the CPU, and the instances stay as they are. A blade is never pushed by fronts or the flow (it
+  leans instead) and redraws wherever the map changes under its reach. Inside a turned element (`El::turn`) a
+  blade is not turned with it.
 - **Fields** (`src/field.rs`): `Scalar` (any `Fn(x, y) -> f32`), `Noise` (value noise with time), `Bump`,
   `Balls` (metaballs) and `Sum`; `Grid` (sampled at nodes, read back bilinearly, `contours` producing polylines
   with marching squares, saddles decided by the cell average so lines never cross); `curl` (divergence-free
@@ -2352,6 +2372,26 @@ release, the page is identical pixel for pixel to how it was before and wants no
   strength, its old scope (which went with the old page) dropped. `audit::off_palette` counts
   pixels in no colour the theme makes (the ground mixed toward the ink or an accent), and `tests/fieldmap.rs` checks it
   is 0 on the page after.
+- **Gusts** (`Cmd::Gust { gust, scope }`, `fieldmap::Gust`): a band `width` px wide (330) that travels along
+  `dir` at `speed` px a second (240) from the line through `from`, across the scope (`Scope` as for fronts, at most
+  the window). At a share `u` of the band its flow along `dir` is `strength · 0.5 (1 − cos 2πu) · MapFx::flow`
+  (`strength` 1) and its energy `energy` (0.2) times the same; for `wake_s` (0.5 s) behind its trailing edge the
+  flow goes the other way, `strength · wake · sin²(πu)` (`wake` 0.105: 6° on a blade the band leans 57°). Across
+  `dir` the band lags `slant · n^curve` px (`slant` 0, `curve` 1; `n` is the distance across `dir` over the scope's
+  extent that way, 0..1), so it can sweep a field in perspective (W-01: 500 and 0.53). A gust is never put into the
+  map to decay: on each step it is worked out from the map's clock at every node and laid over what the map holds,
+  the larger energy and, of each flow component, the larger in size with its sign (`FieldMap::encode`). So a trail
+  under it keeps its own life, and the frame the band and its wake have left the scope (`Gust::gone`) the map's
+  bytes are what they would have been without it and no frame is wanted. With reduced motion it puts no flow.
+- **Lives by area** (`El::map_life(energy_life, flow_life)`, 0.1–30 s): nodes inside the element's visible box take
+  these lives instead of the look's (the first such box a node is in). The linear term is the same, so the map
+  still returns to exactly 0 (with 6 s, from full energy within `settle_time(1, 6)`, 4.5 s).
+- **Pacing what moves by itself** (`Ui::ambient_fps(n)`, 60 by default, which is no pacing): a frame wanted only by
+  what moves by itself (the map, gusts, breath, flows, ticks) waits until `1 / n` s after the last drawn one;
+  `needs_frame` is false until then and `next_wake` gives that time. Input is never paced, and neither is what it
+  starts until 1 s after the last input; after that it is what moves by itself (a trail that takes 6 s to close
+  does not run at 60 frames a second). Everything goes by the clock, not by frames, so a frame at a given moment
+  is the same bytes at 30 and at 60.
 - **Numbers** (`MapFx`, in `Look::map` and a preset's `interaction.map`; each a number control): `cell` 8–32 (16),
   `stirr` 0–1 (0.6), `stirr_radius` 8–160 (48), `flow` 0–2 (1), `drift` 0–24 (6), `energy_life` 0.05–3 (0.45 s),
   `flow_life` 0.05–3 (0.5 s), `bleed` 0–1 (0.2), `meander` 0–1 (0.35), `creep` 0–1 (0.3), `breath` 0–0.3 (0),
@@ -2375,7 +2415,16 @@ the box itself 0; after release and settling into a corner, the map is all 0 wit
 under Normcore the map is never written and two seconds draw 0 frames; a press without a drag doesn't stir; with
 reduced motion the flow stays 0; `Cmd::Stir` in its element and path forms); `tests/render.rs` (the same arguments
 with a drag rendered three times are byte-identical); `check` item 19; `bench … map` (one step plus upload at
-1280 × 800 within 0.2 ms); `craft <dir> stirr` (eight frames each in `plain`, `dottr`, `smudgr` and `glitchr`).
+1280 × 800 within 0.2 ms); `craft <dir> stirr` (eight frames each in `plain`, `dottr`, `smudgr` and `glitchr`). Blades and
+gusts: `tests/blades.rs` (an 80 px blade at 0, 19, 38, 57 and 72° and `stiff` 0, 0.5 and 1: the chord within 1°,
+the length within 2 %, upright within 3° over its first 4 px, its tip within 85°; the GPU draws it on its shape,
+its head along the tip's tangent; a gust of 0.79 over one blade with `max_lean` 72° peaks at 57° ± 0.5°, sways
+back once to 6° ± 0.5° within 0.5 s of the trailing edge and is upright from 1.25 s after the peak, after which
+the map is byte-identical to before and no frame is wanted; a gust over a path with 6 s lives leaves the path's
+bytes and its closing time as they were alone; the same schedule three times gives the same map bytes and frame;
+frames at 30 and 60 a second are the same at the same moments, input is not paced and what it starts is a second
+later; 3,000 blades are one draw, and while a gust crosses them the runtime's time a frame is within 0.1 ms of the
+same page without them, with nothing laid out or shaped).
 
 ### 1.30 The thread material `scribblr` and long paths
 

@@ -39,6 +39,11 @@ pub struct Instance {
     /// difference from the identity so that zero is untransformed: screen offset from the centre =
     /// `[[1 + xf[0], xf[1]], [xf[2], 1 + xf[3]]]` × the offset in the box. Glyphs on a path or a sphere,
     /// strokes of a drawing (`el::canvas`).
+    ///
+    /// Blades (draw.rs `Blade`) are worked out by the vertex stage from the map at their root: a segment
+    /// is a shape with `extra[1]` ≥ 1 (1 + its lean paint), its `rect` the box the blade can reach and
+    /// its numbers in `uv`; a head is a glyph with `extra[1]` ≤ −1 (−1 − its own lean) and the blade's
+    /// root, length and stiffness in `xf` (shader.wgsl `blade_seg`, `blade_head`).
     pub xf: [f32; 4],
 }
 impl Instance {
@@ -47,9 +52,17 @@ impl Instance {
         let (s, c) = angle.sin_cos();
         [c * sx - 1.0, -s * sy, s * sx, c * sy - 1.0]
     }
+    /// A blade's segment or head (draw.rs `Blade`): its shape is worked out on the GPU from the field map.
+    pub fn blade(&self) -> bool { (self.paint[3] == SHAPE && self.extra[1] >= 0.5) || self.blade_head() }
+    fn blade_head(&self) -> bool { self.paint[3] == GLYPH && self.extra[1] < -0.5 }
     /// The axis-aligned box (x0, y0, x1, y1) its transformed `rect` covers, grown by `pad` (device px).
     pub fn bounds(&self, pad: f32) -> [f32; 4] {
         let r = self.rect;
+        // A blade's head: wherever on the blade's reach its tip takes it (`xf` holds the root and length).
+        if self.blade_head() {
+            let (x, d) = (self.xf, r[2].max(r[3]) + pad);
+            return [x[0] - x[2] - d, x[1] - x[2] - d, x[0] + x[2] + d, x[1] + d];
+        }
         let (hw, hh) = (r[2] * 0.5 + pad, r[3] * 0.5 + pad);
         let (cx, cy) = (r[0] + r[2] * 0.5, r[1] + r[3] * 0.5);
         let x = self.xf;

@@ -200,6 +200,10 @@ pub enum Cmd {
     /// (0..1) and flow `v` (logical px are not involved: a direction whose length is how much; along a
     /// path `v` is [along the path, across it]) over `radius` logical px, on what `scope` reaches.
     Stir { at: StirAt, v: [f32; 2], energy: f32, radius: f32, scope: crate::el::Scope },
+    /// A gust over the field map (DESIGN.md §1.29): a band that crosses `scope`, worked out from the time
+    /// at every node and laid over the map each step, with a wake behind it, gone without a trace once it
+    /// has passed. One command; the application does nothing while it crosses.
+    Gust { gust: crate::fieldmap::Gust, scope: crate::el::Scope },
     /// Press the element `key` as a person would (its message, its front, its condensing): for scripted
     /// demonstrations and tests. It does not count as a person's input (`Ui::on_input` is not told).
     Press { key: String },

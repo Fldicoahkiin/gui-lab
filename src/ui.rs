@@ -116,6 +116,7 @@ pub struct Node<M> {
     anchor: Option<String>,
     pub(crate) clips: bool,
     calm: bool,
+    map_life: Option<(f32, f32)>,
     on_text: Option<OnText<M>>,
     /// A multi-line text field.
     pub multiline: bool,
@@ -399,6 +400,11 @@ pub struct Ui<S, M> {
     /// The last frame drawn was taken while something moved: one more frame is owed, so the screen
     /// ends on the settled page even when the motion ends between two frames.
     owed: bool,
+    /// Frames a second for what moves by itself (`Ui::ambient_fps`), when the last input came and when
+    /// the last frame was drawn (runtime clock, s).
+    ambient: f32,
+    input_t: f32,
+    frame_t: f32,
     /// The runtime's own clock (what `tick` was given).
     wall: f32,
     /// Where the beat clock is against the runtime's.
@@ -904,7 +910,23 @@ impl<S, M: Clone> Ui<S, M> {
     /// Tell the state where a mouse or pen is (logical px) whenever it moves over the window; returns
     /// whether the view changes. For views that follow the pointer itself (parallax, a highlight).
     pub fn on_pointer(mut self, f: fn(&mut S, f32, f32) -> bool) -> Self { self.pointer_of = Some(f); self }
-    fn heard(&mut self) { if !self.scripted && let Some(f) = self.input && f(&mut self.state) { self.relayout(); } }
+    /// Input came (`heard`, and pointer moves and releases, which a state is not told of): what it
+    /// starts is not paced for a second (`Ui::ambient_fps`).
+    fn heard(&mut self) {
+        if !self.scripted { self.input_t = self.clock; }
+        if !self.scripted && let Some(f) = self.input && f(&mut self.state) { self.relayout(); }
+    }
+    /// Pace what moves by itself to `n` frames a second (DESIGN.md §1.29): the map, its breath and
+    /// gusts, flow fields, drawings and anything a tick changes. Frames for input, and for what input
+    /// starts, are never paced until a second after the last input. Everything goes by the clock, not by
+    /// frames, so a frame at a given time is the same at any `n`. 60 (the default) or more is no pacing.
+    pub fn ambient_fps(&mut self, n: f32) { self.ambient = n.max(1.0); }
+    /// The time before which a frame wanted only by what moves by itself waits (`ambient_fps`), if any.
+    fn paced_until(&self, now: f32) -> Option<f32> {
+        if self.ambient >= 60.0 || now - self.input_t < 1.0 { return None; }
+        let next = self.frame_t + 1.0 / self.ambient;
+        (now + 1e-4 < next).then_some(next)
+    }
     /// Tell the state when a key is let go; `f` returns whether the state changed.
     pub fn on_key_up(mut self, f: fn(&mut S, Key) -> bool) -> Self { self.released = Some(f); self }
     /// A key let go.
@@ -927,7 +949,7 @@ impl<S, M: Clone> Ui<S, M> {
             hover: None, focus: None, after_focus: None, fit_short: vec![], fit_k: HashMap::new(), pressed: None, capture: None, modal_at: None, modal_key: None, return_focus: None, split: None, splits: 0,
             keyboard: false, marks: Marks::default(), sized: None, commands: None, unseen: vec![], base: vec![], tags: vec![], roles: vec![],
             run: None, painted_phase: 0, flows: HashMap::new(), ghosts: vec![], body_len: 0, animating: false, lifted: HashMap::new(),
-            gaze_of: None, gaze_seen: HashMap::new(), annots: vec![], readout: gaze::Readout::default(), hovered: None, pointer_of: None, scripted: false, ticked: None, warm: None, warmed: None, owed: false, unused_key: None, shortcut: None, scrolled_of: None, released: None, input: None,
+            gaze_of: None, gaze_seen: HashMap::new(), annots: vec![], readout: gaze::Readout::default(), hovered: None, pointer_of: None, scripted: false, ticked: None, warm: None, warmed: None, owed: false, ambient: 60.0, input_t: -1e9, frame_t: -1e9, unused_key: None, shortcut: None, scrolled_of: None, released: None, input: None,
             dirty: true, look_of: None, locale_of: None, timing: Timing::default(), wake_of: None, latest_birth: f32::NEG_INFINITY, gaze_until: f32::NEG_INFINITY,
             marks_moving: false, caret: None, caret_on: true, static_loose: false, mclock: 0.0, moving: false, gclock: 0.0, ground_moving: false,
             perf: crate::perf::Perf { quality: 1.0, ..Default::default() }, span: 0, painting: false, overlay: 0, overlay_at: 0.0, overlay_box: None, fade_s: REDUCED_FADE, came: vec![], arriving: HashMap::new(), sweeping: false, swept_nodes: vec![], remeasure: false, plate_slots: Default::default(), plate_clear: vec![], plate_over: vec![], pclock: 0.0, plate_frame: f32::NEG_INFINITY, assets: HashMap::new(), assets_asked: Default::default(), shape_seen: 0.0, hud_idle: false, rebuilt: 0,
@@ -1253,6 +1275,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// caret's blink, a clock the state keeps). When it is false the host draws nothing and waits for
     /// input or `next_wake`.
     pub fn needs_frame(&self, now: f32) -> bool {
+        if self.paced_until(now).is_some() { return false; }
         let b = self.beat_of(now);
         self.dirty || self.stale_layout || self.stale_paint || self.owed || self.warm.is_some() || self.prep.pending() || self.held(now) || self.moving_at(b) || self.wake_at(b).is_some_and(|w| w <= b) || (self.sweeping && !self.arriving.is_empty())
             || (self.plates_ageing() && self.clock - self.plate_frame >= PLATE_FRAME - 1e-4)
@@ -1263,6 +1286,8 @@ impl<S, M: Clone> Ui<S, M> {
     /// when only input can change anything.
     pub fn next_wake(&self, now: f32) -> Option<f32> {
         let b = self.beat_of(now);
+        let wanted = self.dirty || self.owed || self.warm.is_some() || self.prep.pending() || self.held(now) || self.moving_at(b) || (self.sweeping && !self.arriving.is_empty());
+        if wanted && let Some(t) = self.paced_until(now) { return Some(t); }
         if self.dirty || self.owed || self.warm.is_some() || self.prep.pending() || self.held(now) || self.moving_at(b) || (self.sweeping && !self.arriving.is_empty()) { return Some(now); }
         if self.plates_ageing() { return Some((self.plate_frame + PLATE_FRAME).max(now)); }
         // A wake on the beat clock is that much later on the runtime's.
@@ -1342,6 +1367,7 @@ impl<S, M: Clone> Ui<S, M> {
         self.dirty = false;
         self.owed = self.moving_at(self.beat_of(self.clock));
         self.plate_frame = self.clock;
+        self.frame_t = self.clock;
     }
     /// Which node each plate this paint draws is in which slot: a plate keeps its slot while its element
     /// is there; a slot whose element has gone is emptied; beyond four plates, or twice the window's
@@ -1729,6 +1755,7 @@ impl<S, M: Clone> Ui<S, M> {
     fn pointer_moved_now(&mut self, id: u64, kind: PointerKind, x: f32, y: f32) {
         let now = self.event_t.take().unwrap_or(self.clock);
         self.ev = now;
+        if !self.scripted { self.input_t = self.clock; }
         if kind != PointerKind::Touch { self.touching = false; self.pointer_move_now(x, y); return; }
         let Some(t) = &mut self.touch else { return };
         if t.id != id || t.mode == TouchMode::Cancelled { return; }
@@ -1794,6 +1821,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// A pointer let go. A finger that scrolled flings on at its speed (at most `max_velocity`); one that
     /// did not is a tap: the press is sent now.
     pub fn pointer_up(&mut self, id: u64, kind: PointerKind, x: f32, y: f32) {
+        if !self.scripted { self.input_t = self.clock; }
         self.settle();
         self.ev = self.event_t.take().unwrap_or(self.clock);
         if kind != PointerKind::Touch { self.release(x, y); return; }
@@ -1850,6 +1878,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// Logical px.
     pub fn pointer_move(&mut self, x: f32, y: f32) { self.ev = self.event_t.take().unwrap_or(self.clock); self.deferred(|ui| ui.pointer_move_now(x, y)) }
     fn pointer_move_now(&mut self, x: f32, y: f32) {
+        if !self.scripted { self.input_t = self.clock; }
         self.dirty = true;
         let s = self.scale;
         self.keyboard = false;
@@ -1944,6 +1973,7 @@ impl<S, M: Clone> Ui<S, M> {
     }
     /// The pointer left the window.
     pub fn pointer_leave(&mut self) {
+        if !self.scripted { self.input_t = self.clock; }
         self.settle();
         self.dirty = true;
         self.field.pointer = [-1e5, -1e5, 0.0, 0.0];
@@ -2031,6 +2061,7 @@ impl<S, M: Clone> Ui<S, M> {
 
     /// The mouse button came up at (`x`, `y`).
     pub fn release(&mut self, x: f32, y: f32) {
+        if !self.scripted { self.input_t = self.clock; }
         self.settle();
         self.dirty = true;
         if let Some(k) = self.text_capture.take() && self.field_at().is_some_and(|f| self.nodes[f].key == k)
@@ -2688,6 +2719,17 @@ impl<S, M: Clone> Ui<S, M> {
                     self.front_from(Some(i), x, y, true, strength);
                 },
                 Cmd::Stir { at, v, energy, radius, scope } => self.stir_cmd(at, v, energy, radius, scope),
+                Cmd::Gust { gust, scope } => {
+                    self.fit_map();
+                    // Across the window at most: the band's slant is measured over its scope, and it is
+                    // gone when it has crossed it.
+                    if let Some(b) = self.stir_scope(None, &scope) {
+                        let b = [b[0].max(0.0), b[1].max(0.0), b[2].min(self.size.0), b[3].min(self.size.1)];
+                        let f = self.timing.map.flow;
+                        self.fmap.gust(gust, b, f);
+                        self.dirty = true;
+                    }
+                }
                 Cmd::Press { key } => { self.scripted = true; self.activate(&key); self.scripted = false; }
                 Cmd::Pointer { x, y } => { let s = self.scale; self.field.pointer[0] = x * s; self.field.pointer[1] = y * s; self.dirty = true; }
                 Cmd::Focus { key } => self.focus_key(&key),
@@ -3404,7 +3446,8 @@ impl<S, M: Clone> Ui<S, M> {
             let mut put = |sink: &mut Sink, mut inst: Instance, id: u64, glyph: Option<u32>| -> bool {
                 inst.clip = clip;
                 // Turned after layout (`El::turn`): drawn about the turned ancestors' centres.
-                if let Some(a) = &turned { a.instance(&mut inst, s); }
+                // (Not a blade: its numbers are where a transform would go.)
+                if let Some(a) = &turned && !inst.blade() { a.instance(&mut inst, s); }
                 // A negative push marks what fronts pass by whatever its element says (the caret, a
                 // selection's halo).
                 inst.resp = if inst.resp[1] < 0.0 { [0.0; 4] } else { resp };
@@ -3623,6 +3666,42 @@ impl<S, M: Clone> Ui<S, M> {
                     // A drawing shows at most the budget's count of marks, evenly thinned (DESIGN.md §1.27).
                     let stride = d.marks.len().div_ceil(crate::budget::cap().max(1)).max(1);
                     for (j, m) in d.marks.iter().enumerate().step_by(stride) {
+                        if let crate::draw::Mark::Blade(b) = m {
+                            // Its segments (6, or 2 when it is short) and its head, each worked out on the GPU
+                            // from the map at its root (scene.rs `Instance::xf`).
+                            let (rx, ry, len, w) = (ox + b.root.0 * k, oy + b.root.1 * k, b.len * k, (b.width * k).max(0.5));
+                            let segs = if b.len * k / s > 24.0 { 6u32 } else { 2 };
+                            let bounds = [rx - len - w, ry - len - w, 2.0 * (len + w), len + 2.0 * w];
+                            let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round();
+                            let lp = b.lean_paint;
+                            let wq = (w * 16.0).round().min(4095.0);
+                            for g in 0..segs {
+                                let inst = Instance { rect: bounds, uv: [b.stiff.clamp(0.0, 1.0), b.max_lean.abs().min(1.5), b.lean, g as f32 + 8.0 * segs as f32 + 64.0 * wq], paint: [b.paint.tone, b.paint.accent, b.paint.alpha, SHAPE], clip,
+                                    extra: [0.0, 1.0 + q(lp.tone) + 256.0 * q(lp.accent), 0.0, 0.0], look: [mat, b.paint.hue as f32, 0.0, 0.0], resp, xf: [0.0; 4] };
+                                put(&mut sink, inst, ident(&n.key, (j as u32 * 8 + g) | 0x2000_0000, 1), None);
+                            }
+                            if let Some(h) = b.head {
+                                let face = h.font.resolve([0; 3]);
+                                let mut chb = [0u8; 4];
+                                let para = crate::text::Para { s: h.ch.encode_utf8(&mut chb), face, size: h.size * k / s, line: h.size * k / s * 1.2, width: 1e4, print: 0.0, around: None, track: 0.0 };
+                                let proto = Instance { paint: [h.paint.tone, h.paint.accent, h.paint.alpha, 0.0], look: [mat, h.paint.hue as f32, 0.0, 0.0], ..Default::default() };
+                                let mut quads = vec![];
+                                self.text.emit(para, (0.0, 0.0), proto, s, |inst, _| quads.push(inst));
+                                let sp = crate::text::SPREAD as f32;
+                                let (sq, mq) = ((b.stiff.clamp(0.0, 1.0) * 100.0).round(), (b.max_lean.abs().min(1.5).to_degrees() * 10.0).round());
+                                let lq = ((b.lean.to_degrees().clamp(-90.0, 90.0) + 90.0) * 10.0).round();
+                                for mut g in quads {
+                                    // At rest the bottom centre of its ink is on the upright tip.
+                                    let (ax, ay) = (g.rect[0] + g.rect[2] * 0.5, g.rect[1] + g.rect[3] - sp);
+                                    g.rect[0] += rx - ax; g.rect[1] += ry - len - ay;
+                                    g.xf = [rx, ry, len, sq + 128.0 * mq];
+                                    g.extra[1] = -(1.0 + lq);
+                                    g.clip = clip;
+                                    put(&mut sink, g, ident(&n.key, (j as u32 * 8 + 7) | 0x2000_0000, 2), None);
+                                }
+                            }
+                            continue;
+                        }
                         let (rect, radius, xf, p) = match *m {
                             crate::draw::Mark::Dot { x, y, r, paint } => {
                                 let rr = (r * k).max(0.5);
@@ -3634,6 +3713,7 @@ impl<S, M: Clone> Ui<S, M> {
                                 let (cx, cy) = (ox + (a.0 + b.0) * 0.5 * k, oy + (a.1 + b.1) * 0.5 * k);
                                 ([cx - (len + ww) * 0.5, cy - ww * 0.5, len + ww, ww], ww * 0.5, Instance::turned(dy.atan2(dx), 1.0, 1.0), paint)
                             }
+                            crate::draw::Mark::Blade(_) => unreachable!("drawn above"),
                         };
                         let inst = Instance { rect, uv: [radius, 0.0, 0.0, 0.0], paint: [p.tone, p.accent, p.alpha, SHAPE], clip, look: [mat, p.hue as f32, rect[1], rect[3].max(1.0)], resp, xf, ..Default::default() };
                         put(&mut sink, inst, ident(&n.key, j as u32 | 0x2000_0000, 0), None);
@@ -3860,6 +3940,7 @@ impl<S, M: Clone> Ui<S, M> {
         if self.fmap.fit(self.size.0, self.size.1, cell) { self.stirr_at.clear(); self.fmap_ink = u64::MAX; }
         let s = self.scale;
         self.fmap.calm = self.field.calm.iter().filter(|r| r[2] > r[0]).map(|r| [r[0] / s, r[1] / s, r[2] / s, r[3] / s]).collect();
+        self.fmap.lives = self.nodes.iter().filter(|n| !n.hidden).filter_map(|n| n.map_life.map(|(e, f)| { let r = n.rect.intersect(&n.clip); ([r.x, r.y, r.right(), r.bottom()], e, f) })).collect();
     }
     /// Step the field map by `dt` s and stir it where `stirr` elements went since the last tick (the
     /// distance their centres moved, as shedding measures it); whether its bytes changed.
@@ -4017,6 +4098,11 @@ impl<S, M: Clone> Ui<S, M> {
         self.strand_faded.clear();
         self.strand_drawn.clear();
         self.trace_drawn.clear();
+        // No thread and no trace: nothing to measure (a field of blades is not walked every frame).
+        if self.timing.material != crate::style::Material::Scribblr.id() && !self.nodes.iter().any(|n| n.trace.is_some() && !n.hidden) {
+            self.strand_hold.clear();
+            return;
+        }
         let s = self.scale;
         let now = self.clock;
         let screen = [0.0, 0.0, self.size.0 * s, self.size.1 * s];
@@ -4041,7 +4127,7 @@ impl<S, M: Clone> Ui<S, M> {
         let mut own: Vec<Vec<usize>> = vec![vec![]; self.nodes.len()];
         for i in 0..self.page_len.min(self.scene.instances.len()) {
             let inst = &self.scene.instances[i];
-            if inst.paint[3] != GLYPH && inst.paint[3] != SHAPE { continue; }
+            if (inst.paint[3] != GLYPH && inst.paint[3] != SHAPE) || inst.blade() { continue; }
             if inst.paint[2] <= 0.0 || inst.rect[2] <= 0.0 || inst.rect[3] <= 0.0 { continue; }
             own[self.owners[i].0].push(i);
         }
@@ -5875,7 +5961,7 @@ fn measure_key(c: &Content) -> u64 {
 /// A virtual list's rows are built here, for what its viewport shows.
 #[allow(clippy::too_many_arguments)]
 fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], off: (bool, bool), flow: Option<(Rc<str>, usize)>, inh: Inherit, vx: &mut VirtCtx, built: &mut Built, nodes: &mut Vec<Node<M>>) -> usize {
-    let El { key, mut style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, mut on_text, multiline, selectable, cursor, virt, access, ripple, mut on_pick, mut on_wheel, mut on_move, guide, skeleton, rtl, on_visible, on_outline, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview, fit, clamp, plate, mut children } = el;
+    let El { key, mut style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, map_life, mut on_text, multiline, selectable, cursor, virt, access, ripple, mut on_pick, mut on_wheel, mut on_move, guide, skeleton, rtl, on_visible, on_outline, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview, fit, clamp, plate, mut children } = el;
     let mut inh = inh;
     if let Some(r) = rtl { inh.rtl = r; }
     style.direction = if inh.rtl { taffy::Direction::Rtl } else { taffy::Direction::Ltr };
@@ -5892,6 +5978,10 @@ fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], of
     inh.preview |= preview;
     if inh.skeleton { on_press = None; on_key = None; on_drag = None; on_blur = None; on_text = None; on_pick = None; on_wheel = None; on_move = None; focusable = false; commit = false; }
     if let Content::Text { font, .. } = &mut content { *font = Font::Face(font.resolve(roles)); }
+    // A drawing's blade heads in a face by role take this subtree's faces (the drawing is copied only then).
+    if let Content::Canvas(d) = &mut content && d.marks.iter().any(|m| matches!(m, crate::draw::Mark::Blade(b) if b.head.is_some_and(|h| !matches!(h.font, Font::Face(_))))) {
+        for m in &mut Rc::make_mut(d).marks { if let crate::draw::Mark::Blade(b) = m && let Some(h) = &mut b.head { h.font = Font::Face(h.font.resolve(roles)); } }
+    }
     if let Content::Cells(c) = &mut content { let f = Font::Face(c.font.resolve(roles)); if c.font != f { Rc::make_mut(c).font = f; } }
     let i = nodes.len();
     let flow = own_flow.map(|f| (Rc::from(f.as_str()), i)).or(flow);
@@ -5942,7 +6032,7 @@ fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], of
     nodes.push(Node {
         key, parent, rect: Rect::default(), clip: Rect::default(), inner: Rect::default(), scroll, horizontal, focusable, tab_order, skip_to, focus_shown, written: 0, preview, disabled: off, extent: 0.0,
         content, fill, border, radius, on_press, on_key, on_drag, on_blur, loose, wipe, bar, reveal, commit, modal, hidden, shift, shed, flow_field, stirr, trace, flow: flow.clone(),
-        mat: inh.code(), loosen: inh.loosen, annotate, scope: gaze_scope, anchor, clips, calm, on_text, multiline, selectable: inh.select, cursor,
+        mat: inh.code(), loosen: inh.loosen, annotate, scope: gaze_scope, anchor, clips, calm, map_life, on_text, multiline, selectable: inh.select, cursor,
         virt: virt_info, access, respond, legible, ripple: inh.scope.clone(), ripple_scope: ripple.container || commit_scope, recompose, recompose_always: is_text && ripple.recompose == Some(true), unframed: ripple.unframed, keyed,
         on_pick, on_wheel, on_move, guide, on_visible, on_outline, decode, skeleton: inh.skeleton, form, turn, xf: None, reveal_by, ongoing: ongoing || parent.is_some_and(|p| nodes[p].ongoing), pass, opacity, opacity_all: opacity * parent.map_or(1.0, |p| nodes[p].opacity_all), commit_scope, fit, clamp, shown: None, plate, local: taffy::Layout::new(), tid: placeholder,
     });

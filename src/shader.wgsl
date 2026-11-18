@@ -150,8 +150,130 @@ fn exact_i(iv: VOut) -> VOut {
   return i;
 }
 
+// ── Blades (draw.rs Blade, DESIGN.md §1.26) ───────────────────────────────────────────────────────
+// A blade's segments and its head are instances whose shape is worked out here from the map's flow at the
+// root, every frame, the same way as draw.rs `Blade::shape`.
+const BLADE_N: i32 = 18;
+const BLADE_TIP: f32 = 1.4835299; // 85°
+const BLADE_BEND: f32 = 10.0;
+fn blade_angle(u: f32, t: f32, s: f32, h: f32) -> f32 {
+  let b0 = max(h, 0.6 * s);
+  var tip = BLADE_TIP * t * 2.0; var b = b0; var k = 1.0;
+  if (t > 0.5) { let w = (t - 0.5) * 2.0; tip = BLADE_TIP; b = b0 + (h - b0) * w; k = 1.0 + (BLADE_BEND - 1.0) * w; }
+  let sp = clamp((u - b) / (1.0 - b), 0.0, 1.0);
+  return tip * (1.0 - pow(max(1.0 - sp, 1e-6), k));
+}
+/// The point `upto` steps along (root at 0, up −y), for the way `t`.
+fn blade_walk(upto: i32, t: f32, s: f32, h: f32, len: f32) -> vec2f {
+  var p = vec2f(0.0);
+  let d = len / f32(BLADE_N);
+  for (var j = 0; j < upto; j++) {
+    let a = blade_angle((f32(j) + 0.5) / f32(BLADE_N), t, s, h);
+    p += vec2f(sin(a), -cos(a)) * d;
+  }
+  return p;
+}
+/// The way (0..1) whose chord leans `th` (≥ 0).
+fn blade_way(th: f32, s: f32, h: f32, len: f32) -> f32 {
+  if (th <= 0.0) { return 0.0; }
+  var lo = 0.0; var hi = 1.0;
+  for (var k = 0; k < 16; k++) {
+    let m = (lo + hi) * 0.5;
+    let p = blade_walk(BLADE_N, m, s, h, len);
+    if (atan2(p.x, -p.y) < th) { lo = m; } else { hi = m; }
+  }
+  return (lo + hi) * 0.5;
+}
+/// A blade's lean now: its own, and the map's flow at its root within ±max_lean.
+fn blade_lean(root: vec2f, own: f32, most: f32) -> f32 {
+  return clamp(own + most * clamp(fmap_flow(root).x, -1.0, 1.0), -1.43, 1.43);
+}
+/// A blade's segment as a stroke with round ends (a canvas line): uv.x stiffness, uv.y the most lean,
+/// uv.z its own lean, uv.w which segment + 8 × how many + 64 × its width × 16; extra.y 1 + the lean paint's
+/// tone + 256 × its accent (255ths); rect the box it can reach, the root at its bottom middle less the width.
+fn blade_seg(iv: VIn) -> VIn {
+  var i = iv;
+  let code = i.uv.w;
+  let wq = floor(code / 64.0); let rem = code - wq * 64.0;
+  let segs = floor(rem / 8.0); let g = rem - segs * 8.0;
+  let w = wq / 16.0;
+  let len = i.rect.z * 0.5 - w;
+  let root = vec2f(i.rect.x + i.rect.z * 0.5, i.rect.y + i.rect.w - w);
+  let th = blade_lean(root, i.uv.z, i.uv.y);
+  let h = min(4.0, 0.08 * len) / max(len, 1e-3);
+  let t = blade_way(abs(th), i.uv.x, h, len);
+  let per = BLADE_N / i32(segs);
+  let sg = vec2f(select(1.0, -1.0, th < 0.0), 1.0);
+  var a = blade_walk(i32(g) * per, t, i.uv.x, h, len) * sg;
+  var b = blade_walk((i32(g) + 1) * per, t, i.uv.x, h, len) * sg;
+  let dir = normalize(b - a + vec2f(0.0, -1e-6));
+  let across = vec2f(-dir.y, dir.x);
+  // Where it meets the segments before and after it, it is cut along the joint's bisector (`inst`), so
+  // the round ends of two segments never both cover a pixel: uv.z, uv.w the bisector's angle in the
+  // segment's own frame + 4 (1: no cut, an end of the blade).
+  var cuts = vec2f(1.0);
+  if (g > 0.5) {
+    let d0 = normalize(a - blade_walk((i32(g) - 1) * per, t, iv.uv.x, h, len) * sg + vec2f(0.0, -1e-6));
+    let n = normalize(d0 + dir);
+    cuts.x = 4.0 + atan2(dot(n, across), dot(n, dir));
+  }
+  if (g < segs - 1.5) {
+    let d1 = normalize(blade_walk((i32(g) + 2) * per, t, iv.uv.x, h, len) * sg - b + vec2f(0.0, -1e-6));
+    let n = normalize(dir + d1);
+    cuts.y = 4.0 + atan2(dot(n, across), dot(n, dir));
+  }
+  // Tapering from the width at the root to half of it at the tip; the round ends at root and tip stay
+  // within them.
+  let ww = max(w * (1.0 - 0.5 * (g + 0.5) / segs), 0.5);
+  if (g < 0.5) { a += dir * min(ww * 0.5, distance(a, b) * 0.5); }
+  if (g > segs - 1.5) { b -= dir * min(ww * 0.5, distance(a, b) * 0.5); }
+  let l = distance(a, b);
+  let c = root + (a + b) * 0.5;
+  i.rect = vec4f(c.x - (l + ww) * 0.5, c.y - ww * 0.5, l + ww, ww);
+  i.uv = vec4f(ww * 0.5, 0.0, cuts);
+  i.xf = vec4f(dir.x - 1.0, -dir.y, dir.y, dir.x - 1.0);
+  let f = clamp(abs(th) / max(iv.uv.y, 1e-3), 0.0, 1.0);
+  let lp = i.extra.y - 1.0;
+  let la = floor(lp / 256.0); let lt = lp - la * 256.0;
+  i.paint = vec4f(mix(i.paint.x, lt / 255.0, f), mix(i.paint.y, la / 255.0, f), i.paint.z, i.paint.w);
+  i.extra.y = 0.0;
+  i.look.z = 0.0; i.look.w = 0.0;
+  i.resp.y = 0.0;
+  return i;
+}
+/// A blade's head (a glyph): rect upright, the bottom middle of its ink on the upright tip; xf the root
+/// (x, y), the length, stiffness × 100 + 128 × the most lean (0.1°); extra.y −(1 + (own lean + 90°) × 10).
+/// Turned about that point with the tip's tangent and moved onto the tip.
+fn blade_head(iv: VIn) -> VIn {
+  var i = iv;
+  let root = i.xf.xy; let len = i.xf.z;
+  let mq = floor(i.xf.w / 128.0); let s = (i.xf.w - mq * 128.0) / 100.0;
+  let most = radians(mq / 10.0);
+  let own = radians((-i.extra.y - 1.0) / 10.0 - 90.0);
+  let th = blade_lean(root, own, most);
+  let h = min(4.0, 0.08 * len) / max(len, 1e-3);
+  let t = blade_way(abs(th), s, h, len);
+  let sg = select(1.0, -1.0, th < 0.0);
+  var tip = blade_walk(BLADE_N, t, s, h, len);
+  tip.x *= sg;
+  let phi = sg * blade_angle(1.0, t, s, h);
+  let cs = cos(phi); let sn = sin(phi);
+  let up = root + vec2f(0.0, -len);
+  let mid = i.rect.xy + i.rect.zw * 0.5 - up;
+  let m2 = root + tip + vec2f(cs * mid.x - sn * mid.y, sn * mid.x + cs * mid.y);
+  i.rect = vec4f(m2 - i.rect.zw * 0.5, i.rect.zw);
+  i.xf = vec4f(cs - 1.0, -sn, sn, cs - 1.0);
+  i.extra.y = 0.0;
+  i.look.z = 0.0; i.look.w = 0.0;
+  i.resp.y = 0.0;
+  return i;
+}
+
 @vertex fn vs_inst(i: VIn) -> VOut { return vs_pad(i, u.fd.z); }
-fn vs_pad(i: VIn, spad: f32) -> VOut {
+fn vs_pad(iv: VIn, spad: f32) -> VOut {
+  var i = iv;
+  if (i.paint.w > 0.5 && i.paint.w < 1.5 && i.extra.y > 0.5) { i = blade_seg(iv); }
+  else if (i.paint.w < 0.5 && i.extra.y < -0.5) { i = blade_head(iv); }
   let c = vec2f(f32(i.vi & 1u), f32((i.vi >> 1u) & 1u));
   // Glyph rects already include the spread; shapes and pictures are padded here so their nearness fits.
   let pad = select(spad, 0.0, i.paint.w < 0.5);
@@ -235,6 +357,13 @@ fn inst(i: VOut) -> vec4f {
       return vec4f(clamp(sd + 0.5, 0.0, 1.0), clamp(0.5 + sd / (2.0 * u.fd.z), 0.0, 1.0), 0.0, -sd);
     }
     return vec4f(g.r, g.g, 0.0, (0.5 - g.g) * 2.0 * u.fd.z);
+  }
+  // A blade's segment (`blade_seg`): what lies past a joint's bisector is the next segment's, by the
+  // pixel's centre, so every pixel is one segment's and no joint is drawn twice.
+  if (i.paint.w > 0.5 && i.paint.w < 1.5 && i.uvr.z > 0.5) {
+    let r = i.size.y * 0.5;
+    if (i.uvr.z > 2.0 && dot(i.local - vec2f(r, r), vec2f(cos(i.uvr.z - 4.0), sin(i.uvr.z - 4.0))) < 0.0) { discard; }
+    if (i.uvr.w > 2.0 && dot(i.local - vec2f(i.size.x - r, r), vec2f(cos(i.uvr.w - 4.0), sin(i.uvr.w - 4.0))) >= 0.0) { discard; }
   }
   var d = box_d(i.local, i.size, i.radius.x);
   if (i.extra.x > 0.0) { d = abs(d + i.extra.x * 0.5) - i.extra.x * 0.5; }

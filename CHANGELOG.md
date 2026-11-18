@@ -8,6 +8,19 @@ crate and the `amenui` npm package (`web/`) always carry the same version, becau
 match the module that `web_app!` generates. The minimum Rust is the one CI builds with (`rust-version`
 in Cargo.toml); raising it is a breaking change before 1.0 only in the second number.
 
+## Blades, gusts and pacing
+
+- `Drawing::blade(Blade)` (`Mark::Blade`): a rooted stroke the field map bends from the flow at its root, worked
+  out on the GPU every frame; it leans by its chord, keeps its length, stays upright at its foot, tapers to half
+  its width and can carry a head glyph on its tip (DESIGN.md §1.26). `Mark` has `Blade`, so exhaustive matches
+  need the new arm.
+- `Cmd::Gust { gust, scope }` (`fieldmap::Gust`): a band that crosses a scope with a wake behind it, worked out from
+  the clock and laid over the map, never put into it: once it has passed, the map is as it was and nothing is
+  asked for (DESIGN.md §1.29). `Cmd` has `Gust`.
+- `El::map_life(energy_life, flow_life)`: the map's lives within an element's box.
+- `Ui::ambient_fps(n)`: frames for what moves by itself at most `n` a second; input and what it starts are not
+  paced until a second after the last input.
+
 ## Ink over pictures and character marks
 
 - Text and shapes drawn over a picture are their own colour there, blended with the picture by their coverage and
