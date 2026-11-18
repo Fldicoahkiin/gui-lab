@@ -239,12 +239,17 @@ fn the_host_path_warms_within_the_budget_and_tells_the_page_how_far_it_is() {
     let mut steps: Vec<(u32, f64)> = vec![];
     let mut seen: Vec<amenui::render::Progress> = vec![];
     let mut frames = 0;
+    // The warm-up is timed by a clock of its own, which runs 0.9 ms between readings (one piece reads it
+    // twice, and once more before the next): what a step makes, and how long it says it took, do not
+    // depend on how busy the machine is.
+    let mut now = 0.0f64;
+    let mut clock = move || { now += 0.9; now };
     loop {
         cold.render(&mut a, &look);
         let before = a.warm().map_or(0, |p| p.done);
-        let t0 = std::time::Instant::now();
-        let p = cold.r.warm_frame(&mut a, budget);
-        let ms = t0.elapsed().as_secs_f64() * 1000.0;
+        let (mut first, mut last) = (None, 0.0);
+        let p = cold.r.warm_frame_timed(&mut a, budget, &mut || { let r = clock(); first.get_or_insert(r); last = r; r });
+        let ms = last - first.unwrap_or(last);
         frames += 1;
         assert!(frames < 200, "the warm-up ends");
         steps.push((p.done - before, ms));

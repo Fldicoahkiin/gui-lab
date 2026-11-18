@@ -65,18 +65,21 @@ impl Renderer {
     /// `Warmup::step`. After the first piece a call goes on only while the next one, as long as the
     /// longest of its kind so far took, still ends within 1.5 × `budget_ms` (a kind not seen yet waits
     /// for the next call). A renderer that is not warming up says `Stage::Ready` at once.
-    pub fn warm_step(&mut self, budget_ms: f32, text: &mut Text) -> Progress {
-        let t0 = crate::perf::now_ms();
+    pub fn warm_step(&mut self, budget_ms: f32, text: &mut Text) -> Progress { self.warm_step_timed(budget_ms, text, &mut crate::perf::now_ms) }
+    /// `warm_step` timed by `clock` (ms) instead of the wall clock: what it makes in a call depends only
+    /// on what `clock` says (for tests that must not depend on how busy the machine is).
+    pub fn warm_step_timed(&mut self, budget_ms: f32, text: &mut Text, clock: &mut dyn FnMut() -> f64) -> Progress {
+        let t0 = clock();
         let mut did = 0;
         loop {
             let Some(p) = self.warm.as_mut() else { return self.warm_progress() };
             let Some(&job) = p.jobs.last() else { self.warm = None; return self.warm_progress() };
             if did > 0 {
-                let spent = (crate::perf::now_ms() - t0) as f32;
+                let spent = (clock() - t0) as f32;
                 if spent >= budget_ms || spent + p.cost[job as usize] > 1.5 * budget_ms { return self.warm_progress(); }
             }
             p.jobs.pop();
-            let tj = crate::perf::now_ms();
+            let tj = clock();
             let was_cold = p.cold() || matches!(job, Job::MarksBegin | Job::MarksSet | Job::MarksUpload | Job::Post);
             match job {
                 Job::MarksBegin => {
@@ -96,7 +99,7 @@ impl Renderer {
             let p = self.warm.as_mut().expect("still warming");
             p.done += 1;
             did += 1;
-            let took = (crate::perf::now_ms() - tj) as f32;
+            let took = (clock() - tj) as f32;
             let c = &mut p.cost[job as usize];
             *c = if c.is_finite() { c.max(took) } else { took };
             if was_cold && !p.cold() { self.condense = true; }
@@ -118,9 +121,11 @@ impl Renderer {
     /// within `budget_ms` ([`WARM_MS`] by default) and tell the runtime how far it is
     /// (`Ui::warm`). Nothing to do, and nothing told, once the renderer is warm and the runtime knows.
     /// Returns what the step made it to (`Stage::Ready`, done = total, on the last one).
-    pub fn warm_frame<S, M: Clone>(&mut self, ui: &mut crate::ui::Ui<S, M>, budget_ms: f32) -> Progress {
+    pub fn warm_frame<S, M: Clone>(&mut self, ui: &mut crate::ui::Ui<S, M>, budget_ms: f32) -> Progress { self.warm_frame_timed(ui, budget_ms, &mut crate::perf::now_ms) }
+    /// `warm_frame` timed by `clock` (ms) instead of the wall clock (see `warm_step_timed`).
+    pub fn warm_frame_timed<S, M: Clone>(&mut self, ui: &mut crate::ui::Ui<S, M>, budget_ms: f32, clock: &mut dyn FnMut() -> f64) -> Progress {
         if self.warm.is_none() { if ui.warm().is_some() { ui.set_warm(None); } return self.warm_progress(); }
-        let p = self.warm_step(budget_ms, ui.text_mut());
+        let p = self.warm_step_timed(budget_ms, ui.text_mut(), clock);
         ui.set_warm(Some(p));
         p
     }
