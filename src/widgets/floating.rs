@@ -130,7 +130,7 @@ pub fn floating<M: Clone + 'static>(key: &str, f: &Floating, content: El<M>, msg
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn drag(phase: Phase, dx: f32, dy: f32) -> FloatMsg { FloatMsg::Drag(Drag { phase, x: 0.0, y: 0.0, w: 160.0, h: 96.0, dx, dy }) }
+    fn drag(phase: Phase, dx: f32, dy: f32) -> FloatMsg { FloatMsg::Drag(Drag { phase, x: 0.0, y: 0.0, w: 160.0, h: 96.0, dx, dy, t: 0.0 }) }
     fn throw(f: &mut Floating, t0: f32, path: &[(f32, f32)]) -> f32 {
         f.update(drag(Phase::Start, 0.0, 0.0), t0);
         for (i, &(dx, dy)) in path.iter().enumerate() { f.update(drag(if i + 1 == path.len() { Phase::End } else { Phase::Move }, dx, dy), t0 + (i + 1) as f32 / 60.0); }

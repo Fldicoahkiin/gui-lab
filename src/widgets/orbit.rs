@@ -119,7 +119,7 @@ pub fn orbit<M: 'static>(key: &str, mut scene: Scene3d, o: &Orbit, msg: impl Fn(
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn drag(phase: Phase, dx: f32) -> OrbitMsg { OrbitMsg::Drag(Drag { phase, x: 0.0, y: 0.0, w: 100.0, h: 100.0, dx, dy: 0.0 }) }
+    fn drag(phase: Phase, dx: f32) -> OrbitMsg { OrbitMsg::Drag(Drag { phase, x: 0.0, y: 0.0, w: 100.0, h: 100.0, dx, dy: 0.0, t: 0.0 }) }
 
     #[test]
     fn drags_from_the_press_and_coasts_to_a_stop() {

@@ -81,6 +81,8 @@ impl<S: App, M: Clone> Host<S, M> {
         let [sans, pixel, mono] = fonts;
         let faces = crate::text::with_serif(crate::text::with_geist(crate::text::bundled(sans, pixel, mono), crate::text::geist_bytes()), crate::text::serif_bytes());
         let mut ui = make(faces, w, h, scale);
+        // The page hands over every pointer move and wheel; they are laid out once a frame.
+        ui.coalesce(true);
         if !hash.trim_start_matches('#').is_empty() && ui.state.route(hash) { ui.relayout(); }
         ui.set_warm(Some(r.warm_progress()));
         ui.perf_mut().backend = backend_name(adapter.get_info().backend).into();

@@ -14,7 +14,7 @@ struct Drags { seen: Vec<Drag> }
 fn drags(_: &Drags) -> El<Drag> {
     col().key("root").pad(20.0, 20.0)
         .child(space(100.0, 40.0).key("handle").fill(Paint::INK).on_drag_with(Some))
-        .child(space(100.0, 40.0).key("other").on_press(Drag { phase: Phase::End, x: -1.0, y: -1.0, w: 0.0, h: 0.0, dx: 0.0, dy: 0.0 }))
+        .child(space(100.0, 40.0).key("other").on_press(Drag { phase: Phase::End, x: -1.0, y: -1.0, w: 0.0, h: 0.0, dx: 0.0, dy: 0.0, t: 0.0 }))
 }
 
 #[test]

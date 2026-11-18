@@ -248,6 +248,9 @@ pub struct Point {
     pub glyph: Option<usize>,
     /// That glyph's depth.
     pub z: f32,
+    /// When it happened, s on the runtime's clock: the event's own time when the host gives it
+    /// (`Ui::event_time`), so the moves a frame brings together are each at their own time.
+    pub t: f32,
 }
 
 /// How a clip, a pose's alpha or the edge of the window takes text away (`El::reveal_by`): glyph by
@@ -375,6 +378,8 @@ pub struct Drag {
     pub dx: f32,
     /// How far it has moved down since the press.
     pub dy: f32,
+    /// When it happened, s on the runtime's clock (as `Point::t`).
+    pub t: f32,
 }
 impl Drag {
     /// The pointer as a fraction of the element, clamped to 0..1.
@@ -995,7 +1000,7 @@ impl<M> El<M> {
         let f = Rc::new(f);
         let g = f.clone();
         self.on_move = Some(Rc::new(move |p: Option<Point>| g(p)));
-        self.on_drag = Some(Rc::new(move |d: Drag| f(Some(Point { x: d.x, y: d.y, down: d.phase != Phase::End, glyph: None, z: 0.0 }))));
+        self.on_drag = Some(Rc::new(move |d: Drag| f(Some(Point { x: d.x, y: d.y, down: d.phase != Phase::End, glyph: None, z: 0.0, t: d.t }))));
         self.ripple.unframed = true;
         self
     }

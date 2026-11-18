@@ -104,6 +104,8 @@ impl<S: App, M: Clone> Shell<S, M> {
         // Scripts the bundled faces lack come from the system's fonts.
         faces.push(Face::system());
         let mut ui = make(faces, config.width, config.height, window.scale_factor() as f32);
+        // Every pointer move and wheel the window sends is laid out once a frame.
+        ui.coalesce(true);
         ui.perf_mut().backend = format!("{:?}", info.backend);
         ui.perf_mut().adapter = info.name.clone();
         let dark = window.theme() == Some(winit::window::Theme::Dark);

@@ -542,6 +542,8 @@ pub struct Ui<S, M> {
     /// When the pointer event being handled happened (the host's timestamp), if it says: a finger's
     /// speed is measured by these, not by when the events were handled.
     event_t: Option<f32>,
+    /// When the pointer event being handled happened, on the runtime's clock (`Point::t`, `Drag::t`).
+    ev: f32,
     // ── Recomposition (DESIGN.md §1.16) ──
     /// Each recomposing text's glyphs as last painted; the runs in progress by text key; glyphs sliding;
     /// and whether the layout in progress is a page change (a flow), which replaces text instead.
@@ -572,6 +574,14 @@ pub struct Ui<S, M> {
     /// Messages the runtime itself has to send after a layout or paint (visibility, outlines).
     queued: Vec<M>,
     flushing: bool,
+    /// A host that hands over several events a frame (`Ui::coalesce`): inside a pointer move, a wheel or a
+    /// tick, laying out and painting wait for the frame, so the events a frame brings together cost one
+    /// layout.
+    coalesce: bool,
+    defer: u32,
+    /// What waits: a layout (and the paint after it), or only a paint (`Ui::settle`).
+    stale_layout: bool,
+    stale_paint: bool,
     /// Decode transitions running (by key), and each decoding element's instances as last painted
     /// (what its disappearance plays over).
     decodes: HashMap<String, DecodeRun>,
@@ -834,6 +844,7 @@ impl<S, M: Clone> Ui<S, M> {
     pub fn on_key_up(mut self, f: fn(&mut S, Key) -> bool) -> Self { self.released = Some(f); self }
     /// A key let go.
     pub fn key_up(&mut self, k: Key) {
+        self.settle();
         self.dirty = true;
         if let Some(f) = self.released && f(&mut self.state, k) { self.relayout(); }
     }
@@ -857,9 +868,9 @@ impl<S, M: Clone> Ui<S, M> {
             perf: crate::perf::Perf { quality: 1.0, ..Default::default() }, span: 0, painting: false, overlay: 0, overlay_at: 0.0, overlay_box: None, shape_seen: 0.0, hud_idle: false, rebuilt: 0,
             text_capture: None, sel: None, sel_drag: false, clicks: (f32::NEG_INFINITY, 0.0, 0.0, 0), a11y_sent: HashMap::new(), a11y_focus: None,
             tree: TaffyTree::new(), tids: HashMap::new(), mkeys: HashMap::new(), virt_views: HashMap::new(), virt_made: HashMap::new(),
-            scrolling: Scrolling::default(), touch: None, touches: HashSet::new(), touching: false, fling: None, over: HashMap::new(), motion: HashMap::new(), scroll_paint: false, event_t: None,
+            scrolling: Scrolling::default(), touch: None, touches: HashSet::new(), touching: false, fling: None, over: HashMap::new(), motion: HashMap::new(), scroll_paint: false, event_t: None, ev: 0.0,
             recs: HashMap::new(), recomps: HashMap::new(), slides: HashMap::new(), no_recompose: false,
-            meshes: crate::mesh::Library::default(), mesh_hover: None, glyphs: Default::default(), prep: Default::default(), move_over: None, particle_gpu: false, motes: vec![], shed_at: HashMap::new(), shed_owed: HashMap::new(), field_marks: HashMap::new(), seen: HashMap::new(), outlines: HashMap::new(), decodes: HashMap::new(), decode_last: HashMap::new(), last_morph: None, left: Default::default(), queued: vec![], flushing: false, motes_made: 0,
+            meshes: crate::mesh::Library::default(), mesh_hover: None, glyphs: Default::default(), prep: Default::default(), move_over: None, particle_gpu: false, motes: vec![], shed_at: HashMap::new(), shed_owed: HashMap::new(), field_marks: HashMap::new(), seen: HashMap::new(), outlines: HashMap::new(), decodes: HashMap::new(), decode_last: HashMap::new(), last_morph: None, left: Default::default(), queued: vec![], flushing: false, coalesce: false, defer: 0, stale_layout: false, stale_paint: false, motes_made: 0,
             fmap: crate::fieldmap::FieldMap::default(), stirr_at: HashMap::new(), fmap_size: (0.0, 0.0), fmap_ink: u64::MAX, strand_faded: HashMap::new(), strand_cache: HashMap::new(), strand_hold: HashMap::new(), strand_drawn: vec![], trace_drawn: vec![], leaders: vec![], echoes: HashMap::new(), echo_at: f32::NEG_INFINITY, frozen: None, trace_head: HashMap::new(),
         };
         ui.resize(w, h, scale);
@@ -912,6 +923,7 @@ impl<S, M: Clone> Ui<S, M> {
     fn beat_of(&self, t: f32) -> f32 { if self.timing.beat.on() { self.bclock.at(t) } else { t } }
     /// Send a command as the application's `on_commands` would (`Cmd`): it is taken now, with an update.
     pub fn command(&mut self, cmd: Cmd) {
+        self.settle();
         self.sent.push(cmd);
         self.relayout();
     }
@@ -1112,7 +1124,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// input or `next_wake`.
     pub fn needs_frame(&self, now: f32) -> bool {
         let b = self.beat_of(now);
-        self.dirty || self.owed || self.warm.is_some() || self.prep.pending() || self.held(now) || self.moving_at(b) || self.wake_at(b).is_some_and(|w| w <= b)
+        self.dirty || self.stale_layout || self.stale_paint || self.owed || self.warm.is_some() || self.prep.pending() || self.held(now) || self.moving_at(b) || self.wake_at(b).is_some_and(|w| w <= b)
     }
     /// A `Cmd::Hold` is going on: frames go on (the same) until it ends.
     fn held(&self, now: f32) -> bool { self.timing.beat.on() && self.bclock.hold.is_some_and(|(_, until)| now < until) }
@@ -1377,9 +1389,13 @@ impl<S, M: Clone> Ui<S, M> {
         self.clock = t;
         if self.look_of.is_some() { self.timing = Timing::of(&self.look()); }
         self.ramp_births();
-        if let Some(f) = self.ticked && f(&mut self.state, wall) { self.relayout(); }
-        // Preparation in the spare time (`Ui::prepare`): what it changed is shown.
-        if self.prep.run(&mut self.state) { self.relayout(); }
+        // What the state's tick changed is laid out: once, before the frame is drawn, when input is
+        // coalesced (a host that ticks before each event does not lay out for each).
+        self.deferred(|ui| {
+            if let Some(f) = ui.ticked && f(&mut ui.state, wall) { ui.relayout(); }
+            // Preparation in the spare time (`Ui::prepare`): what it changed is shown.
+            if ui.prep.run(&mut ui.state) { ui.relayout(); }
+        });
         let before = (self.marks.at, self.marks.alpha);
         self.aim_marks();
         self.marks_moving = before != (self.marks.at, self.marks.alpha) || self.marks_settling();
@@ -1448,6 +1464,8 @@ impl<S, M: Clone> Ui<S, M> {
     /// control held) but only sends it when it lifts without having scrolled — unless what it is on is
     /// dragged (a slider) or is a text field, or there is nothing to scroll, which it presses at once.
     pub fn pointer_down(&mut self, id: u64, kind: PointerKind, x: f32, y: f32, shift: bool) {
+        self.settle();
+        self.ev = self.event_t.take().unwrap_or(self.clock);
         if kind != PointerKind::Touch { self.touching = false; self.press_with(x, y, shift); return; }
         self.dirty = true;
         self.touches.insert(id);
@@ -1478,16 +1496,18 @@ impl<S, M: Clone> Ui<S, M> {
             self.paint();
             TouchMode::Pending
         };
-        let at = self.event_t.take().unwrap_or(self.clock);
+        let at = self.ev;
         self.touch = Some(Touch { id, start: (x, y), last: (x, y), samples: [(at, x, y)].into(), mode });
     }
     /// The time (on the runtime's clock) the next pointer event happened, when the host knows it; a
     /// finger's speed is measured from these.
     pub fn event_time(&mut self, t: f32) { self.event_t = Some(self.beat_of(t)); }
     /// A pointer moved (a mouse or pen also hovers).
-    pub fn pointer_moved(&mut self, id: u64, kind: PointerKind, x: f32, y: f32) {
-        if kind != PointerKind::Touch { self.touching = false; self.pointer_move(x, y); return; }
+    pub fn pointer_moved(&mut self, id: u64, kind: PointerKind, x: f32, y: f32) { self.deferred(|ui| ui.pointer_moved_now(id, kind, x, y)) }
+    fn pointer_moved_now(&mut self, id: u64, kind: PointerKind, x: f32, y: f32) {
         let now = self.event_t.take().unwrap_or(self.clock);
+        self.ev = now;
+        if kind != PointerKind::Touch { self.touching = false; self.pointer_move_now(x, y); return; }
         let Some(t) = &mut self.touch else { return };
         if t.id != id || t.mode == TouchMode::Cancelled { return; }
         t.samples.push_back((now, x, y));
@@ -1495,7 +1515,7 @@ impl<S, M: Clone> Ui<S, M> {
         let (last, start) = (t.last, t.start);
         t.last = (x, y);
         match t.mode.clone() {
-            TouchMode::Direct => self.pointer_move(x, y),
+            TouchMode::Direct => self.pointer_move_now(x, y),
             TouchMode::Pending => {
                 let (dx, dy) = (x - start.0, y - start.1);
                 if dx.hypot(dy) < self.scrolling.slop { return; }
@@ -1552,6 +1572,8 @@ impl<S, M: Clone> Ui<S, M> {
     /// A pointer let go. A finger that scrolled flings on at its speed (at most `max_velocity`); one that
     /// did not is a tap: the press is sent now.
     pub fn pointer_up(&mut self, id: u64, kind: PointerKind, x: f32, y: f32) {
+        self.settle();
+        self.ev = self.event_t.take().unwrap_or(self.clock);
         if kind != PointerKind::Touch { self.release(x, y); return; }
         self.dirty = true;
         self.touches.remove(&id);
@@ -1581,6 +1603,7 @@ impl<S, M: Clone> Ui<S, M> {
     }
     /// A pointer the system took away (a gesture of its own): nothing is sent.
     pub fn pointer_cancel(&mut self, id: u64) {
+        self.settle();
         self.dirty = true;
         self.touches.remove(&id);
         let Some(t) = self.touch.take_if(|t| t.id == id) else { return };
@@ -1603,7 +1626,8 @@ impl<S, M: Clone> Ui<S, M> {
     }
 
     /// Logical px.
-    pub fn pointer_move(&mut self, x: f32, y: f32) {
+    pub fn pointer_move(&mut self, x: f32, y: f32) { self.ev = self.event_t.take().unwrap_or(self.clock); self.deferred(|ui| ui.pointer_move_now(x, y)) }
+    fn pointer_move_now(&mut self, x: f32, y: f32) {
         self.dirty = true;
         let s = self.scale;
         self.keyboard = false;
@@ -1649,7 +1673,7 @@ impl<S, M: Clone> Ui<S, M> {
         if let (Some(i), Some((x, y))) = (now, at) && let Some(f) = self.nodes[i].on_move.clone() {
             let (lx, ly) = self.local_in(i, x, y);
             let (glyph, z) = self.glyph_in(i, x, y);
-            if let Some(m) = f(Some(crate::el::Point { x: lx, y: ly, down: false, glyph, z })) { self.send(m); }
+            if let Some(m) = f(Some(crate::el::Point { x: lx, y: ly, down: false, glyph, z, t: self.ev })) { self.send(m); }
         }
     }
     /// A window point (logical px) in element `i`'s own coordinates: from its top left, or in a
@@ -1686,18 +1710,19 @@ impl<S, M: Clone> Ui<S, M> {
         let at = self.nodes.iter().position(|n| n.key == c.key);
         if let Some(i) = at { c.rect = self.nodes[i].rect; }
         let r = c.rect;
-        let mut d = Drag { phase, x: x - r.x, y: y - r.y, w: r.w, h: r.h, dx: x - c.start.0, dy: y - c.start.1 };
+        let mut d = Drag { phase, x: x - r.x, y: y - r.y, w: r.w, h: r.h, dx: x - c.start.0, dy: y - c.start.1, t: self.ev };
         // A canvas is dragged in its drawing's space.
         if let Some(i) = at && let Content::Canvas(dr) = &self.nodes[i].content {
             let inner = self.nodes[i].inner;
             let k = dr.w / inner.w.max(1e-3);
-            d = Drag { phase, x: (x - inner.x) * k, y: (y - inner.y) * k, w: dr.w, h: dr.h, dx: d.dx * k, dy: d.dy * k };
+            d = Drag { phase, x: (x - inner.x) * k, y: (y - inner.y) * k, w: dr.w, h: dr.h, dx: d.dx * k, dy: d.dy * k, t: d.t };
         }
         let Some(c) = &self.capture else { return };
         if let Some(m) = (c.handler)(d) { self.send(m); }
     }
     /// The pointer left the window.
     pub fn pointer_leave(&mut self) {
+        self.settle();
         self.dirty = true;
         self.field.pointer = [-1e5, -1e5, 0.0, 0.0];
         self.move_hover(None);
@@ -1713,6 +1738,7 @@ impl<S, M: Clone> Ui<S, M> {
     pub fn press(&mut self, x: f32, y: f32) { self.press_with(x, y, false); }
     /// A press with Shift held or not (Shift extends a text selection).
     pub fn press_with(&mut self, x: f32, y: f32, shift: bool) {
+        self.settle();
         // A press without a release before it (a lost pointer-up) ends the old capture.
         self.capture = None;
         self.text_capture = None;
@@ -1781,6 +1807,7 @@ impl<S, M: Clone> Ui<S, M> {
 
     /// The mouse button came up at (`x`, `y`).
     pub fn release(&mut self, x: f32, y: f32) {
+        self.settle();
         self.dirty = true;
         if let Some(k) = self.text_capture.take() && self.field_at().is_some_and(|f| self.nodes[f].key == k)
             && let Some(at) = self.field_at().and_then(|f| self.leaf_of(f)).and_then(|l| self.text_hit(l, x, y)) {
@@ -1800,7 +1827,8 @@ impl<S, M: Clone> Ui<S, M> {
     pub fn wheel(&mut self, x: f32, y: f32, dy: f32) { self.wheel_xy(x, y, 0.0, dy); }
     /// A wheel with both axes. A horizontal scroll node takes `dx`, or `dy` when there is no `dx`
     /// (most wheels only turn one way).
-    pub fn wheel_xy(&mut self, x: f32, y: f32, dx: f32, dy: f32) {
+    pub fn wheel_xy(&mut self, x: f32, y: f32, dx: f32, dy: f32) { self.deferred(|ui| ui.wheel_xy_now(x, y, dx, dy)) }
+    fn wheel_xy_now(&mut self, x: f32, y: f32, dx: f32, dy: f32) {
         self.dirty = true;
         self.heard();
         let mut at = self.hit(x, y);
@@ -1822,6 +1850,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// Down / Home / End in a multi-line field as moves by the layout, anything else as a key (Cmd+A,
     /// Cmd+Z…). Returns whether anything used it.
     pub fn key_mods(&mut self, k: Key, mods: Mods) -> bool {
+        self.settle();
         let shift = mods.shift;
         self.dirty = true;
         self.heard();
@@ -1929,6 +1958,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// What changed in the mirror since the last call (the same keyed comparison as layout's): elements
     /// added or changed, elements gone, and where focus is now if it moved.
     pub fn a11y_diff(&mut self) -> Vec<A11yOp> {
+        self.settle();
         let now = self.a11y();
         let mut ops = vec![];
         let keys: HashSet<&str> = now.iter().map(|n| n.key.as_str()).collect();
@@ -1944,12 +1974,14 @@ impl<S, M: Clone> Ui<S, M> {
     }
     /// Assistive technology moved focus to the element `key`.
     pub fn focus_key(&mut self, key: &str) {
+        self.settle();
         self.dirty = true;
         if self.node(key).is_some_and(|n| n.focusable) { self.keyboard = true; self.set_focus(Some(key.to_owned())); }
     }
     /// Assistive technology activated the element `key` (a click on its mirror): the same message as a
     /// press or Enter, with the same front and commit. Returns whether it did anything.
     pub fn activate(&mut self, key: &str) -> bool {
+        self.settle();
         self.dirty = true;
         self.heard();
         let Some(i) = self.nodes.iter().position(|n| n.key == key) else { return false };
@@ -1990,6 +2022,7 @@ impl<S, M: Clone> Ui<S, M> {
     }
     /// Text typed (or committed by an input method, or dropped in), for the focused field.
     pub fn text_input(&mut self, s: &str) -> bool {
+        self.settle();
         self.dirty = true;
         self.heard();
         self.keyboard = true;
@@ -1997,17 +2030,19 @@ impl<S, M: Clone> Ui<S, M> {
     }
     /// An input method's composition so far (`cursor`: a byte range in it); empty text cancels it.
     pub fn ime_preedit(&mut self, text: &str, cursor: Option<(usize, usize)>) -> bool {
+        self.settle();
         self.dirty = true;
         self.keyboard = true;
         self.send_text(TextInput::Compose { text: text.into(), cursor })
     }
     /// An input method committed `text` (empty: the composition ended with nothing).
     pub fn ime_commit(&mut self, text: &str) -> bool {
+        self.settle();
         self.dirty = true;
         if text.is_empty() { self.send_text(TextInput::Compose { text: String::new(), cursor: None }) } else { self.text_input(text) }
     }
     /// The clipboard's text, pasted into the focused field.
-    pub fn paste(&mut self, s: &str) -> bool { self.dirty = true; self.heard(); self.send_text(TextInput::Paste(s.into())) }
+    pub fn paste(&mut self, s: &str) -> bool { self.settle(); self.dirty = true; self.heard(); self.send_text(TextInput::Paste(s.into())) }
     /// What a copy takes: the focused field's selection, or else the read-only selection (its pieces in
     /// separate text elements joined by line breaks).
     pub fn copy(&self) -> Option<String> {
@@ -2023,6 +2058,7 @@ impl<S, M: Clone> Ui<S, M> {
     }
     /// Copy, and remove the selection from the focused field.
     pub fn cut(&mut self) -> Option<String> {
+        self.settle();
         let c = self.copy()?;
         if self.field_at().is_some() { self.dirty = true; self.send_text(TextInput::Cut); }
         Some(c)
@@ -2030,6 +2066,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// Where the focused field's caret is (logical px): the host puts its hidden text element, and so an
     /// input method's candidate window, there.
     pub fn ime_rect(&mut self) -> Option<Rect> {
+        self.settle();
         let leaf = self.field_at().and_then(|f| self.leaf_of(f))?;
         let n = &self.nodes[leaf];
         let Content::Text { caret, .. } = &n.content else { return None };
@@ -2337,8 +2374,28 @@ impl<S, M: Clone> Ui<S, M> {
         self.field.front_in([x * s, y * s], self.beat_grid(), strength, rect, source, self.timing.wave_life);
     }
 
-    /// View → taffy tree → absolute rects → scene.
+    /// Lay out and paint what pointer moves, wheels and ticks left waiting: the renderer does it before
+    /// it draws, and every other input before it looks at the page.
+    pub fn settle(&mut self) {
+        if self.stale_layout { self.relayout(); } else if self.stale_paint { self.paint(); }
+    }
+    /// Lay out once per frame what pointer moves, wheels and ticks change, before the frame is drawn
+    /// (`Ui::settle`), instead of at each: for a host that hands over several events a frame and ticks
+    /// before each (the web and desktop hosts turn it on). Off, each one lays out at once.
+    pub fn coalesce(&mut self, on: bool) { self.coalesce = on; if !on { self.settle(); } }
+    /// Run `f` with laying out and painting left for the frame when input is coalesced (`Ui::settle`).
+    fn deferred<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        if !self.coalesce { return f(self); }
+        self.defer += 1;
+        let r = f(self);
+        self.defer -= 1;
+        r
+    }
+    /// View → taffy tree → absolute rects → scene (inside a pointer move or a wheel, once before the
+    /// frame instead: `Ui::settle`).
     pub fn relayout(&mut self) {
+        if self.defer > 0 { self.stale_layout = true; self.dirty = true; return; }
+        self.stale_layout = false;
         let sp = self.span_begin();
         self.relayout_inner();
         self.span_end(sp);
@@ -2775,6 +2832,8 @@ impl<S, M: Clone> Ui<S, M> {
 
     /// Nodes → instances. Identity is key + part (+ glyph id), so unchanged things keep their birth time.
     fn paint(&mut self) {
+        if self.defer > 0 { self.stale_paint = true; self.dirty = true; return; }
+        self.stale_paint = false;
         self.paint_once();
         // The glyph atlas filled up (many sizes over a long run): start it over and paint again, so every
         // glyph on the page is in the new one. What was kept from before (tiles, ghosts) is dropped.
@@ -3032,7 +3091,7 @@ impl<S, M: Clone> Ui<S, M> {
                         // The pieces from the content box's corner, kept while the text is the same.
                         let groups = self.text.reveal_pieces(para, n.reveal_by);
                         let window = [0.0, 0.0, self.size.0 * s, self.size.1 * s];
-                        crate::form::reveal_whole(&mut posed, &groups, (ox, oy), [clip[0].max(window[0]), clip[1].max(window[1]), clip[2].min(window[2]), clip[3].min(window[3])]);
+                        crate::form::reveal_whole(&mut posed, &groups, (0.0, 0.0), [clip[0].max(window[0]), clip[1].max(window[1]), clip[2].min(window[2]), clip[3].min(window[3])]);
                     }
                     if pose.is_some() || n.reveal_by != crate::el::Reveal::Glyph { crate::form::arrange(&mut posed, n.form.as_ref().filter(|_| pose.is_some()), &self.text.pixels); }
                     let glyphs: Vec<(Instance, u32)> = posed.iter().map(|g| (g.inst, g.glyph)).collect();

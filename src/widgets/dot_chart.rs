@@ -185,7 +185,7 @@ mod tests {
     fn dragging_a_knot_recomputes_the_curve() {
         let mut c = DotChart::default();
         let before = c.value(28);
-        let d = |phase, dy| ChartMsg::Knot(3, Drag { phase, x: 0.0, y: 0.0, w: 14.0, h: 14.0, dx: 0.0, dy });
+        let d = |phase, dy| ChartMsg::Knot(3, Drag { phase, x: 0.0, y: 0.0, w: 14.0, h: 14.0, dx: 0.0, dy, t: 0.0 });
         c.update(d(Phase::Start, 0.0));
         c.update(d(Phase::Move, -60.0));
         assert!(c.value(28) > before, "dragged up, the curve rose there");

@@ -163,7 +163,7 @@ pub fn bottom_sheet<M: Clone + 'static>(key: &str, s: &Sheet, title: &str, body:
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn drag(phase: Phase, dy: f32) -> SheetMsg { SheetMsg::Drag(Drag { phase, x: 0.0, y: 0.0, w: 360.0, h: 640.0, dx: 0.0, dy }) }
+    fn drag(phase: Phase, dy: f32) -> SheetMsg { SheetMsg::Drag(Drag { phase, x: 0.0, y: 0.0, w: 360.0, h: 640.0, dx: 0.0, dy, t: 0.0 }) }
     fn settle(s: &mut Sheet, mut t: f32) -> f32 { let end = t + 10.0; while s.moving() && t < end { t += 1.0 / 60.0; s.step(t); } t }
     /// Drag by `total` px over `secs`, in 60 Hz steps, and let go.
     fn swipe(s: &mut Sheet, t0: f32, total: f32, secs: f32) -> f32 {

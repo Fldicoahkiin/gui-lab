@@ -918,6 +918,8 @@ impl Renderer {
     }
 
     pub fn draw<S, M: Clone>(&mut self, target: &wgpu::TextureView, ui: &mut Ui<S, M>, look: &Look) {
+        // What the frame's input left waiting is laid out first (`Ui::settle`).
+        ui.settle();
         let started = crate::perf::now_ms();
         self.reduced = ui.reduced_motion();
         self.resize(ui.device_size().0, ui.device_size().1);

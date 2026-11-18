@@ -99,9 +99,10 @@ impl Pointer {
     pub fn hear(&mut self, p: Option<Point>, now: f32) {
         match p {
             Some(p) => {
-                let dt = (now - self.last.2).max(1.0 / 240.0);
+                // The speed between the moves' own times (several can come in one frame).
+                let dt = (p.t - self.last.2).max(1.0 / 240.0);
                 if self.over { (self.vx, self.vy) = ((p.x - self.last.0) / dt, (p.y - self.last.1) / dt); }
-                self.last = (p.x, p.y, now);
+                self.last = (p.x, p.y, p.t);
                 self.over = true;
                 self.down = p.down;
                 let (vx, vy) = (self.x.velocity, self.y.velocity);
