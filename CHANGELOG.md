@@ -13,7 +13,8 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
 - `Drawing::blade(Blade)` (`Mark::Blade`): a rooted stroke the field map bends from the flow at its root, worked
   out on the GPU every frame; its lean is its tip's tangent, its root leans 0.35 of that and it bends above its
   stiff part (`Blade::tangent`, `Blade::shape`), drawn in 10, 6 or 2 segments by its length; it keeps its length,
-  tapers to half its width and can carry a head glyph on its tip, turned with it (DESIGN.md §1.26). `Mark` has `Blade`, so exhaustive matches
+  tapers to half its width and can carry a head glyph on its tip, turned with it and going to `lean_paint` with
+  the stroke; its own lean and the map's add, within ±`max_lean` (DESIGN.md §1.26). `Mark` has `Blade`, so exhaustive matches
   need the new arm.
 - `Cmd::Gust { gust, scope }` (`fieldmap::Gust`): a band that crosses a scope with a wake behind it, worked out from
   the clock and laid over the map, never put into it: once it has passed, the map is as it was and nothing is
@@ -24,12 +25,18 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
 - The warm-up goes on in idle time (`Renderer::warm_idle`; the web module's `warm_idle`, which `web/amenui.js`
   calls from `requestIdleCallback`): a page that draws nothing after its first frame is still warm soon, and its
   pieces no longer land in the frames of the next input. A warm-up step no longer asks for a frame of its own.
-  A page shell of its own calls `warm_idle` the same way.
+  A page shell of its own calls `warm_idle` the same way, asking for the next idle callback whatever a call did
+  (a pipeline compile that blocked, a call that threw or found the module busy) until `warm()` is empty.
+- The field map's ink for `creep` is read again only for instances that changed since the last scene, and not for
+  blades or what lies inside a box with lives of its own, where nothing creeps.
 - `Cmd::Flow` grows a subtree with a picture on both pages: the picture is one, in a box and a visible part
   that go from the old to the new on whole pixels; the rest of the old subtree rides with it at its own size
   and fades, the rest of the new one and what is new outside the flows comes in once it has landed, and the
-  old page's ground stays around it until then (DESIGN.md §1.10). A flier's clip goes from the old to the
-  new one instead of covering both.
+  old page's ground stays around it until then (DESIGN.md §1.10). The growing picture and its riders are drawn
+  in the page pass over what dissolves, so the notes keep their colour and size and no other window is drawn
+  over it; a frame along the window's edge fades under it; a picture that shrinks back takes the old page with
+  it, the new page's ground around it from the first frame. A flier's clip goes from the old to the new one
+  instead of covering both.
 - `Ui::ambient_fps(n)`: frames for what moves by itself at most `n` a second; input and what it starts are not
   paced until a second after the last input.
 

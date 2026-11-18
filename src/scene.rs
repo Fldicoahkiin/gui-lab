@@ -42,8 +42,8 @@ pub struct Instance {
     ///
     /// Blades (draw.rs `Blade`) are worked out by the vertex stage from the map at their root: a segment
     /// is a shape with `extra[1]` ≥ 1 (1 + its lean paint), its `rect` the box the blade can reach and
-    /// its numbers in `uv`; a head is a glyph with `extra[1]` ≤ −1 (−1 − its own lean) and the blade's
-    /// root, length and stiffness in `xf` (shader.wgsl `blade_seg`, `blade_head`).
+    /// its numbers in `uv`; a head is a glyph with `extra[1]` ≤ −1 (−1 − its own lean), the lean paint in
+    /// `extra[0]` and the blade's root, length and stiffness in `xf` (shader.wgsl `blade_seg`, `blade_head`).
     pub xf: [f32; 4],
 }
 impl Instance {

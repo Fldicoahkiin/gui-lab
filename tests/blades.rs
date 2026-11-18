@@ -51,8 +51,8 @@ const H: u32 = 140;
 struct One { lean: f32, head: bool }
 fn one(s: &One) -> El<()> {
     let mut d = Drawing::new(W as f32, H as f32);
-    let head = s.head.then_some(Head { ch: 'l', size: 14.0, font: Font::Mono, paint: Paint::ACCENT });
-    d.blade(Blade { root: (120.0, 120.0), len: 80.0, width: 3.0, lean: s.lean.to_radians(), max_lean: 72f32.to_radians(), head, ..Blade::default() });
+    let head = s.head.then_some(Head { ch: 'l', size: 14.0, font: Font::Mono, paint: Paint::INK });
+    d.blade(Blade { root: (120.0, 120.0), len: 80.0, width: 3.0, lean: s.lean.to_radians(), max_lean: 72f32.to_radians(), lean_paint: Paint::ACCENT, head, ..Blade::default() });
     col().key("page").width(W as f32).height(H as f32).child(canvas(d).key("field").width(W as f32))
 }
 fn shot(o: &mut Offscreen, s: One) -> Vec<u8> {
@@ -84,17 +84,21 @@ fn the_gpu_draws_a_blade_where_its_shape_says_with_its_head_on_the_tip() {
         let (ux, uy) = (a.to_radians().sin(), -a.to_radians().cos());
         assert!(!inked(&f, &bare, 120.0 + t[0] + ux * 4.0, 120.0 + t[1] + uy * 4.0), "{a}°: ink past the tip");
     }
-    // The head: its ink starts at the tip and goes on along the tip's tangent; the stem is the blade's paint.
-    for a in [0.0f32, 57.0] {
-        let f = shot(&mut o, One { lean: a, head: true });
+    // The head: its ink starts at the tip and goes on along the tip's tangent, not down the stem; its
+    // colour goes from its paint (ink) to the blade's lean paint (the accent) as the stroke's does.
+    for a in [0.0f32, 57.0, 72.0] {
+        let (f, stem) = (shot(&mut o, One { lean: a, head: true }), shot(&mut o, One { lean: a, head: false }));
         if let Ok(d) = std::env::var("DUMP") { std::fs::write(format!("{d}/head-{a}.png"), amenui::offscreen::png_bytes(W, H, &f)).unwrap(); }
         let t = Blade::at(1.0, a.to_radians(), 0.5, 80.0);
         let (sx, sy) = (a.to_radians().sin(), -a.to_radians().cos());
-        // The accent (orange) at a thin stroke's coverage: red well over blue; the stem is grey.
-        let near = |q: [i32; 3]| q[0] - q[2] > 40;
-        let along = (2..14).filter(|d| near(px(&f, 120.0 + t[0] + sx * *d as f32, 120.0 + t[1] + sy * *d as f32))).count();
-        assert!(along >= 2, "{a}°: the head's ink along the tip's tangent: {along} px");
-        assert!(!near(px(&f, 120.0 + t[0] - sx * 3.0, 120.0 + t[1] - sy * 3.0)), "{a}°: the head runs down the stem");
+        let head = |x: f32, y: f32| inked(&f, &stem, x, y);
+        let pts: Vec<(f32, f32)> = (2..14).map(|d| (120.0 + t[0] + sx * d as f32, 120.0 + t[1] + sy * d as f32)).filter(|&(x, y)| head(x, y)).collect();
+        assert!(pts.len() >= 2, "{a}°: the head's ink along the tip's tangent: {} px", pts.len());
+        assert!(!head(120.0 + t[0] - sx * 3.0, 120.0 + t[1] - sy * 3.0), "{a}°: the head runs down the stem");
+        // The accent (orange) at a thin stroke's coverage: red well over blue; the ink is white.
+        let orange = pts.iter().filter(|&&(x, y)| { let q = px(&f, x, y); q[0] - q[2] > 40 }).count();
+        if a == 0.0 { assert_eq!(orange, 0, "upright, the head is not in the lean paint"); }
+        if a == 72.0 { assert!(orange * 5 >= pts.len() * 4, "leaning its most, the head is in the lean paint: {orange} of {} px", pts.len()); }
     }
 }
 

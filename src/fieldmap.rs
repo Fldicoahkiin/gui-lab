@@ -371,6 +371,12 @@ impl FieldMap {
     }
     /// Which nodes have ink (`creep`): the coverage of the scene at each node, 0..1.
     pub fn set_ink(&mut self, ink: Vec<f32>) { if ink.len() == self.e.len() { self.ink = ink; } }
+    /// How much ink the node nearest (x, y) (logical px) has, 0..1 (`set_ink`).
+    pub fn ink_at(&self, x: f32, y: f32) -> f32 {
+        if self.cols == 0 || self.rows == 0 || self.ink.is_empty() { return 0.0; }
+        let (i, j) = (((x / self.cell).round().max(0.0) as usize).min(self.cols - 1), ((y / self.cell).round().max(0.0) as usize).min(self.rows - 1));
+        self.ink[j * self.cols + i]
+    }
 
     /// Let `dt` seconds pass: as many fixed steps as are owed. Whether the bytes changed.
     pub fn advance(&mut self, dt: f32, fx: &MapFx) -> bool {

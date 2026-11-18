@@ -255,3 +255,20 @@ fn a_press_front_that_outlives_its_page_runs_on_as_a_whole_ring() {
     eprintln!("pixels changed by quadrant about the press: {quads:?}");
     assert!(quads.iter().all(|q| *q > 0), "the front shows in every quadrant about the press: {quads:?}");
 }
+
+#[test]
+fn the_ink_for_creep_is_read_again_only_where_the_scene_changed() {
+    let mut ui = open(plain());
+    let (c0, s0) = (ui.counters().inked, ui.counters().scenes);
+    let page = ui.instances_of("page").len() as u64;
+    drag(&mut ui, &[]);
+    let (c1, s1) = (ui.counters().inked, ui.counters().scenes);
+    assert!(s1 > s0 + 10, "the drag built {} scenes", s1 - s0);
+    // Each new scene reads the box (it moved) and nothing of the page that stayed where it was.
+    let boxed = ui.instances_of("float").len() as u64;
+    assert!(c1 - c0 <= (s1 - s0) * boxed, "{} instances read over {} scenes (the box is {boxed}, the page {page})", c1 - c0, s1 - s0);
+    // What it read is the scene's ink: on the shapes, none on the bare page between them.
+    let ink = |key: &str| { let (x, y) = ui.node(key).expect(key).rect.center(); ui.fieldmap().ink_at(x, y) };
+    assert!(ink("far-shape") > 0.9, "the far shape's ink: {}", ink("far-shape"));
+    assert_eq!(ui.fieldmap().ink_at(1200.0, 700.0), 0.0);
+}

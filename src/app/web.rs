@@ -255,9 +255,10 @@ macro_rules! web_app {
             }
             #[wasm_bindgen(wasm_bindgen = $crate::app::web::__rt::wasm_bindgen)]
             pub fn resize(w: u32, h: u32, scale: f32) { host(|s| s.resize(w, h, scale)); }
-            /// The warm-up in idle time: 1 while pieces are left, plus 2 when a frame is wanted now.
+            /// The warm-up in idle time: 1 while pieces are left, plus 2 when a frame is wanted now. A call
+            /// that finds the module busy says 1, so the page asks again.
             #[wasm_bindgen(wasm_bindgen = $crate::app::web::__rt::wasm_bindgen)]
-            pub fn warm_idle(budget_ms: f32, t: f32) -> u32 { host(|s| s.warm_idle(budget_ms, t)).unwrap_or(0) }
+            pub fn warm_idle(budget_ms: f32, t: f32) -> u32 { host(|s| s.warm_idle(budget_ms, t)).unwrap_or(1) }
             #[wasm_bindgen(wasm_bindgen = $crate::app::web::__rt::wasm_bindgen)]
             pub fn pointer_move(id: u32, k: u32, x: f32, y: f32, t: f32, te: f32) { host(|s| s.pointer_move(id, k, (x, y), t, te)); }
             #[wasm_bindgen(wasm_bindgen = $crate::app::web::__rt::wasm_bindgen)]

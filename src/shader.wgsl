@@ -182,9 +182,19 @@ fn blade_at(s: f32, th: f32, st: f32, len: f32) -> vec2f {
   return p;
 }
 fn blade_point(k: f32, n: f32, th: f32, st: f32, len: f32) -> vec2f { return blade_at(blade_joint(k, n, st), th, st, len); }
-/// A blade's lean now (its tip's angle): its own, and the map's flow at its root within ±max_lean.
+/// A blade's lean now (its tip's angle): its own and the map's flow at its root (max_lean × flow.x)
+/// added, all of it within ±max_lean (and ±85°).
 fn blade_lean(root: vec2f, own: f32, most: f32) -> f32 {
-  return clamp(own + most * clamp(fmap_flow(root).x, -1.0, 1.0), -BLADE_MOST, BLADE_MOST);
+  let m = min(most, BLADE_MOST);
+  return clamp(own + most * clamp(fmap_flow(root).x, -1.0, 1.0), -m, m);
+}
+/// A paint going to a blade's lean paint (`1 +` its tone + 256 × its accent, 255ths) as it leans `th`
+/// of the most `most`.
+fn blade_paint(p: vec4f, code: f32, th: f32, most: f32) -> vec4f {
+  let f = clamp(abs(th) / max(most, 1e-3), 0.0, 1.0);
+  let lp = code - 1.0;
+  let la = floor(lp / 256.0); let lt = lp - la * 256.0;
+  return vec4f(mix(p.x, lt / 255.0, f), mix(p.y, la / 255.0, f), p.z, p.w);
 }
 /// A blade's segment as a stroke with round ends (a canvas line): uv.x stiffness, uv.y the most lean,
 /// uv.z its own lean, uv.w which segment + 16 × how many + 256 × its width × 16; extra.y 1 + the lean
@@ -228,18 +238,16 @@ fn blade_seg(iv: VIn) -> VIn {
   i.rect = vec4f(c.x - (l + ww) * 0.5, c.y - ww * 0.5, l + ww, ww);
   i.uv = vec4f(ww * 0.5, 0.0, cuts);
   i.xf = vec4f(dir.x - 1.0, -dir.y, dir.y, dir.x - 1.0);
-  let f = clamp(abs(th) / max(iv.uv.y, 1e-3), 0.0, 1.0);
-  let lp = i.extra.y - 1.0;
-  let la = floor(lp / 256.0); let lt = lp - la * 256.0;
-  i.paint = vec4f(mix(i.paint.x, lt / 255.0, f), mix(i.paint.y, la / 255.0, f), i.paint.z, i.paint.w);
+  i.paint = blade_paint(i.paint, i.extra.y, th, iv.uv.y);
   i.extra.y = 0.0;
   i.look.z = 0.0; i.look.w = 0.0;
   i.resp.y = 0.0;
   return i;
 }
 /// A blade's head (a glyph): rect upright, the bottom middle of its ink on the upright tip; xf the root
-/// (x, y), the length, stiffness × 100 + 128 × the most lean (0.1°); extra.y −(1 + (own lean + 90°) × 10).
-/// Turned about that point with the tip's tangent (the lean) and moved onto the tip.
+/// (x, y), the length, stiffness × 100 + 128 × the most lean (0.1°); extra.y −(1 + (own lean + 90°) × 10);
+/// extra.x the blade's lean paint as a segment's extra.y. Turned about that point with the tip's tangent
+/// (the lean) and moved onto the tip; its paint goes to the lean paint as the blade's does.
 fn blade_head(iv: VIn) -> VIn {
   var i = iv;
   let root = i.xf.xy; let len = i.xf.z;
@@ -254,7 +262,8 @@ fn blade_head(iv: VIn) -> VIn {
   let m2 = root + tip + vec2f(cs * mid.x - sn * mid.y, sn * mid.x + cs * mid.y);
   i.rect = vec4f(m2 - i.rect.zw * 0.5, i.rect.zw);
   i.xf = vec4f(cs - 1.0, -sn, sn, cs - 1.0);
-  i.extra.y = 0.0;
+  i.paint = blade_paint(i.paint, i.extra.x, th, most);
+  i.extra.x = 0.0; i.extra.y = 0.0;
   i.look.z = 0.0; i.look.w = 0.0;
   i.resp.y = 0.0;
   return i;

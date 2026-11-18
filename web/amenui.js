@@ -107,13 +107,16 @@ export async function mount(stage, opts) {
     // each idle period makes the next pieces and draws nothing; a frame only when the material arrives.
     // Without requestIdleCallback, an animation frame that does warm-up work only.
     const idle = window.requestIdleCallback ? f => requestIdleCallback(f, { timeout: 200 }) : f => requestAnimationFrame(() => f(null));
+    // A piece that blocks for long (a pipeline compiled in one go), throws, or finds the module busy
+    // never ends it: the next idle period goes on, until the warm-up says it is done.
     const warmIdle = d => {
       if (!w.warm_idle) return;
       const ms = d && !d.didTimeout ? Math.max(1, Math.min(d.timeRemaining(), 6)) : 6;
-      const r = w.warm_idle(ms, now());
+      let r = 1;
+      try { r = w.warm_idle(ms, now()); } catch (e) { console.error(e); }
       if (r & 2) kick();
-      warmUpdate();
-      if (r & 1) idle(warmIdle);
+      try { warmUpdate(); } catch (e) { console.error(e); }
+      if ((r & 1) || warming) idle(warmIdle);
     };
     idle(warmIdle);
     // Text: while a text field has focus the hidden text element sits at its caret and has the keyboard.

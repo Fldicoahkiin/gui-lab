@@ -20,12 +20,12 @@ pub enum Mark {
 /// A rooted stroke that the field map bends (DESIGN.md §1.26): a stalk of grass. It stands on `root`
 /// and is `len` long, `width` wide at the root and half that at the tip (0.5 px at least). The GPU bends
 /// it from the field map's flow at its root every frame: it leans `lean + max_lean × flow.x / drift`
-/// (radians, clockwise; the flow's part within ±`max_lean`, all of it within ±85°), measured as the
+/// (radians, clockwise; its own lean and the flow's added, all of it within ±`max_lean` and ±85°), measured as the
 /// angle of its tip's tangent from upright. Its root leans 0.35 of that and it bends toward the tip
 /// (`Blade::tangent`); `stiff` says how much of it stays straight (0: an even bend from root to tip; 1:
 /// the lower 60 % straight); it keeps its length (`Blade::shape`). Its colour goes from
 /// `paint` to `lean_paint` as it leans. A `head` glyph rides the tip, the bottom centre of its ink on
-/// it, turned with the tip. While only the map moves, nothing of it is worked out on the CPU.
+/// it, turned with the tip, its colour going from its own paint to `lean_paint` with the stroke's. While only the map moves, nothing of it is worked out on the CPU.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Blade {
     /// Where it stands, in the drawing's space.

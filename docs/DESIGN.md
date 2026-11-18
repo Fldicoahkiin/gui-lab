@@ -1085,8 +1085,9 @@ leaving; fingers have no hover).
   (`Renderer::warm_idle`), which draws nothing and asks for no frame except the one after which the look's material
   can be drawn (the page then condenses into it). The native host does it before it waits, coming straight back while
   pieces are left; on the web the exported `warm_idle(budget_ms, t)` (1 while pieces are left, plus 2 when a frame is
-  wanted) is called by `web/amenui.js` from `requestIdleCallback` (an animation frame that does only warm-up work
-  where there is none). A page that asks for no frames after its first is warm within a bounded time of quiet, and
+  wanted; 1 too when the module was busy) is called by `web/amenui.js` from `requestIdleCallback` (an animation frame
+  that does only warm-up work where there is none), and the next idle callback is asked for whatever the call did
+  (a piece that blocked for long, a call that threw) until the warm-up says it is done. A page that asks for no frames after its first is warm within a bounded time of quiet, and
   later input frames make no pieces. On the web the exported `warm()` returns `[done, total]` (empty once warm), and
   `web/amenui.js` sets `aria-busy` on the canvas while it warms and calls `opts.onWarm(done, total)` each time it
   moves on.
@@ -1242,13 +1243,19 @@ loosening to 1 and fading out within `out_ms`; new instances of the new page fad
 A subtree with a picture on both pages grows instead (an index's window into its piece, and back): its first
 picture on each page are paired whatever their places in the subtrees, and the picture is drawn as one, its
 box going from the old one to the new one and shown only inside the part of it that shows, which goes from
-the old one's (the window) to the new one's (the full view); both on whole pixels every frame, on the layer
-above the page. Nothing else of the subtree is paired, since the two pages lay out different things over the
-picture: the rest of the old subtree (notes, boxes, labels) rides with the picture at its own size and colour,
-its centre where the picture takes it, inside the part that shows, without loosening, and fades over
-`out_ms`; the rest of the new subtree, and everything new outside the flows, comes in over `fade_ms` once the
-picture has landed. Until then the look's ground is the old page's (`Ui::look`), so around the picture is the
-page it came from, and the new page's ground comes in under a picture that covers it. Text that flows with it
+the old one's (the window) to the new one's (the full view); both on whole pixels every frame. It is drawn
+in the page pass as the page's last picture, after everything that dissolves, so it is above every other
+window, and what rides on it is ink over a picture (its own colour and size). Nothing else of the subtree is
+paired, since the two pages lay out different things over the picture: the rest of the old subtree (notes,
+boxes, labels) rides with the picture at its own size and colour, its centre where the picture takes it,
+inside the part that shows, without loosening, and fades over `out_ms`; what of it lies along the edge of the
+part that showed (its centre within 3 px of it: a frame round the window) is the window's, and fades over
+`out_ms` where it was, under the picture. The rest of the new subtree, and everything new outside the flows,
+comes in over `fade_ms` once the picture has landed. A picture that grows keeps the look's ground the old
+page's until then (`Ui::look`), so around it is the page it came from, and the new page's ground comes in
+under a picture that covers it. A picture that shrinks takes its page with it: the look's ground is the new
+page's at once, what else of the old page lies in the part that showed rides with the picture too, and what
+lies outside it goes at once, so around the picture is only the new page's ground. Text that flows with it
 (a title) is paired as above and drawn over the picture; neighbouring windows are old instances that dissolve
 under it.
 
@@ -1263,12 +1270,15 @@ easing's ends, exact landing, reversing starts from current progress and returns
 count limit enlarges cells by whole multiples; the runtime's phase times (half loosened, before and after
 the hand-off, the target appears at looseness 1 without condensing, the end), reversing in flight and while
 loosening; flow rects at t = 0 / ½ / 1, kept birth times, unpaired instances dissolving, a straight swap
-without a flow command; the commands of two website pages; `tests/flow.rs` (an index window growing into
-its piece at 420 ms: at 40, 80, 200 and 350 ms one picture in one rect on whole pixels where the ease puts it
-between the window and the full view, its birth time kept, the index's ground around it, every other
-instance drawn at a size and colour one of the pages draws and not loosened over the picture, the title's
-glyphs once each, over the picture and inside their clips; landed, the piece as at rest on its own ground;
-and back, the piece's ground around it until it is in its window). `check`: the hand-off frame (source at looseness 1
+without a flow command; the commands of two website pages; `tests/flow.rs` (pages built as the site's: a
+picture with abs-placed text notes, a `Drawing` over it, shades at a real alpha, a window with a frame drawn
+round it and a live line under it, a neighbouring window; an index window growing into its piece at 420 ms
+and back, both ways at 40, 80, 200 and 350 ms: one picture in one rect on whole pixels where the ease puts
+it, its birth time kept, the index's ground around it, the notes over it in their own colour and no green
+over it, every other instance drawn at a size and colour one of the pages draws and not loosened over the
+picture, the frame and live line gone by their opacity within `out_ms` and never drawn over the picture,
+no other window over it, the title's glyphs once each, over the picture, opaque and inside their clips;
+landed, the new page as at rest on its own ground). `check`: the hand-off frame (source at looseness 1
 against particles at t = 0) and the landing frame (particles at t = 1 against the target at looseness 1),
 under `plain` and `dottr`, differ by ≤ 2/255 per pixel within the elements' bounds (in fact 0); in the light
 theme mid-flight there are particles outside both elements (with a control). `film` gives samples for every
@@ -2189,7 +2199,8 @@ So the foundation changed in five places, with no special cases in the effect pa
   grass. `root`, `len`, `width` (at the root, 1.5 by default; the tip is half of it, 0.5 px at least), its own
   `lean` (0), `max_lean` (57°), `stiff` (0.5), `paint`, `lean_paint` and an optional `head` glyph. Its lean is
   `lean + max_lean · clamp(flow.x / drift, −1, 1)` with the flow read at the root, so vertical flow never lays
-  it down, and never past ±85°; its colour is `mix(paint, lean_paint, |lean| / max_lean)`. The lean is the
+  it down: its own lean and the flow's add, all of it within ±`max_lean` (and ±85°); its colour is
+  `mix(paint, lean_paint, |lean| / max_lean)`, and its head's `mix(head.paint, lean_paint, |lean| / max_lean)`. The lean is the
   angle of the tip's tangent from upright. Along the blade, a share `s` of its length from the root, the tangent
   is `lean · (0.35 + 0.65 · g(s))` (`Blade::tangent`): the root leans 0.35 of the tip. With `stiff` 0, `g(s) = s`,
   one even bend from root to tip; with `stiff` above 0, `g` is 0 over the lower `0.6 · stiff` of the blade (that
@@ -2351,7 +2362,9 @@ release, the page is identical pixel for pixel to how it was before and wants no
 - **Stepping**: a fixed step of 1/60 s; `tick` accumulates elapsed time and steps whenever there is enough (ten
   small steps and one step of ten are equal node by node, so the `render` tool stays byte-deterministic). Each
   step: (1) all three numbers `x ← mix(x, 3 × 3 average, bleed)`; at nodes with ink (`creep`), inked neighbours
-  weigh more and empty ones less, and `bleed` grows, so energy creeps along text and shapes; (2)
+  weigh more and empty ones less, and `bleed` grows, so energy creeps along text and shapes (the ink is the
+  coverage of what reads the map, read again on a new scene only for instances that changed, never for blades or
+  for what lies inside a box with lives of its own, where nothing creeps); (2)
   `e ← max(0, e·exp(−dt/energy_life) − 0.15·dt)`, and the flow's length decays the same way by `flow_life`;
   `meander` turns the flow direction by a slow field (the product of two travelling waves, patches of about 160 px)
   by at most 40° per second, keeping its length; (3) nodes inside an `El::calm` box are cleared. The linear term
@@ -2449,13 +2462,14 @@ there is no flow, and at 0 it is exactly 0); `tests/fieldmap.rs` (dragging the f
 decoration beside the path above 0.3, `Nudge` text 0, legible `Loosen` text within the cap, `Ignore` 0, far away 0,
 the box itself 0; after release and settling into a corner, the map is all 0 within 1.5 s and no frames are wanted;
 under Normcore the map is never written and two seconds draw 0 frames; a press without a drag doesn't stir; with
-reduced motion the flow stays 0; `Cmd::Stir` in its element and path forms); `tests/render.rs` (the same arguments
+reduced motion the flow stays 0; `Cmd::Stir` in its element and path forms; over the drag each new scene reads
+the ink of no more instances than the box has, and the ink is on the shapes and 0 on the bare page); `tests/render.rs` (the same arguments
 with a drag rendered three times are byte-identical); `check` item 19; `bench … map` (one step plus upload at
 1280 × 800 within 0.2 ms); `craft <dir> stirr` (eight frames each in `plain`, `dottr`, `smudgr` and `glitchr`). Blades and
 gusts: `tests/blades.rs` (an 80 px blade at 0, 19, 38, 57 and 72° and `stiff` 0, 0.5 and 1: the tip's tangent
 within 1° of the lean, its lowest 4 px within 2° of 0.35 of it, with `stiff` 1 the lower 48 px within 0.5 px of a
 straight line, neighbouring segments at most 12° apart, the length within 2 %; the GPU draws it on its shape,
-its head along the tip's tangent; a gust of 0.79 over one blade with `max_lean` 72° peaks at 57° ± 0.5°, sways
+its head along the tip's tangent and in its own paint upright, the lean paint at 72° of 72°; a gust of 0.79 over one blade with `max_lean` 72° peaks at 57° ± 0.5°, sways
 back once to 6° ± 0.5° within 0.5 s of the trailing edge and is upright from 1.25 s after the peak, after which
 the map is byte-identical to before and no frame is wanted; a pointer's walk with `map_life(6, 6)`, 40 px wide:
 its last stalk over 3° at 5.0 s and upright at 6.0 ± 0.1 s, the end walked first upright first, then the map

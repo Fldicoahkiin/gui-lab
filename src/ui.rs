@@ -702,11 +702,13 @@ pub struct Ui<S, M> {
     particle_gpu: bool,
     // ── The field map (DESIGN.md §1.29) ──
     /// The map; where each `stirr` element's centre was at the last tick; the window size then; which
-    /// scene the map's ink (for `creep`) was taken from.
+    /// scene the map's ink (for `creep`) was taken from, and the ink each instance put in the nodes then
+    /// (by what it is and where: only an instance that changed is read again).
     fmap: crate::fieldmap::FieldMap,
     stirr_at: HashMap<String, (f32, f32)>,
     fmap_size: (f32, f32),
     fmap_ink: u64,
+    fmap_inks: HashMap<u64, Vec<(u32, f32)>>,
     /// scribblr (DESIGN.md §1.30): page instances whose fill is faded this frame (their own alpha), each
     /// glyph's outlines by its atlas place, size and transform (relative to its rect), the threads held
     /// for a step of the beat (by element: the beat and the pieces), the threads drawn last (for tests and the
@@ -995,7 +997,7 @@ impl<S, M: Clone> Ui<S, M> {
             scrolling: Scrolling::default(), touch: None, touches: HashSet::new(), touching: false, fling: None, over: HashMap::new(), motion: HashMap::new(), scroll_paint: false, event_t: None, ev: 0.0,
             recs: HashMap::new(), recomps: HashMap::new(), slides: HashMap::new(), no_recompose: false,
             meshes: crate::mesh::Library::default(), mesh_hover: None, glyphs: Default::default(), prep: Default::default(), move_over: None, particle_gpu: false, motes: vec![], shed_at: HashMap::new(), shed_owed: HashMap::new(), field_marks: HashMap::new(), seen: HashMap::new(), outlines: HashMap::new(), decodes: HashMap::new(), decode_last: HashMap::new(), last_morph: None, left: Default::default(), queued: vec![], flushing: false, coalesce: false, defer: 0, stale_layout: false, stale_paint: false, motes_made: 0,
-            fmap: crate::fieldmap::FieldMap::default(), stirr_at: HashMap::new(), fmap_size: (0.0, 0.0), fmap_ink: u64::MAX, strand_faded: HashMap::new(), strand_cache: HashMap::new(), strand_hold: HashMap::new(), strand_drawn: vec![], trace_drawn: vec![], leaders: vec![], echoes: HashMap::new(), echo_at: f32::NEG_INFINITY, frozen: None, trace_head: HashMap::new(),
+            fmap: crate::fieldmap::FieldMap::default(), stirr_at: HashMap::new(), fmap_size: (0.0, 0.0), fmap_ink: u64::MAX, fmap_inks: HashMap::new(), strand_faded: HashMap::new(), strand_cache: HashMap::new(), strand_hold: HashMap::new(), strand_drawn: vec![], trace_drawn: vec![], leaders: vec![], echoes: HashMap::new(), echo_at: f32::NEG_INFINITY, frozen: None, trace_head: HashMap::new(),
         };
         ui.resize(w, h, scale);
         ui
@@ -3739,6 +3741,7 @@ impl<S, M: Clone> Ui<S, M> {
                                     g.rect[0] += rx - ax; g.rect[1] += ry - len - ay;
                                     g.xf = [rx, ry, len, sq + 128.0 * mq];
                                     g.extra[1] = -(1.0 + lq);
+                                    g.extra[0] = 1.0 + q(lp.tone) + 256.0 * q(lp.accent);
                                     g.clip = clip;
                                     put(&mut sink, g, ident(&n.key, (j as u32 * 16 + 15) | 0x2000_0000, 2), None);
                                 }
@@ -3980,7 +3983,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// The map over the window at the look's cell size, the calm boxes and the viewer's preference.
     fn fit_map(&mut self) {
         let cell = self.timing.map.cell;
-        if self.fmap.fit(self.size.0, self.size.1, cell) { self.stirr_at.clear(); self.fmap_ink = u64::MAX; }
+        if self.fmap.fit(self.size.0, self.size.1, cell) { self.stirr_at.clear(); self.fmap_ink = u64::MAX; self.fmap_inks.clear(); }
         let s = self.scale;
         self.fmap.calm = self.field.calm.iter().filter(|r| r[2] > r[0]).map(|r| [r[0] / s, r[1] / s, r[2] / s, r[3] / s]).collect();
         self.fmap.lives = self.nodes.iter().filter(|n| !n.hidden).filter_map(|n| n.map_life.map(|(e, f)| { let r = n.rect.intersect(&n.clip); ([r.x, r.y, r.right(), r.bottom()], e, f) })).collect();
@@ -3995,7 +3998,8 @@ impl<S, M: Clone> Ui<S, M> {
         // Where there is ink (for creep), taken again when the scene changed and the map is in use.
         if fx.creep > 0.0 && self.fmap.moving(&fx) && self.fmap_ink != self.perf.counters.scenes {
             self.fmap_ink = self.perf.counters.scenes;
-            self.fmap.set_ink(self.map_ink());
+            let ink = self.map_ink();
+            self.fmap.set_ink(ink);
         }
         let before = self.fmap.snapshot().bytes.clone();
         self.fmap.advance(dt, &fx);
@@ -4040,24 +4044,44 @@ impl<S, M: Clone> Ui<S, M> {
     }
     /// How much ink each node of the map has (0..1): the coverage of what reads the map, at the node and
     /// a quarter cell around it.
-    fn map_ink(&self) -> Vec<f32> {
+    fn map_ink(&mut self) -> Vec<f32> {
+        use std::hash::{Hash, Hasher};
         let m = &self.fmap;
         let (s, c) = (self.scale, m.cell);
         let mut ink = vec![0.0f32; m.cols * m.rows];
+        let mut kept: HashMap<u64, Vec<(u32, f32)>> = HashMap::with_capacity(self.fmap_inks.len());
+        let atlas = self.text.pixels.len();
         for inst in self.scene.instances[..self.page_len.min(self.scene.instances.len())].iter().filter(|i| i.look[2] > 0.5 && i.paint[2] > 0.01) {
             let b = inst.bounds(0.0);
-            let (i0, i1) = (((b[0] / s) / c).floor().max(0.0) as usize, (((b[2] / s) / c).ceil().max(0.0) as usize).min(m.cols - 1));
-            let (j0, j1) = (((b[1] / s) / c).floor().max(0.0) as usize, (((b[3] / s) / c).ceil().max(0.0) as usize).min(m.rows - 1));
-            for j in j0..=j1 {
-                for i in i0..=i1 {
-                    let (x, y) = (i as f32 * c * s, j as f32 * c * s);
-                    let q = c * s * 0.25;
-                    let v = [(0.0, 0.0), (-q, -q), (q, -q), (-q, q), (q, q)].iter().map(|(dx, dy)| crate::morph::ink_at(inst, x + dx, y + dy, &self.text.pixels)).fold(0.0, f32::max);
-                    let k = j * m.cols + i;
-                    ink[k] = ink[k].max(v);
+            // A blade is worked out on the GPU (its rect is only where it can reach); nothing creeps in
+            // a box with lives of its own, so what lies all inside one is not read.
+            if inst.blade() || m.lives.iter().any(|(l, _, _)| b[0] / s >= l[0] && b[1] / s >= l[1] && b[2] / s <= l[2] && b[3] / s <= l[3]) { continue; }
+            let mut h = std::hash::DefaultHasher::new();
+            for v in inst.rect.iter().chain(&inst.uv).chain(&inst.paint).chain(&inst.clip).chain(&inst.xf).chain(&inst.extra[..1]) { v.to_bits().hash(&mut h); }
+            atlas.hash(&mut h);
+            let key = h.finish();
+            let cells = match self.fmap_inks.remove(&key).or_else(|| kept.get(&key).cloned()) {
+                Some(v) => v,
+                None => {
+                    self.perf.counters.inked += 1;
+                    let (i0, i1) = (((b[0] / s) / c).floor().max(0.0) as usize, (((b[2] / s) / c).ceil().max(0.0) as usize).min(m.cols - 1));
+                    let (j0, j1) = (((b[1] / s) / c).floor().max(0.0) as usize, (((b[3] / s) / c).ceil().max(0.0) as usize).min(m.rows - 1));
+                    let mut v = vec![];
+                    for j in j0..=j1 {
+                        for i in i0..=i1 {
+                            let (x, y) = (i as f32 * c * s, j as f32 * c * s);
+                            let q = c * s * 0.25;
+                            let a = [(0.0, 0.0), (-q, -q), (q, -q), (-q, q), (q, q)].iter().map(|(dx, dy)| crate::morph::ink_at(inst, x + dx, y + dy, &self.text.pixels)).fold(0.0, f32::max);
+                            if a > 0.0 { v.push(((j * m.cols + i) as u32, a)); }
+                        }
+                    }
+                    v
                 }
-            }
+            };
+            for &(k, a) in &cells { let k = k as usize; ink[k] = ink[k].max(a); }
+            kept.insert(key, cells);
         }
+        self.fmap_inks = kept;
         ink
     }
     /// Move the motes by `dt` s (DESIGN.md §1.22); whether anything changed.
@@ -4567,6 +4591,8 @@ impl<S, M: Clone> Ui<S, M> {
         // One more pass after the last animation ends puts every instance back as painted.
         // Parts in flight are drawn over the page, so they do not pass behind what is already there.
         let mut lifted = vec![];
+        // Growing pictures (`Grow`): drawn as the page's last pictures, over what dissolves.
+        let mut growing = vec![];
         let plain = self.flows.values().any(|f| f.src.is_some()) && self.look().material == crate::style::Material::Plain;
         if active || self.animating {
             for i in 0..self.page_len {
@@ -4584,7 +4610,7 @@ impl<S, M: Clone> Ui<S, M> {
                     let e = g.ease(now);
                     inst.rect = g.picture(e);
                     inst.clip = g.shows(e);
-                    if now < g.start + g.dur && self.scene.layer.is_none() { lifted.push((i, inst)); inst.rect = [0.0; 4]; }
+                    if now < g.start + g.dur && self.scene.layer.is_none() { growing.push((i, inst)); inst.rect = [0.0; 4]; }
                 } else if let Some(f) = self.flows.get(&id) {
                     let p = ((now - f.start) / f.dur.max(1e-4)).clamp(0.0, 1.0);
                     // A glyph flying from the last frame eases in and out on a sine, which leaves its
@@ -4652,7 +4678,7 @@ impl<S, M: Clone> Ui<S, M> {
             // Less motion: it only fades.
             if g.loosen && !self.fmap.reduced { inst.extra[2] = inst.extra[2].max(p); }
             inst.paint[2] *= 1.0 - p;
-            // Riding with a growing picture, over it, inside the part of it that shows.
+            // Riding with a growing picture, over it, inside the part of it that shows (drawn after it).
             if let Some(gr) = g.ride.and_then(|r| self.grows.get(r)) {
                 let e = gr.ease(now);
                 inst.rect = gr.ride(inst.rect, e);
@@ -4661,18 +4687,21 @@ impl<S, M: Clone> Ui<S, M> {
             }
             self.scene.push(inst);
         }
+        // The growing pictures and what rides on them are the page's, drawn last: over what dissolves,
+        // and pictures as any other, so what rides on them is ink over a picture.
+        self.lifted.clear();
+        for (i, inst) in growing { self.lifted.insert(i, self.scene.instances.len()); self.scene.push(inst); }
+        for inst in riding { self.scene.push(inst); }
         for r in self.recomps.values() {
             for t in &r.tiles { for inst in tile_pieces(t, now - r.start, false) { self.scene.push(inst); } }
             if now < r.keep_until { for inst in &r.keep { self.scene.push(*inst); } }
         }
-        self.lifted.clear();
         // Text over pictures and shapes, as it is on any page.
         lifted.sort_by_key(|(_, inst)| std::cmp::Reverse(inst.paint[3] as u32));
         // In a layer of their own (only when there is no modal layer): where they have ink they replace
         // what is beneath in the near image, so a title flying over a picture is drawn as text.
-        if !lifted.is_empty() || !riding.is_empty() { self.scene.begin_layer(); }
+        if !lifted.is_empty() { self.scene.begin_layer(); }
         for (i, inst) in lifted { self.lifted.insert(i, self.scene.instances.len()); self.scene.push(inst); }
-        for inst in riding { self.scene.push(inst); }
         self.body_len = self.scene.instances.len();
     }
 
@@ -4971,12 +5000,31 @@ impl<S, M: Clone> Ui<S, M> {
             self.flows.insert(id, FlowRec { from: self.base[i].rect, clip: self.base[i].clip, start: now, dur: wait + fade, loose: 0.0, src: None, fade_in: Some([now + wait, now + wait + fade]), grow: None });
         }
         let out = if self.fmap.reduced { self.fade_s } else { spec.out_ms / 1000.0 };
+        // Around a picture that grows is the page it grows out of; one that shrinks takes the page it
+        // leaves with it: what else of that page lies in the part that showed rides with it too, and
+        // what lies outside goes at once, so around it is only the new page's ground.
+        let area = |r: [f32; 4]| (r[2] - r[0]) * (r[3] - r[1]);
+        let grows_out = grow_of.values().any(|&g| area(self.grows[g].r0) < area(self.grows[g].r1));
+        let shrinks = grow_of.values().copied().find(|&g| area(self.grows[g].r0) > area(self.grows[g].r1));
         for (k, o) in old.iter().enumerate() {
             if used[k] || new_ids.contains(&o.id) || spec.out_ms <= 0.0 { continue; }
-            let ride = o.tag.as_ref().and_then(|t| grow_of.get(&t.flow)).copied();
-            self.ghosts.push(Ghost { inst: o.inst, start: now, dur: out, loosen: ride.is_none(), ride });
+            let mut ride = o.tag.as_ref().and_then(|t| grow_of.get(&t.flow)).copied();
+            if ride.is_none() && let Some(g) = shrinks {
+                let (r, b) = (self.grows[g].r0, o.inst.rect);
+                if b[0] < r[0] || b[1] < r[1] || b[0] + b[2] > r[2] || b[1] + b[3] > r[3] { continue; }
+                ride = Some(g);
+            }
+            let mut loosen = ride.is_none();
+            // What lies along the edge of the part that showed (a frame round the window) is the
+            // window's, not the picture's: it fades where it was, under the picture that grows over it.
+            if let Some(g) = ride {
+                let (r, b) = (self.grows[g].r0, o.inst.rect);
+                let (cx, cy) = (b[0] + b[2] * 0.5, b[1] + b[3] * 0.5);
+                if cx < r[0] + 3.0 || cy < r[1] + 3.0 || cx > r[2] - 3.0 || cy > r[3] - 3.0 { (ride, loosen) = (None, false); }
+            }
+            self.ghosts.push(Ghost { inst: o.inst, start: now, dur: out, loosen, ride });
         }
-        if !grow_of.is_empty() && let Some(g) = self.ground_seen { self.ground_hold = Some((g, now + flight)); }
+        if grows_out && let Some(g) = self.ground_seen { self.ground_hold = Some((g, now + flight)); }
         self.animating = true;
         self.finish();
     }
