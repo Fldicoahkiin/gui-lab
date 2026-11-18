@@ -150,6 +150,8 @@ struct Tiles {
 pub struct Renderer {
     /// Draw every glyph transparent (for acceptance checks that need to know which pixels are text).
     pub hide_glyphs: bool,
+    /// How many plates the last frame laid on (two passes each: ink and nearness), for tests.
+    pub plates_laid: std::cell::Cell<u32>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     out_format: wgpu::TextureFormat,
@@ -248,6 +250,8 @@ pub struct Renderer {
     plate_fade: [[f32; 4]; 4],
     /// How many plates the last frame had (a plate that comes or goes redraws everything).
     had_plates: usize,
+    /// Each plate slot has had ink drawn into it since it was made or cleared: an empty plate is not laid on.
+    plate_inked: [bool; 4],
     /// The last frame had ink ageing on a plate (the frame after it shows where the ageing ended).
     was_ageing: bool,
     /// The last plate clearing applied (`Scene::plate_serial`).
@@ -444,11 +448,11 @@ impl Renderer {
         let (blank_view, blank_group) = (blank.clone(), material.clone());
         let mut r = Self {
             device, queue, out_format, layout, ubuf, sampler, atlas, atlas_view, marks, marks_view, palette_view, chars, chars_view,
-            before: blank.clone(), blank: blank.clone(), hold: blank.clone(), hold_pipe, holds, hold_cap: 64, hold_n: 0, fmap, fmap_view: fmap_view.clone(), fmap_seen: None, fmap_u: [0.0; 4], split_seen: 0, split: [0.0; 4], last_look: None, marks_ready: false, hide_glyphs: false,
+            before: blank.clone(), blank: blank.clone(), hold: blank.clone(), hold_pipe, holds, hold_cap: 64, hold_n: 0, fmap, fmap_view: fmap_view.clone(), fmap_seen: None, fmap_u: [0.0; 4], split_seen: 0, split: [0.0; 4], last_look: None, marks_ready: false, hide_glyphs: false, plates_laid: std::cell::Cell::new(0),
             pictures: HashMap::new(), picture_views: HashMap::new(), hold_group: None, instances, capacity, pipes, annots, annot_capacity: 256, up_pipe: None, shader, pl,
             ink: blank.clone(), lo: blank.clone(), lo_key: (0, 0, 0), material_up: material.clone(), auto: Default::default(), always_lo: false, no_map: false,
             near: blank, material_first: material.clone(), material, size: (0, 0), tiles, mesh, sim_rows: 0,
-            region: crate::dirty::Region::All, partial: true, frame_view: blank_view.clone(), prev: None, spare: (vec![], vec![]), zero, blit, group: None, group_pipe, had_groups: false, plates: Default::default(), plate_pipes, plate_now: 0.0, plate_fade: [[0.0; 4]; 4], had_plates: 0, was_ageing: false, plate_serial: 0, reduced: false, fade_s: 0.15, sbox: [0.0; 4], post: None, blit_group: blank_group, warm: None, condense: false, last_region: None, tr: [[0.0; 4]; 9], boxes: [[0.0; 4]; 16], tr_loose: 0.0, t_cont: 0.0,
+            region: crate::dirty::Region::All, partial: true, frame_view: blank_view.clone(), prev: None, spare: (vec![], vec![]), zero, blit, group: None, group_pipe, had_groups: false, plates: Default::default(), plate_pipes, plate_now: 0.0, plate_fade: [[0.0; 4]; 4], had_plates: 0, plate_inked: [false; 4], was_ageing: false, plate_serial: 0, reduced: false, fade_s: 0.15, sbox: [0.0; 4], post: None, blit_group: blank_group, warm: None, condense: false, last_region: None, tr: [[0.0; 4]; 9], boxes: [[0.0; 4]; 16], tr_loose: 0.0, t_cont: 0.0,
         };
         r.set_picture(u32::MAX, 1, 1, &[0, 0, 0, 255]);
         r.resize(w, h);
@@ -1237,13 +1241,17 @@ impl Renderer {
                 let bind = Self::bind(&self.device, &self.layout, &self.ubuf, &self.sampler, [&ink, &near, &self.marks_view, &self.palette_view, &self.chars_view, &self.blank, &near_age, &self.fmap_view, &age]);
                 for v in [&ink, &near, &age, &near_age] { let _ = clear(enc, v, wgpu::Color::TRANSPARENT); }
                 self.plates[slot] = Some(PlateTex { ink, near, age, near_age, bind });
+                self.plate_inked[slot] = false;
             }
         }
-        if scene.plate_serial == self.plate_serial { return; }
-        self.plate_serial = scene.plate_serial;
-        for &slot in &scene.plate_clear {
-            if let Some(pt) = &self.plates[slot as usize] { for v in [&pt.ink, &pt.near, &pt.age, &pt.near_age] { let _ = clear(enc, v, wgpu::Color::TRANSPARENT); } }
+        if scene.plate_serial != self.plate_serial {
+            self.plate_serial = scene.plate_serial;
+            for &slot in &scene.plate_clear {
+                if let Some(pt) = &self.plates[slot as usize] { for v in [&pt.ink, &pt.near, &pt.age, &pt.near_age] { let _ = clear(enc, v, wgpu::Color::TRANSPARENT); } }
+                self.plate_inked[slot as usize] = false;
+            }
         }
+        for p in scene.plates.iter().filter(|p| p.end > p.start) { self.plate_inked[p.slot as usize] = true; }
     }
     fn stage1(&self, enc: &mut wgpu::CommandEncoder, scene: &Scene, ink: &wgpu::TextureView, near: &wgpu::TextureView, tiles: u32, scissor: Option<[u32; 4]>) {
         let layer = scene.layer.unwrap_or(u32::MAX);
@@ -1291,6 +1299,10 @@ impl Renderer {
                 if stop <= at { if pending && stop == layer && at == layer { draw_tiles(&mut pass); pending = false; } continue; }
                 // Plates in order; several may start at once (empty ones among them).
                 while let Some(p) = kept.next_if(|p| p.start == at) {
+                    // A plate that has never held ink (nothing drawn since it was made or cleared) is not
+                    // laid on: the page costs and looks as one without it.
+                    if !self.plate_inked[p.slot as usize] { continue; }
+                    if k == 0 { self.plates_laid.set(self.plates_laid.get() + 1); }
                     // A plate (DESIGN.md §1.33): this frame's ink goes into its kept images (and when it
                     // was drawn, into its age), then what they hold is laid on, aged, in its place.
                     let pt = self.plates[p.slot as usize].as_ref().expect("checked");
@@ -1411,6 +1423,7 @@ impl Renderer {
         let frame_view = self.frame_view.clone();
         let out = if with_before { &frame_view } else { target };
         self.plates_ready(&mut enc, scene);
+        self.plates_laid.set(0);
         self.hold_pass(&mut enc);
         match boxes {
             None => self.stage1(&mut enc, scene, &ink, &near, tiles, None),

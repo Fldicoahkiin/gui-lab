@@ -1227,6 +1227,12 @@ impl<S, M: Clone> Ui<S, M> {
         for n in self.nodes.iter().filter(|n| n.clamp > 0 && matches!(&n.content, Content::Text { around: Some(_), .. })) { out.push(P::ClampAround { key: n.key.clone() }); }
         for (key, need, min) in &self.fit_short { out.push(P::FitShort { key: key.clone(), need: *need, min: *min }); }
         for key in &self.plate_over { out.push(P::PlateOver { key: key.clone() }); }
+        for n in &self.nodes {
+            let read = n.legible && matches!(n.content, Content::Text { .. });
+            if n.hidden || n.plate.is_some() || !(read || n.focusable || n.on_press.is_some()) { continue; }
+            let mut at = n.parent;
+            while let Some(k) = at { if self.nodes[k].plate.is_some() { out.push(P::OnPlate { key: n.key.clone(), plate: self.nodes[k].key.clone() }); break; } at = self.nodes[k].parent; }
+        }
         out
     }
 

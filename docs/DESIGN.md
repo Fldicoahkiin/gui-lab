@@ -2589,7 +2589,14 @@ key }` empties it in one frame, hard (a cut for the beat); `fade_s` (0–60 s in
 good) is the soft way.
 
 - The plate draws nothing of its own: no edge, no ground, no dimming. An empty plate is byte for byte the page without
-  it. It reaches as far as its clip box and ink is cut at the box's edge, with no fade there (that would draw the box).
+  it, and costs the same: a plate that has held no ink since it was made or cleared is not laid on (no extra pass).
+- What is on a plate is ink, not something to read or press. Text to read and controls go beside the plate or over
+  it, as its siblings, not its children; one inside a plate's subtree is reported (`OnPlate` in `Ui::problems`, P1 in
+  the audit).
+- Cost, as regression lines on lavapipe at 1440 × 900 (a whole-window plate, the fifth set's measurement: keeping ink
+  12.3 → 15.0 ms, ageing 49 → 57.5 ms): a frame keeping ink at most 125 % of the same page without a plate, an ageing
+  frame at most 120 %. On a real GPU a whole-window plate may add at most 0.6 ms a frame; that measurement is still to
+  be made before a release, and if it is over, plates are for music videos and the lab only. It reaches as far as its clip box and ink is cut at the box's edge, with no fade there (that would draw the box).
 - The ink on a plate is ink: the near image is max-blended, so strokes laid one over another keep a true outline, and
   every material draws it as usual. There is no material code for plates.
 - At most 4 plates in a window, their images together at most twice the window's area; more are drawn as ordinary
@@ -2623,7 +2630,8 @@ ink and paper to within 3 %, the ink never growing from 0.8 to 1 in steps of 0.0
 0.9 with at most 55 % of the ink of a new one at 0.5, which is 99 % as just drawn; old ink 2 px from a new stroke's
 outline as old as the rest of it; a `Hold(2)` byte for byte; five plates keeping four; a new window size emptying them; the same
 timeline three times the same 300 frames; halfway through a crack the ink only in the pieces not yet turned and gone
-at the end; nothing on a plate in the accessibility mirror).
+at the end; nothing on a plate in the accessibility mirror, and text to read in one reported; an empty plate not laid
+on, one with ink laid on once).
 
 ### 1.34 Effects that can be turned off
 

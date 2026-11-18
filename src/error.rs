@@ -221,6 +221,14 @@ pub enum ViewProblem {
         /// The element.
         key: String,
     },
+    #[error("`{key}` is text to read or a control inside the plate `{plate}`: what is on a plate is ink, not read out, selected or pressed. Put it beside the plate or over it, as its sibling, not its child.")]
+    /// Text to read or a control in a plate's subtree.
+    OnPlate {
+        /// The element.
+        key: String,
+        /// The plate.
+        plate: String,
+    },
     #[error("`{key}` fits its subtree into its box, but it would need a scale of {need:.2} and the least is {min:.2}: it is drawn at {min:.2} and clipped. Make the box larger, the subtree smaller, or `Fit::min` lower.")]
     /// A box marked `El::fit` cannot hold its subtree at the least scale.
     FitShort {

@@ -69,7 +69,14 @@ fn an_empty_plate_is_as_no_plate() {
         let mut a = mk(S { dark, ..s0(*m) });
         let mut b = mk(S { dark, plate: false, ..s0(*m) });
         assert!(frame(&mut o, &mut a, 3.0) == frame(&mut o, &mut b, 3.0), "{m:?} dark {dark}: an empty plate shows");
+        // And it costs nothing: it is not laid on.
+        let _ = frame(&mut o, &mut a, 3.1);
+        assert_eq!(o.r.plates_laid.get(), 0, "{m:?} dark {dark}: an empty plate was laid on");
     } }
+    // One stroke on it, and it is.
+    let mut a = mk(S { strokes: vec![(20.0, 20.0)], ..s0(Material::Plain) });
+    let _ = frame(&mut o, &mut a, 3.0);
+    assert_eq!(o.r.plates_laid.get(), 1, "a plate with ink is laid on once");
 }
 
 #[test]
@@ -260,13 +267,17 @@ fn halfway_through_a_crack_the_plates_ink_is_only_in_the_pieces_not_yet_turned()
 }
 
 #[test]
-fn what_is_on_a_plate_is_not_in_the_accessibility_tree() {
+fn what_is_on_a_plate_is_not_in_the_accessibility_tree_and_text_to_read_there_is_reported() {
     use amenui::el::text;
     let v = |_: &u8| -> El<()> { col().key("page").child(text("Read me", 14.0, Paint::TEXT).key("off")).child(col().key("board").width(200.0).height(80.0).plate(Plate::default()).child(text("Drawn, not said", 14.0, Paint::TEXT).selectable().key("on"))) };
     let mut ui = Ui::new(0u8, v, |_, _| {}, fonts(), W, H, 1.0);
     ui.tick(1.0);
     let keys: Vec<String> = ui.a11y().into_iter().map(|n| n.key).collect();
     assert!(keys.iter().any(|k| k == "off") && !keys.iter().any(|k| k == "on" || k == "board"), "{keys:?}");
+    // Text to read inside the plate is told: it belongs beside the plate, as its sibling (audit P1).
+    let on: Vec<_> = ui.problems().into_iter().filter(|p| matches!(p, amenui::error::ViewProblem::OnPlate { key, plate } if key == "on" && plate == "board")).collect();
+    assert_eq!(on.len(), 1, "{:?}", ui.problems());
+    assert!(!ui.problems().iter().any(|p| matches!(p, amenui::error::ViewProblem::OnPlate { key, .. } if key == "off")), "text beside the plate is fine");
 }
 
 #[test]
