@@ -409,7 +409,12 @@ fn a_fitted_subtree_fills_its_box_in_two_layouts_and_grows_with_it() {
             let (b, c) = (ui.node("box").unwrap().inner, ui.node("stage").unwrap().rect);
             let k = ui.fitted("box").expect("a scale");
             // At `min` it is drawn at `min` and clipped (the audit reports it).
-            if k <= 0.25 { assert!(ui.problems().iter().any(|p| matches!(p, amenui::error::ViewProblem::FitShort { .. })), "{which} in {w} x {h}: short and not reported"); continue; }
+            // At `min` it is drawn at `min`; what it then cuts (and only that) the audit reports.
+            if k <= 0.25 {
+                let cut = c.right() > b.right() + 0.5 || c.bottom() > b.bottom() + 0.5;
+                assert_eq!(ui.problems().iter().any(|p| matches!(p, amenui::error::ViewProblem::FitShort { .. })), cut, "{which} in {w} x {h}: cut {cut}, reported otherwise");
+                continue;
+            }
             assert!(c.x >= b.x - 0.5 && c.y >= b.y - 0.5 && c.right() <= b.right() + 0.5 && c.bottom() <= b.bottom() + 0.5, "{which} in {w} x {h}: {c:?} is outside {b:?} (k {k})");
             let fill = (c.w / b.w).max(c.h / b.h);
             { assert!(fill >= 0.97, "{which} in {w} x {h}: fills {fill:.3}"); }
@@ -437,4 +442,47 @@ fn a_fitted_subtree_fills_its_box_in_two_layouts_and_grows_with_it() {
         let mut hand = mk(w, h, which, Some((k, c.x - b.x - 1.0, c.y - b.y - 1.0)), 1.0);
         assert!(o.render(&mut a, &look) == o.render(&mut hand, &look), "{which} in {w} x {h}: fitted and zoomed by hand by {k} differ");
     } }
+}
+
+mod fitstage {
+    use amenui::el::{El, Fit, Font, Paint, col, row, space, text};
+    pub struct S { pub w: f32, pub h: f32, pub pixel: bool }
+    fn stage(pixel: bool) -> El<()> {
+        let t = text("A stage at its own size", 64.0, Paint::INK).key("title");
+        let t = if pixel { t.font(Font::Face(amenui::text::PIXEL)) } else { t };
+        col().key("stage").width(1440.0).height(900.0).pad(60.0, 50.0).gap(24.0).fill(Paint::FAINT).child(t)
+            .child(row().gap(20.0).child(space(300.0, 200.0).fill(Paint::ACCENT)).child(space(200.0, 200.0).fill(Paint::INK)))
+    }
+    pub fn view(s: &S) -> El<()> {
+        col().key("page").fill_width().fill_height().pad(10.0, 10.0).child(col().key("box").width(s.w).height(s.h).border(1.0, Paint::DIM).fit(Fit::default()).child(stage(s.pixel)))
+    }
+}
+
+#[test]
+fn a_fit_keeps_its_scale_with_pixel_type_starts_what_overflows_and_reports_only_what_is_cut() {
+    use fitstage::{S, view};
+    let mk = |w: f32, h: f32, pixel: bool| { let mut ui = amenui::ui::Ui::new(S { w, h, pixel }, view, |_, _| {}, fonts(), 900, 700, 1.0); ui.tick(1.0); ui };
+    let short = |ui: &amenui::ui::Ui<S, ()>| ui.problems().iter().any(|p| matches!(p, amenui::error::ViewProblem::FitShort { .. }));
+    // Pixel type: the scale is the one without it, the stage fills the box, only the type is smaller.
+    let (plain, pixel) = (mk(420.0, 280.0, false), mk(420.0, 280.0, true));
+    let (kp, kx) = (plain.fitted("box").unwrap(), pixel.fitted("box").unwrap());
+    assert!((kp - kx).abs() < 1e-4, "pixel type changed the scale: {kx} for {kp}");
+    let (b, c, t) = (pixel.node("box").unwrap().inner, pixel.node("stage").unwrap().rect, pixel.node("title").unwrap().rect);
+    assert!(c.w >= 0.97 * b.w, "the stage is {} of the box's {}", c.w, b.w);
+    assert!(t.right() <= c.right() + 0.5, "the pixel title {t:?} overflows the stage {c:?}");
+    // At the least scale, a direction that overflows starts at the box's start; the other follows align.
+    for (w, h) in [(250.0f32, 250.0f32), (200.0, 120.0), (480.0, 160.0)] {
+        let ui = mk(w, h, false);
+        let (b, c) = (ui.node("box").unwrap().inner, ui.node("stage").unwrap().rect);
+        assert!(short(&ui), "{w} x {h}: cut and not reported");
+        if c.w > b.w + 0.5 { assert!((c.x - b.x).abs() < 0.5, "{w} x {h}: overflowing across, starts at {} not {}", c.x, b.x); }
+        else { assert!((c.x - (b.x + 0.5 * (b.w - c.w))).abs() < 1.0, "{w} x {h}: centred across"); }
+        if c.h > b.h + 0.5 { assert!((c.y - b.y).abs() < 0.5, "{w} x {h}: overflowing down, starts at {} not {}", c.y, b.y); }
+        else { assert!((c.y - (b.y + 0.5 * (b.h - c.h))).abs() < 1.0, "{w} x {h}: centred down"); }
+    }
+    // Exactly at the least scale and in the box (360 wide inside its 1 px border): not cut, not reported.
+    let ui = mk(362.0, 300.0, false);
+    let (b, c) = (ui.node("box").unwrap().inner, ui.node("stage").unwrap().rect);
+    assert!(c.right() <= b.right() + 0.5 && c.bottom() <= b.bottom() + 0.5, "{c:?} in {b:?}");
+    assert!(!short(&ui), "362 x 300 at k {}: in the box and reported", ui.fitted("box").unwrap());
 }

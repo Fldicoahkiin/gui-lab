@@ -151,8 +151,13 @@ gives every leaf a positioning area so the list is emptied).
 **Fitting a subtree** (`El::fit(Fit { mode, min, max, align })`): the container's one child is laid out at 1 to find its
 natural size, then zoomed (`El::zoom`) by the scale that fits the container's content box (`mode`, `FitMode`; by default it only shrinks, to `min` 0.25 at least), placed at `align` (fractions; 0.5, 0.5 centres it), in the
 same layout: two taffy passes, no hook after layout. The scale depends only on the box and the natural size, so a
-larger box never gets a smaller scale; with pixel type it goes down to a whole multiple of the face's size. At `min`
-and still too large it is drawn at `min`, clipped, and `Ui::problems` reports `FitShort`. A content-sized child is
+larger box never gets a smaller scale. Pixel type does not change the scale: each pixel text in the subtree is set
+at the largest whole multiple of its face's size that is no larger than the scale makes it, so it is only ever smaller
+than in proportion and never overflows. At `min` and still too large it is drawn at `min` and clipped, and
+`Ui::problems` reports `FitShort`; in a direction it overflows it is placed from the start (left, top), so its
+beginning is seen and its end cut, and in the other it follows `align`. Exactly at `min` and within the content box
+(inside any border) it is not cut and nothing is reported. `tests/render.rs`
+(`a_fit_keeps_its_scale_with_pixel_type_starts_what_overflows_and_reports_only_what_is_cut`). A content-sized child is
 measured in a holder 10⁵ px wide, so it is measured at its own width, not the container's.
 
 **Clamping text** (`El::clamp(lines)`): a text element shows at most `lines` lines; text that does not fit ends in
@@ -3706,9 +3711,8 @@ and echoes (§1.1, §1.6, §1.7, §1.9, §1.10, §1.12, §1.23, §1.28, §1.29):
 
 Layout, faces and plates (the fifth set of framework needs):
 
-- `El::fit` with pixel type rounds the scale down to a whole multiple of the face's size, and that floor can take it
-  under `Fit::min` (0.188 for the smallest box in `fit-box.png`, min 0.25); `FitShort` is reported then too. The
-  containment check of `tests/render.rs` is skipped at or under `min`, where clipping is the specified behaviour.
+- `El::fit`: the containment check of `tests/render.rs` is skipped at or under `min`, where clipping is the specified
+  behaviour (there it checks that `FitShort` is reported exactly when the subtree is cut).
 - `El::clamp`: selecting and copying a clamped text gives the text as shown, not the whole text; the fallback of three
   periods (a face without `…`) is set at the face's own spacing, not tightened by 0.05 em; taking the clamp away brings
   the rest in by recomposition (§1.16), not condensing from the ellipsis.

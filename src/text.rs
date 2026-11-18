@@ -374,6 +374,16 @@ impl Text {
         }
     }
 
+    /// The size to set a face at so that it is drawn no larger than `size` would be: for a pixel face, the
+    /// largest whole multiple (at least one) of its native size at or under `size`, in device px.
+    pub fn size_down(&self, face: u8, size: f32) -> f32 {
+        let r = self.real(face).1;
+        match self.family(face).pixel {
+            Some(native) => ((size * r * self.scale / native + 1e-4).floor().max(1.0) * native) / (self.scale * r),
+            None => size,
+        }
+    }
+
     /// The paragraph shaped and broken, from the cache when it was laid out before (same text, face,
     /// size, line height, width and obstacles); only a miss shapes (and counts in `shaped`).
     fn layout(&mut self, s: &str, face: u8, size: f32, line: f32, max_width: Option<f32>, set: Setting<'_>) -> Rc<Layout<()>> {

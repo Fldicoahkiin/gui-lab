@@ -2899,7 +2899,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// the pass that laid the subtree out on its own: the scale, and where the zoomed subtree goes in
     /// the box (left and top insets, logical px). A box that cannot hold its subtree at the least scale
     /// is told in `Ui::problems`.
-    fn fit_scales(&mut self, probe: &[Node<M>]) -> Vec<(f32, f32, f32)> {
+    fn fit_scales(&mut self, probe: &[Node<M>]) -> Vec<Fitted> {
         let mut out = vec![];
         self.fit_k.clear();
         for (i, n) in probe.iter().enumerate() {
@@ -2909,7 +2909,7 @@ impl<S, M: Clone> Ui<S, M> {
             let (pl, pt) = (l.padding.left, l.padding.top);
             let (cw, ch) = ((l.size.width - l.border.left - l.border.right - pl - l.padding.right).max(0.0), (l.size.height - l.border.top - l.border.bottom - pt - l.padding.bottom).max(0.0));
             // The subtree is in the holder `fit_probe` put it in.
-            let Some(c) = probe.iter().position(|m| m.parent == Some(i)).and_then(|h| probe.iter().position(|m| m.parent == Some(h))) else { out.push((1.0, pl, pt)); continue };
+            let Some(c) = probe.iter().position(|m| m.parent == Some(i)).and_then(|h| probe.iter().position(|m| m.parent == Some(h))) else { out.push(Fitted { k: 1.0, at: (pl, pt), pixel: vec![] }); continue };
             let (nw, nh) = (probe[c].local.size.width.max(1e-3), probe[c].local.size.height.max(1e-3));
             // Text does not scale exactly with its size (advances and line heights snap): room of a
             // pixel at the scale is kept so the zoomed subtree is never larger than the box.
@@ -2920,22 +2920,28 @@ impl<S, M: Clone> Ui<S, M> {
             };
             let room = by(cw, ch).max(1.0);
             let raw = by((cw - room).max(0.0), (ch - room).max(0.0));
-            let mut k = raw.clamp(f.min, f.max.max(f.min));
-            if raw < f.min { self.fit_short.push((n.key.clone(), raw, f.min)); }
-            // Pixel faces are drawn at whole multiples of their native size: the scale goes down to the
-            // largest that keeps every pixel text in the subtree on one, so it never overflows.
-            let s = self.scale;
+            let k = raw.clamp(f.min, f.max.max(f.min));
+            // What does not fit at the least scale, in the directions the mode fits (exactly the least
+            // scale and in the box is not short).
+            let (over_x, over_y) = (k * nw > cw + 0.5, k * nh > ch + 0.5);
+            let short = match f.mode { crate::el::FitMode::Contain => over_x || over_y, crate::el::FitMode::Width => over_x, crate::el::FitMode::Height => over_y };
+            if raw < f.min && short { self.fit_short.push((n.key.clone(), raw, f.min)); }
+            // Pixel faces are drawn at whole multiples of their native size: each pixel text in the
+            // subtree goes down to the largest that is no larger than the scale makes it, so it never
+            // overflows; the scale itself is not changed.
+            let mut pixel = vec![];
             for m in probe.iter().enumerate().skip(c).take_while(|(j, _)| within(probe, *j, c)).map(|(_, m)| m) {
                 let Some(p) = m.para() else { continue };
-                let Some(native) = self.text.native(p.face) else { continue };
-                let d = p.size * s;
-                let mult = (k * d / native + 1e-4).floor().max(1.0);
-                k = k.min(mult * native / d);
+                if self.text.native(p.face).is_none() { continue };
+                pixel.push((p.s.to_owned(), p.size, self.text.size_down(p.face, k * p.size)));
             }
             let (ax, ay) = f.align;
             self.fit_k.insert(n.key.clone(), k);
-            // On whole pixels, as the layout puts boxes.
-            out.push((k, (pl + ax.clamp(0.0, 1.0) * (cw - k * nw)).round(), (pt + ay.clamp(0.0, 1.0) * (ch - k * nh)).round()));
+            // On whole pixels, as the layout puts boxes; in a direction it overflows, from the start, so
+            // its beginning is seen and its end is cut.
+            let x = if over_x { pl } else { pl + ax.clamp(0.0, 1.0) * (cw - k * nw) };
+            let y = if over_y { pt } else { pt + ay.clamp(0.0, 1.0) * (ch - k * nh) };
+            out.push(Fitted { k, at: (x.round(), y.round()), pixel });
         }
         out
     }
@@ -5606,15 +5612,23 @@ fn fit_probe<M>(el: &mut El<M>) {
     }
     for c in &mut el.children { fit_probe(c); }
 }
+/// How a box marked `El::fit` zooms its subtree: the scale, where it goes (logical px from the box), and
+/// each pixel text's own size there (its text, its size at 1, the size it is set at).
+struct Fitted { k: f32, at: (f32, f32), pixel: Vec<(String, f32, f32)> }
 /// Each fitted subtree zoomed by its scale and put where it goes in its box (`Ui::fit_scales`, in the
 /// same order).
-fn fit_apply<M>(el: &mut El<M>, ks: &[(f32, f32, f32)]) {
-    fn go<M>(el: &mut El<M>, ks: &[(f32, f32, f32)], at: &mut usize) {
+fn fit_apply<M>(el: &mut El<M>, ks: &[Fitted]) {
+    fn snap<M>(el: &mut El<M>, k: f32, pixel: &[(String, f32, f32)]) {
+        if let Content::Text { s, size, .. } = &mut el.content && let Some(p) = pixel.iter().find(|p| p.0 == *s && (p.1 * k - *size).abs() < 1e-3) { *size = p.2; }
+        for c in &mut el.children { snap(c, k, pixel); }
+    }
+    fn go<M>(el: &mut El<M>, ks: &[Fitted], at: &mut usize) {
         if el.fit.is_some() {
-            let (k, x, y) = ks.get(*at).copied().unwrap_or((1.0, 0.0, 0.0));
+            let (k, (x, y), pixel) = ks.get(*at).map_or((1.0, (0.0, 0.0), &[][..]), |f| (f.k, f.at, &f.pixel[..]));
             *at += 1;
             if let Some(c) = el.children.first_mut() {
                 let mut z = std::mem::replace(c, crate::el::space(0.0, 0.0)).zoom(k);
+                snap(&mut z, k, pixel);
                 z.style.position = taffy::Position::Absolute;
                 z.style.inset = taffy::Rect { left: length(x), top: length(y), right: auto(), bottom: auto() };
                 *c = z;
