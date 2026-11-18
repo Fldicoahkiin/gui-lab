@@ -3827,6 +3827,7 @@ impl<S, M: Clone> Ui<S, M> {
         // One more pass after the last animation ends puts every instance back as painted.
         // Parts in flight are drawn over the page, so they do not pass behind what is already there.
         let mut lifted = vec![];
+        let plain = self.flows.values().any(|f| f.src.is_some()) && self.look().material == crate::style::Material::Plain;
         if active || self.animating {
             for i in 0..self.page_len {
                 let mut inst = self.base[i];
@@ -3840,7 +3841,9 @@ impl<S, M: Clone> Ui<S, M> {
                 }
                 if let Some(f) = self.flows.get(&id) {
                     let p = ((now - f.start) / f.dur.max(1e-4)).clamp(0.0, 1.0);
-                    let e = Ease::InOutCubic.at(p);
+                    // A glyph flying from the last frame eases in and out on a sine, which leaves its
+                    // ends sooner than the cubic.
+                    let e = if f.src.is_some() { 0.5 - 0.5 * (std::f32::consts::PI * p).cos() } else { Ease::InOutCubic.at(p) };
                     if inst.paint[3] > 2.5 && (f.from[2] * inst.rect[3] - f.from[3] * inst.rect[2]).abs() > 0.5 {
                         // A 3D view between boxes of other proportions keeps its own (it is drawn into its
                         // layout box): it moves centre to centre and scales uniformly, never stretched
@@ -3868,6 +3871,9 @@ impl<S, M: Clone> Ui<S, M> {
                         inst.extra[1] = shape.extra[1];
                         inst.rect = [g[0] - sp * fx, g[1] - sp * fy, g[2] + 2.0 * sp * fx, g[3] + 2.0 * sp * fy];
                         for k in 0..3 { inst.paint[k] = o.paint[k] + (self.base[i].paint[k] - o.paint[k]) * e; }
+                        // In a material it comes apart into the material's marks on the way, most at
+                        // halfway; plain, it stays a whole glyph.
+                        if !plain { inst.extra[2] = inst.extra[2].max(0.6 * (std::f32::consts::PI * e).sin()); }
                     }
                     if let Some([a, b]) = f.fade_in { inst.paint[2] *= ((now - a) / (b - a).max(1e-4)).clamp(0.0, 1.0); }
                     if p < 1.0 { inst.clip = [f.clip[0].min(inst.clip[0]), f.clip[1].min(inst.clip[1]), f.clip[2].max(inst.clip[2]), f.clip[3].max(inst.clip[3])]; }
@@ -3974,8 +3980,9 @@ impl<S, M: Clone> Ui<S, M> {
     }
     /// Start a morph kept by `morph_from_last`, once the new view is laid out.
     /// The old title's glyphs fly to the new one's, glyph by glyph in order, each whole (DESIGN.md
-    /// §1.10): straight, eased in and out, its size and colour going over; each 30 ms after the last
-    /// (in all at most 40 % of the duration), so the last lands at the duration. Glyphs one side has
+    /// §1.10): straight, eased in and out on a sine, its size and colour going over, in a material loosened
+    /// by `0.6 × sin(π × p)` on the way; each 12 ms after the last (in all at most 15 % of the duration), in
+    /// the word's order from the end that faces the way it goes, so the last lands at the duration. Glyphs one side has
     /// more of fade where they are: the old over the first 30 %, the new over the last 30 %. With less
     /// motion nothing flies: the old fades out where it was and the new in where it is, 150 ms each.
     fn morph_last(&mut self) {
@@ -3990,12 +3997,21 @@ impl<S, M: Clone> Ui<S, M> {
         let (sg, so): (Vec<Instance>, Vec<Instance>) = src.into_iter().partition(glyph);
         let (dg, d_other): (Vec<usize>, Vec<usize>) = dst.into_iter().partition(|&i| glyph(&self.base[i]));
         let n = if reduced { 0 } else { sg.len().min(dg.len()) };
-        let per = if n > 1 { 0.03f32.min(0.4 * dur / (n - 1) as f32) } else { 0.0 };
+        let per = if n > 1 { 0.012f32.min(0.15 * dur / (n - 1) as f32) } else { 0.0 };
         let travel = dur - per * n.saturating_sub(1) as f32;
+        // In the word's order, from the end that faces the way it goes: the glyph in front leaves first,
+        // so the glyphs open out a little on the way and never run into the ones ahead of them.
+        let centre = |r: [f32; 4]| [r[0] + r[2] * 0.5, r[1] + r[3] * 0.5];
+        let mean = |c: &mut dyn Iterator<Item = [f32; 2]>| { let (mut s, mut m) = ([0.0f32; 2], 0.0f32); for p in c { s[0] += p[0]; s[1] += p[1]; m += 1.0; } [s[0] / m.max(1.0), s[1] / m.max(1.0)] };
+        let (a, b) = (mean(&mut sg[..n].iter().map(|i| centre(i.rect))), mean(&mut dg[..n].iter().map(|&i| centre(self.base[i].rect))));
+        let way = [b[0] - a[0], b[1] - a[1]];
+        let ahead = |k: usize| { let c = centre(sg[k].rect); (c[0] - a[0]) * way[0] + (c[1] - a[1]) * way[1] };
+        let front_first = n > 1 && ahead(n - 1) > ahead(0);
         for k in 0..n {
             let i = dg[k];
             let id = self.owners[i].1;
-            self.flows.insert(id, FlowRec { from: sg[k].rect, clip: sg[k].clip, start: now + per * k as f32, dur: travel, loose: 0.0, src: Some(sg[k]), fade_in: None });
+            let order = if front_first { n - 1 - k } else { k };
+            self.flows.insert(id, FlowRec { from: sg[k].rect, clip: sg[k].clip, start: now + per * order as f32, dur: travel, loose: 0.0, src: Some(sg[k]), fade_in: None });
             // It is the old glyph come over: born when that was.
             self.births.insert(id, sg[k].extra[3]);
             self.base[i].extra[3] = sg[k].extra[3];

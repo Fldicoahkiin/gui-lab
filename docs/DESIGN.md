@@ -956,11 +956,15 @@ can also be called directly. `Ui::morph_from_last(to, spec)` (or a `MorphSpec` w
 source from the frame drawn last rather than from an element on the page, so a title flies from where it was across a
 route change even though its old element is gone: the glyphs drawn for `key` last frame are kept, and after the new
 layout each flies, whole, to the glyph of `to` in the same place in order. In every material, plain too: the unit is
-the glyph, its edges clear all the way, never a copy at each end fading over (a material draws its own marks of it as
-it goes, so the dots or characters travel with it). Each goes in a straight line, eased in and out (cubic), its size
-and colour going from the old glyph's to the new one's (drawn as the old glyph for the first half, as the new for the
-second); each starts 30 ms after the one before, the whole stagger at most 40 % of `duration_ms`, and the last lands
-at `duration_ms`. The frame at `duration_ms` is the new page as drawn directly, byte for byte; nothing tightens after.
+the glyph, never a copy at each end fading over (plain, its edges are clear all the way; a material draws its own marks of it as
+it goes, loosened by `0.6 × sin(π × p)` at its own progress `p`, so it comes apart into the dots or characters on the
+way and is whole at both ends). Each goes in a straight line, eased in and out on a
+sine (`p = 0.5 − 0.5 × cos(π × t)`), its size and colour going from the old glyph's to the new one's (drawn as the old
+glyph for the first half, as the new for the second); in the word's order from the end that faces the way it goes
+(the glyph in front leaves first, so the word opens out a little rather than running into itself), each starts 12 ms
+after the one before, the whole stagger at
+most 15 % of `duration_ms`, each flying for `duration_ms` less the whole stagger, so the last lands at `duration_ms`
+and the word moves as a word. The frame at `duration_ms` is the new page as drawn directly, byte for byte; nothing tightens after.
 Glyphs only one side has fade where they are, the old over the first 30 %, the new over the last 30 %; the rest of the
 new page is in place from the first frame, and the flying glyphs stir nothing. With less motion nothing flies: the old
 title fades out where it was and the new one in where it is, 150 ms each. `MorphSpec` is `Clone`, not `Copy`, for
