@@ -226,6 +226,8 @@ pub struct Text {
     fonts: FontContext,
     layouts: LayoutContext<()>,
     scaler: ScaleContext,
+    /// Which ellipsis each face and device size ends a clamped text in (`Text::ellipsis`).
+    dots: HashMap<(u8, u32), &'static str>,
     families: Vec<Family>,
     /// Device px per logical px: pixel faces snap their size in device px.
     scale: f32,
@@ -275,7 +277,7 @@ impl Text {
         }).collect();
         Self {
             fonts: FontContext { collection, source_cache: Default::default() },
-            layouts: LayoutContext::new(), scaler: ScaleContext::new(), families, scale: 1.0,
+            layouts: LayoutContext::new(), scaler: ScaleContext::new(), dots: HashMap::new(), families, scale: 1.0,
             slots: HashMap::new(), full: false, measured: HashMap::new(), cache: [HashMap::new(), HashMap::new()], pieces: [HashMap::new(), HashMap::new()], reveals: 0, pixels: vec![0; (ATLAS * ATLAS * 2) as usize], dirty: true, pen: (1, 1, 0), shaped: 0, shape_ms: 0.0, log_shapes: false, shape_log: vec![], asked: Default::default(),
         }
     }
@@ -559,7 +561,7 @@ impl Text {
         let w = p.width;
         let full = self.layout(p.s, p.face, p.size, p.line, Some(w), p.setting());
         if full.len() <= n { return None; }
-        let dots = if self.has_char(p.face, '\u{2026}') { "\u{2026}" } else { "..." };
+        let dots = self.ellipsis(p.face, p.size);
         // Whether `s[..end]` with the ellipsis fits, and how full its last line is.
         let mut fits = |t: &mut Self, end: usize| -> Option<f32> {
             let mut c = p.s[..end].trim_end().to_owned();
@@ -593,6 +595,41 @@ impl Text {
         while c.ends_with([',', '.', ':', ';', '\u{2014}', '\u{2013}', '-', '(', '[', '{', '\u{ff0c}', '\u{3002}', '\u{ff1a}', '\u{ff08}']) { c.pop(); c = c.trim_end().to_owned(); }
         c.push_str(dots);
         Some(c)
+    }
+    /// The ellipsis a clamped text in `face` at `size` ends in: the face's own U+2026 when its ink sits
+    /// on the baseline, else three full stops (a face without one, or whose one floats more than a
+    /// device px above the baseline, as some pixel faces' do).
+    pub fn ellipsis(&mut self, face: u8, size: f32) -> &'static str {
+        let key = (face, (self.size_for(face, size) * self.scale * 64.0).round() as u32);
+        if let Some(d) = self.dots.get(&key) { return d; }
+        let d = self.ellipsis_now(face, size);
+        self.dots.insert(key, d);
+        d
+    }
+    fn ellipsis_now(&mut self, face: u8, size: f32) -> &'static str {
+        if !self.has_char(face, '\u{2026}') { return "..."; }
+        // The glyph as it is set (shaping may pick another than the character map's), rasterised as the
+        // page draws it.
+        let l = self.layout("\u{2026}", face, size, size * 1.5, None, Setting { around: None, track: 0.0 });
+        let scale = self.scale;
+        let mut above: Option<f32> = None;
+        for ln in l.lines() { for item in ln.items() {
+            let PositionedLayoutItem::GlyphRun(gr) = item else { continue };
+            let run = gr.run();
+            let font = run.font();
+            let Some(fref) = swash::FontRef::from_index(font.data.as_ref(), font.index as usize) else { continue };
+            let coords: Vec<i16> = run.normalized_coords().iter().map(|c| c.to_bits()).collect();
+            let mut scaler = self.scaler.builder(fref).size(run.font_size() * scale).hint(false).normalized_coords(coords.iter().copied()).build();
+            for g in gr.glyphs() {
+                let Some(img) = Render::new(&[Source::Outline]).format(Format::Alpha).render(&mut scaler, g.id as u16) else { continue };
+                let w = img.placement.width as usize;
+                // The lowest row drawn more than half, in device px above the baseline.
+                let Some(row) = (0..img.placement.height as usize).rev().find(|&y| img.data[y * w..(y + 1) * w].iter().any(|&c| c >= 128)) else { continue };
+                let a = img.placement.top as f32 - (row as f32 + 1.0) - g.y * scale;
+                above = Some(above.map_or(a, |b: f32| b.min(a)));
+            }
+        } }
+        if above.is_none_or(|a| a > 1.0) { "..." } else { "\u{2026}" }
     }
     /// Whether face `face` has a glyph for `ch`.
     pub fn has_char(&self, face: u8, ch: char) -> bool {

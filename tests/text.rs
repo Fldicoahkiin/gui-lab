@@ -234,3 +234,84 @@ fn clamped_text_ends_in_an_ellipsis_within_its_lines_and_grows_with_its_width() 
         }
     } } }
 }
+
+/// One clamped paragraph whose clamp can be taken away.
+mod expand {
+    use amenui::el::{El, Paint, col, text};
+    pub struct S { pub lines: Option<u16>, pub face: u8 }
+    pub const PARA: &str = "Clamped text shows at most so many lines and ends in the face's own ellipsis on the last line, drawn by the material as the rest of the line is.";
+    pub fn view(s: &S) -> El<()> {
+        let t = text(PARA, 14.0, Paint::TEXT).font(amenui::el::Font::Face(s.face)).width(260.0).key("one");
+        col().key("page").fill_width().fill_height().pad(20.0, 20.0).child(match s.lines { Some(n) => t.clamp(n), None => t })
+    }
+}
+
+#[test]
+fn a_clamp_taken_away_always_ends_the_line_in_its_ellipsis_or_what_comes_after() {
+    use amenui::ui::Ui;
+    let fonts = || amenui::text::load_bundled(concat!(env!("CARGO_MANIFEST_DIR"), "/assets")).expect("fonts");
+    let (w, h) = (300u32, 140u32);
+    let Ok(mut o) = amenui::offscreen::Offscreen::try_new(w, h) else { eprintln!("no GPU adapter here: skipped"); return };
+    let look = amenui::style::Look { material: amenui::style::Material::Dottr, theme: amenui::style::LIGHT, ..amenui::style::Look::default() };
+    let mk = |lines: Option<u16>, face: u8| { let mut ui = Ui::new(expand::S { lines, face }, expand::view, |_, _| {}, fonts(), w, h, 1.0).on_look(|_| amenui::style::Look { material: amenui::style::Material::Dottr, theme: amenui::style::LIGHT, ..amenui::style::Look::default() }); ui.tick(2.0); ui };
+    let ink = |px: &[u8], bare: &[u8], r: amenui::ui::Rect| { let mut n = 0; for y in r.y.max(0.0) as u32..(r.bottom() as u32).min(h) { for x in r.x.max(0.0) as u32..(r.right() as u32).min(w) { let i = ((y * w + x) * 4) as usize; if (0..3).any(|c| (px[i + c] as i32 - bare[i + c] as i32).abs() > 24) { n += 1; } } } n };
+    for face in [0u8, 1] {
+    let mut ui = mk(Some(2), face);
+    assert!(ui.clamped("one"));
+    let rest = o.render(&mut ui, &look);
+    // Where the ellipsis is: the last glyph of the clamped text.
+    let last = *ui.instances_of("one").iter().filter(|i| i.paint[3] == amenui::scene::GLYPH).max_by(|a, b| (a.rect[1], a.rect[0]).partial_cmp(&(b.rect[1], b.rect[0])).unwrap()).unwrap();
+    // Glyphs of outline faces carry the spread round them; pixel faces' do not.
+    let pad = if face == amenui::text::PIXEL { 0.0 } else { amenui::text::SPREAD as f32 };
+    let r = amenui::ui::Rect::new(last.rect[0] + pad - 2.0, last.rect[1] + pad, last.rect[2] - 2.0 * pad + 8.0, last.rect[3] - 2.0 * pad);
+    let mut empty = Ui::new(expand::S { lines: Some(2), face }, |_: &expand::S| -> amenui::el::El<()> { amenui::el::col().key("page").fill_width().fill_height() }, |_, _| {}, fonts(), w, h, 1.0).on_look(|_| amenui::style::Look { material: amenui::style::Material::Dottr, theme: amenui::style::LIGHT, ..amenui::style::Look::default() });
+    empty.tick(2.0);
+    let bare = o.render(&mut empty, &look);
+    let mut done = mk(None, face);
+    let fin = o.render(&mut done, &look);
+    let (a, b) = (ink(&rest, &bare, r), ink(&fin, &bare, r));
+    assert!(a > 0 && b > 0, "ink at the end of the line: {a} clamped, {b} after");
+    ui.state.lines = None;
+    ui.relayout();
+    let mut t = 2.0;
+    for f in 0..30 {
+        t += 1.0 / 60.0;
+        ui.tick(t);
+        let px = o.render(&mut ui, &look);
+        let n = ink(&px, &bare, r);
+        eprintln!("face {face} {} ms: {n} px of ink at the end of the line ({a} clamped, {b} after)", (f + 1) * 1000 / 60);
+        assert!(n * 2 >= a.min(b), "face {face} {} ms: {n} px of ink where the ellipsis was ({a} clamped, {b} after)", (f + 1) * 1000 / 60);
+    }
+    }
+}
+
+/// One clamped, selectable paragraph.
+mod clamp_copy {
+    use amenui::el::{El, Font, Paint, col, text};
+    pub struct S { pub face: u8 }
+    pub fn view(s: &S) -> El<()> {
+        col().key("page").fill_width().fill_height().pad(20.0, 20.0)
+            .child(text(super::expand::PARA, 14.0, Paint::TEXT).font(Font::Face(s.face)).width(260.0).clamp(2).selectable().key("one"))
+    }
+}
+
+#[test]
+fn a_clamped_text_copies_what_it_shows_without_the_ellipsis_and_a_pixel_face_ends_in_full_stops() {
+    use amenui::ui::Ui;
+    let fonts = || amenui::text::load_bundled(concat!(env!("CARGO_MANIFEST_DIR"), "/assets")).expect("fonts");
+    for (face, dots) in [(amenui::text::SANS, "\u{2026}"), (amenui::text::PIXEL, "...")] {
+        let mut ui = Ui::new(clamp_copy::S { face }, clamp_copy::view, |_, _| {}, fonts(), 400, 200, 1.0);
+        ui.tick(1.0);
+        let r = ui.node("one").unwrap().rect;
+        ui.press(r.x + 1.0, r.y + 4.0);
+        ui.pointer_move(r.right() - 1.0, r.bottom() - 2.0);
+        ui.release(r.right() - 1.0, r.bottom() - 2.0);
+        let got = ui.copy().expect("a selection");
+        let shown = amenui::text::Text::new(fonts()).clamp_lines(amenui::text::Para { s: super_para(), face, size: 14.0, line: ui.node("one").unwrap().rect.h / 2.0, width: ui.node("one").unwrap().inner.w + 1.0, print: 0.0, around: None, track: 0.0 }, 2).expect("cut");
+        assert!(shown.ends_with(dots), "face {face}: {shown:?} does not end in {dots:?}");
+        assert!(!got.contains('\u{2026}') && !got.ends_with("..."), "face {face}: the copy {got:?} has the ellipsis");
+        assert!(super_para().starts_with(&got) && got.len() < super_para().len(), "face {face}: the copy {got:?} is not what is shown");
+        assert_eq!(ui.export_tree().find("one").unwrap().text.as_deref(), Some(super_para()), "face {face}: assistive technology reads all of it");
+    }
+}
+fn super_para() -> &'static str { expand::PARA }

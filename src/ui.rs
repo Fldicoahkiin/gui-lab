@@ -298,7 +298,7 @@ struct TextRec { s: String, face: u8, size: f32, line: f32, width: f32, print: f
 struct RTile { p: Particle, src: Vec<Instance>, dst: Vec<Instance> }
 /// The changed glyphs of one text recomposing: the tiles, when they started and land, and the new glyphs
 /// they stand in for (hidden until then).
-struct Recomp { tiles: Vec<RTile>, start: f32, end: f32, hide: HashSet<u64> }
+struct Recomp { tiles: Vec<RTile>, start: f32, end: f32, hide: HashSet<u64>, keep: Vec<Instance>, keep_until: f32 }
 /// An unchanged glyph sliding to where the new string puts it.
 struct Slide { from: [f32; 4], clip: [f32; 4], start: f32, dur: f32 }
 /// A recomposition found while painting, worked out after the scene is built.
@@ -2282,7 +2282,9 @@ impl<S, M: Clone> Ui<S, M> {
         let mut pieces: Vec<(usize, (usize, usize))> = self.sel_ranges().into_iter().collect();
         if pieces.is_empty() { return None; }
         pieces.sort_by_key(|p| p.0);
-        Some(pieces.iter().filter_map(|(i, (a, b))| self.nodes[*i].text().and_then(|s| s.get(*a..*b))).collect::<Vec<_>>().join("\n"))
+        // A clamped text gives what it shows, without the ellipsis (it is not part of the text).
+        let end = |i: usize| self.nodes[i].shown.as_deref().map_or(usize::MAX, |sh| sh.strip_suffix('\u{2026}').or_else(|| sh.strip_suffix("...")).unwrap_or(sh).len());
+        Some(pieces.iter().filter_map(|&(i, (a, b))| self.nodes[i].text().and_then(|s| s.get(a.min(end(i))..b.min(end(i))))).collect::<Vec<_>>().join("\n"))
     }
     /// Copy, and remove the selection from the focused field.
     pub fn cut(&mut self) -> Option<String> {
@@ -4430,6 +4432,7 @@ impl<S, M: Clone> Ui<S, M> {
         }
         for r in self.recomps.values() {
             for t in &r.tiles { for inst in tile_pieces(t, now - r.start, false) { self.scene.push(inst); } }
+            if now < r.keep_until { for inst in &r.keep { self.scene.push(*inst); } }
         }
         self.lifted.clear();
         // Text over pictures and shapes, as it is on any page.
@@ -4754,6 +4757,19 @@ impl<S, M: Clone> Ui<S, M> {
                 }).collect()
             };
             let (opart, npart) = (parts(&old, op, os), parts(&new, np, ns));
+            // A clamped text letting go of its clamp: its ellipsis stays where it is, not cut into tiles,
+            // until the first glyph that comes after it has more than half its ink (DESIGN.md §1.2), so
+            // the end of the line always shows one or the other.
+            let dots = ["\u{2026}", "..."].into_iter().find(|d| old.s.ends_with(d) && new.s.starts_with(old.s[..old.s.len() - d.len()].trim_end()) && new.s.len() > old.s.len() - d.len());
+            let ellipsis: Vec<bool> = match dots {
+                Some(d) => {
+                    let para = Para { s: &old.s, face: old.face, size: old.size, line: old.line, width: old.width, print: old.print, around: None, track: old.track };
+                    let b = self.text.boxes(para, old.origin, old.s.len() - d.len(), old.s.len());
+                    old.glyphs.iter().map(|(_, g)| { let (cx, cy) = ((g.rect[0] + g.rect[2] * 0.5) / s, (g.rect[1] + g.rect[3] * 0.5) / s); b.iter().any(|r| r.inset(-1.0, -1.0, -1.0, -1.0).contains(cx, cy)) }).collect()
+                }
+                None => vec![false; old.glyphs.len()],
+            };
+            let mut keep: Vec<Instance> = vec![];
             let run = self.recomps.remove(&key);
             let hidden_before: HashSet<u64> = run.as_ref().map(|r| r.hide.clone()).unwrap_or_default();
             let shown = |id: u64, inst: &Instance, slides: &HashMap<u64, Slide>| -> Instance {
@@ -4793,7 +4809,12 @@ impl<S, M: Clone> Ui<S, M> {
                 }
                 for (oid, oinst) in o.iter().skip(n.len()) { if !hidden_before.contains(oid) { src.push(shown(*oid, oinst, &self.slides)); } }
             }
-            for ((oid, oinst), p) in old.glyphs.iter().zip(&opart) { if *p == 1 && !hidden_before.contains(oid) { src.push(shown(*oid, oinst, &self.slides)); } }
+            for (((oid, oinst), p), e) in old.glyphs.iter().zip(&opart).zip(&ellipsis) {
+                if *p != 1 || hidden_before.contains(oid) { continue; }
+                if *e { keep.push(shown(*oid, oinst, &self.slides)); } else { src.push(shown(*oid, oinst, &self.slides)); }
+            }
+            // The first glyph after the ellipsis: the first new glyph in the changed part.
+            let first: Option<Instance> = if keep.is_empty() { None } else { new.glyphs.iter().zip(&npart).find(|(_, p)| **p == 1).map(|(g, _)| g.1) };
             for ((nid, ninst), p) in new.glyphs.iter().zip(&npart) { if *p == 1 { new_changed.push(*nid); dst.push(Instance { extra: [ninst.extra[0], ninst.extra[1], ninst.extra[2], -1e4], ..*ninst }); } }
             for (id, sl) in new_slides { self.slides.insert(id, sl); }
             // The new glyphs are there all along (under their tiles): they do not condense.
@@ -4813,7 +4834,23 @@ impl<S, M: Clone> Ui<S, M> {
             let budget = (spec.max_tiles - live as f32).max(0.0) as usize;
             if rtiles.len() > budget { rtiles.truncate(budget); }
             let dur = dur_ms / 1000.0;
-            self.recomps.insert(key, Recomp { tiles: rtiles, start: now, end: now + dur, hide: new_changed.into_iter().collect() });
+            // When more than half of the cells that land in that glyph show it.
+            let keep_until = match first {
+                None => f32::NEG_INFINITY,
+                Some(g) => {
+                    let inside = |i: &Instance| { let (cx, cy) = (i.rect[0] + i.rect[2] * 0.5, i.rect[1] + i.rect[3] * 0.5); cx >= g.rect[0] && cy >= g.rect[1] && cx < g.rect[0] + g.rect[2] && cy < g.rect[1] + g.rect[3] };
+                    let mine: Vec<&RTile> = rtiles.iter().filter(|t| t.dst.iter().any(inside)).collect();
+                    let mut at = dur;
+                    let mut t = 0.0;
+                    while t < dur {
+                        let landed = mine.iter().filter(|r| morph::progress(&r.p, t, Ease::InOutCubic) >= r.p.misc[3]).count();
+                        if !mine.is_empty() && landed * 2 > mine.len() { at = t; break; }
+                        t += 1.0 / 240.0;
+                    }
+                    now + at
+                }
+            };
+            self.recomps.insert(key, Recomp { tiles: rtiles, start: now, end: now + dur, hide: new_changed.into_iter().collect(), keep, keep_until });
             self.animating = true;
         }
     }

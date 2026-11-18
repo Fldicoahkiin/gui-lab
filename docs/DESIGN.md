@@ -163,9 +163,15 @@ measured in a holder 10⁵ px wide, so it is measured at its own width, not the 
 **Clamping text** (`El::clamp(lines)`): a text element shows at most `lines` lines; text that does not fit ends in
 the face's own ellipsis on the last line, in the text's colour and size, on the baseline, drawn by the material as
 the rest of the line is (no fade, no mask). It breaks after a word, or between characters when that would leave more
-than a quarter of the last line empty, and leaves no space or punctuation before the ellipsis. `Ui::clamped(key)`
-says whether it was cut; the accessibility mirror reads the whole text. Taking the clamp away brings the rest in as
-changed text does (§1.16). With `around` it does not clamp yet (`ClampAround` in `Ui::problems`).
+than a quarter of the last line empty, and leaves no space or punctuation before the ellipsis. The ellipsis is the
+face's U+2026 as shaping sets it; a face without one, or whose one has its ink's bottom more than a device px above
+the baseline (the pixel face's floats at the middle of the x height), ends in three full stops at the face's own
+spacing. `Ui::clamped(key)` says whether it was cut; the accessibility mirror reads the whole text; selecting and
+copying it gives what is shown, without the ellipsis (it is not part of the text). Taking the clamp away brings the
+rest in as changed text does (§1.16), and the ellipsis stays where it is, whole, until the first glyph after it has
+more than half its ink, so the end of the line always shows one or the other. With `around` it does not clamp yet
+(`ClampAround` in `Ui::problems`). `tests/text.rs` (`a_clamp_taken_away_always_ends_the_line_in_its_ellipsis_or_what_comes_after`,
+`a_clamped_text_copies_what_it_shows_without_the_ellipsis_and_a_pixel_face_ends_in_full_stops`).
 
 **Previews** (`El::preview(true)`): a modal element inside (a sheet, a context menu, a dialog) is drawn where it is
 written, laid out and clipped by the preview, without a layer: nothing beneath it is held loose, focus is not kept
@@ -3717,9 +3723,6 @@ Layout, faces and plates (the fifth set of framework needs):
 
 - `El::fit`: the containment check of `tests/render.rs` is skipped at or under `min`, where clipping is the specified
   behaviour (there it checks that `FitShort` is reported exactly when the subtree is cut).
-- `El::clamp`: selecting and copying a clamped text gives the text as shown, not the whole text; the fallback of three
-  periods (a face without `…`) is set at the face's own spacing, not tightened by 0.05 em; taking the clamp away brings
-  the rest in by recomposition (§1.16), not condensing from the ellipsis.
 - Clearing the focus: `tests/focus.rs` checks that the method and the command leave the same way and that the page
   is then as never focused; it does not compare each leaving frame with the focus moving to another element.
 - `El::fit` and the readout's wrapping are measured; the 1 % comparison with the website's `fit_stage` is the
