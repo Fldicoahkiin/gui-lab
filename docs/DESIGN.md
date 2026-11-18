@@ -2587,6 +2587,34 @@ of pixels changing; a `Hold(2)` byte for byte; five plates keeping four; a new w
 timeline three times the same 300 frames; halfway through a crack the ink only in the pieces not yet turned and gone
 at the end; nothing on a plate in the accessibility mirror).
 
+### 1.34 Effects that can be turned off
+
+Each effect the framework draws can be turned off from the look, without the application building its view again:
+`Look::off: style::Off`, every field `false` (on) by default. An effect that is off goes straight to its end state:
+nothing is lost but the motion, every control still works, it asks for no frames and draws no pass of its own. A
+switch takes effect on the next frame; a morph, a flow, a recomposition or a decode in flight when its switch goes off
+ends where it was going, and fronts in flight stop.
+
+| field | off means |
+|---|---|
+| `close` | new things are there at once, without condensing (`Fx::enter`) |
+| `fronts` | `Cmd::Ripplr` and a commit's front send nothing; `Cmd::Commit` shows the new look at once, with no transition |
+| `flows` | `Cmd::Flow` does nothing: the page changes at once |
+| `morphs` | `Cmd::Morph`, `Ui::morph` and `Ui::morph_from_last` do nothing: the new picture is there at once |
+| `ripples` | a press sends no front: it changes the control and nothing round it |
+| `loosen` | a press does not hold what is pressed loose or condense it again after, and no burst runs on press or hover |
+| `recompose` | changed text is replaced at once (§1.16) |
+| `decode` | `El::decode` text is there at once (§1.28) |
+| `material_still` | the materials' clocks stand (their rest pose: no drift, no slips, no wandering thread) and the beat stops |
+| `bloom` | no bloom pass (`post.bloom`) |
+
+The field dots (the ground's own marks in each material) have no switch yet: each material draws them in its own
+shader, and a switch for them comes with the uniforms every material shader gets for the console's plate.
+
+Acceptance: `tests/off.rs` (for each switch, the frame after what would set the effect off is byte for byte the frame
+the effect settles on, and the page asks for no frames in the 2 s after; a flow switched off mid-flight ends at once;
+everything is on by default).
+
 ## 2. Parameters must be exact
 
 Sliders are not the main means. The number control (`number`):
@@ -3061,7 +3089,7 @@ language marking names the current language); `labsheet <dir> body` gives `body.
 | The field map and trails (§1.29), the `scribblr` thread material and long paths (§1.30), small type and edge notes, field map readouts, Loose Thread, black and white only and invert (§4.2–§4.4, §1.21) | Field map and trails: unit tests in `fieldmap.rs`, `tests/fieldmap.rs`, the drag in `tests/render.rs`, `check` item 19, `bench … map`, `craft <dir> stirr`. Thread: unit tests in `strand.rs`, `tests/strand.rs`, `check` item 20 (1–5), `bench … strand`, `craft <dir> scribblr`. Small type, readouts, black and white only and invert (§4.2–§4.4, `binary` and `invert` in §1.21): the edge note and readout tests in `tests/gaze.rs`, `check` items 7.2, 7.3, 20.6 and 20.7, `craft <dir> loose-thread`. `cargo test`, no `clippy` warnings, all of `check` |
 | Text on a form with depth and facing, hits where things are drawn, words shown whole, the warm-up and the application's own preparation, the audit and the measured ink box (§1.23, §1.26, §1.31) | Done: `cargo test` (with `tests/form.rs`, `tests/pointer.rs`, `tests/warmup.rs`, `tests/audit.rs` and the unit tests of `form.rs`, `hit.rs`, `mesh.rs`), no `clippy` warnings (native and web), rustdoc without warnings; `render --page recipe-form --audit --strict` exits 0, and the audit of every recipe in every material, dark and light, has no P0 or P1 |
 | The legible text under effects, tails with a clear way out, runs of frames at a fixed rate, the materials past half loose, the Crack transition and the beat (§1.6.2, §1.17, §1.30, §1.32, §4.1) | Done: `cargo test` (with `tests/wrap.rs`, `tests/strand.rs`, `tests/frames.rs`, `tests/sample.rs`, `tests/transition.rs`, `tests/beat.rs` and the unit tests of `beat.rs`), no `clippy` warnings (native and web), rustdoc without warnings. Not done: plates, gaze echoes and dashed `INK` leaders |
-| Layout on a 1/64 px grid, pinned absolute children, fitting a subtree, clamping text, previews, clearing the focus, line inks, text that holds what is under it, faces that come later, plates (§1.2, §1.6.5, §1.8, §1.15, §1.31, §1.33) | Done: `cargo test` (with `tests/render.rs`, `tests/text.rs`, `tests/menu.rs`, `tests/access.rs`, `tests/focus.rs`, `tests/legible.rs`, `tests/frames.rs`, `tests/transform.rs`, `tests/faces.rs`, `tests/plate.rs`), no `clippy` warnings natively and for `wasm32` |
+| Layout on a 1/64 px grid, pinned absolute children, fitting a subtree, clamping text, previews, clearing the focus, line inks, text that holds what is under it, faces that come later, plates, effect switches (§1.2, §1.6.5, §1.8, §1.15, §1.31, §1.33, §1.34) | Done: `cargo test` (with `tests/off.rs`, `tests/render.rs`, `tests/text.rs`, `tests/menu.rs`, `tests/access.rs`, `tests/focus.rs`, `tests/legible.rs`, `tests/frames.rs`, `tests/transform.rs`, `tests/faces.rs`, `tests/plate.rs`), no `clippy` warnings natively and for `wasm32` |
 
 Since the split into two repositories, the tools `check`, `pages`, `scenes`, `film`, `samples`, `craft`, `bench`, `shot`,
 `labsheet`, `scroll` and `window`, and the tests that drive gallery pages, are in the website repository.
@@ -3667,6 +3695,7 @@ Layout, faces and plates (the fifth set of framework needs):
   website's to run once it uses `El::fit`.
 - Faces that come later: the warm-up's budget with faces arriving and material shaders fetched as assets are not
   done; the module still carries the material shaders.
+- Effect switches (§1.34): the field dots have no switch yet (see there).
 - Plates: ageing by material (the table of how each material lets a stroke go) and the field acting on a plate's
   ink per pixel are not done; every material uses plain's thinning out over the last fifth, and the pointer and
   fronts act on plate ink only as on any decoration drawn this frame (not on kept pixels). So the check that an

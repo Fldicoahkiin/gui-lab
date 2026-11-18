@@ -10,7 +10,7 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
 
 ## Fitting, clamping, faces that come later and plates
 
-- Breaking: `FlowSpec` has `fade_ms` and `Look` has `overlay_keep`, so struct literals of them need the new field or
+- Breaking: `FlowSpec` has `fade_ms` and `Look` has `overlay_keep` and `off`, so struct literals of them need the new field or
   `..Default::default()`; `Cmd` has `ClearFocus` and `ClearPlate`, `ViewProblem` has `FitShort`, `ClampAround` and
   `PlateOver`, and `FontError` has `Bad`, so exhaustive matches need the new arms. Every element is now the box its
   absolutely placed children are pinned in (its padding box), not the window: a page that placed an `absolute` child
@@ -30,6 +30,8 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
 - A decode held at a step draws once and then the page rests (it asked for frames for good before).
 - `Look::overlay_keep` keeps the readout in its corner; the readout wraps to fit a window 390 px wide.
 - With less motion a flow fades in place over `FlowSpec::fade_ms` (150 ms by default).
+- `Look::off` turns each effect off (close, fronts and commits, flows, morphs, ripples, loosening, recompose,
+  decode, material motion, bloom), each going straight to its end state and asking for no frames (§1.34).
 - A box whose last child was absolute no longer keeps the child's layout after it goes (it could panic in taffy).
 
 ## Coalesced input, cached word pieces, and a web page that survives a panic

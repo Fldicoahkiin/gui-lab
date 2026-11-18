@@ -650,6 +650,37 @@ pub struct Look {
     /// The tempo (DESIGN.md §1.32): fronts, glitchr's held rows, scribblr's held pose and a transition's
     /// steps fall on its steps. `bpm` 0 (the default) is off.
     pub beat: crate::beat::Beat,
+    /// Effects turned off (DESIGN.md §1.34): all on by default.
+    pub off: Off,
+}
+/// The effects the framework draws, each of which can be turned off without the application building
+/// its view again (DESIGN.md §1.34). An effect that is off goes straight to its end state: nothing is
+/// lost but the motion, it asks for no frames and draws no pass of its own. A switch takes effect on
+/// the next frame, mid-flight included (what is in the air ends where it was going).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Off {
+    /// New things condensing in (`Fx::enter`): off, they are there at once.
+    pub close: bool,
+    /// Fronts across the window and commits: off, `Cmd::Ripplr` and a commit's front send nothing, and
+    /// a commit shows the new look at once (no transition).
+    pub fronts: bool,
+    /// Flows (`Cmd::Flow`): off, the page changes at once.
+    pub flows: bool,
+    /// Morphs (`Cmd::Morph`, `Ui::morph`, `Ui::morph_from_last`): off, the new picture is there at once.
+    pub morphs: bool,
+    /// A press's own ripple: off, a press changes the control and nothing round it.
+    pub ripples: bool,
+    /// Loosening on hover and press: off, what is pressed is not held loose, does not condense again
+    /// after, and no burst runs over it.
+    pub loosen: bool,
+    /// Recomposition (DESIGN.md §1.16): off, changed text is replaced at once.
+    pub recompose: bool,
+    /// Decodes (`El::decode`, DESIGN.md §1.28): off, the text is there at once.
+    pub decode: bool,
+    /// Material motion: off, the materials' clocks stand at their rest pose and the beat stops.
+    pub material_still: bool,
+    /// The finishing pass's bloom (`post.bloom`): off, no bloom pass.
+    pub bloom: bool,
 }
 pub use crate::fieldmap::MapFx;
 /// How marks on a 3D element follow its depth: nearer parts get larger marks (`depth_scale`: the
@@ -722,7 +753,7 @@ impl Look {
 pub const SETTINGS: [&str; 19] = ["loose_scale", "legible_cap", "loose_max", "press_ms", "fx.pitch", "fx.jitter", "fx.glitch", "fx.wave_speed", "fx.wave_life",
     "fx.wave_width", "fx.wave_tail", "fx.push", "fx.lens", "fx.enter", "beat.bpm", "beat.steps", "beat.swing", "post.invert", "post.binary"];
 impl Default for Look {
-    fn default() -> Self { Self { fx: Fx::default(), theme: DARK, material: Material::Dottr, pics: [Markr::default(); 8], params: MaterialParams::all(), gaze: Gaze::default(), loose_scale: 1.0, quality: 1.0, overlay: 0, overlay_at: Corner::BottomRight, overlay_inset: [12.0, 12.0], overlay_keep: false, legible_cap: LEGIBLE_CAP, loose_max: 1.0, recompose: crate::morph::Recompose::default(), particles: crate::morph::Particles::default(), press_ms: 350.0, roles: [crate::el::Response::Nudge, crate::el::Response::Loosen], transition: crate::preset::Transition { duration_ms: 0.0, steps: [crate::preset::Step { kind: crate::preset::StepKind::None, from: 0.0, to: 0.0, a: 0.0, b: 0.0, c: 0.0, d: 0.0, e: 0.0 }; 4] }, scroll: Scroll::default(), post: crate::post::Post::default(), marks: Marks::default(), map: MapFx::default(), beat: crate::beat::Beat { bpm: 0.0, steps: 4, swing: 0.0 } } }
+    fn default() -> Self { Self { fx: Fx::default(), theme: DARK, material: Material::Dottr, pics: [Markr::default(); 8], params: MaterialParams::all(), gaze: Gaze::default(), loose_scale: 1.0, quality: 1.0, overlay: 0, overlay_at: Corner::BottomRight, overlay_inset: [12.0, 12.0], overlay_keep: false, legible_cap: LEGIBLE_CAP, loose_max: 1.0, recompose: crate::morph::Recompose::default(), particles: crate::morph::Particles::default(), press_ms: 350.0, roles: [crate::el::Response::Nudge, crate::el::Response::Loosen], transition: crate::preset::Transition { duration_ms: 0.0, steps: [crate::preset::Step { kind: crate::preset::StepKind::None, from: 0.0, to: 0.0, a: 0.0, b: 0.0, c: 0.0, d: 0.0, e: 0.0 }; 4] }, scroll: Scroll::default(), post: crate::post::Post::default(), marks: Marks::default(), map: MapFx::default(), beat: crate::beat::Beat { bpm: 0.0, steps: 4, swing: 0.0 }, off: Off::default() } }
 }
 /// A corner of the window (`Look::overlay_at`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

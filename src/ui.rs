@@ -818,6 +818,8 @@ pub struct Timing {
     pub beat: crate::beat::Beat,
     /// The finishing pass is one-bit (`post::Post::binary`).
     pub binary: bool,
+    /// The effects turned off (`Look::off`).
+    pub off: crate::style::Off,
 }
 impl Default for Timing {
     fn default() -> Self { Self::of(&Look::default()) }
@@ -827,7 +829,7 @@ impl Timing {
     pub fn of(l: &Look) -> Self {
         Self { wave_life: l.fx.wave_life, wave_speed: l.fx.wave_speed, enter: l.fx.enter, material: l.material.id(), overlay: l.overlay,
                fx: l.fx, legible_cap: l.legible_cap, loose_max: l.loose_max, recompose: l.recompose,
-               press: l.press_ms / 1000.0, roles: l.roles, transition: l.transition.duration_ms / 1000.0, scroll: l.scroll, map: l.map, strand: crate::strand::StrandFx::of(l.numbers(crate::style::Material::Scribblr).0), beat: l.beat.clamped(), binary: l.post.binary }
+               press: l.press_ms / 1000.0, roles: l.roles, transition: l.transition.duration_ms / 1000.0, scroll: l.scroll, map: l.map, strand: crate::strand::StrandFx::of(l.numbers(crate::style::Material::Scribblr).0), beat: l.beat.clamped(), binary: l.post.binary, off: l.off }
     }
 }
 
@@ -1126,6 +1128,9 @@ impl<S, M: Clone> Ui<S, M> {
         let mut l = self.look_of.map_or_else(Look::default, |f| f(&self.state));
         // Names were checked when they were set.
         for (n, v) in &self.sets { let _ = l.set(n, *v); }
+        // What is turned off (DESIGN.md §1.34) is turned off in the look the renderer draws with.
+        if l.off.bloom { l.post.bloom.strength = 0.0; }
+        if l.off.material_still { l.beat.bpm = 0.0; }
         l
     }
 
@@ -1360,6 +1365,17 @@ impl<S, M: Clone> Ui<S, M> {
         while let Some(k) = at { if self.nodes[k].plate.is_some() { return true; } at = self.nodes[k].parent; }
         false
     }
+    /// An effect turned off while it is in flight ends where it was going (DESIGN.md §1.34).
+    fn cut_what_is_off(&mut self) {
+        let off = self.timing.off;
+        let mut cut = false;
+        if off.morphs && self.run.is_some() { self.run = None; cut = true; }
+        if off.flows && !self.flows.is_empty() { self.flows.clear(); cut = true; }
+        if off.recompose && !self.recomps.is_empty() { self.recomps.clear(); cut = true; }
+        if off.decode && !self.decodes.is_empty() { cut = true; }
+        if off.fronts && self.field.fronts.iter().any(|f| f[3] > 0.0) { for f in &mut self.field.fronts { f[3] = 0.0; } cut = true; }
+        if cut { self.dirty = true; self.paint(); }
+    }
     /// The plate in `slot` drew the instances from `start` to now.
     fn plate_span(&mut self, slot: u8, start: u32) {
         let end = self.scene.instances.len() as u32;
@@ -1555,10 +1571,11 @@ impl<S, M: Clone> Ui<S, M> {
         self.scene.plate_now = self.pclock;
         self.scene.plate_ageing = self.plates_ageing();
         // The material clock runs only while something was moving.
-        if self.moving { self.mclock += dt; }
-        if self.ground_moving { self.gclock += dt; }
+        if self.moving && !self.timing.off.material_still { self.mclock += dt; }
+        if self.ground_moving && !self.timing.off.material_still { self.gclock += dt; }
         self.clock = t;
         if self.look_of.is_some() { self.timing = Timing::of(&self.look()); }
+        self.cut_what_is_off();
         self.ramp_births();
         // What the state's tick changed is laid out: once, before the frame is drawn, when input is
         // coalesced (a host that ticks before each event does not lay out for each).
@@ -1917,6 +1934,8 @@ impl<S, M: Clone> Ui<S, M> {
     }
     /// A burst over a rect (logical px) from now: `strength` 0..1 for `secs`.
     pub fn burst(&mut self, r: Rect, strength: f32, secs: f32) {
+        // A press's and a hover's burst is loosening on press (`Off::loosen`).
+        if self.timing.off.loosen { return; }
         let s = self.scale;
         self.field.burst(Some([r.x * s, r.y * s, r.right() * s, r.bottom() * s]), self.clock, strength, secs);
     }
@@ -2540,6 +2559,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// from no looser than `Look::legible_cap` (it is born that far into condensing), what is ignored
     /// not at all (DESIGN.md §1.15).
     fn rebirth(&mut self, key: &str) {
+        if self.timing.off.loosen { return; }
         let Some(root) = self.nodes.iter().position(|n| n.key == key) else { return };
         let enter = self.timing.enter;
         for &(owner, id) in &self.owners {
@@ -2557,7 +2577,9 @@ impl<S, M: Clone> Ui<S, M> {
     /// A new press from the same element restarts its front rather than adding one.
     fn front_from(&mut self, i: Option<usize>, x: f32, y: f32, control: bool, strength: f32) {
         let Some(i) = i else { return };
-        let scope = if self.up(i, |n| n.commit).is_some() { Some(Scope::Global) }
+        let commit = self.up(i, |n| n.commit).is_some();
+        if (commit && self.timing.off.fronts) || (!commit && self.timing.off.ripples) { return; }
+        let scope = if commit { Some(Scope::Global) }
                     else { self.nodes[i].ripple.clone().or(control.then_some(Scope::Own)) };
         let Some(scope) = scope else { return };
         let window = Rect::new(0.0, 0.0, self.size.0, self.size.1);
@@ -2607,6 +2629,15 @@ impl<S, M: Clone> Ui<S, M> {
         // Commands are taken first: a flow needs the frame as it is before the new layout.
         let mut cmds = std::mem::take(&mut self.sent);
         cmds.extend(self.commands.map(|f| f(&mut self.state)).unwrap_or_default());
+        // What is turned off goes straight to its end (DESIGN.md §1.34): its command does nothing.
+        let off = self.timing.off;
+        cmds.retain(|c| !match c {
+            Cmd::Flow(_) => off.flows,
+            Cmd::Morph { .. } => off.morphs,
+            Cmd::Commit { .. } => off.fronts,
+            Cmd::Ripplr { .. } | Cmd::RipplrAt { .. } => off.fronts,
+            _ => false,
+        });
         let flow = cmds.iter().find_map(|c| if let Cmd::Flow(f) = c { Some(*f) } else { None });
         if let Some(f) = flow { self.fade_s = (f.fade_ms / 1000.0).max(1e-3); }
         // A commit keeps the frame as it is before the new view.
@@ -2620,7 +2651,7 @@ impl<S, M: Clone> Ui<S, M> {
         // A morph from the last frame takes its source now, before the new view.
         if let Some(Cmd::Morph { to, spec, .. }) = cmds.iter().find(|c| matches!(c, Cmd::Morph { spec, .. } if spec.from_last.is_some())) { let (to, spec) = (to.clone(), spec.clone()); self.morph_from_last(&to, spec); }
         cmds.retain(|c| !matches!(c, Cmd::Morph { spec, .. } if spec.from_last.is_some()));
-        self.no_recompose = flow.is_some();
+        self.no_recompose = flow.is_some() || off.recompose;
         self.layout();
         self.morph_last();
         self.no_recompose = false;
@@ -3228,7 +3259,7 @@ impl<S, M: Clone> Ui<S, M> {
             // decoration it passes over never shows through it as loose marks (DESIGN.md §1.29).
             if self.modal_at.is_none() && self.scene.layer.is_none() && n.stirr.is_some() && n.fill.is_some() && !n.hidden { self.scene.begin_layer(); }
             veiled[i] = n.parent.is_some_and(|p| veiled[p]) || n.focus_shown && !focus_at.is_some_and(|f| within(&self.nodes, f, i));
-            held[i] = self.pressed.as_deref() == Some(n.key.as_str()) || n.parent.is_some_and(|p| held[p]);
+            held[i] = !self.timing.off.loosen && (self.pressed.as_deref() == Some(n.key.as_str()) || n.parent.is_some_and(|p| held[p]));
             stirred[i] = n.stirr.is_some() || n.parent.is_some_and(|p| stirred[p]);
             unit[i] = n.parent.and_then(|p| unit[p]).or(n.active().then_some(i));
             // A see-through subtree (`El::opacity`) is drawn as one group: it ends where the subtree does.
@@ -3309,7 +3340,7 @@ impl<S, M: Clone> Ui<S, M> {
                 if hidden { inst.extra[3] = -1e4; sink.unseen.push((i, inst)); return false; }
                 // What a morph shows has been there all along: it must not condense on top of its ramp.
                 // A drawing's marks change every frame: they are there at once, never condensing.
-                let born = if role != 0 || drawn { *births.entry(id).or_insert(-1e4) }
+                let born = if role != 0 || drawn || self.timing.off.close { *births.entry(id).or_insert(-1e4) }
                            else { *births.entry(id).or_insert_with(|| self.births.get(&id).copied().or(if glyph.is_some() { text_born } else { None }).unwrap_or(if self.scroll_paint { -1e4 } else { now })) };
                 if glyph.is_some() { let e = text_births.entry(nk).or_insert(born); *e = e.min(born); }
                 inst.extra[3] = born;
@@ -3596,6 +3627,8 @@ impl<S, M: Clone> Ui<S, M> {
     }
     /// Start what appears and what went (DESIGN.md §1.28), and keep each decoding element's instances.
     fn decode_pass(&mut self) {
+        // Decodes turned off (DESIGN.md §1.34): the text is there as it ends.
+        if self.timing.off.decode { self.decodes.clear(); self.decode_last.clear(); return; }
         let (now, s) = (self.clock, self.scale);
         let mut present: HashMap<String, Shown> = HashMap::new();
         for i in 0..self.nodes.len() {
@@ -4392,6 +4425,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// the morph in progress turns it around: in flight, every tile goes back from where it is; while
     /// the source is still loosening, it tightens again. Any other morph in progress is cut short.
     pub fn morph(&mut self, from: &str, to: &str, spec: MorphSpec) {
+        if self.timing.off.morphs { return; }
         let now = self.clock;
         let tighten = spec.tighten_ms / 1000.0;
         let mut k0 = 0.0;
@@ -4444,6 +4478,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// so a title on the old page flies, glyph by glyph, to the title of the new one (`morph_last`).
     /// With nothing drawn under that key, the new element just comes in as usual. `Cmd::Morph` with `from_last` set does the same.
     pub fn morph_from_last(&mut self, to: &str, spec: MorphSpec) {
+        if self.timing.off.morphs { return; }
         let from = spec.from_last.clone().unwrap_or_else(|| to.to_owned());
         let src = self.instances_of(&from).into_iter().filter(|i| i.paint[2] > 0.0 && i.rect[2] > 0.0).collect();
         self.last_morph = Some((src, to.to_owned(), spec));
