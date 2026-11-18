@@ -219,8 +219,37 @@ fn near_rgb(a: &[u8], i: usize, c: [u8; 3], tol: i32) -> bool { (0..3).all(|k| (
 fn rgb(a: &[u8], i: usize) -> [u8; 3] { [a[i * 4], a[i * 4 + 1], a[i * 4 + 2]] }
 fn chroma(a: &[u8], i: usize) -> i32 { let p = rgb(a, i); *p.iter().max().unwrap() as i32 - *p.iter().min().unwrap() as i32 }
 
+/// Blobs under 16 px² of pixels in the paper's or the ink's colour (light or dark, not coloured) that
+/// `f` has within `pick` and `bare` does not have there: specks that are not the material's own lattice.
+fn specks(f: &[u8], bare: &[u8], pick: &dyn Fn(usize) -> bool, paper: [u8; 3], ink: [u8; 3]) -> usize {
+    let (w, h) = (W as usize, H as usize);
+    let class = |a: &[u8], i: usize| -> u8 {
+        if chroma(a, i) > 30 { return 0; }
+        let (dp, di): (i32, i32) = ((0..3).map(|k| (a[i * 4 + k] as i32 - paper[k] as i32).abs()).sum(), (0..3).map(|k| (a[i * 4 + k] as i32 - ink[k] as i32).abs()).sum());
+        if dp <= di { 1 } else { 2 }
+    };
+    let cls: Vec<u8> = (0..w * h).map(|i| class(f, i)).collect();
+    let mut seen = vec![false; w * h];
+    let mut found = 0;
+    for start in 0..w * h {
+        if seen[start] || cls[start] == 0 || !pick(start) { continue; }
+        let c = cls[start];
+        let (mut stack, mut blob) = (vec![start], vec![]);
+        seen[start] = true;
+        while let Some(i) = stack.pop() {
+            blob.push(i);
+            let (x, y) = (i % w, i / w);
+            let mut go = |j: usize| { if !seen[j] && cls[j] == c { seen[j] = true; stack.push(j); } };
+            if x > 0 { go(i - 1); } if x + 1 < w { go(i + 1); } if y > 0 { go(i - w); } if y + 1 < h { go(i + w); }
+        }
+        // Small, inside the band, and not where the shape alone has the same class.
+        if blob.len() < 16 && blob.iter().all(|&i| pick(i)) && blob.iter().filter(|&&i| class(bare, i) == c).count() * 2 < blob.len() { found += 1; }
+    }
+    found
+}
+
 /// What each material's edge round a label must not do (DESIGN.md §1.15): charr keeps no solid box past the
-/// island, halftonr draws no line of colour where its screens part, dottr leaves no seam of paper round the
+/// island, halftonr draws no line of colour where its screens part and leaves no speck smaller than a dot, dottr leaves no seam of paper round the
 /// island, scribblr has no soft rim beyond it and glitchr copies no part of the label anywhere.
 #[test]
 fn the_edge_of_the_island_has_no_box_seam_rim_or_copy() {
@@ -257,6 +286,14 @@ fn the_edge_of_the_island_has_no_box_seam_rim_or_copy() {
                         let solid = |lo: f32, hi: f32| { let v: Vec<usize> = within(lo, hi).collect(); v.iter().filter(|&&i| same(&f, &rest, i)).count() as f32 / v.len().max(1) as f32 };
                         let (edge, far) = (solid(r0 + 1.5, r0 + 2.5), solid(r1d + 3.0, 1e9));
                         if edge > far + 0.25 { bad.push(format!("{tag}: {edge:.2} solid just past r0, {far:.2} far away")); }
+                    }
+                    Material::Halftonr if k == 1.0 || k == 0.6 => {
+                        // No speck off the screen round the island: the dots close up into it.
+                        let inkc = rgb(&bare_rest, (W * (H / 2) + W / 2) as usize * 1);
+                        let n_sp = specks(&f, &bare, &|i| sh[i] && dd[i] > 2.0 && dd[i] <= r1d + 2.0, paper, inkc);
+                        if n_sp > 0 { bad.push(format!("{tag}: {n_sp} specks under 16 px² round the island")); }
+                        let coloured = within(r0, r0 + 3.0).filter(|&i| chroma(&f, i) > 40 && chroma(&bare, i) <= 40).count();
+                        if coloured > 2 { bad.push(format!("{tag}: {coloured} px of colour round the label")); }
                     }
                     Material::Halftonr | Material::Glitchr => {
                         // No colour round the label that the shape alone does not have.

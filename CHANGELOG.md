@@ -19,7 +19,7 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
 - Text to read and controls hold the looseness under and around them to the legibility cap (DESIGN.md §1.15): a label
   on a loose shape reads as at rest. Sites no longer need a ground-coloured patch or band under labels. Each material
   meets the island in its own way: whole cells and an island that follows the glyphs in charr, dots that join it in
-  dottr, one screen and no colour line in halftonr, no copies of the label in glitchr, a crisp fill in scribblr.
+  dottr, separations that close up by whole dots in halftonr, no copies of the label in glitchr, a crisp fill in scribblr.
 - An element that clips, clips inside its border.
 - `El::fit(Fit)` zooms a subtree to fit its box in the same layout (pixel type is set smaller, the scale is kept; at
   `min` what overflows starts at the box's start, and only what is cut is reported); `El::clamp(lines)` ends text in

@@ -18,8 +18,9 @@ fn m_halftonr_screens(p: vec2f) -> vec3f {
   // (Its own looseness, before any hold of text to read: the screen does not change size round a label.)
   let on = smoothstep(0.5, 1.0, clamp((dec_loose(near_t(p).b) + u.rip.y) * loose_scale(), 0.0, u.rip.x));
   let pitch = max(2.0, a0.x * s) * mix(1.0, 1.5, on); let ang = radians(a0.y); let split = a0.z * s * (1.0 + on); let gain = a0.w;
-  // Dots only where the ink is really loose: text held at the cap stays as it is.
-  if (kt_loose(p) <= 0.0 && kt_loose(p + vec2f(pitch)) <= 0.0 && kt_loose(p - vec2f(pitch)) <= 0.0) { return exact(p); }
+  // Dots only where the ink is really loose (by its own looseness: a hold decides whole cells below,
+  // so no dot is cut off by a pixel's own hold).
+  if (kt_loose_own(p) <= 0.0 && kt_loose_own(p + vec2f(pitch)) <= 0.0 && kt_loose_own(p - vec2f(pitch)) <= 0.0) { return exact(p); }
   let g = gnd(p);
   let ex = exact(p);
   if (split <= 0.0) { return ht_one(p, pitch, ang, gain); }
@@ -29,7 +30,7 @@ fn m_halftonr_screens(p: vec2f) -> vec3f {
     let q = rot(lat(p), ang);
     let cell = floor(q / pitch);
     let c = rot((cell + 0.5) * pitch, -ang) - anc;
-    if (kt_loose(c) <= 0.12 + 0.5 * h1(cell + vec2f(ang * 7.0, 3.0))) { return ex; }
+    if (kt_loose_own(c) <= 0.12 + 0.5 * h1(cell + vec2f(ang * 7.0, 3.0))) { return ex; }
     // A thin rule falls between the taps of a coarse screen: the dot takes the most ink near it.
     let e = pitch * 0.3;
     var best = ink_t(c);
@@ -55,8 +56,15 @@ fn m_halftonr_screens(p: vec2f) -> vec3f {
     let c = rot((cell + 0.5) * pitch, -angs[j]) - anc;
     // Out of register only away from text to read: the separations close up across the band round it
     // and are in register at `r0`.
-    let off = vec2f(cos(f32(j) * 2.094), sin(f32(j) * 2.094)) * split * (1.0 - hold_at(c));
-    if (kt_loose(c) <= 0.12 + 0.5 * h1(cell + vec2f(angs[j] * 7.0, 3.0))) { continue; }
+    let hc = hold_at(c);
+    let off = vec2f(cos(f32(j) * 2.094), sin(f32(j) * 2.094)) * split * (1.0 - hc);
+    if (kt_loose_own(c) <= 0.12 + 0.5 * h1(cell + vec2f(angs[j] * 7.0, 3.0))) { continue; }
+    // The separations print over the ink, so closed up they are the ink itself. Toward text to read
+    // they close up by whole dots: across the band round it each cell drops its dot at a hold of its
+    // own, and none is left that would reach the island or lie along its edge. A dot is never cut, shrunk or tinted on the
+    // way, so nothing round the island is smaller than a dot or off its screen.
+    if (hc >= 0.25 + 0.4 * h1(cell + vec2f(f32(j) * 3.1, 11.0))) { continue; }
+    if (near_island(c, pitch * 0.6 + 3.0 * s)) { continue; }
     // A cell on accent ink is left to the accent's own screen.
     if (dec(c).acc > 0.5 || dec(c + off).acc > 0.5) { continue; }
     let e = pitch * 0.25;
@@ -73,9 +81,17 @@ fn m_halftonr_screens(p: vec2f) -> vec3f {
     if (light) { col = select(mix(sep, d.rgb, 0.35), d.rgb, j == 2); }
     out = mix(out, col, m);
   }
-  // Round text to read the screens become one, in the ink's own colour, so the island's edge has no
-  // separation of its own along it.
-  return mix(out, ht_one(p, pitch, ang, gain), smoothstep(0.0, 0.35, hold_at(p)));
+  return out;
+}
+/// Whether the island of text to read (`core_at`) comes within `r` of `c`: a dot there would touch it,
+/// or lie along its edge.
+fn near_island(c: vec2f, r: f32) -> bool {
+  if (core_at(c) > 0.0) { return true; }
+  for (var i = 0; i < 16; i++) {
+    let v = vec2f(cos(f32(i) * 0.3927), sin(f32(i) * 0.3927)) * r;
+    if (core_at(c + v) + core_at(c + v * 0.67) + core_at(c + v * 0.33) > 0.0) { return true; }
+  }
+  return false;
 }
 /// One screen in the ink's own colour (no separations).
 fn ht_one(p: vec2f, pitch: f32, ang: f32, gain: f32) -> vec3f {

@@ -1560,8 +1560,10 @@ How each material meets the island: within the core every material draws the fra
 halftonr's screens) is sized by the ink's own looseness, not the held one, so its pitch does not change near a
 label and no cell is cut; the hold only decides what each whole cell draws. charr: cells are drawn whole or not at
 all, denser towards the island, and the island follows the glyphs (not their box); dottr: dots grow towards the
-island and join it, with no seam of paper; halftonr: one screen near the island, the separation drawn to 0 at `r0`,
-so no line of colour; glitchr: a slipped row never samples within a hold, so no copy of the label appears; scribblr:
+island and join it, with no seam of paper; halftonr: its separations print over the ink, so closed up they are
+the ink itself; across the band each cell drops its dot whole at a hold of its own, and no dot is left that would
+reach the island or lie within 3 px of it, so nothing round the island is smaller than a dot, off its screen or a line
+of colour; glitchr: a slipped row never samples within a hold, so no copy of the label appears; scribblr:
 the fill holds to `r0` with a crisp edge, and the thread goes round the island. `tests/legible.rs`
 (`the_edge_of_the_island_has_no_box_seam_rim_or_copy`, and the held area of charr at most 92 % of the ink box grown
 by `r1`: measured 0.24–0.35). Measured on dottr at looseness 1: the label's own ink 1.000 of its ink at rest, within
