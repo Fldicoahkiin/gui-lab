@@ -213,6 +213,71 @@ fn with_less_motion_a_flow_fades_over_its_own_duration() {
     }
 }
 
+/// An index (a bar, a row of small tiles) and a piece (one tile grown to the window, a caption that is
+/// only there): a route change as the site makes it.
+#[derive(Default)]
+struct Route { piece: bool, cmds: Vec<Cmd> }
+fn route(s: &Route) -> El<bool> {
+    let root = col().key("root").fill_width().fill_height();
+    if !s.piece {
+        root.child(space(800.0, 40.0).key("bar").fill(Paint::DIM))
+            .child(amenui::el::row().pad(20.0, 20.0).gap(10.0).child(space(120.0, 80.0).key("tile/0").fill(Paint::INK).flow("w0")).child(space(120.0, 80.0).key("tile/1").fill(Paint::ACCENT)))
+    } else {
+        root.child(space(760.0, 420.0).key("piece").fill(Paint::INK).flow("w0"))
+            .child(text("Only on the piece", 16.0, Paint::TEXT).key("caption"))
+    }
+}
+
+/// A route change with `Cmd::Flow` never draws the new page whole over the old from the first frame:
+/// what is new fades in over `fade_ms` (an opacity change of 120 ms: under half at 40 ms, and 40 and 80 ms
+/// differ from both ends), and a shared part flows on through a new window size.
+#[test]
+fn a_flow_fades_the_new_page_in_and_goes_on_through_a_resize() {
+    let Ok(mut o) = amenui::offscreen::Offscreen::try_new(800, 600) else { eprintln!("no GPU adapter here: skipped"); return };
+    let look = amenui::style::Look { material: amenui::style::Material::Plain, theme: amenui::style::LIGHT, ..amenui::style::Look::default() };
+    // The opacity change: no flight, 120 ms each way.
+    let mut ui = Ui::new(Route::default(), route, |_, _| {}, fonts(), 800, 600, 1.0).on_commands(|s| std::mem::take(&mut s.cmds));
+    ui.tick(5.0);
+    let index = o.render(&mut ui, &look);
+    ui.state.piece = true;
+    ui.state.cmds.push(Cmd::Flow(FlowSpec { flow_ms: 0.0, flow_loose: 0.0, out_ms: 120.0, fade_ms: 120.0 }));
+    ui.relayout();
+    let alpha = |ui: &Ui<Route, bool>| ui.instances_of("caption").iter().map(|i| i.paint[2]).fold(0.0, f32::max);
+    let mut shots = vec![];
+    for ms in [5.0f32, 40.0, 80.0, 200.0] {
+        ui.tick(5.0 + ms / 1000.0);
+        if ms == 40.0 { assert!(alpha(&ui) < 0.5, "the new page at {} of its opacity 40 ms in", alpha(&ui)); }
+        shots.push(o.render(&mut ui, &look));
+    }
+    let differ = |a: &[u8], b: &[u8]| a.chunks(4).zip(b.chunks(4)).filter(|(p, q)| (0..3).any(|c| (p[c] as i32 - q[c] as i32).abs() > 8)).count();
+    let piece = &shots[3];
+    assert!(differ(&shots[0], piece) > 0, "5 ms after the press the frame is already the piece");
+    for (k, ms) in [(1usize, 40), (2, 80)] {
+        assert!(differ(&shots[k], &index) > 0 && differ(&shots[k], piece) > 0, "{ms} ms: the same as one end");
+    }
+    // The flight: the shared tile grows into the piece, and goes on growing when the window changes size
+    // between the two pages (the bar and the status line go).
+    let mut ui = Ui::new(Route::default(), route, |_, _| {}, fonts(), 800, 600, 1.0).on_commands(|s| std::mem::take(&mut s.cmds));
+    ui.tick(5.0);
+    let from = ui.instances_of("tile/0")[0].rect;
+    ui.state.piece = true;
+    ui.state.cmds.push(Cmd::Flow(FlowSpec::default()));
+    ui.relayout();
+    ui.resize(800, 640, 1.0);
+    let mut last = from[2] * from[3];
+    for ms in [60.0f32, 200.0, 350.0] {
+        ui.tick(5.0 + ms / 1000.0);
+        let r = ui.instances_of("piece")[0].rect;
+        let area = r[2] * r[3];
+        assert!(area > last, "{ms} ms: the piece is {area} px², it was {last}");
+        last = area;
+    }
+    assert!(ui.flowing() > 0, "the flow ended before its 420 ms");
+    ui.tick(5.5);
+    let r = ui.node("piece").unwrap().rect;
+    assert_eq!(ui.instances_of("piece")[0].rect, [r.x, r.y, r.w, r.h]);
+}
+
 // ── Sampling follows transforms and poses (DESIGN.md §1.26) ────────────────────────────────────────
 
 #[derive(Default)]

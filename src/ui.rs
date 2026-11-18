@@ -2767,11 +2767,19 @@ impl<S, M: Clone> Ui<S, M> {
         self.fit_short.clear();
         if !has_fit(&el) { self.fit_k.clear(); }
         if has_fit(&el) {
-            fit_probe(&mut el);
-            let probe = self.lay_pass(el);
-            let ks = self.fit_scales(&probe);
+            // A box that reflows (`FitMode::Reflow`) is probed again at the scale found, until it holds
+            // its subtree (a smaller scale wraps it into fewer lines) or it is at its least scale.
+            let mut ks: Vec<Fitted> = vec![];
+            for pass in 0..4 {
+                if pass > 0 { self.perf.counters.views += 1; el = (self.view)(&self.state); }
+                let prev: Vec<f32> = ks.iter().map(|f| f.k).collect();
+                fit_probe(&mut el, &prev, &mut 0);
+                let probe = self.lay_pass(el);
+                let again = self.fit_scales(&probe, &prev, &mut ks);
+                el = (self.view)(&self.state);
+                if !again { break; }
+            }
             self.perf.counters.views += 1;
-            el = (self.view)(&self.state);
             fit_apply(&mut el, &ks);
         }
         let mut nodes = self.lay_pass(el);
@@ -2915,9 +2923,14 @@ impl<S, M: Clone> Ui<S, M> {
     /// the pass that laid the subtree out on its own: the scale, and where the zoomed subtree goes in
     /// the box (left and top insets, logical px). A box that cannot hold its subtree at the least scale
     /// is told in `Ui::problems`.
-    fn fit_scales(&mut self, probe: &[Node<M>]) -> Vec<Fitted> {
-        let mut out = vec![];
+    /// `prev` holds the scales a reflowing box was probed at (none on the first pass); `out` is
+    /// replaced. Returns whether a reflowing box wants another probe at its new scale.
+    fn fit_scales(&mut self, probe: &[Node<M>], prev: &[f32], out: &mut Vec<Fitted>) -> bool {
+        out.clear();
+        let mut again = false;
+        let mut at = 0usize;
         self.fit_k.clear();
+        self.fit_short.clear();
         for (i, n) in probe.iter().enumerate() {
             let Some(f) = n.fit else { continue };
             let l = n.local;
@@ -2925,14 +2938,50 @@ impl<S, M: Clone> Ui<S, M> {
             let (pl, pt) = (l.padding.left, l.padding.top);
             let (cw, ch) = ((l.size.width - l.border.left - l.border.right - pl - l.padding.right).max(0.0), (l.size.height - l.border.top - l.border.bottom - pt - l.padding.bottom).max(0.0));
             // The subtree is in the holder `fit_probe` put it in.
-            let Some(c) = probe.iter().position(|m| m.parent == Some(i)).and_then(|h| probe.iter().position(|m| m.parent == Some(h))) else { out.push(Fitted { k: 1.0, at: (pl, pt), pixel: vec![] }); continue };
+            let kp = prev.get(at).copied().unwrap_or(1.0);
+            at += 1;
+            if f.mode == crate::el::FitMode::Reflow {
+                // Laid out in place at `kp`: what reaches out of the content box (not what scrolls
+                // inside a scroller), from its centre, as the subtree is centred in it.
+                let Some(c) = probe.iter().position(|m| m.parent == Some(i)) else { out.push(Fitted { k: 1.0, at: (pl, pt), pixel: vec![], w: Some((cw, ch)) }); continue };
+                let mut pos = vec![(0.0f32, 0.0f32); probe.len()];
+                let (mut x0, mut y0, mut x1, mut y1) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+                let (bx, by0) = (l.border.left + pl, l.border.top + pt);
+                for j in c..probe.len() {
+                    if !within(probe, j, c) { break; }
+                    let up = probe[j].parent.unwrap_or(i);
+                    let base = if j == c { (-bx, -by0) } else { pos[up] };
+                    pos[j] = (base.0 + probe[j].local.location.x, base.1 + probe[j].local.location.y);
+                    // Under a scroller (below `c`): its rows are not extent.
+                    let mut q = up; let mut scrolled = false;
+                    while q != c && q != i { if probe[q].scroll { scrolled = true; break; } q = probe[q].parent.unwrap_or(i); }
+                    if scrolled { continue; }
+                    let sz = probe[j].local.size;
+                    if sz.width <= 0.0 || sz.height <= 0.0 { continue; }
+                    if j == c { (x0, y0, x1, y1) = (pos[j].0, pos[j].1, pos[j].0 + sz.width, pos[j].1 + sz.height); }
+                    else { x0 = x0.min(pos[j].0); y0 = y0.min(pos[j].1); x1 = x1.max(pos[j].0 + sz.width); y1 = y1.max(pos[j].1 + sz.height); }
+                }
+                let (hx, hy) = ((cw * 0.5 - x0).max(x1 - cw * 0.5).max(1e-3), (ch * 0.5 - y0).max(y1 - ch * 0.5).max(1e-3));
+                // Within a pixel is a fit (a box's edges are on whole pixels, its contents on 1/64 px).
+                let fits = hx <= cw * 0.5 + 1.0 && hy <= ch * 0.5 + 1.0;
+                let ratio = ((cw * 0.5 - 0.5) / hx).min((ch * 0.5 - 0.5) / hy);
+                let k = if fits { kp } else { (kp * ratio).clamp(f.min.min(1.0), kp) };
+                if (k - kp).abs() > 1e-3 { again = true; }
+                if !fits && k <= f.min + 1e-4 && (kp - f.min).abs() < 1e-3 { self.fit_short.push((n.key.clone(), kp * ratio, f.min)); }
+                // Pixel text is zoomed with the rest: a reflow scales by a little, and a pixel face's
+                // next whole size down would halve it.
+                self.fit_k.insert(n.key.clone(), k);
+                out.push(Fitted { k, at: (pl, pt), pixel: vec![], w: Some((cw, ch)) });
+                continue;
+            }
+            let Some(c) = probe.iter().position(|m| m.parent == Some(i)).and_then(|h| probe.iter().position(|m| m.parent == Some(h))) else { out.push(Fitted { k: 1.0, at: (pl, pt), pixel: vec![], w: None }); continue };
             let (nw, nh) = (probe[c].local.size.width.max(1e-3), probe[c].local.size.height.max(1e-3));
             // Text does not scale exactly with its size (advances and line heights snap): room of a
             // pixel at the scale is kept so the zoomed subtree is never larger than the box.
             let by = |w: f32, h: f32| match f.mode {
                 crate::el::FitMode::Contain => (w / nw).min(h / nh),
                 crate::el::FitMode::Width => w / nw,
-                crate::el::FitMode::Height => h / nh,
+                crate::el::FitMode::Height | crate::el::FitMode::Reflow => h / nh,
             };
             let room = by(cw, ch).max(1.0);
             let raw = by((cw - room).max(0.0), (ch - room).max(0.0));
@@ -2940,7 +2989,7 @@ impl<S, M: Clone> Ui<S, M> {
             // What does not fit at the least scale, in the directions the mode fits (exactly the least
             // scale and in the box is not short).
             let (over_x, over_y) = (k * nw > cw + 0.5, k * nh > ch + 0.5);
-            let short = match f.mode { crate::el::FitMode::Contain => over_x || over_y, crate::el::FitMode::Width => over_x, crate::el::FitMode::Height => over_y };
+            let short = match f.mode { crate::el::FitMode::Contain | crate::el::FitMode::Reflow => over_x || over_y, crate::el::FitMode::Width => over_x, crate::el::FitMode::Height => over_y };
             if raw < f.min && short { self.fit_short.push((n.key.clone(), raw, f.min)); }
             // Pixel faces are drawn at whole multiples of their native size: each pixel text in the
             // subtree goes down to the largest that is no larger than the scale makes it, so it never
@@ -2948,7 +2997,7 @@ impl<S, M: Clone> Ui<S, M> {
             let mut pixel = vec![];
             for m in probe.iter().enumerate().skip(c).take_while(|(j, _)| within(probe, *j, c)).map(|(_, m)| m) {
                 let Some(p) = m.para() else { continue };
-                if self.text.native(p.face).is_none() { continue };
+                if self.text.native(p.face).is_none() || k >= 1.0 - 1e-4 { continue };
                 pixel.push((p.s.to_owned(), p.size, self.text.size_down(p.face, k * p.size)));
             }
             let (ax, ay) = f.align;
@@ -2957,9 +3006,9 @@ impl<S, M: Clone> Ui<S, M> {
             // its beginning is seen and its end is cut.
             let x = if over_x { pl } else { pl + ax.clamp(0.0, 1.0) * (cw - k * nw) };
             let y = if over_y { pt } else { pt + ay.clamp(0.0, 1.0) * (ch - k * nh) };
-            out.push(Fitted { k, at: (x.round(), y.round()), pixel });
+            out.push(Fitted { k, at: (x.round(), y.round()), pixel, w: None });
         }
-        out
+        again
     }
     fn finish_layout(&mut self, nodes: &mut Vec<Node<M>>) {
         let nodes = std::mem::take(nodes);
@@ -4382,7 +4431,10 @@ impl<S, M: Clone> Ui<S, M> {
                     // A glyph flying from the last frame eases in and out on a sine, which leaves its
                     // ends sooner than the cubic.
                     let e = if f.src.is_some() { 0.5 - 0.5 * (std::f32::consts::PI * p).cos() } else { Ease::InOutCubic.at(p) };
-                    if inst.paint[3] > 2.5 && (f.from[2] * inst.rect[3] - f.from[3] * inst.rect[2]).abs() > 0.5 {
+                    // Something that only fades in stays where it is laid out now (a new window size
+                    // during the fade moves it with the page).
+                    let still = f.fade_in.is_some() && f.src.is_none();
+                    if !still && inst.paint[3] > 2.5 && (f.from[2] * inst.rect[3] - f.from[3] * inst.rect[2]).abs() > 0.5 {
                         // A 3D view between boxes of other proportions keeps its own (it is drawn into its
                         // layout box): it moves centre to centre and scales uniformly, never stretched
                         // (DESIGN.md §1.10).
@@ -4393,7 +4445,7 @@ impl<S, M: Clone> Ui<S, M> {
                         let c1 = (inst.rect[0] + w1 * 0.5, inst.rect[1] + h1 * 0.5);
                         let c = (c0.0 + (c1.0 - c0.0) * e, c0.1 + (c1.1 - c0.1) * e);
                         inst.rect = [c.0 - w1 * sc * 0.5, c.1 - h1 * sc * 0.5, w1 * sc, h1 * sc];
-                    } else {
+                    } else if !still {
                         for k in 0..4 { inst.rect[k] = f.from[k] + (inst.rect[k] - f.from[k]) * e; }
                     }
                     if let Some(o) = &f.src {
@@ -4414,7 +4466,7 @@ impl<S, M: Clone> Ui<S, M> {
                         if !plain { inst.extra[2] = inst.extra[2].max(0.6 * (std::f32::consts::PI * e).sin()); }
                     }
                     if let Some([a, b]) = f.fade_in { inst.paint[2] *= ((now - a) / (b - a).max(1e-4)).clamp(0.0, 1.0); }
-                    if p < 1.0 { inst.clip = [f.clip[0].min(inst.clip[0]), f.clip[1].min(inst.clip[1]), f.clip[2].max(inst.clip[2]), f.clip[3].max(inst.clip[3])]; }
+                    if p < 1.0 && !still { inst.clip = [f.clip[0].min(inst.clip[0]), f.clip[1].min(inst.clip[1]), f.clip[2].max(inst.clip[2]), f.clip[3].max(inst.clip[3])]; }
                     inst.extra[2] = inst.extra[2].max(f.loose * (std::f32::consts::PI * e).sin());
                     if p < 1.0 && self.scene.layer.is_none() { lifted.push((i, inst)); inst.rect = [0.0; 4]; }
                 }
@@ -4708,6 +4760,14 @@ impl<S, M: Clone> Ui<S, M> {
             self.flows.insert(id, FlowRec { from: o.inst.rect, clip: o.inst.clip, start: now, dur: spec.flow_ms / 1000.0, loose: spec.flow_loose, src: None, fade_in: None });
             self.births.insert(id, o.inst.extra[3]);
             self.base[i].extra[3] = o.inst.extra[3];
+        }
+        // What is new on the page fades in over `fade_ms` as the old fades out, with or without less
+        // motion: it is never drawn whole over the old page from the first frame.
+        let fade = (spec.fade_ms / 1000.0).max(1e-3);
+        for i in 0..self.page_len {
+            let id = self.owners[i].1;
+            if old_ids.contains(&id) || self.flows.contains_key(&id) { continue; }
+            self.flows.insert(id, FlowRec { from: self.base[i].rect, clip: self.base[i].clip, start: now, dur: fade, loose: 0.0, src: None, fade_in: Some([now, now + fade]) });
         }
         for (k, o) in old.iter().enumerate() {
             if !used[k] && !new_ids.contains(&o.id) && spec.out_ms > 0.0 { self.ghosts.push(Ghost { inst: o.inst, start: now, dur: if self.fmap.reduced { self.fade_s } else { spec.out_ms / 1000.0 }, loosen: true }); }
@@ -5675,22 +5735,35 @@ fn sweep_glyphs(text: &mut Text, para: Para<'_>, origin: (f32, f32), proto: Inst
 fn has_fit<M>(el: &El<M>) -> bool { el.fit.is_some() || el.children.iter().any(has_fit) }
 /// For the pass that finds natural sizes: each fitted subtree out of the flow, at the box's top left,
 /// as large as it would be on its own.
-fn fit_probe<M>(el: &mut El<M>) {
+/// A box that reflows is measured in place instead, as it will be drawn, zoomed by the scale it was
+/// last probed at (`prev`, in order; 1 on the first pass).
+fn fit_probe<M>(el: &mut El<M>, prev: &[f32], at: &mut usize) {
     // The subtree is measured at its own size: in a wide holder at the box's corner, where nothing
     // narrower than its content makes it wrap.
-    if el.fit.is_some() && let Some(c) = el.children.first_mut() {
-        let mut holder = crate::el::col();
-        holder.style.position = taffy::Position::Absolute;
-        holder.style.inset = taffy::Rect { left: length(0.0), top: length(0.0), right: auto(), bottom: auto() };
-        holder.style.size.width = length(1.0e5);
-        holder.style.align_items = AlignItems::START;
-        *c = holder.child(std::mem::replace(c, crate::el::space(0.0, 0.0)));
+    if let Some(f) = el.fit {
+        let k = prev.get(*at).copied().unwrap_or(1.0);
+        *at += 1;
+        if let Some(c) = el.children.first_mut() {
+            if f.mode == crate::el::FitMode::Reflow {
+                // In place, as it will be drawn, at the scale it was last probed at.
+                if (k - 1.0).abs() > 1e-4 { let sub = std::mem::replace(c, crate::el::space(0.0, 0.0)).zoom(k); *c = sub; }
+            } else {
+                let mut holder = crate::el::col();
+                holder.style.position = taffy::Position::Absolute;
+                holder.style.align_items = AlignItems::START;
+                holder.style.inset = taffy::Rect { left: length(0.0), top: length(0.0), right: auto(), bottom: auto() };
+                holder.style.size.width = length(1.0e5);
+                let sub = std::mem::replace(c, crate::el::space(0.0, 0.0));
+                *c = holder.child(sub);
+            }
+        }
     }
-    for c in &mut el.children { fit_probe(c); }
+    for c in &mut el.children { fit_probe(c, prev, at); }
 }
 /// How a box marked `El::fit` zooms its subtree: the scale, where it goes (logical px from the box), and
 /// each pixel text's own size there (its text, its size at 1, the size it is set at).
-struct Fitted { k: f32, at: (f32, f32), pixel: Vec<(String, f32, f32)> }
+/// A box that reflows keeps its subtree in the flow (`w`: its content box, set for those).
+struct Fitted { k: f32, at: (f32, f32), pixel: Vec<(String, f32, f32)>, w: Option<(f32, f32)> }
 /// Each fitted subtree zoomed by its scale and put where it goes in its box (`Ui::fit_scales`, in the
 /// same order).
 fn fit_apply<M>(el: &mut El<M>, ks: &[Fitted]) {
@@ -5700,13 +5773,17 @@ fn fit_apply<M>(el: &mut El<M>, ks: &[Fitted]) {
     }
     fn go<M>(el: &mut El<M>, ks: &[Fitted], at: &mut usize) {
         if el.fit.is_some() {
-            let (k, (x, y), pixel) = ks.get(*at).map_or((1.0, (0.0, 0.0), &[][..]), |f| (f.k, f.at, &f.pixel[..]));
+            let (k, (x, y), pixel, w) = ks.get(*at).map_or((1.0, (0.0, 0.0), &[][..], None), |f| (f.k, f.at, &f.pixel[..], f.w));
             *at += 1;
             if let Some(c) = el.children.first_mut() {
-                let mut z = std::mem::replace(c, crate::el::space(0.0, 0.0)).zoom(k);
+                let mut z = std::mem::replace(c, crate::el::space(0.0, 0.0));
+                if (k - 1.0).abs() > 1e-4 || w.is_none() { z = z.zoom(k); }
                 snap(&mut z, k, pixel);
-                z.style.position = taffy::Position::Absolute;
-                z.style.inset = taffy::Rect { left: length(x), top: length(y), right: auto(), bottom: auto() };
+                // A reflowing subtree stays in the flow, zoomed in place, as it was measured.
+                if w.is_none() {
+                    z.style.position = taffy::Position::Absolute;
+                    z.style.inset = taffy::Rect { left: length(x), top: length(y), right: auto(), bottom: auto() };
+                }
                 *c = z;
             }
         }

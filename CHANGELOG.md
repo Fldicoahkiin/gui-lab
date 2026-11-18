@@ -22,7 +22,8 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
   dottr, separations that close up by whole dots in halftonr, no copies of the label in glitchr, a crisp fill in scribblr.
 - An element that clips, clips inside its border.
 - `El::fit(Fit)` zooms a subtree to fit its box in the same layout (pixel type is set smaller, the scale is kept; at
-  `min` what overflows starts at the box's start, and only what is cut is reported); `El::clamp(lines)` ends text in
+  `min` what overflows starts at the box's start, and only what is cut is reported); `FitMode::Reflow` lays it out
+  at the box's width first, with its type at its own size, and zooms it down only if it still does not fit; `El::clamp(lines)` ends text in
   the face's own ellipsis (three full stops where the face's floats off the baseline), copies what it shows without
   it, and brings the rest in from the next frame when the clamp is taken away, keeping the ellipsis until the text after it has come, with `Ui::clamped`; `El::preview(true)` draws sheets, menus and dialogs where they are written, without a
   layer (a skip link over what is beneath it and still where it is written in Tab order, a docked sheet inside the border); `Ui::line_inks` reads each line's box and ink; `Ui::clear_focus` and `Cmd::ClearFocus` take the focus off.
@@ -35,7 +36,8 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
   only the old ink under its own outline; an empty plate is not laid on; text to read inside a plate is reported.
 - A decode held at a step draws once and then the page rests (it asked for frames for good before).
 - `Look::overlay_keep` keeps the readout in its corner; the readout wraps to fit a window 390 px wide.
-- With less motion a flow fades in place over `FlowSpec::fade_ms` (150 ms by default).
+- With less motion a flow fades in place over `FlowSpec::fade_ms` (150 ms by default). With or without it, what is
+  new on the page fades in over `fade_ms`, so a route change is never the new page drawn whole over the old one.
 - `Look::off` turns each effect off (close, fronts and commits, flows, morphs, ripples, loosening, recompose,
   decode, material motion, bloom, the field's dots), each going straight to its end state and asking for no frames (§1.34).
 - A box whose last child was absolute no longer keeps the child's layout after it goes (it could panic in taffy).

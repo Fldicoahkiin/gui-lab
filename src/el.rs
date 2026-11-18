@@ -127,6 +127,10 @@ pub enum FitMode {
     Width,
     /// As tall as the box.
     Height,
+    /// Laid out again at the box's width first, with its type at its own size and wrapping there; then,
+    /// only if it still does not fit (too tall, or something in it that does not wrap is too wide),
+    /// zoomed down as `Contain` does, to `Fit::min` at least. It never grows (`Fit::max` is not used).
+    Reflow,
 }
 /// A subtree fitted into its container's box (`El::fit`): how, the least and the most it may be scaled
 /// (by default it only shrinks, to a quarter at least), and where it goes in the box when it does not

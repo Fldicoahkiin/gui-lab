@@ -160,6 +160,20 @@ beginning is seen and its end cut, and in the other it follows `align`. Exactly 
 (`a_fit_keeps_its_scale_with_pixel_type_starts_what_overflows_and_reports_only_what_is_cut`). A content-sized child is
 measured in a holder 10⁵ px wide, so it is measured at its own width, not the container's.
 
+`FitMode::Reflow` is for a specimen that should read as on its page (a docs stage): the child is first laid out in
+place, at the box's width, its type at its own size and its rows wrapping there; only if it still reaches out of the
+content box (measured from the box's centre, by every part under it except what scrolls inside a scroller) is it
+zoomed down, and laid out again at that scale (up to four passes, each only smaller, so it settles where a smaller
+scale wraps it into fewer lines), to `min` at least. Pixel type is zoomed with the rest (a reflow scales by little,
+and a pixel face's next whole size down would halve it). `max` is not used. `tests/render.rs`
+(`a_reflow_fit_wraps_at_the_box_width_and_shrinks_only_what_still_overflows`). Against the website's `fit_stage`, at
+the docs stills' two sizes (100 stills), 80 are within 1 % of their pixels once a shift of up to 3 px is allowed and
+65 within 0.2 %; the rest are Lab canvases whose fields depend on their offset, the skeleton stage (which `fit_stage`
+draws a third of its size, counting a part laid out off the page) and the narrow dot chart, settled at a slightly
+different scale.
+
+Within any fit, pixel text is not set smaller when the scale is 1.
+
 **Clamping text** (`El::clamp(lines)`): a text element shows at most `lines` lines; text that does not fit ends in
 the face's own ellipsis on the last line, in the text's colour and size, on the baseline, drawn by the material as
 the rest of the line is (no fade, no mask). It breaks after a word, or between characters when that would leave more
@@ -1216,6 +1230,14 @@ errors.
 
 With less motion a flow is a fade in place over `FlowSpec::fade_ms` (150 ms by default; the website uses 120 for
 its route fade), and what comes and goes fades over the same time (`tests/transform.rs`).
+
+With or without less motion, what is new on the page (not shared with the old one) fades in over `fade_ms` where it
+is laid out while the old page fades out, so a route change never draws the new page whole over the old from its first
+frame. A new window size during the flow (a bar that goes with the old page) moves what fades in with the page, and
+shared parts fly on to where they now are. `tests/transform.rs`
+(`a_flow_fades_the_new_page_in_and_goes_on_through_a_resize`: with 120 ms the new page is under half its opacity at
+40 ms and the frames at 40 and 80 ms differ from both ends; with the 420 ms default the shared tile grows at 60, 200
+and 350 ms through a resize and ends exactly on its box).
 
 ### 1.11 Drawing only when something changed
 
@@ -3743,8 +3765,8 @@ Layout, faces and plates (the fifth set of framework needs):
   behaviour (there it checks that `FitShort` is reported exactly when the subtree is cut).
 - Clearing the focus: `tests/focus.rs` checks that the method and the command leave the same way and that the page
   is then as never focused; it does not compare each leaving frame with the focus moving to another element.
-- `El::fit` and the readout's wrapping are measured; the 1 % comparison with the website's `fit_stage` is the
-  website's to run once it uses `El::fit`.
+- `El::fit` and the readout's wrapping are measured; the comparison with the website's `fit_stage` is with
+  `FitMode::Reflow` (§1.2), run on the website's stills with a site change that is not in the website yet.
 - Faces that come later: the warm-up's budget with faces arriving and material shaders fetched as assets are not
   done; the module still carries the material shaders.
 - Effect switches (§1.34): the field dots have no switch yet (see there).

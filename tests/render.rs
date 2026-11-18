@@ -486,3 +486,47 @@ fn a_fit_keeps_its_scale_with_pixel_type_starts_what_overflows_and_reports_only_
     assert!(c.right() <= b.right() + 0.5 && c.bottom() <= b.bottom() + 0.5, "{c:?} in {b:?}");
     assert!(!short(&ui), "362 x 300 at k {}: in the box and reported", ui.fitted("box").unwrap());
 }
+
+mod reflow {
+    use amenui::el::{El, Fit, FitMode, Paint, col, row, space, text};
+    pub struct S { pub w: f32, pub h: f32, pub wide: bool }
+    pub const PARA: &str = "A caption under the specimen that wraps at the width of the box it is shown in, as it does on its page.";
+    pub fn view(s: &S) -> El<()> {
+        let mut body = col().key("body").fill_width().gap(8.0).child(text(PARA, 14.0, Paint::TEXT).key("para"));
+        // Something that does not wrap: a row wider than the box.
+        if s.wide { body = body.child(row().gap(10.0).child(space(300.0, 40.0).key("bar/a").fill(Paint::INK)).child(space(300.0, 40.0).fill(Paint::ACCENT))); }
+        col().key("page").fill_width().fill_height().pad(10.0, 10.0)
+            .child(col().key("box").width(s.w).height(s.h).pad(8.0, 8.0).border(1.0, Paint::DIM).center().fit(Fit { mode: FitMode::Reflow, min: 0.5, ..Fit::default() }).child(body))
+    }
+}
+
+/// `FitMode::Reflow` lays its subtree out again at the box's width first, its type at its own size,
+/// and zooms it down only when it still does not fit, to `Fit::min` at least.
+#[test]
+fn a_reflow_fit_wraps_at_the_box_width_and_shrinks_only_what_still_overflows() {
+    use reflow::{S, view};
+    let mk = |w: f32, h: f32, wide: bool| { let mut ui = amenui::ui::Ui::new(S { w, h, wide }, view, |_, _| {}, fonts(), 900, 700, 1.0); ui.tick(1.0); ui };
+    // Room enough once it wraps: not zoomed, wrapped at the box's width, the type at its own size.
+    let mut a = mk(320.0, 240.0, false);
+    assert_eq!(a.fitted("box"), Some(1.0));
+    let (b, p) = (a.node("box").unwrap().inner, a.node("para").unwrap().rect);
+    assert!(p.w <= b.w + 0.5 && p.x >= b.x - 0.5, "the caption is {p:?} in {b:?}");
+    let lines = a.line_boxes("para").len();
+    assert!(lines >= 3, "{lines} lines: not wrapped at the box");
+    let sizes: Vec<f32> = a.instances_of("para").iter().map(|i| i.rect[3]).collect();
+    let mut plain = mk(320.0, 240.0, false);
+    plain.tick(1.0);
+    assert_eq!(sizes, plain.instances_of("para").iter().map(|i| i.rect[3]).collect::<Vec<_>>());
+    // Too low a box: zoomed down, and then it fits.
+    let a = mk(320.0, 60.0, false);
+    let k = a.fitted("box").unwrap();
+    assert!(k < 1.0 && k >= 0.5, "scale {k}");
+    let (b, body) = (a.node("box").unwrap().inner, a.node("body").unwrap().rect);
+    assert!(body.y >= b.y - 1.0 && body.bottom() <= b.bottom() + 1.0, "{body:?} in {b:?}");
+    // A row that does not wrap, wider than the box: zoomed down to hold it, not below the least scale.
+    let a = mk(320.0, 240.0, true);
+    let k = a.fitted("box").unwrap();
+    assert!(k < 1.0 && k >= 0.5, "scale {k}");
+    let bar = a.node("bar/a").unwrap().rect;
+    assert!((bar.w - 300.0 * k).abs() < 1.0, "the bar is {} wide at {k}", bar.w);
+}
