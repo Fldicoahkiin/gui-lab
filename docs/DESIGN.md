@@ -1251,8 +1251,10 @@ the old one's (the window) to the new one's (the full view); both on whole pixel
 in the page pass as the page's last picture, after everything that dissolves, so it is above every other
 window, and what rides on it is ink over a picture (its own colour and size). Nothing else of the subtree is
 paired, since the two pages lay out different things over the picture: the rest of the old subtree (notes,
-boxes, labels) rides with the picture at its own size and colour, its centre where the picture takes it,
-inside the part that shows, without loosening, whole until the picture lands; what of it lies along the edge
+boxes, labels) rides with the picture at its own size and colour, by parts: an element's glyphs together (a
+word, a label) and strokes or shapes that touch together (a box of four lines), each part whole, its centre
+where the picture takes it, so only the parts' places close up or open out and no box comes apart. It stays inside
+the part that shows, without loosening, whole until the picture lands; what of it lies along the edge
 of the part that showed (its centre within 3 px of it: a frame round the window) is the window's, and fades
 over `out_ms` where it was, under the picture. The rest of the new subtree is there at once when the picture
 lands, as the old goes, so each note over the picture is drawn once every frame and never missing; everything

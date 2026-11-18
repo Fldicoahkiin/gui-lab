@@ -295,7 +295,9 @@ struct FlowRec {
 }
 /// An instance of the old page that has no place on the new one: it loosens (`loosen`) and fades; one
 /// of a subtree whose picture grows (`ride`) rides with the picture at its own size instead.
-struct Ghost { inst: Instance, start: f32, dur: f32, loosen: bool, ride: Option<usize> }
+/// `anchor`: for one that rides on a growing picture, the box of the part of its element it moves with
+/// (a word, one box of lines), so that part keeps its own shape.
+struct Ghost { inst: Instance, start: f32, dur: f32, loosen: bool, ride: Option<usize>, anchor: [f32; 4] }
 /// A look's ground and second ground.
 type Grounds = ([f32; 3], [f32; 3]);
 /// A flow subtree's picture on its way (`Cmd::Flow`): its box (x, y, w, h) and the part of it that shows
@@ -324,7 +326,7 @@ impl Grow {
     }
 }
 /// A page instance as it was drawn, kept across a relayout for `Cmd::Flow`.
-struct Old { id: u64, tag: Option<Tag>, inst: Instance }
+struct Old { id: u64, node: usize, tag: Option<Tag>, inst: Instance }
 
 /// A text's glyphs as last painted, kept to see what changed in the next view (DESIGN.md §1.16).
 /// `changed` is when its string last changed (seconds), to tell a readout that changes every frame.
@@ -4754,7 +4756,9 @@ impl<S, M: Clone> Ui<S, M> {
             // Riding with a growing picture, over it, inside the part of it that shows (drawn after it).
             if let Some(gr) = g.ride.and_then(|r| self.grows.get(r)) {
                 let e = gr.ease(now);
-                inst.rect = gr.ride(inst.rect, e);
+                let a = gr.ride(g.anchor, e);
+                inst.rect[0] += a[0] - g.anchor[0];
+                inst.rect[1] += a[1] - g.anchor[1];
                 inst.clip = gr.shows(e);
                 if self.scene.layer.is_none() { riding.push(inst); continue; }
             }
@@ -4890,7 +4894,7 @@ impl<S, M: Clone> Ui<S, M> {
             self.base[i].extra[3] = sg[k].extra[3];
         }
         let (out, inn) = if reduced { (dur, [now, now + dur]) } else { (0.3 * dur, [now + 0.7 * dur, now + dur]) };
-        for inst in sg[n..].iter().chain(&so) { self.ghosts.push(Ghost { inst: *inst, start: now, dur: out, loosen: false, ride: None }); }
+        for inst in sg[n..].iter().chain(&so) { self.ghosts.push(Ghost { inst: *inst, start: now, dur: out, loosen: false, ride: None, anchor: inst.rect }); }
         for &i in dg[n..].iter().chain(&d_other) {
             let id = self.owners[i].1;
             self.flows.insert(id, FlowRec { from: self.base[i].rect, clip: self.base[i].clip, start: now, dur, loose: 0.0, src: None, fade_in: Some(inn), grow: None });
@@ -5010,7 +5014,7 @@ impl<S, M: Clone> Ui<S, M> {
 
     /// The page as it is drawn now, for a flow.
     fn record(&self) -> Vec<Old> {
-        (0..self.page_len).map(|i| Old { id: self.owners[i].1, tag: self.tags[i].clone(), inst: self.scene.instances[i] }).collect()
+        (0..self.page_len).map(|i| Old { id: self.owners[i].1, node: self.owners[i].0, tag: self.tags[i].clone(), inst: self.scene.instances[i] }).collect()
     }
 
     /// After a relayout for a new page: instances of a flow subtree that left one place and appeared in
@@ -5082,6 +5086,7 @@ impl<S, M: Clone> Ui<S, M> {
         let area = |r: [f32; 4]| (r[2] - r[0]) * (r[3] - r[1]);
         let grows_out = grow_of.values().any(|&g| area(self.grows[g].r0) < area(self.grows[g].r1));
         let shrinks = grow_of.values().copied().find(|&g| area(self.grows[g].r0) > area(self.grows[g].r1));
+        let mut going = vec![];
         for (k, o) in old.iter().enumerate() {
             if used[k] || new_ids.contains(&o.id) || spec.out_ms <= 0.0 { continue; }
             let mut ride = o.tag.as_ref().and_then(|t| grow_of.get(&t.flow)).copied();
@@ -5101,7 +5106,33 @@ impl<S, M: Clone> Ui<S, M> {
                 if cx < r[0] + 3.0 || cy < r[1] + 3.0 || cx > r[2] - 3.0 || cy > r[3] - 3.0 { (ride, loosen) = (None, false); }
             }
             let (start, dur) = if on_it && ride.is_some() { (now + flight - 1e-4, 1e-4) } else { (now, out) };
-            self.ghosts.push(Ghost { inst: o.inst, start, dur, loosen, ride });
+            going.push((k, Ghost { inst: o.inst, start, dur, loosen, ride, anchor: o.inst.rect }));
+        }
+        // What rides moves by parts of its element, each part whole: an element's glyphs together (a
+        // word or label), and lines or shapes that touch (one box of four lines) together, so a part
+        // keeps its shape while only the parts' places close up with the picture.
+        let mut part: Vec<usize> = (0..going.len()).collect();
+        fn root(p: &mut [usize], mut i: usize) -> usize { while p[i] != i { p[i] = p[p[i]]; i = p[i]; } i }
+        // By what each covers, turned (a drawing's strokes are), as (x0, y0, x1, y1).
+        let touch = |a: [f32; 4], b: [f32; 4]| a[0] <= b[2] && b[0] <= a[2] && a[1] <= b[3] && b[1] <= a[3];
+        let mut by_node: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
+        for (j, (k, g)) in going.iter().enumerate() { if let Some(r) = g.ride { by_node.entry((old[*k].node, r)).or_default().push(j); } }
+        for js in by_node.values() {
+            for (a, &x) in js.iter().enumerate() { for &y in &js[a + 1..] {
+                let (gx, gy) = (&going[x].1.inst, &going[y].1.inst);
+                if (gx.paint[3] == GLYPH && gy.paint[3] == GLYPH) || touch(gx.bounds(0.5), gy.bounds(0.5)) { let (rx, ry) = (root(&mut part, x), root(&mut part, y)); part[rx] = ry; }
+            } }
+        }
+        let mut boxes: HashMap<usize, [f32; 4]> = HashMap::new();
+        for (j, (_, g)) in going.iter().enumerate() {
+            let (r, b) = (root(&mut part, j), g.inst.bounds(0.0));
+            let e = boxes.entry(r).or_insert(b);
+            *e = [e[0].min(b[0]), e[1].min(b[1]), e[2].max(b[2]), e[3].max(b[3])];
+        }
+        for (j, (_, mut g)) in going.into_iter().enumerate() {
+            let b = boxes[&root(&mut part, j)];
+            g.anchor = [b[0], b[1], b[2] - b[0], b[3] - b[1]];
+            self.ghosts.push(g);
         }
         if grows_out && let Some(g) = self.ground_seen { self.ground_hold = Some((g, now + flight)); }
         self.animating = true;

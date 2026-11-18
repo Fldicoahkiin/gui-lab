@@ -10,6 +10,8 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
 
 ## Islands under labels
 
+- Flow: what rides on a growing picture moves by whole parts (a word; strokes that touch, as a box of lines),
+  so a box drawn as four lines stays one box at one size while the picture grows or shrinks (DESIGN.md §1.10).
 - `Ui::ambient_fps(30)` on a 60 Hz display draws every second refresh: a paced frame is due within half a
   refresh of its time, and `web/amenui.js` wakes a refresh early for it (in Chrome it was 20 a second).
 - Web: when the WebGPU device fails, the full build starts on WebGL2 before it reports `device`; the canvas is

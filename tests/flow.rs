@@ -23,13 +23,14 @@ const PIECE_GROUND: [f32; 3] = [0.92, 0.84, 0.30];
 const SPEC: FlowSpec = FlowSpec { flow_ms: 420.0, flow_loose: 0.0, out_ms: 180.0, fade_ms: 180.0 };
 
 #[derive(Default)]
-struct Site { piece: bool, cmds: Vec<Cmd> }
+struct Site { piece: bool, cmds: Vec<Cmd>, birds: u32 }
 fn at<M: 'static>(e: El<M>, x: f32, y: f32) -> El<M> { e.absolute(Some(x), Some(y), None, None) }
 /// A faint shade, at a real alpha.
 const SHADE: Paint = Paint { tone: 1.0, accent: 0.0, alpha: 0.35, hue: 0 };
 /// A picture with notes over it, as the site's picture layer: `w × h`; a note's text placed where the
 /// page puts it, a box and a faint line drawn over the picture, and a faint shaded block.
-fn layer(key: &str, (w, h): (f32, f32), pic: u32, note: (f32, f32), bx: [f32; 4]) -> El<()> {
+/// `birds` more notes below the scan, as the site's flight adds while it moves.
+fn layer(key: &str, (w, h): (f32, f32), pic: u32, note: (f32, f32), bx: [f32; 4], birds: u32) -> El<()> {
     let mut d = Drawing::new(w, h);
     let (x0, y0, x1, y1) = (bx[0], bx[1], bx[0] + bx[2], bx[1] + bx[3]);
     d.line((x0, y0), (x1, y0), 1.0, Paint::INK); d.line((x1, y0), (x1, y1), 1.0, Paint::INK);
@@ -41,6 +42,7 @@ fn layer(key: &str, (w, h): (f32, f32), pic: u32, note: (f32, f32), bx: [f32; 4]
         .child(at(col().key(format!("{key}/shade")).width(30.0).height(12.0).fill(SHADE), note.0, note.1 + 20.0))
         .child(at(text("note", 11.0, Paint::ACCENT).font(Font::Mono).key(format!("{key}/note")), note.0, note.1))
         .child(at(cells(Cells { over: format!("{key}/picture"), pitch: [7.0, 10.0], ramp: ":=+*".into(), size: 9.0, ..Cells::default() }, 6, 3).key(format!("{key}/scan")), note.0, note.1 + 40.0))
+        .children((0..birds).map(|b| at(text("bird", 11.0, Paint::ACCENT).font(Font::Mono).key(format!("{key}/bird{b}")), note.0, note.1 + 80.0 + 14.0 * b as f32)))
 }
 /// The window's frame: four lines in the accent, drawn over it.
 fn frame(key: &str, w: f32, h: f32) -> El<()> {
@@ -55,16 +57,16 @@ fn view(s: &Site) -> El<()> {
     if !s.piece {
         root.child(at(text("works", 30.0, Paint::INK).key("works/title"), 32.0, 40.0))
             .child(at(col().key("w/0").width(240.0).height(300.0).clip().flow("work/a")
-                .child(at(layer("w/0/layer", (480.0, 360.0), PIC_A, (150.0, 40.0), [180.0, 120.0, 40.0, 30.0]), -120.0, 0.0))
+                .child(at(layer("w/0/layer", (480.0, 360.0), PIC_A, (150.0, 40.0), [180.0, 120.0, 40.0, 30.0], s.birds), -120.0, 0.0))
                 .child(frame("w/0/frame", 240.0, 300.0)), 32.0, 120.0))
             .child(at(col().key("w/1").width(240.0).height(300.0).clip().flow("work/b")
-                .child(at(layer("w/1/layer", (480.0, 360.0), PIC_B, (100.0, 60.0), [60.0, 80.0, 40.0, 30.0]), -120.0, 0.0)), 288.0, 120.0))
+                .child(at(layer("w/1/layer", (480.0, 360.0), PIC_B, (100.0, 60.0), [60.0, 80.0, 40.0, 30.0], 0), -120.0, 0.0)), 288.0, 120.0))
             .child(at(text("Alpha", 16.0, Paint::TEXT).key("w/0/title").flow("work/a/title"), 32.0, 440.0))
             .child(at(text("LIVE · OPEN", 11.0, Paint::ACCENT).font(Font::Mono).key("w/0/live"), 420.0, 444.0))
             .child(at(text("Beta", 16.0, Paint::TEXT).key("w/1/title").flow("work/b/title"), 288.0, 440.0))
     } else {
         root.child(at(col().key("page").width(W as f32).height(H as f32).clip().calm()
-                .child(layer("page/layer", (W as f32, H as f32), PIC_A, (420.0, 100.0), [500.0, 260.0, 60.0, 45.0]).flow("work/a")), 0.0, 0.0))
+                .child(layer("page/layer", (W as f32, H as f32), PIC_A, (420.0, 100.0), [500.0, 260.0, 60.0, 45.0], s.birds).flow("work/a")), 0.0, 0.0))
             .child(at(text("Alpha", 30.0, Paint::INK).key("page/title").flow("work/a/title"), 32.0, 520.0))
             .child(at(text("back", 11.0, Paint::DIM).font(Font::Mono).key("page/back"), 720.0, 24.0))
     }
@@ -128,6 +130,14 @@ fn flight(back: bool) {
     piece.tick(3.0);
     let mut rest: Vec<Instance> = index.scene().instances.clone();
     rest.extend(piece.scene().instances.iter().copied());
+    // And both with the note the flight adds.
+    for on in [false, true] {
+        let mut b = open();
+        (b.state.piece, b.state.birds) = (on, 1);
+        b.relayout();
+        b.tick(3.0);
+        rest.extend(b.scene().instances.iter().copied());
+    }
     let (win, full) = (shows(&pictures(&index, PIC_A)[0]), shows(&pictures(&piece, PIC_A)[0]));
     let (from, to) = if back { (full, win) } else { (win, full) };
     let mut u = open();
@@ -137,6 +147,9 @@ fn flight(back: bool) {
     go(&mut u, !back);
     let way = if back { "back" } else { "in" };
     for ms in [40.0f32, 80.0, 200.0, 350.0] {
+        // Mid-flight the new page lays out a note it did not have when the flow began: it comes in
+        // with the rest of the new subtree, not before.
+        if ms == 200.0 { u.tick(t0 + 0.19); u.state.birds = 1; u.relayout(); }
         u.tick(t0 + ms / 1000.0);
         let f = render(&mut o, &mut u);
         if let Ok(d) = std::env::var("DUMP") { std::fs::write(format!("{d}/flow-{way}-{ms}.png"), amenui::offscreen::png_bytes(W, H, &f)).unwrap(); }
@@ -185,6 +198,18 @@ fn flight(back: bool) {
             let same = rest.iter().any(|q| (q.rect[2] - i.rect[2]).abs() < 0.01 && (q.rect[3] - i.rect[3]).abs() < 0.01 && q.paint[0] == i.paint[0] && q.paint[1] == i.paint[1]);
             assert!(same, "{way} {ms} ms: an instance of a size or colour neither page draws: {:?} {:?}", i.rect, i.paint);
             if i.clip == [r[0], r[1], r[2], r[3]] { assert_eq!(i.extra[2], 0.0, "{way} {ms} ms: a note over the picture loosens"); }
+        }
+        // What rides keeps its shape: the box of four lines over the picture is still closed, each
+        // side's ends on the other two (one size of box, not its sides closing up apart).
+        // A line is drawn turned (`xf`): its rect is its length along, about its centre.
+        let lines: Vec<(bool, [f32; 4])> = u.scene().instances.iter().filter(|i| visible(i) && i.paint[3] == 1.0 && i.paint[1] == 0.0 && i.paint[2] > 0.9 && i.clip == [r[0], r[1], r[2], r[3]] && i.rect[3] <= 2.0)
+            .map(|i| (i.xf[2].abs() > 0.5, [i.rect[0] + i.rect[2] * 0.5, i.rect[1] + i.rect[3] * 0.5, (i.rect[2] - i.rect[3]) * 0.5, i.rect[3]])).collect();
+        let down: Vec<[f32; 4]> = lines.iter().filter(|l| l.0).map(|l| l.1).collect();
+        for (_, a) in lines.iter().filter(|l| !l.0 && l.1[2] > 10.0 && l.1[2] < 100.0) {
+            for end in [a[0] - a[2], a[0] + a[2]] {
+                assert!(down.iter().any(|d| (d[0] - end).abs() <= 1.0 && (d[1] - a[1]).abs() <= d[2] + 1.0),
+                    "{way} {ms} ms: a ridden box is not closed: a side about {a:?} has no side at x {end} among {down:?}");
+            }
         }
         // The window's frame and its live line leave by their opacity within `out_ms`, under the picture
         // (going in), or wait for it to land (going back): never drawn over it.
