@@ -8,6 +8,14 @@ crate and the `amenui` npm package (`web/`) always carry the same version, becau
 match the module that `web_app!` generates. The minimum Rust is the one CI builds with (`rust-version`
 in Cargo.toml); raising it is a breaking change before 1.0 only in the second number.
 
+## Strokes with a ramp
+
+- `Drawing::ramp(a, b, w, paint, mid, far)`: a stroke whose colour and opacity go from `paint` at `a` to `far` at `b`,
+  through an optional middle stop, still one instance. Over a picture the colours mix in OKLab; off one it keeps its
+  first hue, and a ramp across hues there is reported (`ViewProblem::RampHue`, P1 in the audit) (DESIGN.md §1.26).
+  `Mark::Line` has two new fields, `far` and `mid` (`None` for a plain line): code that builds one with every field
+  named needs them.
+
 ## Islands under labels
 
 - Flow: what rides on a growing picture moves by whole parts (a word; strokes that touch, as a box of lines),

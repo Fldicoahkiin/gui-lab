@@ -179,6 +179,12 @@ pub enum DriveError {
 /// layout; none of them stops the page from drawing.
 #[derive(Clone, Debug, Error, PartialEq)]
 pub enum ViewProblem {
+    #[error("`{key}` draws a ramp from one accent hue to another that is not over a picture: there it keeps its first hue all the way and only its tone, accent and opacity ramp. Draw it over a picture (its colours are then mixed in OKLab), or ramp within one hue.")]
+    /// A ramp stroke from one hue to another drawn off a picture (`Drawing::ramp`).
+    RampHue {
+        /// The drawing's key.
+        key: String,
+    },
     #[error("the key `{key}` is used by two elements (at `{first}` and at `{second}`). Keys identify elements across views (birth times, scroll offsets, focus, recomposition); give each its own, e.g. `.key(format!(\"{key}/{{i}}\"))` inside a loop.")]
     /// Two elements have the same key.
     DuplicateKey {

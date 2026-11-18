@@ -1307,6 +1307,17 @@ impl<S, M: Clone> Ui<S, M> {
             let mut at = n.parent;
             while let Some(k) = at { if self.nodes[k].plate.is_some() { out.push(P::OnPlate { key: n.key.clone(), plate: self.nodes[k].key.clone() }); break; } at = self.nodes[k].parent; }
         }
+        // A ramp from one hue to another that is not over a picture keeps its first hue all the way.
+        let pictures: Vec<[f32; 4]> = self.base[..self.page_len].iter().filter(|q| q.paint[3] == PICTURE && q.extra[0] <= 0.5)
+            .map(|q| [q.rect[0].max(q.clip[0]), q.rect[1].max(q.clip[1]), (q.rect[0] + q.rect[2]).min(q.clip[2]), (q.rect[1] + q.rect[3]).min(q.clip[3])]).collect();
+        let mut seen = HashSet::new();
+        for (i, q) in self.base[..self.page_len].iter().enumerate() {
+            if q.paint[3] != SHAPE || q.uv[2] > -0.5 || !ramp_hues(q) { continue; }
+            let b = q.bounds(0.0);
+            if pictures.iter().any(|p| b[0] >= p[0] && b[1] >= p[1] && b[2] <= p[2] && b[3] <= p[3]) { continue; }
+            let key = &self.nodes[self.owners[i].0].key;
+            if seen.insert(key.clone()) { out.push(P::RampHue { key: key.clone() }); }
+        }
         out
     }
 
@@ -3761,20 +3772,29 @@ impl<S, M: Clone> Ui<S, M> {
                             }
                             continue;
                         }
-                        let (rect, radius, xf, p) = match *m {
+                        let (rect, radius, xf, p, ramp) = match *m {
                             crate::draw::Mark::Dot { x, y, r, paint } => {
                                 let rr = (r * k).max(0.5);
-                                ([ox + x * k - rr, oy + y * k - rr, rr * 2.0, rr * 2.0], rr, [0.0; 4], paint)
+                                ([ox + x * k - rr, oy + y * k - rr, rr * 2.0, rr * 2.0], rr, [0.0; 4], paint, None)
                             }
-                            crate::draw::Mark::Line { a, b, w, paint } => {
+                            crate::draw::Mark::Line { a, b, w, paint, far, mid } => {
                                 let (dx, dy) = ((b.0 - a.0) * k, (b.1 - a.1) * k);
                                 let (len, ww) = ((dx * dx + dy * dy).sqrt(), (w * k).max(0.5));
                                 let (cx, cy) = (ox + (a.0 + b.0) * 0.5 * k, oy + (a.1 + b.1) * 0.5 * k);
-                                ([cx - (len + ww) * 0.5, cy - ww * 0.5, len + ww, ww], ww * 0.5, Instance::turned(dy.atan2(dx), 1.0, 1.0), paint)
+                                ([cx - (len + ww) * 0.5, cy - ww * 0.5, len + ww, ww], ww * 0.5, Instance::turned(dy.atan2(dx), 1.0, 1.0), paint, far.map(|f| (f, mid)))
                             }
                             crate::draw::Mark::Blade(_) => unreachable!("drawn above"),
                         };
-                        let inst = Instance { rect, uv: [radius, 0.0, 0.0, 0.0], paint: [p.tone, p.accent, p.alpha, SHAPE], clip, look: [mat, p.hue as f32, rect[1], rect[3].max(1.0)], resp, xf, ..Default::default() };
+                        // A ramp (`Drawing::ramp`): its far and middle paints in uv.zw, their hues and where the
+                        // middle is in extra.x, all negative (a stroke has no border; a blade's joints are positive).
+                        let (mut uv, mut ex) = ([radius, 0.0, 0.0, 0.0], 0.0);
+                        if let Some((far, mid)) = ramp {
+                            let (m, at) = mid.unwrap_or((far, 0.5));
+                            uv[2] = -(1.0 + ramp_pack(far));
+                            uv[3] = if mid.is_some() { -(1.0 + ramp_pack(m)) } else { 0.0 };
+                            ex = -(1.0 + far.hue.min(2) as f32 + 4.0 * m.hue.min(2) as f32 + 16.0 * (at.clamp(0.0, 1.0) * 255.0).round());
+                        }
+                        let inst = Instance { rect, uv, paint: [p.tone, p.accent, p.alpha, SHAPE], clip, look: [mat, p.hue as f32, rect[1], rect[3].max(1.0)], resp, xf, extra: [ex, 0.0, 0.0, 0.0] };
                         put(&mut sink, inst, ident(&n.key, j as u32 | 0x2000_0000, 0), None);
                     }
                 }
@@ -6175,6 +6195,24 @@ fn in_preview<M>(el: &mut El<M>) {
     for c in &mut el.children { in_preview(c); }
 }
 
+/// Whether a ramp stroke goes from one accent hue to another (a stop with no accent has no hue).
+fn ramp_hues(q: &Instance) -> bool {
+    let code = -q.extra[0] - 1.0;
+    let hues = code - (code / 16.0).floor() * 16.0;
+    let (mh, fh) = ((hues / 4.0).floor(), hues - (hues / 4.0).floor() * 4.0);
+    let accent = |v: f32| { let n = -v - 1.0; ((n - (n / 65536.0).floor() * 65536.0) / 256.0).floor() > 0.0 };
+    let mut used = vec![];
+    if q.paint[1] > 0.0 { used.push(q.look[1]); }
+    if accent(q.uv[2]) { used.push(fh); }
+    if q.uv[3] < -0.5 && accent(q.uv[3]) { used.push(mh); }
+    used.windows(2).any(|w| w[0] != w[1])
+}
+/// A ramp's paint in one number (`Drawing::ramp`, the shader's `ramp_paint`): tone, accent and opacity
+/// in 255ths, 8 bits each, exact in an `f32`.
+fn ramp_pack(p: Paint) -> f32 {
+    let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round();
+    q(p.tone) + 256.0 * q(p.accent) + 65536.0 * q(p.alpha)
+}
 /// What `flatten` needs to build a virtual list's rows (scroll offsets, viewport heights from the last
 /// layout, the window's height) and the row ranges it built.
 struct VirtCtx<'a> { scroll: &'a HashMap<String, f32>, views: &'a HashMap<String, f32>, window: f32, made: HashMap<String, (usize, usize)> }

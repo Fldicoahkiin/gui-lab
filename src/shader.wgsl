@@ -461,7 +461,55 @@ fn own_loose(i: VOut) -> f32 {
 @fragment fn fs_ink_top(i: VOut) -> @location(0) vec4f { return ink_of(exact_i(i), true); }
 /// Less motion asked for (scrq.w): a new instance fades in over scrq.w (`Ui::reduced_fade`) instead of condensing.
 fn rm_fade(i: VOut) -> f32 { return select(1.0, clamp((u.scrq.y - i.extra.w) / max(u.scrq.w, 1e-3), 0.0, 1.0), u.scrq.w > 0.0); }
-fn ink_of(i: VOut, solid: bool) -> vec4f {
+// ── A stroke with a ramp (draw.rs `Drawing::ramp`; ui.rs packs it): its far paint in uv.z and middle
+// paint in uv.w, each −(1 + tone + 256 accent + 65536 alpha) in 255ths; extra.x −(1 + far hue + 4 middle
+// hue + 16 × where the middle is, in 255ths).
+fn is_ramp(i: VOut) -> bool { return i.paint.w > 0.5 && i.paint.w < 1.5 && i.uvr.z < -0.5; }
+fn ramp_paint(v: f32) -> vec3f {
+  let n = -v - 1.0;
+  let alpha = floor(n / 65536.0); let r = n - alpha * 65536.0; let accent = floor(r / 256.0);
+  return vec3f(r - accent * 256.0, accent, alpha) / 255.0;
+}
+/// How far along the stroke the pixel is, a to b (0–1): its projection on the stroke, so each round end
+/// is its end's colour.
+fn ramp_t(i: VOut) -> f32 { let w = i.size.y; return clamp((i.local.x - w * 0.5) / max(i.size.x - w, 1e-3), 0.0, 1.0); }
+/// The ramp's stops at t: the two paints (tone, accent, alpha) and hues it lies between, and how far.
+struct RampAt { p0: vec3f, p1: vec3f, h0: f32, h1: f32, f: f32 }
+fn ramp_at(i: VOut) -> RampAt {
+  let t = ramp_t(i);
+  let code = -i.extra.x - 1.0;
+  let at = floor(code / 16.0) / 255.0; let hues = code - floor(code / 16.0) * 16.0;
+  let mh = floor(hues / 4.0); let fh = hues - mh * 4.0;
+  let start = i.paint.xyz; let far = ramp_paint(i.uvr.z);
+  if (i.uvr.w < -0.5) {
+    let mid = ramp_paint(i.uvr.w);
+    if (t < at) { return RampAt(start, mid, i.look.y, mh, t / max(at, 1e-4)); }
+    return RampAt(mid, far, mh, fh, (t - at) / max(1.0 - at, 1e-4));
+  }
+  return RampAt(start, far, i.look.y, fh, t);
+}
+fn lin1(c: f32) -> f32 { return select(pow((c + 0.055) / 1.055, 2.4), c / 12.92, c <= 0.04045); }
+fn srgb1(c: f32) -> f32 { return select(1.055 * pow(c, 1.0 / 2.4) - 0.055, c * 12.92, c <= 0.0031308); }
+fn oklab(c: vec3f) -> vec3f {
+  let l = vec3f(lin1(c.r), lin1(c.g), lin1(c.b));
+  let lms = pow(max(mat3x3f(0.4122214708, 0.2119034982, 0.0883024619, 0.5363325363, 0.6806995451, 0.2817188376, 0.0514459929, 0.1073969566, 0.6299787005) * l, vec3f(0.0)), vec3f(1.0 / 3.0));
+  return mat3x3f(0.2104542553, 1.9779984951, 0.0259040371, 0.7936177850, -2.4285922050, 0.7827717662, -0.0040720468, 0.4505937099, -0.8086757660) * lms;
+}
+fn from_oklab(lab: vec3f) -> vec3f {
+  let lms = mat3x3f(1.0, 1.0, 1.0, 0.3963377774, -0.1055613458, -0.0894841775, 0.2158037573, -0.0638541728, -1.2914855480) * lab;
+  let l = mat3x3f(4.0767416621, -1.2684380046, -0.0041960863, -3.3077115913, 2.6097574011, -0.7034186147, 0.2309699292, -0.3413193965, 1.7076147010) * (lms * lms * lms);
+  let c = clamp(l, vec3f(0.0), vec3f(1.0));
+  return vec3f(srgb1(c.r), srgb1(c.g), srgb1(c.b));
+}
+/// A paint's colour as drawn over a picture: ground, ink and its accent mixed (`ink_of`).
+fn paint_col(p: vec3f, hue: f32, at: vec2f) -> vec3f { let r = p.x * (1.0 - p.y); let g = p.y; return gnd(at) * max(1.0 - r - g, 0.0) + u.fg.rgb * r + hue_col(round(hue)) * g; }
+
+fn ink_of(iv: VOut, solid: bool) -> vec4f {
+  var i = iv;
+  // A ramp off a picture: its paint's numbers in a line, its own hue all the way (one hue a pixel).
+  var ramp: RampAt;
+  let ramped = is_ramp(iv);
+  if (ramped) { ramp = ramp_at(iv); i.paint = vec4f(mix(ramp.p0, ramp.p1, ramp.f), i.paint.w); }
   let s = inst(i);
   var a = s.x * i.paint.z * rm_fade(i);
   // A shape scribblr fades (its alpha before the fade in uv.y) keeps its fill within `r0` of text to read
@@ -494,6 +542,11 @@ fn ink_of(i: VOut, solid: bool) -> vec4f {
   // antialiased edge then blends with the picture by its coverage, and a see-through group by its
   // opacity, whatever else is drawn.
   if (i.paint.w < 1.5 && over_pic(i, solid) > 0.0) {
+    // A ramp over a picture: its stops' colours mixed in OKLab, the opacity after.
+    if (ramped) {
+      let col = from_oklab(mix(oklab(paint_col(ramp.p0, ramp.h0, i.pos.xy)), oklab(paint_col(ramp.p1, ramp.h1, i.pos.xy)), ramp.f));
+      return vec4f(col * a, a);
+    }
     let r = i.paint.x * (1.0 - i.paint.y); let g = i.paint.y;
     let col = gnd(i.pos.xy) * max(1.0 - r - g, 0.0) + u.fg.rgb * r + hue_col(round(i.look.y)) * g;
     return vec4f(col * a, a);

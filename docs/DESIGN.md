@@ -2220,6 +2220,16 @@ So the foundation changed in five places, with no special cases in the effect pa
   condense (their birth time is long past). Pointer handlers on a canvas (`on_move`, `on_drag`, and
   `El::on_point`, which combines move, press-drag and leave in one handler, fingers included) report coordinates
   in the canvas's space.
+- **A stroke with a ramp** (`Drawing::ramp(a, b, w, paint, mid, far)`, `Mark::Line`'s `far` and `mid`): its
+  colour and opacity go from `paint` at `a` to `far` at `b`, through `mid` (a paint and where it is, 0–1 of the way)
+  if given, still one instance (the far and middle paints packed into its `uv.zw`, their hues and the middle's place
+  into `extra.x`, all negative; a line without a ramp is the instance it was). The ramp's parameter is the pixel's
+  projection on a→b, `clamp(dot(p − a, b − a) / |b − a|², 0, 1)`, so each round end is its end's colour, flat. Over a
+  picture (where ink is written as its own colour) the stops' colours are mixed in OKLab, each piece linear with no
+  smoothing at the middle stop, and the opacity, linear along the length, is applied after the mix. Off a picture ink
+  is a theme mix with one accent hue a pixel, so there the paint's numbers (tone, accent, opacity) go in a line and it
+  keeps `paint`'s hue all the way: a ramp within one hue, or to transparent, comes out as drawn there; one from one
+  hue to another is reported (`ViewProblem::RampHue`, a P1 in the audit). 540 ramps are one draw.
 - **Blades** (`Mark::Blade`, `Drawing::blade`): a rooted stroke that the field map (§1.29) bends, for a field of
   grass. `root`, `len`, `width` (at the root, 1.5 by default; the tip is half of it, 0.5 px at least), its own
   `lean` (0), `max_lean` (57°), `stiff` (0.5), `paint`, `lean_paint` and an optional `head` glyph. Its lean is

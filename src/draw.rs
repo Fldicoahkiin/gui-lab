@@ -11,8 +11,10 @@ use crate::field::{Grid, Scalar};
 pub enum Mark {
     /// A round dot of radius `r` about (x, y).
     Dot { x: f32, y: f32, r: f32, paint: Paint },
-    /// A stroke `w` wide from `a` to `b` with round ends.
-    Line { a: (f32, f32), b: (f32, f32), w: f32, paint: Paint },
+    /// A stroke `w` wide from `a` to `b` with round ends, in `paint` at `a`; with `far`, a ramp to `far`
+    /// at `b`, through `mid` (a paint and where it is, 0–1 of the way) if given, still one instance
+    /// (`Drawing::ramp`).
+    Line { a: (f32, f32), b: (f32, f32), w: f32, paint: Paint, far: Option<Paint>, mid: Option<(Paint, f32)> },
     /// A rooted stroke that the field map bends (`Blade`).
     Blade(Blade),
 }
@@ -129,7 +131,17 @@ pub struct Drawing { pub w: f32, pub h: f32, pub marks: Vec<Mark> }
 impl Drawing {
     pub fn new(w: f32, h: f32) -> Self { Self { w, h, marks: Vec::new() } }
     pub fn dot(&mut self, x: f32, y: f32, r: f32, paint: Paint) { if r > 0.0 && paint.alpha > 0.0 { self.marks.push(Mark::Dot { x, y, r, paint }); } }
-    pub fn line(&mut self, a: (f32, f32), b: (f32, f32), w: f32, paint: Paint) { if w > 0.0 && paint.alpha > 0.0 { self.marks.push(Mark::Line { a, b, w, paint }); } }
+    pub fn line(&mut self, a: (f32, f32), b: (f32, f32), w: f32, paint: Paint) { if w > 0.0 && paint.alpha > 0.0 { self.marks.push(Mark::Line { a, b, w, paint, far: None, mid: None }); } }
+    /// A stroke whose colour and opacity go from `paint` at `a` to `far` at `b`, through `mid` (a paint
+    /// and where it is, 0–1 of the way from `a`) if given (DESIGN.md §1.26). Over a picture the colours
+    /// are mixed in OKLab, each piece linear, the opacity linear and applied after; elsewhere the
+    /// paint's numbers (tone, accent, opacity) are mixed in a line and it keeps `paint`'s hue (a ramp
+    /// from one hue to another there is reported by `Ui::problems`). Each round end is its end's colour.
+    pub fn ramp(&mut self, a: (f32, f32), b: (f32, f32), w: f32, paint: Paint, mid: Option<(Paint, f32)>, far: Paint) {
+        if w > 0.0 && (paint.alpha > 0.0 || far.alpha > 0.0 || mid.is_some_and(|m| m.0.alpha > 0.0)) {
+            self.marks.push(Mark::Line { a, b, w, paint, far: Some(far), mid: mid.map(|(p, at)| (p, at.clamp(0.0, 1.0))) });
+        }
+    }
     /// A blade (`Blade`).
     pub fn blade(&mut self, b: Blade) { if b.len > 0.0 && b.width > 0.0 && b.paint.alpha > 0.0 { self.marks.push(Mark::Blade(b)); } }
     /// A polyline as strokes; `paint` is asked for each piece by its midpoint.
