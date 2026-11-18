@@ -1072,14 +1072,38 @@ fn zoom_style(s: &mut Style, k: f32) {
 }
 impl<M> El<M> {
     /// Every length in this subtree times `k`: sizes, gaps, padding, margins, insets, corner radii,
-    /// borders (never thinner than a hairline) and type. A widget made for one size shown at another
+    /// borders (never thinner than a hairline), type, `shift`, a print lattice's pitch, `Around`'s
+    /// outlines, gap and narrowest piece, a pose's moves and depth, a stirr's reach, a guide and a trace. A widget made for one size shown at another
     /// (the film scales its controls with the stage, so a small window does not overflow).
     pub fn zoom(mut self, k: f32) -> Self {
         if (k - 1.0).abs() < 1e-4 || k <= 0.0 { return self; }
         zoom_style(&mut self.style, k);
         self.radius *= k;
         if let Some((w, p)) = self.border { self.border = Some(((w * k).max(w.min(1.0)), p)); }
-        if let Content::Text { size, line, weight, .. } = &mut self.content { *size *= k; *line *= k; *weight *= k; }
+        self.shift = (self.shift.0 * k, self.shift.1 * k);
+        if let Content::Text { size, line, weight, print, around, pose, .. } = &mut self.content {
+            *size *= k; *line *= k; *weight *= k; *print *= k;
+            if let Some(a) = around.as_mut() {
+                let a = Rc::make_mut(a);
+                a.gap *= k; a.min *= k;
+                for o in &mut a.obstacles { *o = o.scaled(k); }
+            }
+            // A pose answers in the element's own px: asked where a glyph is in the zoomed box, it is
+            // told where that is at 1, and its moves and depth come back times `k`.
+            if let Some(f) = pose.take() {
+                *pose = Some(Rc::new(move |g: GlyphAt| {
+                    let at = GlyphAt { x: g.x / k, y: g.y / k, w: g.w / k, h: g.h / k, span: g.span.map(|v| v / k), ..g };
+                    let p = f(at);
+                    Pose { dx: p.dx * k, dy: p.dy * k, z: p.z * k, ..p }
+                }));
+            }
+        }
+        if let Some(st) = &mut self.stirr { st.radius = st.radius.map(|r| r * k); }
+        if let Some(g) = &mut self.guide { *g = Rc::new(g.iter().map(|&(x, y)| (x * k, y * k)).collect()); }
+        if let Some(t) = &mut self.trace {
+            t.points = Rc::new(t.points.iter().map(|&[x, y]| [x * k, y * k]).collect());
+            t.weight *= k; t.dash *= k; t.gap *= k;
+        }
         self.children = std::mem::take(&mut self.children).into_iter().map(|c| c.zoom(k)).collect();
         self
     }

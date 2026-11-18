@@ -58,6 +58,19 @@ impl Silhouette {
         }).collect();
         Self { top, rows }
     }
+    /// The same outline `k` times as large about the paragraph's origin (`El::zoom`): each new row
+    /// takes the union of the rows it covers at 1, so the outline never shrinks inside its ink.
+    pub fn scaled(&self, k: f32) -> Self {
+        let top = (self.top * k).floor();
+        let n = ((self.top + self.rows.len() as f32) * k).ceil() - top;
+        let rows = (0..n.max(0.0) as usize).map(|i| {
+            let (y0, y1) = ((top + i as f32) / k - self.top, (top + i as f32 + 1.0) / k - self.top);
+            let (a, b) = (y0.floor().max(0.0) as usize, (y1.ceil().max(0.0) as usize).min(self.rows.len()));
+            let r = self.rows.get(a..b.max(a)).unwrap_or(&[]).iter().fold(EMPTY, |s, r| (s.0.min(r.0), s.1.max(r.1)));
+            if r.0 <= r.1 { (r.0 * k, r.1 * k) } else { EMPTY }
+        }).collect();
+        Self { top, rows }
+    }
     /// The same outline moved by (dx, dy).
     pub fn moved(&self, dx: f32, dy: f32) -> Self {
         // Rows are whole px; a fractional move rounds outward by keeping both neighbouring rows.

@@ -201,3 +201,41 @@ fn opacity_composites_the_subtree_as_one() {
     for k in 0..3 { assert!((got[k] - want[k]).abs() <= 3.0, "{got:?} vs {want:?}"); }
     let _ = look;
 }
+
+/// A card with a shifted badge in it, written at `k` by hand (`hand`) or at 1 and zoomed by `k`.
+mod zoomed {
+    use amenui::el::{El, Paint, col, row, space, text_lh};
+    use amenui::style::{Look, Material};
+    pub struct S { pub k: f32, pub hand: bool }
+    pub fn card(k: f32) -> El<()> {
+        col().key("card").pad(16.0 * k, 12.0 * k).gap(8.0 * k).radius(10.0 * k).fill(Paint::FAINT)
+            .child(text_lh("Shifted", 14.0 * k, 22.0 * k, Paint::TEXT).key("title"))
+            .child(row().key("holder").gap(6.0 * k)
+                .child(space(60.0 * k, 24.0 * k).radius(4.0 * k).fill(Paint::ACCENT).key("badge").shift(40.0 * k, -24.0 * k))
+                .child(space(30.0 * k, 24.0 * k).fill(Paint::INK).key("plain")))
+    }
+    pub fn view(s: &S) -> El<()> {
+        let c = if s.hand { card(s.k) } else { card(1.0).zoom(s.k) };
+        col().key("page").pad(40.0, 60.0).fill_width().fill_height().child(c)
+    }
+    pub fn look(_: &S) -> Look { Look { material: Material::Dottr, ..Look::default() } }
+}
+
+#[test]
+fn zoom_scales_a_shift_with_every_other_length() {
+    let (w, h) = (480u32, 360u32);
+    let mk = |k: f32, hand: bool| { let mut ui = amenui::ui::Ui::new(zoomed::S { k, hand }, zoomed::view, |_, _| {}, fonts(), w, h, 1.0).on_look(zoomed::look); ui.tick(2.0); ui };
+    for k in [0.5f32, 0.75, 1.5, 2.0] {
+        let ui = mk(k, false);
+        let (b, p) = (ui.node("badge").unwrap().rect, ui.node("holder").unwrap().rect);
+        // Unshifted, the badge sits at the holder's top left: its offset is the shift alone.
+        let (dx, dy) = (b.x - p.x, b.y - p.y);
+        assert!((dx - 40.0 * k).abs() < 0.5 && (dy + 24.0 * k).abs() < 0.5, "k {k}: the badge is moved by ({dx}, {dy}), want {:?}", (40.0 * k, -24.0 * k));
+    }
+    let Ok(mut o) = Offscreen::try_new(w, h) else { eprintln!("no GPU adapter here: skipped"); return };
+    let shot = |o: &mut Offscreen, k: f32, hand: bool| { let mut ui = mk(k, hand); let look = ui.look(); o.render(&mut ui, &look) };
+    assert!(shot(&mut o, 1.0, false) == shot(&mut o, 1.0, true), "zoom(1) changes nothing");
+    for k in [0.5f32, 0.75, 1.5, 2.0] {
+        assert!(shot(&mut o, k, false) == shot(&mut o, k, true), "k {k}: zoomed and written by hand differ");
+    }
+}
