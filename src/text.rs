@@ -447,6 +447,58 @@ impl Text {
         self.pieces[0].insert(k, g.clone());
         g
     }
+    /// The text a paragraph clamped to `lines` lines shows (`El::clamp`), or `None` when it fits: the
+    /// longest start of it that, with the face's own ellipsis (U+2026, or three full stops where the
+    /// face has none) after it, takes no more lines and whose last line is no wider than `p.width`. It
+    /// breaks after a word, unless that leaves more than a quarter of the last line empty, then between
+    /// grapheme clusters; no space, comma, full stop, colon, dash or opening bracket is left before the
+    /// ellipsis.
+    pub fn clamp_lines(&mut self, p: Para<'_>, lines: u16) -> Option<String> {
+        let n = lines as usize;
+        if n == 0 { return None; }
+        let w = p.width;
+        let full = self.layout(p.s, p.face, p.size, p.line, Some(w), p.setting());
+        if full.len() <= n { return None; }
+        let dots = if self.has_char(p.face, '\u{2026}') { "\u{2026}" } else { "..." };
+        // Whether `s[..end]` with the ellipsis fits, and how full its last line is.
+        let mut fits = |t: &mut Self, end: usize| -> Option<f32> {
+            let mut c = p.s[..end].trim_end().to_owned();
+            while c.ends_with([',', '.', ':', ';', '\u{2014}', '\u{2013}', '-', '(', '[', '{', '\u{ff0c}', '\u{3002}', '\u{ff1a}', '\u{ff08}']) { c.pop(); c = c.trim_end().to_owned(); }
+            c.push_str(dots);
+            let l = t.layout(&c, p.face, p.size, p.line, Some(w), p.setting());
+            let last = l.lines().last().map_or(0.0, |ln| { let m = ln.metrics(); m.advance - m.hanging_advance });
+            (l.len() <= n && l.lines().all(|ln| { let m = ln.metrics(); m.advance - m.hanging_advance <= w + 0.01 })).then_some(last / w.max(1.0))
+        };
+        // The longest fitting end among `ends` (fitting is monotone in the length), by halving.
+        let best = |t: &mut Self, ends: &[usize], fits: &mut dyn FnMut(&mut Self, usize) -> Option<f32>| -> Option<(usize, f32)> {
+            let (mut lo, mut hi) = (0usize, ends.len());
+            let mut got = None;
+            while lo < hi {
+                let mid = (lo + hi) / 2;
+                match fits(t, ends[mid]) { Some(f) => { got = Some((ends[mid], f)); lo = mid + 1; } None => hi = mid }
+            }
+            got
+        };
+        let graphemes: Vec<usize> = p.s.grapheme_indices(true).map(|(i, _)| i).filter(|&i| i > 0).collect();
+        let words: Vec<usize> = p.s.split_word_bound_indices().filter(|(_, x)| x.chars().all(char::is_whitespace)).map(|(i, _)| i).filter(|&i| i > 0).collect();
+        let by_word = best(self, &words, &mut fits);
+        let by_char = best(self, &graphemes, &mut fits);
+        let end = match (by_word, by_char) {
+            (Some((a, f)), Some((b, _))) if f < 0.75 && b > a => b,
+            (Some((a, _)), _) => a,
+            (None, Some((b, _))) => b,
+            (None, None) => 0,
+        };
+        let mut c = p.s[..end].trim_end().to_owned();
+        while c.ends_with([',', '.', ':', ';', '\u{2014}', '\u{2013}', '-', '(', '[', '{', '\u{ff0c}', '\u{3002}', '\u{ff1a}', '\u{ff08}']) { c.pop(); c = c.trim_end().to_owned(); }
+        c.push_str(dots);
+        Some(c)
+    }
+    /// Whether face `face` has a glyph for `ch`.
+    pub fn has_char(&self, face: u8, ch: char) -> bool {
+        let f = self.family(face);
+        swash::FontRef::from_index(f.data.as_ref(), 0).is_some_and(|r| r.charmap().map(ch) != 0)
+    }
     /// Each laid-out line's ink (`Ui::line_inks`): its box as `line_boxes` gives it, the box round the
     /// pixels its glyphs cover more than half at rest (true outlines, out to whole device px), its
     /// baseline, and where its face's capitals and lowercase reach up to (cap height, x height), all

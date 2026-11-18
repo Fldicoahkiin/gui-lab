@@ -168,6 +168,10 @@ pub struct Node<M> {
     pub commit_scope: bool,
     /// Its subtree is zoomed to fit its box (`El::fit`).
     pub fit: Option<crate::el::Fit>,
+    /// How many lines a text element shows at most (`El::clamp`; 0: all).
+    pub clamp: u16,
+    /// What a clamped text element shows when it is cut: its start and the ellipsis.
+    pub shown: Option<String>,
     /// The box layout gave it, relative to its parent (scrolling does not change it).
     local: taffy::Layout,
     tid: NodeId,
@@ -199,6 +203,7 @@ impl<M> Node<M> {
     pub(crate) fn para(&self) -> Option<Para<'_>> {
         let Content::Text { s, size, line, font, print, around, nowrap, track, .. } = &self.content else { return None };
         let width = if *nowrap { f32::INFINITY } else { self.inner.w + if around.is_some() { 0.0 } else { 1.0 } };
+        let s = self.shown.as_deref().unwrap_or(s);
         Some(Para { s, face: font.resolve([0; 3]), size: *size, line: *line, width, print: *print, around: around.as_deref(), track: *track })
     }
     pub(crate) fn origin(&self) -> (f32, f32) { (self.inner.x, self.inner.y) }
@@ -1142,6 +1147,7 @@ impl<S, M: Clone> Ui<S, M> {
                 out.push(P::UnknownContainer { key: n.key.clone(), container: c.clone() });
             }
         }
+        for n in self.nodes.iter().filter(|n| n.clamp > 0 && matches!(&n.content, Content::Text { around: Some(_), .. })) { out.push(P::ClampAround { key: n.key.clone() }); }
         for (key, need, min) in &self.fit_short { out.push(P::FitShort { key: key.clone(), need: *need, min: *min }); }
         out
     }
@@ -2014,6 +2020,9 @@ impl<S, M: Clone> Ui<S, M> {
         self.dirty = true;
         if self.node(key).is_some_and(|n| n.focusable) { self.keyboard = true; self.set_focus(Some(key.to_owned())); }
     }
+    /// Whether the text element `key`, clamped to lines (`El::clamp`), was cut: it ends in an ellipsis
+    /// and does not show all of its text (a place to offer `More`).
+    pub fn clamped(&self, key: &str) -> bool { self.node(key).is_some_and(|n| n.shown.is_some()) }
     /// The scale the box `key` (marked `El::fit`) zoomed its subtree by in the last layout.
     pub fn fitted(&self, key: &str) -> Option<f32> { self.fit_k.get(key).copied() }
     /// Take the focus away (`Cmd::ClearFocus`): nothing has it, what is shown only with focus inside it
@@ -2661,12 +2670,17 @@ impl<S, M: Clone> Ui<S, M> {
             let text = &mut self.text;
             let measure = |input: taffy::LayoutInput, _: NodeId, ctx: Option<&mut usize>, style: &Style| {
                 let none = |_: *const (), _: f32| 0.0;
+                let ctx_i = ctx.as_ref().map(|i| **i);
                 match ctx.map(|i| &nodes[*i].content) {
                     Some(Content::Text { s, size, line, font, around, nowrap, track, .. }) => taffy::compute_leaf_layout(input, style, none, |known, avail| {
                         let limit = known.width.or(match avail.width { AvailableSpace::Definite(w) => Some(w), AvailableSpace::MinContent => Some(0.0), AvailableSpace::MaxContent => None });
                         // Text flowing around obstacles fills whatever width it is given; text kept on one
                         // line is as wide as it is.
                         let limit = if around.is_some() { limit.filter(|w| *w > 0.0).or(Some(600.0)) } else if *nowrap { None } else { limit };
+                        // Clamped to lines: measured as it is shown (the width it is drawn at is one more).
+                        let clamp = ctx_i.map_or(0, |i| nodes[i].clamp);
+                        let cut = (clamp > 0 && around.is_none() && !*nowrap).then_some(()).and(limit).and_then(|w| text.clamp_lines(Para { s, face: font.resolve([0; 3]), size: *size, line: *line, width: w + 1.0, print: 0.0, around: None, track: *track }, clamp));
+                        let s = cut.as_deref().unwrap_or(s);
                         let (w, h) = text.measure_around(s, font.resolve([0; 3]), *size, *line, limit, crate::text::Setting { around: around.as_deref(), track: *track });
                         Size { width: known.width.unwrap_or(w), height: known.height.unwrap_or(h) }
                     }),
@@ -2740,6 +2754,15 @@ impl<S, M: Clone> Ui<S, M> {
         self.forget_gone(&nodes);
         self.nodes = nodes;
         self.place();
+        // What clamped text shows, at the width it is drawn at.
+        for i in 0..self.nodes.len() {
+            if self.nodes[i].clamp == 0 { continue; }
+            self.nodes[i].shown = None;
+            let around = matches!(&self.nodes[i].content, Content::Text { around: Some(_), .. });
+            if around { continue; }
+            let cut = self.nodes[i].para().and_then(|p| if p.width.is_finite() { self.text.clamp_lines(p, self.nodes[i].clamp) } else { None });
+            self.nodes[i].shown = cut;
+        }
         self.modal_at = self.nodes.iter().rposition(|n| n.modal.is_some());
         self.layer_changed();
         self.paint();
@@ -5341,7 +5364,7 @@ fn measure_key(c: &Content) -> u64 {
 /// A virtual list's rows are built here, for what its viewport shows.
 #[allow(clippy::too_many_arguments)]
 fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], off: (bool, bool), flow: Option<(Rc<str>, usize)>, inh: Inherit, vx: &mut VirtCtx, built: &mut Built, nodes: &mut Vec<Node<M>>) -> usize {
-    let El { key, style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, mut on_text, multiline, selectable, cursor, virt, access, ripple, mut on_pick, mut on_wheel, mut on_move, guide, skeleton, rtl, on_visible, on_outline, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview: _, fit, mut children } = el;
+    let El { key, style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, mut on_text, multiline, selectable, cursor, virt, access, ripple, mut on_pick, mut on_wheel, mut on_move, guide, skeleton, rtl, on_visible, on_outline, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview: _, fit, clamp, mut children } = el;
     let mut style = style;
     let mut inh = inh;
     if let Some(r) = rtl { inh.rtl = r; }
@@ -5406,7 +5429,7 @@ fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], of
         content, fill, border, radius, on_press, on_key, on_drag, on_blur, loose, wipe, bar, reveal, commit, modal, hidden, shift, shed, flow_field, stirr, trace, flow: flow.clone(),
         mat: inh.code(), loosen: inh.loosen, annotate, scope: gaze_scope, anchor, clips, calm, on_text, multiline, selectable: inh.select, cursor,
         virt: virt_info, access, respond, legible, ripple: inh.scope.clone(), ripple_scope: ripple.container || commit_scope, recompose, recompose_always: is_text && ripple.recompose == Some(true), unframed: ripple.unframed, keyed,
-        on_pick, on_wheel, on_move, guide, on_visible, on_outline, decode, skeleton: inh.skeleton, form, turn, xf: None, reveal_by, ongoing: ongoing || parent.is_some_and(|p| nodes[p].ongoing), pass, opacity, opacity_all: opacity * parent.map_or(1.0, |p| nodes[p].opacity_all), commit_scope, fit, local: taffy::Layout::new(), tid: placeholder,
+        on_pick, on_wheel, on_move, guide, on_visible, on_outline, decode, skeleton: inh.skeleton, form, turn, xf: None, reveal_by, ongoing: ongoing || parent.is_some_and(|p| nodes[p].ongoing), pass, opacity, opacity_all: opacity * parent.map_or(1.0, |p| nodes[p].opacity_all), commit_scope, fit, clamp, shown: None, local: taffy::Layout::new(), tid: placeholder,
     });
     let mut style = style;
     crate::el::snap_style(&mut style);

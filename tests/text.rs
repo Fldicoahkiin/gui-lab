@@ -185,3 +185,52 @@ fn line_inks_match_the_drawn_ink_and_the_faces_numbers() {
     } } }
 }
 
+/// One paragraph clamped to `lines` lines in a column `w` px wide.
+mod clamped {
+    use amenui::el::{El, Font, Paint, col, text};
+    pub struct S { pub s: String, pub face: u8, pub w: f32, pub lines: u16 }
+    pub fn view(s: &S) -> El<()> {
+        col().key("page").fill_width().fill_height().pad(10.0, 10.0)
+            .child(col().key("box").width(s.w).child(text(s.s.clone(), 14.0, Paint::TEXT).font(Font::Body).fonts([s.face, s.face, s.face]).clamp(s.lines).key("t")))
+    }
+}
+
+#[test]
+fn clamped_text_ends_in_an_ellipsis_within_its_lines_and_grows_with_its_width() {
+    use amenui::ui::Ui;
+    let fonts = || amenui::text::load_bundled(concat!(env!("CARGO_MANIFEST_DIR"), "/assets")).expect("fonts");
+    let words = ["the", "framework", "draws", "every", "glyph", "with", "a", "true", "outline,", "loosens", "it:", "and", "brings", "it", "back", "together", "again", "-", "(quietly)", "extraordinarily"];
+    let paras: Vec<String> = (0..40).map(|i| (0..(6 + i * 3)).map(|j| words[(i * 7 + j * 3) % words.len()]).collect::<Vec<_>>().join(" ")).collect();
+    let forbidden = [' ', ',', '.', ':', ';', '\u{2014}', '\u{2013}', '-', '('];
+    let mut ui = Ui::new(clamped::S { s: String::new(), face: 0, w: 200.0, lines: 2 }, clamped::view, |_, _| {}, fonts(), 800, 400, 1.0);
+    for (pi, para) in paras.iter().enumerate() { for face in [0u8, 2, 3, 8] { for lines in [1u16, 2, 3, 5] {
+        let step = if pi < 3 { 1 } else { 37 };
+        let (mut last_shown, mut fitted) = (0usize, false);
+        for w in (120..=600).step_by(step) {
+            ui.state = clamped::S { s: para.clone(), face, w: w as f32, lines };
+            ui.relayout();
+            let tag = format!("para {pi} face {face} {lines} lines at {w}");
+            let boxes = ui.line_boxes("t");
+            assert!(boxes.len() <= lines as usize, "{tag}: {} lines", boxes.len());
+            let inner = ui.node("t").unwrap().inner;
+            let inks = ui.line_inks("t");
+            if let Some(l) = inks.last() { assert!(l.ink.right() <= inner.right() + 1.0, "{tag}: the last line's ink ends at {}, the box at {}", l.ink.right(), inner.right()); }
+            let shown = ui.instances_of("t").len();
+            let cut = ui.clamped("t");
+            assert_eq!(ui.export_tree().find("t").unwrap().text.as_deref(), Some(para.as_str()), "{tag}: assistive technology reads all of it");
+            if !cut {
+                // It fits: the same as without the clamp.
+                let mut free = Ui::new(clamped::S { s: para.clone(), face, w: w as f32, lines: 0 }, clamped::view, |_, _| {}, fonts(), 800, 400, 1.0);
+                free.tick(0.0);
+                assert_eq!(free.line_boxes("t"), boxes, "{tag}: fits, yet differs from no clamp");
+            } else {
+                let full = amenui::text::Text::new(fonts()).clamp_lines(amenui::text::Para { s: para, face, size: 14.0, line: 22.0, width: inner.w + 1.0, print: 0.0, around: None, track: 0.0 }, lines).expect("cut");
+                let before = full.trim_end_matches(['\u{2026}', '.']).chars().last();
+                assert!(before.is_none_or(|c| !forbidden.contains(&c)), "{tag}: {full:?} has {before:?} before the ellipsis");
+            }
+            // Wider, it never shows less: more of it, or all of it from the width where it fits on.
+            assert!(!(fitted && cut), "{tag}: cut again after it fitted at a narrower width");
+            if cut { assert!(shown >= last_shown, "{tag}: {shown} glyphs after {last_shown}"); last_shown = shown; } else { fitted = true; }
+        }
+    } } }
+}

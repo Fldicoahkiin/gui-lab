@@ -219,6 +219,12 @@ pub enum ViewProblem {
         /// The least scale (`Fit::min`).
         min: f32,
     },
+    #[error("`{key}` is clamped to lines (`El::clamp`) and flows around obstacles (`El::around`): the two do not work together yet, so it is not clamped. Drop one of them.")]
+    /// A text element clamped to lines that also flows around obstacles.
+    ClampAround {
+        /// The text element.
+        key: String,
+    },
 }
 
 /// A glTF file could not be read into a mesh (`mesh::load_gltf`).
