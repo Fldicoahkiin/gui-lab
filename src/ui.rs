@@ -2747,7 +2747,7 @@ impl<S, M: Clone> Ui<S, M> {
             let measure = |input: taffy::LayoutInput, _: NodeId, ctx: Option<&mut usize>, style: &Style| {
                 let none = |_: *const (), _: f32| 0.0;
                 let ctx_i = ctx.as_ref().map(|i| **i);
-                match ctx.map(|i| &nodes[*i].content) {
+                let mut out = match ctx.map(|i| &nodes[*i].content) {
                     Some(Content::Text { s, size, line, font, around, nowrap, track, .. }) => taffy::compute_leaf_layout(input, style, none, |known, avail| {
                         let limit = known.width.or(match avail.width { AvailableSpace::Definite(w) => Some(w), AvailableSpace::MinContent => Some(0.0), AvailableSpace::MaxContent => None });
                         // Text flowing around obstacles fills whatever width it is given; text kept on one
@@ -2769,7 +2769,11 @@ impl<S, M: Clone> Ui<S, M> {
                         Size { width: w, height: known.height.unwrap_or((w * d.h / d.w.max(1e-3)).round()) }
                     }),
                     _ => taffy::compute_leaf_layout(input, style, none, |_, _| Size::ZERO),
-                }
+                };
+                // A box whose children all went is laid out here as a leaf: a positioning area makes
+                // taffy drop the absolute children it held, which would otherwise outlive their nodes.
+                out.oof_positioning_area = Some(taffy::OofPositioningArea { size: Size::ZERO, offset: taffy::Point::ZERO });
+                out
             };
             let space = Size { width: AvailableSpace::Definite(self.size.0), height: AvailableSpace::Definite(self.size.1) };
             self.perf.counters.layouts += 1;

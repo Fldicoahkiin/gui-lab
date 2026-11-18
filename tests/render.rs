@@ -348,6 +348,28 @@ fn an_absolute_element_is_pinned_by_all_four_insets_to_its_parent() {
     } } } }
 }
 
+#[test]
+fn a_box_whose_only_child_was_absolute_lays_out_once_the_child_goes() {
+    use amenui::el::{El, Paint, col, space};
+    fn view(s: &(u8, bool)) -> El<()> {
+        let mut b = col().key("board").fill_width().fill_height();
+        if s.1 {
+            let d = space(28.0, 10.0).fill(Paint::INK).key("dab");
+            b = b.child(if s.0 == 0 { d.absolute(Some(5.0), Some(5.0), None, None) } else { d.radius(5.0).absolute(None, None, Some(5.0), Some(5.0)) });
+        }
+        col().key("page").fill_width().fill_height().child(b)
+    }
+    for k in 0..2u8 {
+        let mut ui = amenui::ui::Ui::new((k, true), view, |_, _| {}, fonts(), 200, 100, 1.0);
+        ui.tick(1.0);
+        assert!(ui.node("dab").is_some());
+        ui.state.1 = false;
+        ui.relayout();
+        ui.tick(1.1);
+        assert!(ui.node("dab").is_none() && ui.node("board").is_some());
+    }
+}
+
 /// A box of `w` × `h` with one of three subtrees fitted into it (`El::fit`), or the same subtree
 /// zoomed by hand by `hand` (scale, left, top).
 mod fitted {
