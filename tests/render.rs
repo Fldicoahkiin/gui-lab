@@ -108,14 +108,14 @@ fn near_keeps_a_label_on_a_solid_button_whole() {
 mod readout {
     use amenui::el::{El, Paint, col, space, text};
     use amenui::style::{Corner, Look, Material};
-    pub struct S { pub at: Corner, pub inset: [f32; 2], pub block: bool }
+    pub struct S { pub at: Corner, pub inset: [f32; 2], pub block: bool, pub keep: bool, pub mode: u8 }
     pub fn view(s: &S) -> El<()> {
         let mut page = col().key("page").pad(160.0, 150.0).fill_width().fill_height()
             .child(text("A line to read in the middle", 15.0, Paint::TEXT).key("middle"));
         if s.block { page = page.child(space(0.0, 0.0).key("gap").fill_height()).child(text("status: 3 notes saved, last at 12:04", 13.0, Paint::DIM).key("status").absolute(None, None, Some(10.0), Some(20.0))); }
         page
     }
-    pub fn look(s: &S) -> Look { Look { material: Material::Plain, overlay: 1, overlay_at: s.at, overlay_inset: s.inset, ..Look::default() } }
+    pub fn look(s: &S) -> Look { Look { material: Material::Plain, overlay: s.mode, overlay_at: s.at, overlay_inset: s.inset, overlay_keep: s.keep, ..Look::default() } }
 }
 
 #[test]
@@ -129,7 +129,7 @@ fn the_readout_sits_in_its_corner_at_its_inset_and_never_covers_text_to_read() {
         amenui::ui::Rect::new(r[0], r[1], r[2] - r[0], r[3] - r[1])
     };
     let shot = |o: &mut Offscreen, at: Corner, inset: [f32; 2], block: bool| {
-        let mut ui = amenui::ui::Ui::new(readout::S { at, inset, block }, readout::view, |_, _| {}, fonts(), w, h, 1.0).on_look(readout::look);
+        let mut ui = amenui::ui::Ui::new(readout::S { at, inset, block, keep: false, mode: 1 }, readout::view, |_, _| {}, fonts(), w, h, 1.0).on_look(readout::look);
         ui.tick(1.0);
         let look = ui.look();
         let _ = o.render(&mut ui, &look);
@@ -155,6 +155,26 @@ fn the_readout_sits_in_its_corner_at_its_inset_and_never_covers_text_to_read() {
     let r = b.intersect(&status);
     assert!(r.w <= 0.0 || r.h <= 0.0, "the readout {b:?} covers the status line {status:?}");
     assert!(b.x - 12.0 > -1.0 && (b.x - 12.0).abs() <= 1.0 && (b.y - 12.0).abs() <= 1.0, "it went to the top left: {b:?}");
+}
+
+#[test]
+fn the_readout_can_keep_its_corner_and_fits_a_narrow_window() {
+    use amenui::style::Corner;
+    let mk = |w: u32, h: u32, block: bool, keep: bool, mode: u8| {
+        let Ok(mut o) = Offscreen::try_new(w, h) else { return None };
+        let mut ui = amenui::ui::Ui::new(readout::S { at: Corner::BottomRight, inset: [12.0, 12.0], block, keep, mode }, readout::view, |_, _| {}, fonts(), w, h, 1.0).on_look(readout::look);
+        ui.tick(1.0);
+        let look = ui.look();
+        let _ = o.render(&mut ui, &look);
+        Some(ui.overlay_box().expect("drawn"))
+    };
+    let Some(b) = mk(640, 400, true, true, 1) else { eprintln!("no GPU adapter here: skipped"); return };
+    assert!((640.0 - b.right() - 12.0).abs() <= 1.0 && (400.0 - b.bottom() - 12.0).abs() <= 1.0, "kept in the bottom right: {b:?}");
+    // At 390 px both forms fit inside the window, at the inset.
+    for mode in [1u8, 2] {
+        let b = mk(390, 844, false, false, mode).unwrap();
+        assert!(b.x >= 11.0 && b.right() <= 390.0 - 11.0 && b.y >= 0.0 && b.bottom() <= 844.0, "mode {mode}: {b:?} is not inside 390 px");
+    }
 }
 
 /// Two overlapping squares (ink below, accent on top) in a box set see-through as one, and a text

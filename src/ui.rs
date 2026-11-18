@@ -3991,14 +3991,43 @@ impl<S, M: Clone> Ui<S, M> {
         let ink = [look.theme.ink[0], look.theme.ink[1], look.theme.ink[2], 0.0];
         const SIZE: f32 = 11.0;
         const LINE: f32 = 14.0;
-        let spark_h = if self.overlay == 2 { 34.0 } else { 0.0 };
         let s = self.scale;
-        let width = lines.iter().map(|l| self.text.measure(l, MONO, SIZE, LINE, None).0).fold(0.0, f32::max).max(if self.overlay == 2 { 240.0 } else { 0.0 });
+        let [ix, iy] = look.overlay_inset;
+        // In a narrow window the lines wrap where their fields part (two spaces), the rest indented,
+        // and a field wider than the window still breaks between characters: the box never overflows.
+        let room = (self.size.0 - 2.0 * ix - 16.0).max(40.0);
+        let lines = {
+            let text = &mut self.text;
+            let mut fit = |l: &str| text.measure(l, MONO, SIZE, LINE, None).0 <= room;
+            let mut out = vec![];
+            for l in lines {
+                if fit(&l) { out.push(l); continue; }
+                let mut cur = String::new();
+                for part in l.split("  ").map(str::trim).filter(|p| !p.is_empty()) {
+                    let next = if cur.is_empty() { part.to_owned() } else { format!("{cur}  {part}") };
+                    if fit(&next) || cur.is_empty() { cur = next; continue; }
+                    out.push(std::mem::take(&mut cur));
+                    cur = format!("  {part}");
+                }
+                // A field alone wider than the window.
+                while !fit(&cur) && cur.chars().count() > 1 {
+                    let mut n = cur.chars().count() - 1;
+                    while n > 1 && !fit(&cur.chars().take(n).collect::<String>()) { n -= 1; }
+                    let head: String = cur.chars().take(n).collect();
+                    out.push(head);
+                    cur = format!("  {}", cur.chars().skip(n).collect::<String>());
+                }
+                if !cur.trim().is_empty() { out.push(cur); }
+            }
+            out
+        };
+        let spark_h = if self.overlay == 2 { 34.0 } else { 0.0 };
+        let width = lines.iter().map(|l| self.text.measure(l, MONO, SIZE, LINE, None).0).fold(0.0, f32::max).max(if self.overlay == 2 { 240.0f32.min(room) } else { 0.0 });
         let h = LINE * lines.len() as f32 + spark_h + if spark_h > 0.0 { 8.0 } else { 0.0 };
         // The box in the look's corner, `overlay_inset` from the edges; where it would cover text to read
-        // it moves on clockwise to the next corner that is clear (the asked one when none is).
+        // it moves on clockwise to the next corner that is clear (the asked one when none is, or when
+        // `overlay_keep` says to stay).
         let (pw, ph) = (width + 16.0, h + 12.0);
-        let [ix, iy] = look.overlay_inset;
         let at = |c: crate::style::Corner| {
             use crate::style::Corner::*;
             let x = match c { TopLeft | BottomLeft => ix, TopRight | BottomRight => self.size.0 - ix - pw };
@@ -4008,7 +4037,7 @@ impl<S, M: Clone> Ui<S, M> {
         let read = self.legible_ink();
         let clear = |r: Rect| !read.iter().any(|b| b[0] < (r.right()) * s && b[2] > r.x * s && b[1] < r.bottom() * s && b[3] > r.y * s);
         let mut corner = look.overlay_at;
-        for _ in 0..4 { if clear(at(corner)) { break; } corner = corner.clockwise(); }
+        for _ in 0..4 { if look.overlay_keep || clear(at(corner)) { break; } corner = corner.clockwise(); }
         if !clear(at(corner)) { corner = look.overlay_at; }
         let plate = at(corner);
         self.overlay_box = Some(plate);

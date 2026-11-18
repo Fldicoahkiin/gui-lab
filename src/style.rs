@@ -619,6 +619,9 @@ pub struct Look {
     pub overlay_at: Corner,
     /// How far the readout's box keeps from the window's edges, logical px (`[x, y]`, default 12 each).
     pub overlay_inset: [f32; 2],
+    /// Keep the readout in `overlay_at` even where it covers text to read (default false: it moves on
+    /// to the next clear corner). For a page whose own text fills every corner.
+    pub overlay_keep: bool,
     /// The most looseness field effects (fronts, the lens, a pull past a scroll end, a press held) may
     /// give text to read and controls (DESIGN.md §1.15). Morphs, flows and recomposition are exempt.
     pub legible_cap: f32,
@@ -719,7 +722,7 @@ impl Look {
 pub const SETTINGS: [&str; 19] = ["loose_scale", "legible_cap", "loose_max", "press_ms", "fx.pitch", "fx.jitter", "fx.glitch", "fx.wave_speed", "fx.wave_life",
     "fx.wave_width", "fx.wave_tail", "fx.push", "fx.lens", "fx.enter", "beat.bpm", "beat.steps", "beat.swing", "post.invert", "post.binary"];
 impl Default for Look {
-    fn default() -> Self { Self { fx: Fx::default(), theme: DARK, material: Material::Dottr, pics: [Markr::default(); 8], params: MaterialParams::all(), gaze: Gaze::default(), loose_scale: 1.0, quality: 1.0, overlay: 0, overlay_at: Corner::BottomRight, overlay_inset: [12.0, 12.0], legible_cap: LEGIBLE_CAP, loose_max: 1.0, recompose: crate::morph::Recompose::default(), particles: crate::morph::Particles::default(), press_ms: 350.0, roles: [crate::el::Response::Nudge, crate::el::Response::Loosen], transition: crate::preset::Transition { duration_ms: 0.0, steps: [crate::preset::Step { kind: crate::preset::StepKind::None, from: 0.0, to: 0.0, a: 0.0, b: 0.0, c: 0.0, d: 0.0, e: 0.0 }; 4] }, scroll: Scroll::default(), post: crate::post::Post::default(), marks: Marks::default(), map: MapFx::default(), beat: crate::beat::Beat { bpm: 0.0, steps: 4, swing: 0.0 } } }
+    fn default() -> Self { Self { fx: Fx::default(), theme: DARK, material: Material::Dottr, pics: [Markr::default(); 8], params: MaterialParams::all(), gaze: Gaze::default(), loose_scale: 1.0, quality: 1.0, overlay: 0, overlay_at: Corner::BottomRight, overlay_inset: [12.0, 12.0], overlay_keep: false, legible_cap: LEGIBLE_CAP, loose_max: 1.0, recompose: crate::morph::Recompose::default(), particles: crate::morph::Particles::default(), press_ms: 350.0, roles: [crate::el::Response::Nudge, crate::el::Response::Loosen], transition: crate::preset::Transition { duration_ms: 0.0, steps: [crate::preset::Step { kind: crate::preset::StepKind::None, from: 0.0, to: 0.0, a: 0.0, b: 0.0, c: 0.0, d: 0.0, e: 0.0 }; 4] }, scroll: Scroll::default(), post: crate::post::Post::default(), marks: Marks::default(), map: MapFx::default(), beat: crate::beat::Beat { bpm: 0.0, steps: 4, swing: 0.0 } } }
 }
 /// A corner of the window (`Look::overlay_at`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
