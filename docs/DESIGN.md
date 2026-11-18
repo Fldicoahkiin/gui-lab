@@ -168,9 +168,11 @@ face's U+2026 as shaping sets it; a face without one, or whose one has its ink's
 the baseline (the pixel face's floats at the middle of the x height), ends in three full stops at the face's own
 spacing. `Ui::clamped(key)` says whether it was cut; the accessibility mirror reads the whole text; selecting and
 copying it gives what is shown, without the ellipsis (it is not part of the text). Taking the clamp away brings the
-rest in as changed text does (§1.16), and the ellipsis stays where it is, whole, until the first glyph after it has
+rest in from the next frame: with nothing to fly from, its glyphs come in whole, cell by cell in reading order, over
+the recomposition's flight (§1.16), and the ellipsis stays where it is, whole, until the first glyph after it has
 more than half its ink, so the end of the line always shows one or the other. With `around` it does not clamp yet
 (`ClampAround` in `Ui::problems`). `tests/text.rs` (`a_clamp_taken_away_always_ends_the_line_in_its_ellipsis_or_what_comes_after`,
+`a_clamp_taken_away_starts_to_expand_on_the_next_frame`,
 `a_clamped_text_copies_what_it_shows_without_the_ellipsis_and_a_pixel_face_ends_in_full_stops`).
 
 **Previews** (`El::preview(true)`): a modal element inside (a sheet, a context menu, a dialog) is drawn where it is

@@ -4835,7 +4835,7 @@ impl<S, M: Clone> Ui<S, M> {
             // flight), so a quick run of changes keeps arriving instead of starting over each time.
             let dur_ms = match &run { Some(r) => ((r.end - now) * 1000.0).max(spec.duration_ms * 0.35).min(spec.duration_ms), None => spec.duration_ms };
             let mspec = MorphSpec { duration_ms: dur_ms, stagger: spec.stagger, count_max: spec.count_max * glyphs, curl: 0.0, threshold: 0.5, ease: Ease::InOutCubic, lattice: (spec.tile * self.scale).round().max(1.0), ..MorphSpec::default() };
-            let mut rtiles = recompose_tiles(prev, &src, &dst, &mspec, &self.text.pixels);
+            let mut rtiles = recompose_tiles(prev, &src, &dst, &mspec, &self.text.pixels, !keep.is_empty());
             // Never more than the window's budget (what is left of it after the other texts).
             let budget = (spec.max_tiles - live as f32).max(0.0) as usize;
             if rtiles.len() > budget { rtiles.truncate(budget); }
@@ -5469,7 +5469,10 @@ fn tile_now(t: &RTile, clock: f32) -> Option<Unit> {
 /// (`src`) fly to the cells of the changed new glyphs (`dst`), paired by Morton rank as a morph pairs
 /// (DESIGN.md §1.10, §1.16). Cells are cut from whole glyphs only; the tile grows by whole device px
 /// until each side has at most `spec.count_max` cells.
-fn recompose_tiles(prev: Vec<Unit>, src: &[Instance], dst: &[Instance], spec: &MorphSpec, atlas: &[u8]) -> Vec<RTile> {
+/// With `appear` (a clamp letting go: the new glyphs have nothing to come from), the new glyphs that no
+/// tile flies to come in whole, cell by cell in reading order from the first frame, instead of fading
+/// in at the end of the flight.
+fn recompose_tiles(prev: Vec<Unit>, src: &[Instance], dst: &[Instance], spec: &MorphSpec, atlas: &[u8], appear: bool) -> Vec<RTile> {
     use morph::kind;
     let mut tile = spec.lattice.max(1.0);
     let (a, b) = loop {
@@ -5522,6 +5525,19 @@ fn recompose_tiles(prev: Vec<Unit>, src: &[Instance], dst: &[Instance], spec: &M
         out.push(RTile { p: Particle { ab: [at[0], at[1], at[0], at[1]], run: [0.0, 1.0, delay(sd), dur], misc: [kind::SRC_DUST, tile, sd, 0.5] }, src: list, dst: vec![] });
     }
     let n0 = out.len();
+    if appear && n0 == 0 {
+        // In the order of the glyphs (`dst` is in reading order), then top to bottom and left to right
+        // within one; each cell shows its pieces at once from its turn.
+        let glyph = |at: [f32; 2]| dst.iter().position(|i| piece(i, [at[0], at[1], at[0] + tile, at[1] + tile]).is_some()).unwrap_or(usize::MAX);
+        let mut cells: Vec<(usize, Unit)> = tdust.into_iter().map(|u| (glyph(u.0), u)).collect();
+        cells.sort_by(|a, b| (a.0, a.1.0[1] as i64, a.1.0[0] as i64).cmp(&(b.0, b.1.0[1] as i64, b.1.0[0] as i64)));
+        let n = cells.len().max(1) as f32;
+        for (k, (_, (at, list))) in cells.into_iter().enumerate() {
+            let on = flight * 0.9 * k as f32 / n;
+            out.push(RTile { p: Particle { ab: [at[0], at[1], at[0], at[1]], run: [0.0, 1.0, on, 1.0 / 480.0], misc: [kind::DST_DUST, tile, seed(k), 0.5] }, src: vec![], dst: list });
+        }
+        return out;
+    }
     for (n, (at, list)) in tdust.into_iter().enumerate() {
         let sd = seed(n0 + n);
         out.push(RTile { p: Particle { ab: [at[0], at[1], at[0], at[1]], run: [0.0, 1.0, delay(sd), dur], misc: [kind::DST_DUST, tile, sd, 0.5] }, src: vec![], dst: list });

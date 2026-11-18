@@ -285,6 +285,36 @@ fn a_clamp_taken_away_always_ends_the_line_in_its_ellipsis_or_what_comes_after()
     }
 }
 
+/// Taking a clamp away is seen on the next frame: what comes after the ellipsis starts to come in at
+/// once, glyph by glyph, and keeps coming in until it is all there.
+#[test]
+fn a_clamp_taken_away_starts_to_expand_on_the_next_frame() {
+    use amenui::ui::Ui;
+    let fonts = || amenui::text::load_bundled(concat!(env!("CARGO_MANIFEST_DIR"), "/assets")).expect("fonts");
+    let (w, h) = (300u32, 140u32);
+    let Ok(mut o) = amenui::offscreen::Offscreen::try_new(w, h) else { eprintln!("no GPU adapter here: skipped"); return };
+    let look = amenui::style::Look { material: amenui::style::Material::Dottr, theme: amenui::style::LIGHT, ..amenui::style::Look::default() };
+    let mut ui = Ui::new(expand::S { lines: Some(2), face: 0 }, expand::view, |_, _| {}, fonts(), w, h, 1.0).on_look(|_| amenui::style::Look { material: amenui::style::Material::Dottr, theme: amenui::style::LIGHT, ..amenui::style::Look::default() });
+    ui.tick(2.0);
+    let rest = o.render(&mut ui, &look);
+    ui.state.lines = None;
+    ui.relayout();
+    let differ = |a: &[u8], b: &[u8]| a.chunks(4).zip(b.chunks(4)).filter(|(p, q)| (0..3).any(|c| (p[c] as i32 - q[c] as i32).abs() > 24)).count();
+    let mut last = rest.clone();
+    let mut t = 2.0;
+    for f in 1..=10 {
+        t += 1.0 / 60.0;
+        ui.tick(t);
+        let px = o.render(&mut ui, &look);
+        let (from_rest, from_last) = (differ(&px, &rest), differ(&px, &last));
+        eprintln!("{} ms: {from_rest} px changed since the clamp, {from_last} since the frame before", f * 1000 / 60);
+        assert!(f > 1 || from_rest > 0, "the first frame after the clamp is taken away is as before");
+        // Until the flight ends (160 ms) each frame brings more in.
+        if f <= 8 { assert!(from_last > 0, "{} ms: nothing came in since the frame before", f * 1000 / 60); }
+        last = px;
+    }
+}
+
 /// One clamped, selectable paragraph.
 mod clamp_copy {
     use amenui::el::{El, Font, Paint, col, text};
