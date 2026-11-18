@@ -1195,6 +1195,7 @@ impl Renderer {
         }
         // What text to read holds: its instances as they are now, with the hold's reach in paint.xy.
         let mut holds: Vec<Instance> = scene.holds.iter().filter_map(|&(k, r)| scene.instances.get(k as usize).map(|i| { let mut i = *i; i.paint[0] = r[0]; i.paint[1] = r[1]; i })).collect();
+        holds.extend(scene.islands.iter().copied());
         // Where pictures are, so ink drawn over one is written in the picture's terms (its colour), and
         // where the modal layer covers them with its own shapes and pictures (`fs_hold`).
         let layer = scene.layer.unwrap_or(u32::MAX) as usize;

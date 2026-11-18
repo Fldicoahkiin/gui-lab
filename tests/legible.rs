@@ -318,3 +318,118 @@ fn the_edge_of_the_island_has_no_box_seam_rim_or_copy() {
     } } }
     assert!(bad.is_empty(), "{}", bad.join("\n"));
 }
+
+// ── Islands (DESIGN.md §1.15): a control's own loosened fill keeps one box round its content; text
+// on others' ink keeps an island round its glyphs, one a word ───────────────────────────────────────
+
+/// Every material: the eight that loosen and plain.
+const ALL: [Material; 9] = [Material::Plain, Material::Dottr, Material::Halftonr, Material::Charr, Material::Smudgr, Material::Carvr, Material::Glitchr, Material::Near, Material::Scribblr];
+#[derive(Clone)]
+struct B { m: Material, dark: bool, k: f32, size: f32, label: bool }
+const BX: (f32, f32, f32, f32) = (30.0, 28.0, 200.0, 64.0);
+const BR: f32 = 10.0;
+fn bview(s: &B) -> El<()> {
+    let mut b = col().key("button").width(BX.2).height(BX.3).radius(BR).fill(Paint::ACCENT).loose(s.k).center().on_press(());
+    if s.label { b = b.child(text("GATHER →", s.size, Paint::GROUND).key("button/label")); }
+    col().key("page").fill_width().fill_height().child(b.absolute(Some(BX.0), Some(BX.1), None, None))
+}
+fn bshot(o: &mut Offscreen, s: B) -> Vec<u8> {
+    let mut ui = Ui::new(s, bview, |_, _| {}, fonts(), W, H, 1.0).on_look(|s: &B| Look { material: s.m, theme: if s.dark { DARK } else { LIGHT }, ..Look::default() });
+    ui.tick(3.0);
+    let l = ui.look();
+    o.r.partial = false;
+    o.render(&mut ui, &l)
+}
+/// Inside a rounded box (x0, y0, x1, y1, radius) by `m` px or more.
+fn in_box(x: f32, y: f32, b: [f32; 5], m: f32) -> bool {
+    let (cx, cy) = ((b[0] + b[2]) * 0.5, (b[1] + b[3]) * 0.5);
+    let r = b[4].min((b[2] - b[0]) * 0.5).min((b[3] - b[1]) * 0.5);
+    let (qx, qy) = ((x - cx).abs() - ((b[2] - b[0]) * 0.5 - r), (y - cy).abs() - ((b[3] - b[1]) * 0.5 - r));
+    let d = (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt() + qx.max(qy).min(0.0) - r;
+    d <= -m
+}
+fn diff(a: &[u8], b: &[u8], i: usize) -> i32 { (0..3).map(|c| (a[i * 4 + c] as i32 - b[i * 4 + c] as i32).abs()).max().unwrap_or(0) }
+
+#[test]
+fn a_control_whose_own_fill_loosens_keeps_one_box_round_its_content_at_rest() {
+    let Ok(mut o) = Offscreen::try_new(W, H) else { eprintln!("no GPU adapter here: skipped"); return };
+    let n = (W * H) as usize;
+    let mut bad: Vec<String> = vec![];
+    for dark in [false, true] { for size in [11.0f32, 14.0, 20.0] {
+        let base = B { m: Material::Plain, dark, k: 0.0, size, label: true };
+        let rest = bshot(&mut o, base.clone());
+        let bare_rest = bshot(&mut o, B { label: false, ..base.clone() });
+        let ink = label_ink(&rest, &bare_rest);
+        let (mut x0, mut y0, mut x1, mut y1) = (W as f32, H as f32, 0.0f32, 0.0f32);
+        for i in (0..n).filter(|&i| ink[i] || diff(&rest, &bare_rest, i) > 8) { let (x, y) = ((i as u32 % W) as f32, (i as u32 / W) as f32); x0 = x0.min(x); y0 = y0.min(y); x1 = x1.max(x + 1.0); y1 = y1.max(y + 1.0); }
+        let g = (0.36 * size).max(5.0);
+        let outline = [BX.0, BX.1, BX.0 + BX.2, BX.1 + BX.3, BR];
+        let island = [x0 - g, y0 - g, x1 + g, y1 + g, g];
+        let inside = |x: f32, y: f32, m: f32| in_box(x, y, island, m) && in_box(x, y, outline, m);
+        assert!(island[0] >= outline[0] - 1.0 && island[2] <= outline[2] + 1.0, "{size} px: the island {island:?} is wider than the control {outline:?}");
+        for m in ALL { for k in [0.3f32, 0.6, 1.0] {
+            let tag = format!("{m:?} {} {size} px at {k}", if dark { "dark" } else { "light" });
+            let f = bshot(&mut o, B { m, k, ..base.clone() });
+            let bare = bshot(&mut o, B { m, k, label: false, ..base.clone() });
+            // The material's own frame at rest.
+            let rest = bshot(&mut o, B { m, ..base.clone() });
+            if let Ok(dd) = std::env::var("DUMP") && size == 14.0 && !dark { std::fs::write(format!("{dd}/isl-{m:?}-{k}.png"), amenui::offscreen::png_bytes(W, H, &f)).unwrap(); std::fs::write(format!("{dd}/isl-rest.png"), amenui::offscreen::png_bytes(W, H, &rest)).unwrap(); }
+            // Within the island (a pixel in from its edge): the rest frame, to 1/255, but for the label's ink.
+            let off = (0..n).filter(|&i| { let (x, y) = ((i as u32 % W) as f32 + 0.5, (i as u32 / W) as f32 + 0.5); inside(x, y, 1.0) && !ink[i] && diff(&f, &rest, i) > 1 }).count();
+            if off > 0 { bad.push(format!("{tag}: {off} px of the island not at rest")); }
+            // Away from it the control is the material at its own looseness: no band round the island.
+            // (glitchr's bands take whole rows, so a row through the island keeps it where it is.)
+            if m == Material::Glitchr { continue; }
+            let band = (0..n).filter(|&i| { let (x, y) = ((i as u32 % W) as f32 + 0.5, (i as u32 / W) as f32 + 0.5); !in_box(x, y, [island[0] - 12.0, island[1] - 12.0, island[2] + 12.0, island[3] + 12.0, g + 12.0], 0.0) && diff(&f, &bare, i) > 2 }).count();
+            if band > 0 { bad.push(format!("{tag}: {band} px beyond 12 px of the island differ from the control without its label")); }
+        } }
+    } }
+    // At rest nothing changes: the label's frame at looseness 0 is the same bytes with any material.
+    let a = bshot(&mut o, B { m: Material::Dottr, dark: false, k: 0.0, size: 14.0, label: true });
+    let b = bshot(&mut o, B { m: Material::Dottr, dark: false, k: 0.0, size: 14.0, label: true });
+    assert_eq!(a, b);
+    assert!(bad.is_empty(), "{}", bad.join("\n"));
+}
+
+#[test]
+fn text_on_others_ink_keeps_an_island_at_rest_and_one_a_word() {
+    let Ok(mut o) = Offscreen::try_new(W, H) else { eprintln!("no GPU adapter here: skipped"); return };
+    let n = (W * H) as usize;
+    let mut bad: Vec<String> = vec![];
+    for label in ["Live", "Tj dolly"] { for dark in [false, true] { for size in [11.0f32, 14.0, 20.0] {
+        let (r0, _) = radii(size);
+        let base = S { m: Material::Plain, dark, k: 0.0, size, label: Some(label), legible: true };
+        let rest = shot(&mut o, base.clone());
+        let bare_rest = shot(&mut o, S { label: None, ..base.clone() });
+        let ink = label_ink(&rest, &bare_rest);
+        let d = distance(&ink);
+        for m in LOOSENING { for k in [0.6f32, 1.0] {
+            let f = shot(&mut o, S { m, k, ..base.clone() });
+            let rest = shot(&mut o, S { m, ..base.clone() });
+            let off = (0..n).filter(|&i| d[i] > 0.0 && d[i] <= r0 - 1.5 && !ink[i] && diff(&f, &rest, i) > 1).count();
+            if off > 0 { bad.push(format!("{m:?} \"{label}\" {} {size} px at {k}: {off} px of the island not at rest", if dark { "dark" } else { "light" })); }
+        } }
+        // One island a word: the glyphs' boxes grown by r0 and the bridges between them, joined.
+        let mut ui = Ui::new(S { m: Material::Dottr, k: 1.0, ..base.clone() }, view, |_, _| {}, fonts(), W, H, 1.0).on_look(look);
+        ui.tick(3.0);
+        let sp = amenui::text::SPREAD as f32;
+        let mut boxes: Vec<[f32; 4]> = ui.instances_of("label").iter().map(|i| [i.rect[0] + sp - r0, i.rect[1] + sp - r0, i.rect[0] + i.rect[2] - sp + r0, i.rect[1] + i.rect[3] - sp + r0]).collect();
+        boxes.extend(ui.scene().islands.iter().map(|i| [i.rect[0] - r0, i.rect[1] - r0, i.rect[0] + i.rect[2] + r0, i.rect[1] + i.rect[3] + r0]));
+        let mut part: Vec<usize> = (0..boxes.len()).collect();
+        fn root(p: &mut [usize], i: usize) -> usize { let mut i = i; while p[i] != i { p[i] = p[p[i]]; i = p[i]; } i }
+        for a in 0..boxes.len() { for b in a + 1..boxes.len() {
+            let (p, q) = (boxes[a], boxes[b]);
+            if p[0] <= q[2] && q[0] <= p[2] && p[1] <= q[3] && q[1] <= p[3] { let (ra, rb) = (root(&mut part, a), root(&mut part, b)); part[ra] = rb; }
+        } }
+        // Every glyph of a word in its word's island (two words a space apart may share one: their r0
+        // contours meet across a space narrower than 2 r0).
+        let mut at = 0;
+        for w in label.split(' ') {
+            let n = w.chars().count();
+            let roots: std::collections::HashSet<usize> = (at..at + n).map(|i| root(&mut part, i)).collect();
+            if roots.len() != 1 { bad.push(format!("\"{label}\" {size} px: \"{w}\" is {} islands", roots.len())); }
+            at += n;
+        }
+    } } }
+    assert!(bad.is_empty(), "{}", bad.join("\n"));
+}

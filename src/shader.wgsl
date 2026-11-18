@@ -533,6 +533,15 @@ fn near_in(i: VOut, top: bool) -> vec4f {
 // its true outline, falling smoothly to 0 at paint.y; max-blended into the hold image.
 @vertex fn vs_hold(i: VIn) -> VOut { return vs_pad(i, i.paint.y); }
 @fragment fn fs_hold(iv: VOut) -> @location(0) vec4f {
+  // A control's island (paint.x −3, `Ui::holds`): its box (rect, radius in uv.x) within the control's
+  // outline at rest (clip, radius in look.x); hard, a one-pixel edge, and held all through (r and g).
+  if (iv.paint.x < -2.5) {
+    let p = iv.pos.xy;
+    let d1 = box_d(p - iv.org, iv.size, iv.radius.x);
+    let d2 = box_d(p - iv.clip.xy, iv.clip.zw - iv.clip.xy, iv.look.x);
+    let a = clamp(0.5 - max(d1, d2), 0.0, 1.0);
+    return vec4f(a, a, 0.0, 0.0);
+  }
   let i = exact_i(iv);
   let s = inst(i);
   // A picture of the page: its flag where it is (b). The modal layer's own shapes and pictures: a.
@@ -651,8 +660,11 @@ fn loose_t(p: vec2f) -> f32 {
   let k = dec_loose(near_t(p).b);
   let h = hold_at(p);
   if (h <= 0.0 && hold_here >= 1.0) { return k; }
-  return min(min(k, hold_cap(h)), hold_here);
+  return min(min(k, hold_cap_at(p)), hold_here);
 }
+/// The most looseness the hold at `p` allows: nothing within the island (`core_at`), up to the
+/// legibility cap beyond it, falling off to none by r1.
+fn hold_cap_at(p: vec2f) -> f32 { return hold_cap(hold_at(p)) * (1.0 - core_at(p)); }
 fn ink(p: vec2f) -> vec4f { return textureSampleLevel(tex0, samp, p / u.res.xy, 0.0); }
 fn near(p: vec2f) -> vec4f { return textureSampleLevel(tex1, samp, p / u.res.xy, 0.0); }
 // Exact texels (no filtering), for averaging cells and for pitch 1 to be the image itself.
@@ -1179,7 +1191,7 @@ fn binary_px(p: vec2f, col: vec3f, is_pic: bool) -> vec3f {
 // `shade_new` is called from one place only: it holds every material, and each call site is compiled in
 // full (several made the material pipeline too big to build on a CPU rasteriser).
 fn shade(p: vec2f) -> vec3f {
-  hold_here = hold_cap(hold_at(p));
+  hold_here = hold_cap_at(p);
   var s: TS;
   s.m = 1.0; s.offn = vec2f(0.0); s.offo = vec2f(0.0); s.tint = vec4f(0.0); s.fade = 0.0; s.split = 0.0; s.toner = 0.0;
   if (u.split.w > 0.5) {

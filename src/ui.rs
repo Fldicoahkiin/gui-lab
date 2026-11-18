@@ -3807,6 +3807,9 @@ impl<S, M: Clone> Ui<S, M> {
         });
         if let Some((_, reset, _)) = self.caret { self.caret_on = ((now - reset).max(0.0) / BLINK).floor() as i64 % 2 == 0; }
         self.scene.holds = self.holds();
+        self.scene.islands = self.islands();
+        let bridges = self.bridges(&self.scene.holds);
+        self.scene.islands.extend(bridges);
         self.dirty = true;
         self.page_len = self.scene.instances.len();
         self.base = self.scene.instances.clone();
@@ -3853,6 +3856,58 @@ impl<S, M: Clone> Ui<S, M> {
             if under.iter().any(|(_, u)| u[0] < g[2] && u[2] > g[0] && u[1] < g[3] && u[3] > g[1]) { out.push((k as u32, [r0, r1])); }
         }
         out
+    }
+    /// Text to read over others' ink keeps an island that follows its glyphs (`holds`); where two
+    /// neighbouring glyphs of a word in a line are less than `2 × r1` apart, the gap between their ink
+    /// boxes is held too, so a word is one island (a gap of a fifth of the text's size or more is a
+    /// space between words). Each bridge is a box over the gap, the height the two glyphs share, held as
+    /// a glyph is (`r0` fully, fading out by `r1`).
+    fn bridges(&self, holds: &[(u32, [f32; 2])]) -> Vec<Instance> {
+        let sp = crate::text::SPREAD as f32;
+        let insts = &self.scene.instances;
+        let mut out = vec![];
+        for w in holds.windows(2) {
+            let ((a, r), (b, _)) = (w[0], w[1]);
+            let (ia, ib) = (&insts[a as usize], &insts[b as usize]);
+            if ia.paint[3] != GLYPH || ib.paint[3] != GLYPH || self.owners[a as usize].0 != self.owners[b as usize].0 { continue; }
+            let size = match &self.nodes[self.owners[a as usize].0].content { Content::Text { size, .. } => *size * self.scale, _ => continue };
+            let ink = |i: &Instance| [i.rect[0] + sp, i.rect[1] + sp, i.rect[0] + i.rect[2] - sp, i.rect[1] + i.rect[3] - sp];
+            let (ka, kb) = (ink(ia), ink(ib));
+            let gap = kb[0] - ka[2];
+            // The same line: their boxes overlap in height.
+            let (top, bottom) = (ka[1].max(kb[1]), ka[3].min(kb[3]));
+            if gap <= 0.0 || gap >= 2.0 * r[1] || gap >= 0.2 * size || bottom <= top { continue; }
+            out.push(Instance { rect: [ka[2] - 0.5, top, gap + 1.0, bottom - top], uv: [0.0; 4], paint: [r[0], r[1], 1.0, SHAPE], clip: ia.clip, extra: [0.0; 4], look: [0.0; 4], resp: [0.0; 4], xf: [0.0; 4] });
+        }
+        out
+    }
+    /// The islands of filled controls whose own fill is loosened (`El::loose` on the control itself,
+    /// DESIGN.md §1.15): the ink box of all its content, grown by `max(5, 0.36 × its text's size)` with
+    /// that radius, within its outline at rest. One a control.
+    fn islands(&self) -> Vec<Instance> {
+        let s = self.scale;
+        let sp = crate::text::SPREAD as f32;
+        let mut boxes: HashMap<usize, [f32; 4]> = HashMap::new();
+        for (k, inst) in self.scene.instances.iter().enumerate() {
+            let Some(&(ni, _)) = self.owners.get(k) else { break };
+            if inst.paint[2] <= 0.0 { continue; }
+            // The nearest filled, loosened, legible element above it (its own fill is not content).
+            let Some(c) = (0..ni).rev().find(|&j| within(&self.nodes, ni, j) && { let n = &self.nodes[j]; n.legible && n.fill.is_some() && n.loose > 0.0 }) else { continue };
+            let b = if inst.paint[3] == GLYPH { [inst.rect[0] + sp, inst.rect[1] + sp, inst.rect[0] + inst.rect[2] - sp, inst.rect[1] + inst.rect[3] - sp] } else { [inst.rect[0], inst.rect[1], inst.rect[0] + inst.rect[2], inst.rect[1] + inst.rect[3]] };
+            let e = boxes.entry(c).or_insert(b);
+            *e = [e[0].min(b[0]), e[1].min(b[1]), e[2].max(b[2]), e[3].max(b[3])];
+        }
+        let mut out: Vec<(usize, Instance)> = boxes.into_iter().map(|(c, b)| {
+            let n = &self.nodes[c];
+            let size = self.nodes.iter().enumerate().skip(c + 1).take_while(|(j, _)| within(&self.nodes, *j, c))
+                .find_map(|(_, m)| if let Content::Text { size, .. } = m.content { Some(size) } else { None }).unwrap_or(14.0);
+            let g = (0.36 * size).max(5.0) * s;
+            let rect = [b[0] - g, b[1] - g, b[2] - b[0] + 2.0 * g, b[3] - b[1] + 2.0 * g];
+            let outline = [n.rect.x * s, n.rect.y * s, n.rect.right() * s, n.rect.bottom() * s];
+            (c, Instance { rect, uv: [g, 0.0, 0.0, 0.0], paint: [-3.0, 1.0, 1.0, 4.0], clip: outline, extra: [0.0; 4], look: [n.radius * s, 0.0, 0.0, 0.0], resp: [0.0; 4], xf: [0.0; 4] })
+        }).collect();
+        out.sort_by_key(|(c, _)| *c);
+        out.into_iter().map(|(_, i)| i).collect()
     }
     /// Start what appears and what went (DESIGN.md §1.28), and keep each decoding element's instances.
     fn decode_pass(&mut self) {

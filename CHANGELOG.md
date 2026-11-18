@@ -8,6 +8,14 @@ crate and the `amenui` npm package (`web/`) always carry the same version, becau
 match the module that `web_app!` generates. The minimum Rust is the one CI builds with (`rust-version`
 in Cargo.toml); raising it is a breaking change before 1.0 only in the second number.
 
+## Islands under labels
+
+- The ink under text to read is held at looseness 0, not at `legible_cap`: a label reads on its ground's colour at
+  rest (DESIGN.md §1.15).
+- A filled control whose own fill is loosened keeps one island: its content's ink box grown by `max(5, 0.36 × size)`,
+  rounded, within its outline at rest, with a hard edge. Text on others' ink keeps its glyph island, with the gaps
+  inside a word held too. `Scene` has `islands`.
+
 ## Blades, gusts and pacing
 
 - The `webgl` feature (on by default) carries the WebGL2 backend on the web. Without it a web build has
