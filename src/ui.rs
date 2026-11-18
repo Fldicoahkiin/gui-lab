@@ -2549,6 +2549,7 @@ impl<S, M: Clone> Ui<S, M> {
         // Modal layers are lifted out of wherever they were declared and laid over the whole window, last
         // so that they are drawn on top.
         let mut layers = Vec::new();
+        if el.preview { in_preview(&mut el); }
         hoist(&mut el, &mut layers);
         for mut l in layers {
             l.style.position = taffy::Position::Absolute;
@@ -5174,10 +5175,20 @@ fn ident(key: &str, part: u32, glyph: u32) -> u64 {
 fn hoist<M>(el: &mut El<M>, out: &mut Vec<El<M>>) {
     let kids = std::mem::take(&mut el.children);
     for mut c in kids {
+        if c.preview { in_preview(&mut c); el.children.push(c); continue; }
         if c.modal.is_some() { out.push(c); continue; }
         hoist(&mut c, out);
         el.children.push(c);
     }
+}
+
+/// A preview's subtree (`El::preview`): its modal elements stay where they are written, as ordinary
+/// elements (no layer, nothing held loose beneath, no dismiss, no trapped focus, not modal to assistive
+/// technology), and what is shown only with focus is always shown.
+fn in_preview<M>(el: &mut El<M>) {
+    el.modal = None;
+    el.focus_shown = false;
+    for c in &mut el.children { in_preview(c); }
 }
 
 /// What `flatten` needs to build a virtual list's rows (scroll offsets, viewport heights from the last
@@ -5218,7 +5229,7 @@ fn measure_key(c: &Content) -> u64 {
 /// A virtual list's rows are built here, for what its viewport shows.
 #[allow(clippy::too_many_arguments)]
 fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], off: (bool, bool), flow: Option<(Rc<str>, usize)>, inh: Inherit, vx: &mut VirtCtx, built: &mut Built, nodes: &mut Vec<Node<M>>) -> usize {
-    let El { key, style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, mut on_text, multiline, selectable, cursor, virt, access, ripple, mut on_pick, mut on_wheel, mut on_move, guide, skeleton, rtl, on_visible, on_outline, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, mut children } = el;
+    let El { key, style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, mut on_text, multiline, selectable, cursor, virt, access, ripple, mut on_pick, mut on_wheel, mut on_move, guide, skeleton, rtl, on_visible, on_outline, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview: _, mut children } = el;
     let mut style = style;
     let mut inh = inh;
     if let Some(r) = rtl { inh.rtl = r; }
