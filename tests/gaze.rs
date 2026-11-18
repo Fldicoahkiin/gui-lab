@@ -318,8 +318,16 @@ fn echo_page(s: &E) -> El<()> {
     col().key("page").pad(20.0, 20.0).child(space(60.0, 40.0).key("block").fill(Paint::INK).absolute(Some(s.x), Some(60.0), None, None))
 }
 fn echo_look(_: &E) -> amenui::style::Look { amenui::style::Look { material: amenui::style::Material::Plain, beat: amenui::beat::Beat { bpm: 120.0, steps: 4, swing: 0.0 }, ..amenui::style::Look::default() } }
-/// The echo boxes drawn: the faint outlines (4 bars each) that are not the INK box itself.
+/// The echo bars drawn: the faint outlines that are not the INK box itself (four bars a box, more where
+/// one is cut round the live box).
 fn echo_bars(u: &Ui<E, ()>) -> usize { u.scene().annot.iter().filter(|i| i.paint[3] == 1.0 && i.paint[1] == 0.0 && i.paint[2] <= 0.6 + 1e-4 && i.xf == [0.0; 4]).count() }
+/// How many echo boxes are drawn: each has its own opacity.
+fn echo_boxes(u: &Ui<E, ()>) -> usize {
+    let mut a: Vec<f32> = u.scene().annot.iter().filter(|i| i.paint[3] == 1.0 && i.paint[1] == 0.0 && i.paint[2] <= 0.6 + 1e-4 && i.xf == [0.0; 4]).map(|i| i.paint[2]).collect();
+    a.sort_by(f32::total_cmp);
+    a.dedup_by(|x, y| (*x - *y).abs() < 1e-4);
+    a.len()
+}
 #[test]
 fn echoes_keep_at_most_three_boxes_on_the_grid_and_then_ask_for_nothing() {
     let g = Gaze { mode: GazeMode::All, kinds: kinds::INK, density: 10.0, draw_ms: 0.0, echo: 3, echo_ms: 200.0, ..Gaze::default() };
@@ -333,8 +341,8 @@ fn echoes_keep_at_most_three_boxes_on_the_grid_and_then_ask_for_nothing() {
         u.relayout();
         u.tick(t);
         u.frame_drawn();
-        most = most.max(echo_bars(&u) / 4);
-        assert_eq!(echo_bars(&u) % 4, 0);
+        most = most.max(echo_boxes(&u));
+        assert!(echo_bars(&u) >= 3 * echo_boxes(&u), "every echo box drawn has its sides");
     }
     assert!((2..=3).contains(&most), "at most three echoes, and some: {most}");
     // Each echo was taken on the grid: two steps (0.25 s) apart at 120 bpm, 4 steps a beat.
@@ -399,6 +407,35 @@ fn the_newest_echo_is_at_most_one_interval_old_and_the_three_step_down_in_contra
     for ((op, c), want) in seen.iter().zip([2.2f32, 1.6, 1.25]) { assert!(*c >= want, "the echo at {op} has {c:.2}:1, under {want}:1"); }
     let ops: Vec<f32> = seen.iter().map(|s| s.0 / 0.9).collect();
     for (o, want) in ops.iter().zip([0.6f32, 0.4, 0.2]) { assert!((o - want).abs() < 1e-3, "opacities {ops:?}"); }
+}
+
+#[test]
+fn an_echo_is_not_drawn_inside_the_live_box() {
+    // The block moving right under three echoes, and the same with none: inside the live element's
+    // ink box every pixel is the same, frame after frame.
+    let Ok(mut o1) = amenui::offscreen::Offscreen::try_new(480, 200) else { eprintln!("no GPU adapter here: skipped"); return };
+    let mut o2 = amenui::offscreen::Offscreen::new(480, 200);
+    let g = |echo: u8| Gaze { mode: GazeMode::All, kinds: kinds::INK, density: 10.0, draw_ms: 0.0, echo, echo_ms: 200.0, ..Gaze::default() };
+    let mut a = Ui::new(E { gaze: g(3), x: 20.0 }, echo_page, |_, _| {}, fonts(), 480, 200, 1.0).on_gaze(|s| s.gaze).on_look(echo_look);
+    let mut b = Ui::new(E { gaze: g(0), x: 20.0 }, echo_page, |_, _| {}, fonts(), 480, 200, 1.0).on_gaze(|s| s.gaze).on_look(echo_look);
+    let mut t = 0.0;
+    let mut drawn = 0;
+    for f in 0..80 {
+        t += 1.0 / 60.0;
+        for u in [&mut a, &mut b] { u.state.x += 3.0; u.relayout(); u.tick(t); }
+        let (la, lb) = (a.look(), b.look());
+        let (pa, pb) = (o1.render(&mut a, &la), o2.render(&mut b, &lb));
+        if f < 20 { continue; }
+        drawn += (pa != pb) as usize;
+        let r = a.node("block").expect("the block").rect;
+        for y in r.y.floor() as usize..(r.bottom().ceil() as usize).min(200) {
+            for x in r.x.floor() as usize..(r.right().ceil() as usize).min(480) {
+                let i = (y * 480 + x) * 4;
+                assert!(pa[i..i + 4] == pb[i..i + 4], "frame {f}: an echo shows at ({x}, {y}) inside the live box");
+            }
+        }
+    }
+    assert!(drawn > 30, "the echoes were drawn in {drawn} frames");
 }
 
 #[test]

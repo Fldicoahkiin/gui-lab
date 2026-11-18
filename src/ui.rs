@@ -4484,13 +4484,26 @@ impl<S, M: Clone> Ui<S, M> {
                 // Its echoes: the boxes it had before, newest first, the k-th (from 1) of n at
                 // 0.6 × (1 − (k − 1) ÷ n) of the live box's opacity; thin lines, no label, no fill.
                 if let Some(h) = echoes.get(&a.key) {
+                    // Under the live element: nothing of an echo is drawn inside its ink box.
+                    let live = [b[0].floor(), b[1].floor(), b[2].ceil(), b[3].ceil()];
+                    let under = |out: &mut Vec<Instance>, x: f32, y: f32, w: f32, h: f32, a: f32| {
+                        let (x1, y1) = (x + w, y + h);
+                        let ix = (x.max(live[0]), x1.min(live[2]));
+                        let iy = (y.max(live[1]), y1.min(live[3]));
+                        if ix.0 >= ix.1 || iy.0 >= iy.1 { bar(out, x, y, w, h, a, false); return; }
+                        // What is left of the bar round the box: above, below, left, right.
+                        if iy.0 > y { bar(out, x, y, w, iy.0 - y, a, false); }
+                        if y1 > iy.1 { bar(out, x, iy.1, w, y1 - iy.1, a, false); }
+                        if ix.0 > x { bar(out, x, iy.0, ix.0 - x, iy.1 - iy.0, a, false); }
+                        if x1 > ix.1 { bar(out, ix.1, iy.0, x1 - ix.1, iy.1 - iy.0, a, false); }
+                    };
                     for (k, (_, eb)) in h.iter().rev().filter(|(_, eb)| eb != b).take(n_echo).enumerate() {
                         let fade = 0.9 * 0.6 * (1.0 - k as f32 / n_echo.max(1) as f32);
                         let (x0, y0, x1, y1) = (eb[0].floor(), eb[1].floor(), eb[2].ceil(), eb[3].ceil());
-                        bar(&mut out, x0, y0, x1 - x0, t, fade, false);
-                        bar(&mut out, x0, y1 - t, x1 - x0, t, fade, false);
-                        bar(&mut out, x0, y0, t, y1 - y0, fade, false);
-                        bar(&mut out, x1 - t, y0, t, y1 - y0, fade, false);
+                        under(&mut out, x0, y0, x1 - x0, t, fade);
+                        under(&mut out, x0, y1 - t, x1 - x0, t, fade);
+                        under(&mut out, x0, y0, t, y1 - y0, fade);
+                        under(&mut out, x1 - t, y0, t, y1 - y0, fade);
                     }
                 }
                 // Dashed: 4 device px on, 3 off, along each side, drawn on with the frame.
