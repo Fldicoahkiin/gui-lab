@@ -520,13 +520,13 @@ fn a_reflow_fit_wraps_at_the_box_width_and_shrinks_only_what_still_overflows() {
     // Too low a box: zoomed down, and then it fits.
     let a = mk(320.0, 60.0, false);
     let k = a.fitted("box").unwrap();
-    assert!(k < 1.0 && k >= 0.5, "scale {k}");
+    assert!((0.5..1.0).contains(&k), "scale {k}");
     let (b, body) = (a.node("box").unwrap().inner, a.node("body").unwrap().rect);
     assert!(body.y >= b.y - 1.0 && body.bottom() <= b.bottom() + 1.0, "{body:?} in {b:?}");
     // A row that does not wrap, wider than the box: zoomed down to hold it, not below the least scale.
     let a = mk(320.0, 240.0, true);
     let k = a.fitted("box").unwrap();
-    assert!(k < 1.0 && k >= 0.5, "scale {k}");
+    assert!((0.5..1.0).contains(&k), "scale {k}");
     let bar = a.node("bar/a").unwrap().rect;
     assert!((bar.w - 300.0 * k).abs() < 1.0, "the bar is {} wide at {k}", bar.w);
 }

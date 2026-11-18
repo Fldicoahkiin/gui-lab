@@ -240,7 +240,10 @@ fn specks(f: &[u8], bare: &[u8], pick: &dyn Fn(usize) -> bool, paper: [u8; 3], i
             blob.push(i);
             let (x, y) = (i % w, i / w);
             let mut go = |j: usize| { if !seen[j] && cls[j] == c { seen[j] = true; stack.push(j); } };
-            if x > 0 { go(i - 1); } if x + 1 < w { go(i + 1); } if y > 0 { go(i - w); } if y + 1 < h { go(i + w); }
+            if x > 0 { go(i - 1); }
+            if x + 1 < w { go(i + 1); }
+            if y > 0 { go(i - w); }
+            if y + 1 < h { go(i + w); }
         }
         // Small, inside the band, and not where the shape alone has the same class.
         if blob.len() < 16 && blob.iter().all(|&i| pick(i)) && blob.iter().filter(|&&i| class(bare, i) == c).count() * 2 < blob.len() { found += 1; }
@@ -290,7 +293,7 @@ fn the_edge_of_the_island_has_no_box_seam_rim_or_copy() {
                     }
                     Material::Halftonr if k == 1.0 || k == 0.6 => {
                         // No speck off the screen round the island: the dots close up into it.
-                        let inkc = rgb(&bare_rest, (W * (H / 2) + W / 2) as usize * 1);
+                        let inkc = rgb(&bare_rest, (W * (H / 2) + W / 2) as usize);
                         let n_sp = specks(&f, &bare, &|i| sh[i] && dd[i] > 2.0 && dd[i] <= r1d + 2.0, paper, inkc);
                         if n_sp > 0 { bad.push(format!("{tag}: {n_sp} specks under 16 px² round the island")); }
                         let coloured = within(r0, r0 + 3.0).filter(|&i| chroma(&f, i) > 40 && chroma(&bare, i) <= 40).count();
