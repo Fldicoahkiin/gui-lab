@@ -61,7 +61,7 @@ accesskit_winit = { version = "0.34", optional = true }
 wgpu = { version = "30", default-features = false, features = ["metal"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-web-sys = { version = "0.3", features = ["Window", "Performance", "HtmlCanvasElement"] }
+web-sys = { version = "0.3", features = ["Window", "Performance", "HtmlCanvasElement", "console"] }
 # The web entry (`app::web`, `web_app!`): the exports the page calls.
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"

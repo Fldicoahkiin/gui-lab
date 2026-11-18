@@ -41,6 +41,7 @@ pub mod native;
 pub mod access;
 #[cfg(target_arch = "wasm32")]
 pub mod web;
+pub mod slot;
 
 use crate::i18n::Locale;
 

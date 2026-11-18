@@ -33,6 +33,17 @@ pub struct Host<S, M> {
     dropping: Vec<Dropped>,
 }
 
+/// Log a line on the page's console.
+pub fn log(s: &str) { web_sys::console::warn_1(&s.into()); }
+
+/// The panic hook a web module runs with: the panic goes to the console as `console_error_panic_hook`
+/// writes it, and the module's [`Slot`](super::slot::Slot) learns of it, so the next call from the page
+/// goes on instead of finding the trapped call's application still taken.
+pub fn panic_hook() {
+    static SET: std::sync::Once = std::sync::Once::new();
+    SET.call_once(|| std::panic::set_hook(Box::new(|info| { super::slot::note_panic(); console_error_panic_hook::hook(info); })));
+}
+
 /// A pointer kind from the page: 0 mouse, 1 touch, 2 pen (DESIGN.md §1.8.2).
 pub fn pointer_kind(k: u32) -> PointerKind { match k { 1 => PointerKind::Touch, 2 => PointerKind::Pen, _ => PointerKind::Mouse } }
 
@@ -61,6 +72,9 @@ impl<S: App, M: Clone> Host<S, M> {
         surface.configure(&device, &config);
         // Made a piece at a time (DESIGN.md §1.9): the first frame is plain and comes at once; each frame
         // after it makes the next pieces within `WARM_MS` (`Host::frame`).
+        // A GPU error (a buffer the adapter refuses, a lost surface) is logged, not a panic: the page
+        // keeps running, and what failed is drawn again or left out.
+        device.on_uncaptured_error(std::sync::Arc::new(|e: wgpu::Error| log(&format!("amenui: GPU error: {e}"))));
         let mut r = Renderer::begin(device, queue, format, w, h).into_renderer();
         r.set_particle_tier(crate::render::particle_tier(&adapter));
         setup(&mut r);
@@ -204,15 +218,20 @@ macro_rules! web_app {
             use super::*;
             use $crate::app::web::__rt::wasm_bindgen::prelude::*;
             type H = $crate::app::web::Host<$state, $msg>;
-            ::std::thread_local! { static HOST: ::std::cell::RefCell<::std::option::Option<H>> = const { ::std::cell::RefCell::new(None) }; }
-            /// Run `f` on the running application, if it has started.
-            pub fn host<R>(f: impl FnOnce(&mut H) -> R) -> ::std::option::Option<R> { HOST.with(|s| s.borrow_mut().as_mut().map(f)) }
+            ::std::thread_local! { static HOST: $crate::app::slot::Slot<H> = const { $crate::app::slot::Slot::new() }; }
+            /// Run `f` on the running application, if it has started. After a panic in an earlier call the
+            /// application goes on from where the panic left it (`amenui::app::slot`).
+            pub fn host<R>(f: impl FnOnce(&mut H) -> R) -> ::std::option::Option<R> {
+                let (r, how) = HOST.with(|s| s.call(f));
+                if how == $crate::app::slot::Call::RanAfterPanic { $crate::app::web::log("amenui: going on after a panic in an earlier call"); }
+                r
+            }
 
             #[wasm_bindgen(wasm_bindgen = $crate::app::web::__rt::wasm_bindgen, wasm_bindgen_futures = $crate::app::web::__rt::wasm_bindgen_futures)]
             pub async fn start(canvas: $crate::app::web::__rt::web_sys::HtmlCanvasElement, sans: Vec<u8>, pixel: Vec<u8>, mono: Vec<u8>, scale: f32, hash: String) -> Result<(), JsValue> {
-                $crate::app::web::__rt::console_error_panic_hook::set_once();
+                $crate::app::web::panic_hook();
                 let h = H::start(canvas, [sans, pixel, mono], scale, &hash, $setup, $make).await.map_err(|e| JsValue::from_str(&e))?;
-                HOST.with(|s| *s.borrow_mut() = Some(h));
+                HOST.with(|s| s.set(h));
                 Ok(())
             }
             #[wasm_bindgen(wasm_bindgen = $crate::app::web::__rt::wasm_bindgen)]

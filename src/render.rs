@@ -269,14 +269,20 @@ struct MeshTarget {
     drawn: Option<(u64, [u32; 2], u32)>,
 }
 
-/// The mesh pass: its pipelines, every mesh of the library in one vertex buffer, and a target per element.
+/// The largest vertex buffer the mesh pass asks for, bytes: the library's vertices go in as many as
+/// they need (some adapters refuse a buffer under a megabyte; SwiftShader refused 760 176 bytes).
+pub const MESH_CHUNK: usize = 256 * 1024;
+
+/// The mesh pass: its pipelines, the library's meshes in vertex buffers of at most `MESH_CHUNK`, and a
+/// target per element.
 struct MeshGpu {
     layout: wgpu::BindGroupLayout,
     /// mesh, mask, h, v: made the first time a 3D element is drawn or by the warm-up, with `pl`.
     pipes: Option<[wgpu::RenderPipeline; 4]>,
     pl: wgpu::PipelineLayout,
-    verts: wgpu::Buffer,
-    ranges: Vec<(u32, u32)>,
+    verts: Vec<wgpu::Buffer>,
+    /// Each mesh's pieces: the buffer, its first vertex and how many.
+    ranges: Vec<MeshPieces>,
     generation: u32,
     targets: Vec<MeshTarget>,
 }
@@ -462,8 +468,7 @@ impl Renderer {
             tex(1), tex(2), tex(3), tex(4),
         ] });
         let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
-        let verts = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: 24, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-        MeshGpu { layout, pipes: None, pl, verts, ranges: vec![], generation: 0, targets: vec![] }
+        MeshGpu { layout, pipes: None, pl, verts: vec![], ranges: vec![], generation: 0, targets: vec![] }
     }
 
     /// The mesh pass's pipelines, from its own shader.
@@ -498,9 +503,10 @@ impl Renderer {
         if scene.meshes.is_empty() { return; }
         self.ensure_mesh();
         if self.mesh.generation != lib.generation {
-            let mut all: Vec<[f32; 6]> = vec![];
-            self.mesh.ranges = lib.all().iter().map(|m| { let first = all.len() as u32; all.extend(m.vertices()); (first, all.len() as u32 - first) }).collect();
-            self.mesh.verts = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&all), usage: wgpu::BufferUsages::VERTEX });
+            let cap = MESH_CHUNK.min(self.device.limits().max_buffer_size as usize);
+            let (chunks, ranges) = mesh_chunks(lib.all().iter().map(|m| m.vertices()), cap / std::mem::size_of::<[f32; 6]>());
+            self.mesh.ranges = ranges;
+            self.mesh.verts = chunks.iter().map(|c| self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(c), usage: wgpu::BufferUsages::VERTEX })).collect();
             self.mesh.generation = lib.generation;
             for t in &mut self.mesh.targets { t.drawn = None; }
         }
@@ -527,15 +533,15 @@ impl Renderer {
                 depth: { let (z0, z1) = if marks.depth_scale != 0.0 || marks.depth_dim != 0.0 { sc.depth_range(lib) } else { (0.0, 1.0) }; [marks.depth_scale.clamp(0.0, 1.0), marks.depth_dim.clamp(0.0, 1.0), z0, z1] },
             };
             let mut copies: Vec<MeshCopy> = Vec::with_capacity(sc.count());
-            let mut draws: Vec<(u32, u32, u32, u32)> = vec![];
+            let mut draws: Vec<(u32, u32, u32, u32, u32)> = vec![];
             for it in &sc.items {
-                let Some(&(first, count)) = self.mesh.ranges.get(it.mesh.0 as usize) else { continue };
+                let Some(parts) = self.mesh.ranges.get(it.mesh.0 as usize) else { continue };
                 let start = copies.len() as u32;
                 for m in &it.transforms {
                     let n = copies.len() as u32 + 1;
                     copies.push(MeshCopy { m: m.cols(), paint: [it.paint.tone, it.paint.accent, it.paint.hue as f32, 0.0], id: [(n & 255) as f32, ((n >> 8) & 255) as f32, 0.0, 0.0] });
                 }
-                draws.push((first, count, start, copies.len() as u32));
+                for &(chunk, first, count) in parts { draws.push((chunk, first, count, start, copies.len() as u32)); }
             }
             let t = &mut self.mesh.targets[k];
             self.queue.write_buffer(&t.ubuf, 0, bytemuck::bytes_of(&u));
@@ -555,10 +561,14 @@ impl Renderer {
                 });
                 pass.set_pipeline(&mesh_pipes[0]);
                 pass.set_bind_group(0, &t.groups[3], &[]);
-                pass.set_vertex_buffer(0, self.mesh.verts.slice(..));
                 pass.set_vertex_buffer(1, t.copies.slice(..));
-                // Every group of copies in one call.
-                for (first, count, a, b) in draws { if b > a { pass.draw(first..first + count, a..b); } }
+                // Every group of copies in one call per piece of its mesh.
+                let mut bound = None;
+                for (chunk, first, count, a, b) in draws {
+                    if b <= a { continue; }
+                    if bound != Some(chunk) { pass.set_vertex_buffer(0, self.mesh.verts[chunk as usize].slice(..)); bound = Some(chunk); }
+                    pass.draw(first..first + count, a..b);
+                }
             }
             for (pipe, (view, group)) in [(1, (4, 0)), (2, (5, 1)), (3, (6, 2))] {
                 let mut pass = clear(enc, &t.views[view], wgpu::Color::TRANSPARENT);
@@ -1337,4 +1347,32 @@ fn clear<'a>(enc: &'a mut wgpu::CommandEncoder, view: &'a wgpu::TextureView, col
         label: None, depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None, multiview_mask: None,
         color_attachments: &[Some(wgpu::RenderPassColorAttachment { view, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(color), store: wgpu::StoreOp::Store } })],
     })
+}
+
+/// One mesh's pieces: the buffer, its first vertex and how many.
+pub type MeshPieces = Vec<(u32, u32, u32)>;
+
+/// Meshes' vertices (triangle lists) in buffers of at most `cap` vertices: a mesh goes whole into the
+/// current buffer when it fits, and one larger than a buffer is cut at whole triangles. Returns the
+/// buffers and each mesh's pieces (buffer, first vertex, count).
+pub fn mesh_chunks<I: IntoIterator<Item = Vec<[f32; 6]>>>(meshes: I, cap: usize) -> (Vec<Vec<[f32; 6]>>, Vec<MeshPieces>) {
+    let cap = (cap / 3 * 3).max(3);
+    let mut chunks: Vec<Vec<[f32; 6]>> = vec![];
+    let mut ranges = vec![];
+    for v in meshes {
+        let mut parts = vec![];
+        let mut rest = &v[..];
+        while !rest.is_empty() {
+            if chunks.last().is_none_or(|c| c.len() == cap || (c.len() + rest.len() > cap && !c.is_empty() && rest.len() <= cap)) { chunks.push(Vec::with_capacity(cap.min(rest.len()))); }
+            let at = (chunks.len() - 1) as u32;
+            let c = chunks.last_mut().expect("pushed");
+            let n = rest.len().min(cap - c.len()) / 3 * 3;
+            let n = if n == 0 { rest.len().min(cap - c.len()) } else { n };
+            parts.push((at, c.len() as u32, n as u32));
+            c.extend_from_slice(&rest[..n]);
+            rest = &rest[n..];
+        }
+        ranges.push(parts);
+    }
+    (chunks, ranges)
 }
