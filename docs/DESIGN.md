@@ -329,6 +329,16 @@ darkness, how strongly orientation follows the gradient, depth, and glow.
 
 Text and shapes have no ground of their own; when they loosen, the page shows through, which is right.
 
+**Ink over a picture.** A pixel where a picture is drawn is shown from the picture's colours, so text and
+shapes drawn over a picture are written there as their own colour, the colour the material shows them in
+at rest. Their antialiased edges then blend with the picture by their coverage, and a see-through group
+(`El::opacity`) by its opacity, whatever their siblings are doing; nothing of the ink's codes is read as the
+picture's red, green or blue. Text to read over a picture is shown as it is within its island, however loose
+the picture is beneath (§1.15). Ink over a picture that is not text to read loosens with the picture. In the
+modal layer this holds only where none of the layer's own shapes or pictures is: over those, its ink is the
+layer's, as before. A cut-out counts as its whole box: over its transparent parts the ink's edges are drawn
+whole, not blended with the page.
+
 #### Implementation
 
 **The mark atlas** (`marks`, RG8: r is the mark's coverage, g its height for relief; generated on the CPU at

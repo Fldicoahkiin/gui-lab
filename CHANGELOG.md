@@ -8,6 +8,13 @@ crate and the `amenui` npm package (`web/`) always carry the same version, becau
 match the module that `web_app!` generates. The minimum Rust is the one CI builds with (`rust-version`
 in Cargo.toml); raising it is a breaking change before 1.0 only in the second number.
 
+## Ink over pictures and character marks
+
+- Text and shapes drawn over a picture are their own colour there, blended with the picture by their coverage and
+  opacity, in the page and in a layer (DESIGN.md §1.6.1). Before, their edges (or the whole text, in the page's
+  own layer) were read as the picture's colours and showed red; a site no longer needs a layer of its own for ink
+  over a picture. Text to read over a picture stays as it is while the picture loosens.
+
 ## Fitting, clamping, faces that come later and plates
 
 - Breaking: `FlowSpec` has `fade_ms` and `Look` has `overlay_keep` and `off`, so struct literals of them need the new field or

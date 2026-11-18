@@ -64,7 +64,9 @@ struct Uniforms {
 
 const INK: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const NEAR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
-const HOLD: wgpu::TextureFormat = wgpu::TextureFormat::Rg8Unorm;
+/// r, g: what text to read holds (`fs_hold`); b: where a picture of the page is, by its flag in the
+/// near image; a: where the modal layer has a shape or a picture of its own.
+const HOLD: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 /// When a plate's pixel was drawn last, in `PLATE_TICK`s of the plate clock, as 24 bits in RGB (A: drawn).
 const PLATE_AGE: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 /// The plate clock's step, s (24 bits of it last 38 hours).
@@ -1192,7 +1194,20 @@ impl Renderer {
             self.queue.write_buffer(&self.instances, 0, bytemuck::cast_slice(&scene.instances));
         }
         // What text to read holds: its instances as they are now, with the hold's reach in paint.xy.
-        let holds: Vec<Instance> = scene.holds.iter().filter_map(|&(k, r)| scene.instances.get(k as usize).map(|i| { let mut i = *i; i.paint[0] = r[0]; i.paint[1] = r[1]; i })).collect();
+        let mut holds: Vec<Instance> = scene.holds.iter().filter_map(|&(k, r)| scene.instances.get(k as usize).map(|i| { let mut i = *i; i.paint[0] = r[0]; i.paint[1] = r[1]; i })).collect();
+        // Where pictures are, so ink drawn over one is written in the picture's terms (its colour), and
+        // where the modal layer covers them with its own shapes and pictures (`fs_hold`).
+        let layer = scene.layer.unwrap_or(u32::MAX) as usize;
+        for (k, i) in scene.instances.iter().enumerate() {
+            if i.paint[2] < 0.01 { continue; }
+            let pic = i.paint[3] == crate::scene::PICTURE;
+            if k < layer && pic {
+                let code = (i.paint[1] + 1.0) / 8.0 - if i.resp[1] > 1.5 { 1.0 / 32.0 } else { 0.0 };
+                holds.push(Instance { paint: [-1.0, code, 1.0, i.paint[3]], ..*i });
+            } else if k >= layer && (pic || i.paint[3] == crate::scene::SHAPE) {
+                holds.push(Instance { paint: [-2.0, 0.0, 1.0, i.paint[3]], ..*i });
+            }
+        }
         if holds.len() > self.hold_cap {
             self.hold_cap = holds.len().next_power_of_two();
             self.holds = Self::instance_buffer(&self.device, self.hold_cap);

@@ -313,6 +313,15 @@ fn ink_of(i: VOut, solid: bool) -> vec4f {
     return vec4f(r * a, g * a, code * a, a);
   }
   if (i.paint.w > 1.5) { return vec4f(textureSampleLevel(tex1, samp, clamp(i.uv, vec2f(0.0), vec2f(1.0)), 0.0).rgb * a, a); }
+  // Over a picture the pixel is read as the picture's colours (its flag is in the near image), so text
+  // and shapes there are written as their own colour, straight, as the material shows them at rest: an
+  // antialiased edge then blends with the picture by its coverage, and a see-through group by its
+  // opacity, whatever else is drawn.
+  if (i.paint.w < 1.5 && over_pic(i, solid) > 0.0) {
+    let r = i.paint.x * (1.0 - i.paint.y); let g = i.paint.y;
+    let col = gnd(i.pos.xy) * max(1.0 - r - g, 0.0) + u.fg.rgb * r + hue_col(round(i.look.y)) * g;
+    return vec4f(col * a, a);
+  }
   // Text set in the ground's colour (a label on a solid button) under `near`, which draws panels open:
   // written as the ink's colour, by the text's own paint, so its antialiased edges over the panel decode
   // as text and panel, not as a colour between the panel and the ground.
@@ -320,7 +329,14 @@ fn ink_of(i: VOut, solid: bool) -> vec4f {
   if (i.paint.w < 0.5 && i.paint.x < 0.02 && i.paint.y < 0.02 && eff_mat(i.look.x) == NEAR) { tone = 1.0; }
   return vec4f(tone * (1.0 - i.paint.y) * a, i.paint.y * a, ink_code(i) * a, a);
 }
-fn near_of(i: VOut) -> vec4f {
+/// The flag of the picture under this pixel of a glyph or shape (the hold image's b, 0 for none). In the
+/// modal layer, only where none of its own shapes or pictures is (a): over those the ink is the layer's.
+fn over_pic(i: VOut, top: bool) -> f32 {
+  let h = textureLoad(hold, vec2i(clamp(floor(i.pos.xy), vec2f(0.0), u.res.xy - 1.0)), 0);
+  return select(h.b, 0.0, top && h.a > 0.5);
+}
+fn near_of(i: VOut) -> vec4f { return near_in(i, false); }
+fn near_in(i: VOut, top: bool) -> vec4f {
   let s = inst(i);
   let born = clamp((u.scrq.y - i.extra.w) / max(u.fc.z, 1e-3), 0.0, 1.0);
   // Looseness belongs to the instance's own ink: where it has ink (coverage over a half) it is written
@@ -328,6 +344,8 @@ fn near_of(i: VOut) -> vec4f {
   // looseness never spills onto a neighbour's ink (a new marker beside a column of dots).
   let loose = enc_loose(min(own_loose(i), 1.0), s.x * i.paint.z > 0.5) * step(0.02, s.y) * step(0.01, i.paint.z);
   var slot = select(0.0, (i.paint.y + 1.0) / 8.0 - select(0.0, 1.0 / 32.0, i.resp.y > 1.5), s.z > 0.5);
+  // Ink written as a picture's colour keeps that picture's flag where it is drawn (`ink_of`).
+  if (i.paint.w < 1.5 && s.x > 0.0) { slot = max(slot, over_pic(i, top)); }
   // A 3D element drawn through the material marks its pixels (within the nearness) with the projected
   // normal's code, 1..9 / 255: below any picture's flag, so nothing else reads it (charr does).
   if (i.paint.w > 2.5 && i.extra.x < 0.5 && s.y > 0.01) { slot = max(round(mesh_near(i).b * 255.0), 1.0) / 255.0; }
@@ -343,6 +361,9 @@ fn near_of(i: VOut) -> vec4f {
 @fragment fn fs_hold(iv: VOut) -> @location(0) vec4f {
   let i = exact_i(iv);
   let s = inst(i);
+  // A picture of the page: its flag where it is (b). The modal layer's own shapes and pictures: a.
+  if (i.paint.x < -1.5) { return vec4f(0.0, 0.0, 0.0, step(0.02, s.x)); }
+  if (i.paint.x < -0.5) { return vec4f(0.0, 0.0, i.paint.y * step(0.5, s.z), 0.0); }
   let d = max(s.w, 0.0);
   // g: within `r0` of the outline, with a one-pixel edge (the island a material keeps exactly).
   return vec4f(1.0 - smoothstep(i.paint.x, i.paint.y, d), clamp(i.paint.x - d + 0.5, 0.0, 1.0), 0.0, 0.0);
@@ -387,7 +408,7 @@ fn near_of(i: VOut) -> vec4f {
   // A glyph's faint outer edge leaves the panel's nearness under it, so the materials that read the
   // nearness (collage's torn edge, carvr's cut) do not take a label's rim for the panel's outline.
   if (i.paint.w < 0.5 && s.y < 0.5) { discard; }
-  return near_of(i);
+  return near_in(i, true);
 }
 
 // ── Stage 2: material ─────────────────────────────────────────────────────────────────────────────
@@ -935,6 +956,9 @@ fn shade_new(pf: vec2f) -> vec3f {
     // Each material its own picture past half loose (DESIGN.md §1.6.2): halftonr's screen, charr's
     // characters; the rest keep the marks.
     if (m == HALFTONR) { col = pic_halftonr(q, slot); } else if (m == CHARR) { col = pic_charr(q, slot); } else { col = picture(q, slot); }
+    // Text to read drawn over a picture is in the picture's terms here (`ink_of`): its island is shown
+    // as it is, however loose the picture beneath.
+    if (core_at(p) >= 0.5) { col = straight(ink_t(p)); }
     // The compare wipe's line.
     let wx = floor(u.wipe.x);
     let r = u.wipe_rect;
