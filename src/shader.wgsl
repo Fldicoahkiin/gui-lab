@@ -43,7 +43,7 @@ struct U {
   scrolls: array<vec4f, 8>, // scroll nodes' viewports (x0, y0, x1, y1, device px), DESIGN.md §1.8.3
   scrollo: array<vec4f, 8>, // their content offsets (x, y, whole device px), trace strength, the way the content moves (±1 down/up, ±2 right/left)
   scrp: vec4f,     // the trace's lengths (device px): trail, misregistration, glitch slip, glitch band
-  scrq: vec4f,     // the least time between two glitch slips (s); the beat clock off the grid (condensing); how much ink plain keeps at the legibility cap (Theme::press_keep); w: 1 when less motion is asked for (new things fade in)
+  scrq: vec4f,     // the least time between two glitch slips (s); the beat clock off the grid (condensing); how much ink plain keeps at the legibility cap (Theme::press_keep); w: with less motion, how long new things fade in (s; 0 otherwise)
   post: array<vec4f, 6>, // the finishing pass (post.rs Post::pack): dither kind, levels, palette size, on; bloom strength, threshold, radius, dither strength; chroma offset, scanline strength, period, grain; vignette strength, radius, curvature, grain cell; invert
   pal: array<vec4f, 16>, // the palette, sRGB 0–1
   fmap: vec4f,     // the field map (DESIGN.md §1.29): cell (device px), drift (device px), nodes across, down (0: all zero, not read)
@@ -260,7 +260,7 @@ fn loose1(i: VOut) -> f32 { return clamp(own_loose(i) * loose_scale(), 0.0, u.ri
 /// which only fills up to its cap: text to read never passes `legible_cap` by the field.
 fn own_loose(i: VOut) -> f32 {
   // Less motion (scrq.w): nothing is born loose; it fades in instead (`rm_fade`).
-  let born = select(clamp((u.scrq.y - i.extra.w) / max(u.fc.z, 1e-3), 0.0, 1.0), 1.0, u.scrq.w > 0.5);
+  let born = select(clamp((u.scrq.y - i.extra.w) / max(u.fc.z, 1e-3), 0.0, 1.0), 1.0, u.scrq.w > 0.0);
   // Text to read and controls (a piece pushed as one) are born up to the legibility cap only: a control
   // that changes (a switch turned) is born again, and its label and track stay readable while it does.
   let k = max(i.extra.z, select(1.0 - born, min(1.0 - born, u.burst_t.w), i.resp.y > 1.5));
@@ -280,8 +280,8 @@ fn own_loose(i: VOut) -> f32 {
 @fragment fn fs_ink(i: VOut) -> @location(0) vec4f { return ink_of(exact_i(i), false); }
 // The modal layer: the same (its own pipeline, drawn without blending in the near image).
 @fragment fn fs_ink_top(i: VOut) -> @location(0) vec4f { return ink_of(exact_i(i), true); }
-/// Less motion asked for (scrq.w): a new instance fades in over 150 ms instead of condensing.
-fn rm_fade(i: VOut) -> f32 { return select(1.0, clamp((u.scrq.y - i.extra.w) / 0.15, 0.0, 1.0), u.scrq.w > 0.5); }
+/// Less motion asked for (scrq.w): a new instance fades in over scrq.w (`Ui::reduced_fade`) instead of condensing.
+fn rm_fade(i: VOut) -> f32 { return select(1.0, clamp((u.scrq.y - i.extra.w) / max(u.scrq.w, 1e-3), 0.0, 1.0), u.scrq.w > 0.0); }
 fn ink_of(i: VOut, solid: bool) -> vec4f {
   let s = inst(i);
   var a = s.x * i.paint.z * rm_fade(i);

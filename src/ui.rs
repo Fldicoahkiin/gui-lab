@@ -528,6 +528,8 @@ pub struct Ui<S, M> {
     overlay_at: f32,
     /// Where the readout's box was drawn last (logical px).
     overlay_box: Option<Rect>,
+    /// The fade with less motion, seconds (`Ui::reduced_fade`).
+    fade_s: f32,
     /// The shaping time at the last frame, so the readout shows what this frame spent.
     shape_seen: f64,
     /// The readout last said the page is idle (so it does not ask for another frame).
@@ -895,7 +897,7 @@ impl<S, M: Clone> Ui<S, M> {
             gaze_of: None, gaze_seen: HashMap::new(), annots: vec![], readout: gaze::Readout::default(), hovered: None, pointer_of: None, scripted: false, ticked: None, warm: None, warmed: None, owed: false, unused_key: None, shortcut: None, scrolled_of: None, released: None, input: None,
             dirty: true, look_of: None, locale_of: None, timing: Timing::default(), wake_of: None, latest_birth: f32::NEG_INFINITY, gaze_until: f32::NEG_INFINITY,
             marks_moving: false, caret: None, caret_on: true, static_loose: false, mclock: 0.0, moving: false, gclock: 0.0, ground_moving: false,
-            perf: crate::perf::Perf { quality: 1.0, ..Default::default() }, span: 0, painting: false, overlay: 0, overlay_at: 0.0, overlay_box: None, shape_seen: 0.0, hud_idle: false, rebuilt: 0,
+            perf: crate::perf::Perf { quality: 1.0, ..Default::default() }, span: 0, painting: false, overlay: 0, overlay_at: 0.0, overlay_box: None, fade_s: REDUCED_FADE, shape_seen: 0.0, hud_idle: false, rebuilt: 0,
             text_capture: None, sel: None, sel_drag: false, clicks: (f32::NEG_INFINITY, 0.0, 0.0, 0), a11y_sent: HashMap::new(), a11y_focus: None,
             tree: TaffyTree::new(), tids: HashMap::new(), mkeys: HashMap::new(), virt_views: HashMap::new(), virt_made: HashMap::new(),
             scrolling: Scrolling::default(), touch: None, touches: HashSet::new(), touching: false, fling: None, over: HashMap::new(), motion: HashMap::new(), scroll_paint: false, event_t: None, ev: 0.0,
@@ -932,8 +934,10 @@ impl<S, M: Clone> Ui<S, M> {
     /// its energy but puts in no flow, and lives half as long.
     pub fn set_reduced_motion(&mut self, on: bool) { self.fmap.reduced = on; }
     /// The viewer asked for less motion (`Ui::set_reduced_motion`): what the framework brings in and
-    /// takes away fades over 150 ms instead of loosening and moving.
+    /// takes away fades (`reduced_fade`, 150 ms by default) instead of loosening and moving.
     pub fn reduced_motion(&self) -> bool { self.fmap.reduced }
+    /// How long that fade is, seconds: `FlowSpec::fade_ms` of the last `Cmd::Flow` (150 ms until one).
+    pub fn reduced_fade(&self) -> f32 { self.fade_s }
     /// The text system, to change (mark the atlas for upload after a new device).
     pub fn text_mut(&mut self) -> &mut Text { &mut self.text }
     /// Device px per logical px.
@@ -2462,6 +2466,7 @@ impl<S, M: Clone> Ui<S, M> {
         let mut cmds = std::mem::take(&mut self.sent);
         cmds.extend(self.commands.map(|f| f(&mut self.state)).unwrap_or_default());
         let flow = cmds.iter().find_map(|c| if let Cmd::Flow(f) = c { Some(*f) } else { None });
+        if let Some(f) = flow { self.fade_s = (f.fade_ms / 1000.0).max(1e-3); }
         // A commit keeps the frame as it is before the new view.
         if let Some((x, y, scope)) = cmds.iter().find_map(|c| if let Cmd::Commit { x, y, scope } = c { Some((*x, *y, scope.clone())) } else { None }) {
             match scope {
@@ -4272,7 +4277,7 @@ impl<S, M: Clone> Ui<S, M> {
         let now = self.clock;
         let dst: Vec<usize> = (0..self.page_len).filter(|&i| within(&self.nodes, self.owners[i].0, root)).collect();
         let reduced = self.fmap.reduced;
-        let dur = if reduced { REDUCED_FADE } else { (spec.duration_ms / 1000.0).max(1e-3) };
+        let dur = if reduced { self.fade_s } else { (spec.duration_ms / 1000.0).max(1e-3) };
         let glyph = |i: &Instance| i.paint[3] == GLYPH;
         let (sg, so): (Vec<Instance>, Vec<Instance>) = src.into_iter().partition(glyph);
         let (dg, d_other): (Vec<usize>, Vec<usize>) = dst.into_iter().partition(|&i| glyph(&self.base[i]));
@@ -4448,7 +4453,7 @@ impl<S, M: Clone> Ui<S, M> {
             self.base[i].extra[3] = o.inst.extra[3];
         }
         for (k, o) in old.iter().enumerate() {
-            if !used[k] && !new_ids.contains(&o.id) && spec.out_ms > 0.0 { self.ghosts.push(Ghost { inst: o.inst, start: now, dur: if self.fmap.reduced { REDUCED_FADE } else { spec.out_ms / 1000.0 }, loosen: true }); }
+            if !used[k] && !new_ids.contains(&o.id) && spec.out_ms > 0.0 { self.ghosts.push(Ghost { inst: o.inst, start: now, dur: if self.fmap.reduced { self.fade_s } else { spec.out_ms / 1000.0 }, loosen: true }); }
         }
         self.animating = true;
         self.finish();
@@ -5101,7 +5106,8 @@ impl Inherit {
 const IGNORE: [f32; 4] = [0.0, -1.0, 0.0, 0.0];
 /// A decode transition running over one element (DESIGN.md §1.28): forward when it appeared, backwards
 /// over its last instances when it went.
-/// How long what comes and goes fades when the viewer asked for less motion, s.
+/// How long what comes and goes fades when the viewer asked for less motion, s, until a flow says
+/// otherwise (`FlowSpec::fade_ms`).
 pub const REDUCED_FADE: f32 = 0.15;
 
 

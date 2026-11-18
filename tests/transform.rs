@@ -192,6 +192,26 @@ fn unshared_parts_dissolve() {
     assert_eq!(ui.dissolving(), 0);
 }
 
+#[test]
+fn with_less_motion_a_flow_fades_over_its_own_duration() {
+    for fade_ms in [150.0f32, 120.0] {
+        let mut ui = Ui::new(Pages::default(), pages, go, fonts(), 800, 600, 1.0).on_commands(|s| std::mem::take(&mut s.cmds));
+        ui.set_reduced_motion(true);
+        ui.tick(5.0);
+        assert!((ui.reduced_fade() - 0.15).abs() < 1e-6, "150 ms until a flow says otherwise");
+        let only = ui.instances_of("p1/only").len();
+        ui.state.second = true;
+        ui.state.cmds.push(Cmd::Flow(FlowSpec { flow_ms: 0.0, flow_loose: 0.0, fade_ms, ..FlowSpec::default() }));
+        ui.relayout();
+        assert!((ui.reduced_fade() - fade_ms / 1000.0).abs() < 1e-6);
+        assert_eq!(ui.dissolving(), only);
+        // Just before the end the old page is still fading; just after it, it has gone.
+        ui.tick(5.0 + fade_ms / 1000.0 - 0.01);
+        assert_eq!(ui.dissolving(), only, "{fade_ms} ms: gone too early");
+        ui.tick(5.0 + fade_ms / 1000.0 + 0.01);
+        assert_eq!(ui.dissolving(), 0, "{fade_ms} ms: still fading");
+    }
+}
 
 // ── Sampling follows transforms and poses (DESIGN.md §1.26) ────────────────────────────────────────
 

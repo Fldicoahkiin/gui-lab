@@ -68,9 +68,12 @@ pub struct FlowSpec {
     pub flow_loose: f32,
     /// Parts of the old page that are not shared loosen and fade over this.
     pub out_ms: f32,
+    /// With less motion (`Ui::set_reduced_motion`) nothing flies: the old page fades out and the new one
+    /// in over this (default 150). It stays the fade for what comes in and goes until the next flow.
+    pub fade_ms: f32,
 }
 impl Default for FlowSpec {
-    fn default() -> Self { Self { flow_ms: 420.0, flow_loose: 0.25, out_ms: 180.0 } }
+    fn default() -> Self { Self { flow_ms: 420.0, flow_loose: 0.25, out_ms: 180.0, fade_ms: 150.0 } }
 }
 
 /// How the changed glyphs of a text whose string changed recompose (DESIGN.md §1.16): the old glyphs'

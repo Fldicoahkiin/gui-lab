@@ -233,6 +233,8 @@ pub struct Renderer {
     had_groups: bool,
     /// The viewer asked for less motion (`Ui::reduced_motion`): new instances fade in, not condense.
     reduced: bool,
+    /// How long that fade is, seconds (`Ui::reduced_fade`).
+    fade_s: f32,
     /// The running commit's scope (`El::commit_scope`), device px; empty for the whole window.
     sbox: [f32; 4],
     /// The finishing pass in place of the blit when the look has one (DESIGN.md §1.21).
@@ -416,7 +418,7 @@ impl Renderer {
             pictures: HashMap::new(), picture_views: HashMap::new(), hold_group: None, instances, capacity, pipes, annots, annot_capacity: 256, up_pipe: None, shader, pl,
             ink: blank.clone(), lo: blank.clone(), lo_key: (0, 0, 0), material_up: material.clone(), auto: Default::default(), always_lo: false, no_map: false,
             near: blank, material_first: material.clone(), material, size: (0, 0), tiles, mesh, sim_rows: 0,
-            region: crate::dirty::Region::All, partial: true, frame_view: blank_view.clone(), prev: None, spare: (vec![], vec![]), zero, blit, group: None, group_pipe, had_groups: false, reduced: false, sbox: [0.0; 4], post: None, blit_group: blank_group, warm: None, condense: false, last_region: None, tr: [[0.0; 4]; 9], boxes: [[0.0; 4]; 16], tr_loose: 0.0, t_cont: 0.0,
+            region: crate::dirty::Region::All, partial: true, frame_view: blank_view.clone(), prev: None, spare: (vec![], vec![]), zero, blit, group: None, group_pipe, had_groups: false, reduced: false, fade_s: 0.15, sbox: [0.0; 4], post: None, blit_group: blank_group, warm: None, condense: false, last_region: None, tr: [[0.0; 4]; 9], boxes: [[0.0; 4]; 16], tr_loose: 0.0, t_cont: 0.0,
         };
         r.set_picture(u32::MAX, 1, 1, &[0, 0, 0, 255]);
         r.resize(w, h);
@@ -947,6 +949,7 @@ impl Renderer {
         ui.settle();
         let started = crate::perf::now_ms();
         self.reduced = ui.reduced_motion();
+        self.fade_s = ui.reduced_fade();
         self.resize(ui.device_size().0, ui.device_size().1);
         // Still warming up (`Renderer::begin`): drawn as plain, which is the same page at rest (§1.23);
         // the frame after the last step condenses into the look.
@@ -1380,7 +1383,7 @@ impl Renderer {
             tr: if split[3] > 0.0 { self.tr } else { [[0.0; 4]; 9] }, boxes: self.boxes,
             scrolls: field.scrolls, scrollo: field.scrollo,
             scrp: [look.scroll.trail * scale, look.scroll.misreg * scale, look.scroll.slip * scale, look.scroll.band.max(4.0) * scale],
-            scrq: [look.scroll.slip_ms.max(16.0) / 1000.0, if look.beat.on() { self.t_cont } else { t }, th.press_keep(look.legible_cap), if self.reduced { 1.0 } else { 0.0 }],
+            scrq: [look.scroll.slip_ms.max(16.0) / 1000.0, if look.beat.on() { self.t_cont } else { t }, th.press_keep(look.legible_cap), if self.reduced { self.fade_s } else { 0.0 }],
             post: post.0, pal: post.1, fmap: self.fmap_u, sbox: if split[3] > 0.0 { self.sbox } else { [0.0; 4] },
         };
         self.queue.write_buffer(&self.ubuf, 0, bytemuck::bytes_of(&u));
