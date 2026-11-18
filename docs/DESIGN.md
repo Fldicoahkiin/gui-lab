@@ -1531,9 +1531,20 @@ also hold the looseness of what is drawn under and around them. Each of their in
 legible drawn before it within `r1` holds the looseness there to the legibility cap: fully within `r0`, fading out by
 `r1`, with `r0 = max(3, size / 4)` and `r1 = r0 + max(6, size / 2)` logical px by the type size (of the label, for a
 control; a glyph's `r1` is at most the 12 px the near image's nearness reaches). A heading is a title and holds
-nothing. The renderer draws the holds into a one-channel image before the G-buffer stage, and every source of
-looseness (a shape's own, fronts, the field map) is capped by it, so a label on a loose shape reads as at rest while
-the shape around it loosens. Measured on dottr at looseness 1: the label's own ink 1.000 of its ink at rest, within
+nothing. The renderer draws the holds into a two-channel image before the G-buffer stage: the hold, and the core
+(within `r0`, with a 1 px anti-aliased edge). Every source of looseness (a shape's own, fronts, the field map) is
+capped by the hold, so a label on a loose shape reads as at rest while the shape around it loosens.
+
+How each material meets the island: within the core every material draws the frame at rest, exactly; from `r0` to
+`r1` it draws its own transition, never a fade by transparency. A material's lattice (charr's cells, dottr's dots,
+halftonr's screens) is sized by the ink's own looseness, not the held one, so its pitch does not change near a
+label and no cell is cut; the hold only decides what each whole cell draws. charr: cells are drawn whole or not at
+all, denser towards the island, and the island follows the glyphs (not their box); dottr: dots grow towards the
+island and join it, with no seam of paper; halftonr: one screen near the island, the separation drawn to 0 at `r0`,
+so no line of colour; glitchr: a slipped row never samples within a hold, so no copy of the label appears; scribblr:
+the fill holds to `r0` with a crisp edge, and the thread goes round the island. `tests/legible.rs`
+(`the_edge_of_the_island_has_no_box_seam_rim_or_copy`, and the held area of charr at most 92 % of the ink box grown
+by `r1`: measured 0.24–0.35). Measured on dottr at looseness 1: the label's own ink 1.000 of its ink at rest, within
 `r0` 0.993, beyond `r1` 0.988 of the shape's loose ink unchanged; it costs about 7 ms a frame on lavapipe for the 528
 holds of a full gallery page (60.9 → 68.8 ms, 64.6 → 71.7 ms). `tests/legible.rs`.
 

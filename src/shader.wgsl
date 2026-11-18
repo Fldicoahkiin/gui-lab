@@ -287,8 +287,9 @@ fn rm_fade(i: VOut) -> f32 { return select(1.0, clamp((u.scrq.y - i.extra.w) / m
 fn ink_of(i: VOut, solid: bool) -> vec4f {
   let s = inst(i);
   var a = s.x * i.paint.z * rm_fade(i);
-  // A shape scribblr fades (its alpha before the fade in uv.y) keeps its fill where text to read holds it.
-  if (i.paint.w > 0.5 && i.paint.w < 1.5 && i.uvr.y > 0.0) { a = mix(a, s.x * i.uvr.y * rm_fade(i), hold_at(i.pos.xy)); }
+  // A shape scribblr fades (its alpha before the fade in uv.y) keeps its fill within `r0` of text to read
+  // that holds it, to a one-pixel edge: no soft rim.
+  if (i.paint.w > 0.5 && i.paint.w < 1.5 && i.uvr.y > 0.0) { a = mix(a, s.x * i.uvr.y * rm_fade(i), core_at(i.pos.xy)); }
   if (i.paint.w > 2.5) {
     // Flat shading in the theme's colours: the lit share of the object's tone and accent, so the
     // material decodes it like any shape (code 0.07 above the hue: a shape, and a mesh).
@@ -341,7 +342,8 @@ fn near_of(i: VOut) -> vec4f {
   let i = exact_i(iv);
   let s = inst(i);
   let d = max(s.w, 0.0);
-  return vec4f(1.0 - smoothstep(i.paint.x, i.paint.y, d), 0.0, 0.0, 0.0);
+  // g: within `r0` of the outline, with a one-pixel edge (the island a material keeps exactly).
+  return vec4f(1.0 - smoothstep(i.paint.x, i.paint.y, d), clamp(i.paint.x - d + 0.5, 0.0, 1.0), 0.0, 0.0);
 }
 // ── Stage 3: annotations, exactly, in the gaze colour (paint.y mixes toward the page ground, for
 // the plates under labels) ─────────────────────────────────────────────────────────────────────────
@@ -440,6 +442,9 @@ fn dec_loose(b: f32) -> f32 { let v = round(b * 255.0); return select(v / 125.0,
 /// holds the ink under it and around it (the hold image: 1 on it and within r0, falling to 0 at r1).
 /// How firmly text to read holds the looseness here (0 nowhere near any, 1 on it and within r0).
 fn hold_at(p: vec2f) -> f32 { return textureLoad(hold, vec2i(clamp(floor(p), vec2f(0.0), u.res.xy - 1.0)), 0).r; }
+/// How much of the pixel is within `r0` of text to read (its island, held exactly: 1 inside, a
+/// one-pixel edge).
+fn core_at(p: vec2f) -> f32 { return textureLoad(hold, vec2i(clamp(floor(p), vec2f(0.0), u.res.xy - 1.0)), 0).g; }
 /// The most looseness a hold of `h` allows.
 fn hold_cap(h: f32) -> f32 { return mix(1.0, u.burst_t.w, h); }
 /// The hold where the pixel being shaded is (`shade`): a material that takes a mark's looseness from
@@ -768,6 +773,12 @@ fn kt(p: vec2f) -> f32 { return clamp((half_plane(p) + loose_t(p) + u.rip.y) * l
 /// material's resting look, and the loosened look is all there by 0.26, so a quarter loose is already
 /// on its way.
 fn kt_loose(p: vec2f) -> f32 { return kt(p) * smoothstep(0.18, 0.26, half_plane(p) + loose_t(p) + u.rip.y); }
+/// `kt_loose` by the ink's own looseness, before any hold of text to read: for a material that keeps
+/// the held island itself (`core_at`) and decides whole cells around it.
+fn kt_loose_own(p: vec2f) -> f32 {
+  let k = dec_loose(near_t(p).b);
+  return clamp((half_plane(p) + k + u.rip.y) * loose_scale(), 0.0, u.rip.x) * smoothstep(0.18, 0.26, half_plane(p) + k + u.rip.y);
+}
 /// Whatever is drawn at a point, pictures as their marks: for materials that move the picture around.
 fn scene_at(q: vec2f) -> vec3f {
   let n = near_t(q);

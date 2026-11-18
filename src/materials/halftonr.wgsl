@@ -5,27 +5,24 @@
 // @param 增益 0.2 3.0 0.05 2 - 1.1
 // halftonr: ink as round dots on a rotated screen, with the second colour out of register.
 fn m_halftonr(p: vec2f) -> vec3f {
+  // Within `r0` of text to read the ink is as at rest: its island, with no separation along its edge.
+  let core = core_at(p);
+  if (core >= 1.0) { return exact(p); }
+  return mix(m_halftonr_screens(p), exact(p), core);
+}
+fn m_halftonr_screens(p: vec2f) -> vec3f {
   let s = u.res.z;
   let a0 = mp(SELF, 0);
   // Past half loose the screen goes on opening (to 1.5 times the pitch) and the separations part twice
   // as far (the element's own looseness, so one element keeps one screen).
-  let on = smoothstep(0.5, 1.0, clamp((loose_t(p) + u.rip.y) * loose_scale(), 0.0, u.rip.x));
+  // (Its own looseness, before any hold of text to read: the screen does not change size round a label.)
+  let on = smoothstep(0.5, 1.0, clamp((dec_loose(near_t(p).b) + u.rip.y) * loose_scale(), 0.0, u.rip.x));
   let pitch = max(2.0, a0.x * s) * mix(1.0, 1.5, on); let ang = radians(a0.y); let split = a0.z * s * (1.0 + on); let gain = a0.w;
   // Dots only where the ink is really loose: text held at the cap stays as it is.
   if (kt_loose(p) <= 0.0 && kt_loose(p + vec2f(pitch)) <= 0.0 && kt_loose(p - vec2f(pitch)) <= 0.0) { return exact(p); }
   let g = gnd(p);
   let ex = exact(p);
-  if (split <= 0.0) {
-    let q = rot(lat(p), ang);
-    let cell = floor(q / pitch);
-    let c = rot((cell + 0.5) * pitch, -ang) - anc;
-    if (kt_loose(c) <= 0.12 + 0.5 * h1(cell + vec2f(ang * 7.0, 3.0))) { return ex; }
-    let e = pitch * 0.25;
-    let avg = (ink_t(c + vec2f(-e, -e)) + ink_t(c + vec2f(e, -e)) + ink_t(c + vec2f(-e, e)) + ink_t(c + vec2f(e, e))) * 0.25;
-    let r = pitch * 0.56 * sqrt(clamp(avg.a * gain, 0.0, 1.0));
-    let m = smoothstep(r + 0.6, r - 0.6, length(q - (cell + 0.5) * pitch)) * step(0.02, avg.a);
-    return mix(g, dec_at(avg, c).rgb, m);
-  }
+  if (split <= 0.0) { return ht_one(p, pitch, ang, gain); }
   // Accent ink (a rule in the accent) is one screen in its own colour, not separated.
   let here = dec(p);
   if (here.acc > 0.5 || dec(p + vec2f(pitch * 0.5)).acc > 0.5) {
@@ -53,10 +50,12 @@ fn m_halftonr(p: vec2f) -> vec3f {
   var out = ex;
   let angs = vec3f(radians(15.0), radians(75.0), 0.0) + vec3f(ang - radians(45.0));
   for (var j = 0; j < 3; j++) {
-    let off = vec2f(cos(f32(j) * 2.094), sin(f32(j) * 2.094)) * split;
     let q = rot(lat(p), angs[j]);
     let cell = floor(q / pitch);
     let c = rot((cell + 0.5) * pitch, -angs[j]) - anc;
+    // Out of register only away from text to read: the separations close up across the band round it
+    // and are in register at `r0`.
+    let off = vec2f(cos(f32(j) * 2.094), sin(f32(j) * 2.094)) * split * (1.0 - hold_at(c));
     if (kt_loose(c) <= 0.12 + 0.5 * h1(cell + vec2f(angs[j] * 7.0, 3.0))) { continue; }
     // A cell on accent ink is left to the accent's own screen.
     if (dec(c).acc > 0.5 || dec(c + off).acc > 0.5) { continue; }
@@ -74,5 +73,20 @@ fn m_halftonr(p: vec2f) -> vec3f {
     if (light) { col = select(mix(sep, d.rgb, 0.35), d.rgb, j == 2); }
     out = mix(out, col, m);
   }
-  return out;
+  // Round text to read the screens become one, in the ink's own colour, so the island's edge has no
+  // separation of its own along it.
+  return mix(out, ht_one(p, pitch, ang, gain), smoothstep(0.0, 0.35, hold_at(p)));
+}
+/// One screen in the ink's own colour (no separations).
+fn ht_one(p: vec2f, pitch: f32, ang: f32, gain: f32) -> vec3f {
+  let q = rot(lat(p), ang);
+  let cell = floor(q / pitch);
+  let c = rot((cell + 0.5) * pitch, -ang) - anc;
+  let ex = exact(p);
+  if (kt_loose_own(c) <= 0.12 + 0.5 * h1(cell + vec2f(ang * 7.0, 3.0))) { return ex; }
+  let e = pitch * 0.25;
+  let avg = (ink_t(c + vec2f(-e, -e)) + ink_t(c + vec2f(e, -e)) + ink_t(c + vec2f(-e, e)) + ink_t(c + vec2f(e, e))) * 0.25;
+  let r = pitch * 0.56 * sqrt(clamp(avg.a * gain, 0.0, 1.0));
+  let m = smoothstep(r + 0.6, r - 0.6, length(q - (cell + 0.5) * pitch)) * step(0.02, avg.a);
+  return mix(gnd(p), dec_at(avg, c).rgb, m);
 }

@@ -134,6 +134,22 @@ fn the_hold_is_an_island_round_the_glyphs_not_a_box() {
     let island = (0..n).filter(|&i| d[i] <= r1).count() as f32;
     eprintln!("hold area {island} of the grown ink box {rect}: {:.2}", island / rect);
     assert!(island <= 0.92 * rect, "the hold is {island} px of the box's {rect}");
+    // charr on its own: what the label changes in the frame (its island and the cells round it) is not
+    // the box either.
+    for label in ["Live", "Tj dolly"] { for k in [0.6f32, 1.0] {
+        let base = S { m: Material::Charr, dark: false, k, size: 14.0, label: Some(label), legible: true };
+        let f = shot(&mut o, base.clone());
+        let bare = shot(&mut o, S { label: None, ..base.clone() });
+        let rest = shot(&mut o, S { k: 0.0, ..base.clone() });
+        let bare_rest = shot(&mut o, S { k: 0.0, label: None, ..base });
+        let ink = label_ink(&rest, &bare_rest);
+        let (mut x0, mut y0, mut x1, mut y1) = (W as f32, H as f32, 0.0f32, 0.0f32);
+        for i in (0..n).filter(|&i| ink[i]) { let (x, y) = ((i as u32 % W) as f32, (i as u32 / W) as f32); x0 = x0.min(x); y0 = y0.min(y); x1 = x1.max(x + 1.0); y1 = y1.max(y + 1.0); }
+        let rect = (x1 - x0 + 2.0 * r1) * (y1 - y0 + 2.0 * r1);
+        let held = (0..n).filter(|&i| !same(&f, &bare, i)).count() as f32;
+        eprintln!("charr \"{label}\" at {k}: held {held} of the grown ink box {rect}: {:.2}", held / rect);
+        assert!(held <= 0.92 * rect, "charr \"{label}\" at {k}: {held} px held of the box's {rect}");
+    } }
 }
 
 /// The label above with a front passing: a page that sends one from the shape's left edge.
@@ -195,4 +211,69 @@ fn the_audit_finds_no_label_it_cannot_read() {
         let bad: Vec<_> = f.iter().filter(|f| f.key == "label" && f.kind == amenui::audit::Kind::Contrast && f.level <= amenui::audit::Level::P1).collect();
         assert!(bad.is_empty(), "{m:?} {} {k}: {bad:?}", if dark { "dark" } else { "light" });
     } } }
+}
+
+/// The page's ground, the shape's ink and the label's colour, as drawn: a corner of the page, the shape
+/// at rest without a label, and the label's own most changed pixel.
+fn near_rgb(a: &[u8], i: usize, c: [u8; 3], tol: i32) -> bool { (0..3).all(|k| (a[i * 4 + k] as i32 - c[k] as i32).abs() <= tol) }
+fn rgb(a: &[u8], i: usize) -> [u8; 3] { [a[i * 4], a[i * 4 + 1], a[i * 4 + 2]] }
+fn chroma(a: &[u8], i: usize) -> i32 { let p = rgb(a, i); *p.iter().max().unwrap() as i32 - *p.iter().min().unwrap() as i32 }
+
+/// What each material's edge round a label must not do (DESIGN.md §1.15): charr keeps no solid box past the
+/// island, halftonr draws no line of colour where its screens part, dottr leaves no seam of paper round the
+/// island, scribblr has no soft rim beyond it and glitchr copies no part of the label anywhere.
+#[test]
+fn the_edge_of_the_island_has_no_box_seam_rim_or_copy() {
+    let Ok(mut o) = Offscreen::try_new(W, H) else { eprintln!("no GPU adapter here: skipped"); return };
+    let n = (W * H) as usize;
+    let mut bad: Vec<String> = vec![];
+    for label in ["Live", "Tj dolly"] { for dark in [false, true] { for size in [11.0f32, 14.0, 20.0] {
+        let (r0, r1) = radii(size);
+        let r1d = r1.min(amenui::text::SPREAD as f32);
+        for m in [Material::Charr, Material::Halftonr, Material::Dottr, Material::Scribblr, Material::Glitchr] {
+            let base = S { m, dark, k: 0.0, size, label: Some(label), legible: true };
+            let rest = shot(&mut o, base.clone());
+            let bare_rest = shot(&mut o, S { label: None, ..base.clone() });
+            let ink = label_ink(&rest, &bare_rest);
+            let d = distance(&ink);
+            // The label is drawn in the page's ground: the paper.
+            let paper = rgb(&bare_rest, (W * 4 + 4) as usize);
+            let shape: Vec<bool> = (0..n).map(|i| !near_rgb(&bare_rest, i, paper, 6)).collect();
+            for k in [0.6f32, 1.0] {
+                let f = shot(&mut o, S { k, ..base.clone() });
+                let bare = shot(&mut o, S { k, label: None, ..base.clone() });
+                let tag = format!("{m:?} \"{label}\" {} {size} px at {k}", if dark { "dark" } else { "light" });
+                let (sh, dd) = (&shape, &d);
+                let within = |lo: f32, hi: f32| (0..n).filter(move |&i| sh[i] && dd[i] > lo && dd[i] <= hi);
+                // Paper the lattice of cells or dots would not show, round the island: a seam, or a copy of the
+                // label. (halftonr's transition is a screen of its own, with paper between its dots.)
+                if matches!(m, Material::Charr | Material::Dottr | Material::Glitchr) {
+                    let seam = within(r0, r1d + 2.0).filter(|&i| near_rgb(&f, i, paper, 40) && !near_rgb(&bare, i, paper, 40)).count();
+                    if seam > 3 { bad.push(format!("{tag}: {seam} px of paper round the island that the shape alone does not show")); }
+                }
+                match m {
+                    Material::Charr => {
+                        // Past the island the ink is the material's cells, as solid as far away, not a box.
+                        let solid = |lo: f32, hi: f32| { let v: Vec<usize> = within(lo, hi).collect(); v.iter().filter(|&&i| same(&f, &rest, i)).count() as f32 / v.len().max(1) as f32 };
+                        let (edge, far) = (solid(r0 + 1.5, r0 + 2.5), solid(r1d + 3.0, 1e9));
+                        if edge > far + 0.25 { bad.push(format!("{tag}: {edge:.2} solid just past r0, {far:.2} far away")); }
+                    }
+                    Material::Halftonr | Material::Glitchr => {
+                        // No colour round the label that the shape alone does not have.
+                        let lo = if m == Material::Halftonr { r0 } else { 1.0 };
+                        let hi = if m == Material::Halftonr { r0 + 3.0 } else { r1d + 3.0 };
+                        let coloured = within(lo, hi).filter(|&i| chroma(&f, i) > 40 && chroma(&bare, i) <= 40).count();
+                        if coloured > 2 { bad.push(format!("{tag}: {coloured} px of colour round the label")); }
+                    }
+                    Material::Scribblr => {
+                        let ring: Vec<usize> = within(r0 + 2.0, r0 + 5.0).collect();
+                        let rim = ring.iter().filter(|&&i| !near_rgb(&f, i, paper, 24) && !same(&f, &bare, i)).count() as f32 / ring.len().max(1) as f32;
+                        if rim > 0.10 { bad.push(format!("{tag}: {rim:.3} of the ring past the island is a rim")); }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    } } }
+    assert!(bad.is_empty(), "{}", bad.join("\n"));
 }

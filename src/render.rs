@@ -64,7 +64,7 @@ struct Uniforms {
 
 const INK: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const NEAR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
-const HOLD: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
+const HOLD: wgpu::TextureFormat = wgpu::TextureFormat::Rg8Unorm;
 /// When a plate's pixel was drawn last, in `PLATE_TICK`s of the plate clock, as 24 bits in RGB (A: drawn).
 const PLATE_AGE: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 /// The plate clock's step, s (24 bits of it last 38 hours).

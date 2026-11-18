@@ -6,16 +6,23 @@
 // charr: cells of the print pitch show characters from the character mark set, chosen by the ink
 // they cover; the more loose, the coarser the cells.
 fn m_charr(p: vec2f) -> vec3f {
+  // Within `r0` of text to read the ink is exactly as at rest, an island that follows the glyphs; around
+  // it every cell is a whole character (one under the island's edge is hidden by it, not cut).
+  let core = core_at(p);
+  if (core >= 1.0) { return exact(p); }
+  return mix(m_charr_cells(p), exact(p), core);
+}
+fn m_charr_cells(p: vec2f) -> vec3f {
   let s = u.res.z;
   let a0 = mp(SELF, 0);
   let P0 = clamp(round(a0.x * s), CHAR_MIN, CHAR_MAX);
   let coarse = floor(lat(p) / P0);
-  let kc = kt_loose((coarse + 0.5) * P0 - anc);
-  if (kc <= 0.0 && kt_loose(p) <= 0.0) { return exact(p); }
+  let kc = kt_loose_own((coarse + 0.5) * P0 - anc);
+  if (kc <= 0.0 && kt_loose_own(p) <= 0.0) { return exact(p); }
   // One cell size for the whole element at a time, by its own looseness, and a clean jump between
   // them: half the pitch first, the pitch from 0.3, one and a half times it from 0.7; from there the
   // levels fall to half, so the characters go on getting coarser to the end.
-  let kl = clamp((loose_t(p) + u.rip.y) * loose_scale(), 0.0, u.rip.x);
+  let kl = clamp((dec_loose(near_t(p).b) + u.rip.y) * loose_scale(), 0.0, u.rip.x);
   let levels = clamp(round(mix(round(a0.y), round(a0.y) * 0.5, smoothstep(0.7, 1.0, kl))), 2.0, 16.0);
   let P = select(select(P0, min(CHAR_MAX, round(P0 * 1.5)), kl >= 0.7), max(CHAR_MIN, round(P0 * 0.5)), kl < 0.3);
   let cell = floor(lat(p) / P);
@@ -66,8 +73,9 @@ fn m_charr(p: vec2f) -> vec3f {
     let ca = cell_avg(cell, P);
     if (ca.a > 0.02 && dec_at(ca, centre).acc > 0.5) { return gnd(p); }
   }
-  // Characters only where the ink is really loose: text held at the cap stays as it is.
-  if (kt_loose(centre) <= 0.1 + 0.4 * h1(cell + 1.3)) { return exact(p); }
+  // Characters only where the ink is really loose (its own looseness: text to read keeps its island
+  // above, and the cells round it are whole characters).
+  if (kt_loose_own(centre) <= 0.1 + 0.4 * h1(cell + 1.3)) { return exact(p); }
   // A cell over a picture's edge is not made into characters: the picture keeps its own edge.
   let o0 = cell * P - anc;
   for (var j = 0; j < 3; j++) { for (var i = 0; i < 3; i++) {
@@ -76,6 +84,9 @@ fn m_charr(p: vec2f) -> vec3f {
   let avg = cell_avg(cell, P);
   let d = dec_at(avg, centre);
   var n = clamp(floor(avg.a * levels), 0.0, levels - 1.0);
+  // Toward a held island the characters grow denser, a level at a time, up to the densest by `r0`.
+  let hc = hold_at(centre);
+  if (hc > 0.0 && avg.a > 0.02) { n = clamp(round(mix(n, levels - 1.0, hc)), 0.0, levels - 1.0); }
   var m = -1.0;
   // On a 3D element (DESIGN.md §1.18): density by the light on it, and on its edges and slanted faces a
   // stroke (| / - \) along the edge or across the slope, by the projected normal, as often as

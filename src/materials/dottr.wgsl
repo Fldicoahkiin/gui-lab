@@ -13,12 +13,19 @@ fn m_dottr(frag: vec2f) -> vec3f {
   let here = near_t(frag);
   // Past half loose the units themselves go on changing: their lattice opens to 1.6 times the pitch
   // and they stray twice as far from it (the element's own looseness, so one element keeps one lattice).
-  let on = smoothstep(0.5, 1.0, clamp((loose_t(frag) + u.rip.y) * loose_scale(), 0.0, u.rip.x));
+  // (Its own looseness, before any hold of text to read: the lattice does not change size round a label.)
+  let on = smoothstep(0.5, 1.0, clamp((dec_loose(here.b) + u.rip.y) * loose_scale(), 0.0, u.rip.x));
   let pitch = max(1.5, u.fa.x * s) * mix(1.0, 1.6, on);
   let cell = floor(lat(p) / pitch);
   let block = (cell + 0.5) * pitch - anc;
-  let centre = block + (h2(cell) - 0.5) * u.fa.z * pitch * (1.0 + on);
-  let loose = min((half_plane(centre) + loose_t(centre) + (h1(cell + 7.0) - 0.5) * 0.22) * loose_scale(), u.rip.x);
+  // Toward text to read the units stray less and grow, until by `r0` they join into its island.
+  let hb = hold_at(block);
+  let centre = block + (h2(cell) - 0.5) * u.fa.z * pitch * (1.0 + on) * (1.0 - hb);
+  // Units by the ink's own looseness: text to read keeps its island (`core_at`, below) and the lattice
+  // runs right up to it, so the island is the glyphs' shape, not a block of cells.
+  let own = select(loose_t(centre), min(dec_loose(near_t(centre).b), u.rip.x), hb > 0.0);
+  let loose = min((half_plane(centre) + own + (h1(cell + 7.0) - 0.5) * 0.22) * loose_scale(), u.rip.x);
+  let core = core_at(frag);
   let printed = select(0.0, here.a * 255.0 * 0.5, here.a < 0.5);
   let printed_b = select(0.0, near_t(block).a * 255.0 * 0.5, near_t(block).a < 0.5);
   var col: vec3f; var alpha: f32;
@@ -27,7 +34,9 @@ fn m_dottr(frag: vec2f) -> vec3f {
     let c = (ink(block + vec2f(-q, -q)) + ink(block + vec2f(q, -q)) + ink(block + vec2f(-q, q)) + ink(block + vec2f(q, q))) * 0.25;
     let grow = smoothstep(0.3, 0.42, loose);
     let d = dec_at(c, frag);
-    let r = pitch * mix(0.5, 0.44 * sqrt(c.a), grow) * select(1.0, 0.96, u.fc.w > 0.5);
+    var r = pitch * mix(0.5, 0.44 * sqrt(c.a), grow) * select(1.0, 0.96, u.fc.w > 0.5);
+    // Units grow toward the island until they touch their neighbours by `r0`.
+    r = mix(r, max(r, pitch * 0.56), smoothstep(0.15, 0.85, hb));
     let m = unit(p - centre, r) * step(0.06, c.a);
     col = d.rgb; alpha = m * mix(c.a, 1.0, grow);
   } else if (max(printed, printed_b) > 0.0) {
@@ -56,5 +65,6 @@ fn m_dottr(frag: vec2f) -> vec3f {
   lvl *= 1.0 - smoothstep(0.1, 0.35, near(gcen).r);
   let gu = unit(frag - gat, gp * 0.42 * clamp(lvl, 0.0, 1.0)) * step(0.05, lvl);
   g = mix(g, u.fg.rgb, gu * 0.34);
-  return mix(g, col, alpha);
+  let out = mix(g, col, alpha);
+  return mix(out, exact(frag), core);
 }
