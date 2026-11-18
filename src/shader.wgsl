@@ -1218,33 +1218,40 @@ struct GOut { @builtin(position) pos: vec4f, @location(0) @interpolate(flat) op:
 @fragment fn fs_group(i: GOut) -> @location(0) vec4f { return textureLoad(tex0, vec2i(floor(i.pos.xy)), 0) * i.op; }
 
 // ── Plates (DESIGN.md §1.33): ink that stays. Each pixel keeps when it was last drawn, in ticks, as 24
-// bits in rgb (a: drawn at all); laid on, a pixel older than 0.8 of the plate's fade thins out (pixel by
-// pixel), and at the fade it is gone. The slot comes in the vertex numbers (3 × slot), as a group's opacity does.
-@fragment fn fs_plate_age(iv: VOut) -> @location(0) vec4f {
-  let i = exact_i(iv);
-  // Where its ink or its nearness reaches (the near image's spread round the outline ages with it).
-  if (ink_of(i, false).a <= 0.0 && near_of(i).r <= 0.0) { discard; }
+// bits in rgb (a: drawn at all), twice: where the ink was drawn (`hold` when laid on) and where its
+// nearness reached (`lo`), so a new stroke's spread keeps its own outline alive without making the old
+// ink under it new. Laid on, the ink's coverage is multiplied by 1 − smoothstep(0.8, 1, age) (it fades,
+// as plain's condensing is a fade in), and the nearness, a distance, stays whole until the age is 1.
+// The slot comes in the vertex numbers (3 × slot), as a group's opacity does.
+fn plate_tick() -> vec4f {
   let t = u.plate.x;
   return vec4f(floor(t / 65536.0) / 255.0, (floor(t / 256.0) % 256.0) / 255.0, (t % 256.0) / 255.0, 1.0);
 }
-fn plate_keep(slot: u32, p: vec2i) -> f32 {
-  let fade = u.plates[slot].x;
-  if (fade <= 0.0) { return 1.0; }
-  let a = textureLoad(hold, p, 0);
+@fragment fn fs_plate_age(iv: VOut) -> @location(0) vec4f {
+  let i = exact_i(iv);
+  if (ink_of(i, false).a <= 0.0) { discard; }
+  return plate_tick();
+}
+@fragment fn fs_plate_age_near(iv: VOut) -> @location(0) vec4f {
+  let i = exact_i(iv);
+  if (ink_of(i, false).a <= 0.0 && near_of(i).r <= 0.0) { discard; }
+  return plate_tick();
+}
+fn plate_age(slot: u32, a: vec4f) -> f32 {
   let drawn = round(a.r * 255.0) * 65536.0 + round(a.g * 255.0) * 256.0 + round(a.b * 255.0);
-  let age = max(u.plate.x - drawn, 0.0) / fade;
-  // Thinning out pixel by pixel, each at its own fixed moment, so the ink only ever lessens and the
-  // near image keeps its codes (its nearness is a distance, which a fade would move).
-  let h = fract(52.9829189 * fract(dot(vec2f(p), vec2f(0.06711056, 0.00583715))));
-  return select(0.0, 1.0, 1.0 - smoothstep(0.8, 1.0, age) > h);
+  return select(2.0, max(u.plate.x - drawn, 0.0) / u.plates[slot].x, a.a > 0.0);
 }
 @fragment fn fs_plate_ink(i: GOut) -> @location(0) vec4f {
   let p = vec2i(floor(i.pos.xy));
-  return textureLoad(tex0, p, 0) * plate_keep(u32(round(i.op * 1000.0)), p);
+  let slot = u32(round(i.op * 1000.0));
+  if (u.plates[slot].x <= 0.0) { return textureLoad(tex0, p, 0); }
+  return textureLoad(tex0, p, 0) * (1.0 - smoothstep(0.8, 1.0, plate_age(slot, textureLoad(hold, p, 0))));
 }
 @fragment fn fs_plate_near(i: GOut) -> @location(0) vec4f {
   let p = vec2i(floor(i.pos.xy));
-  return textureLoad(tex1, p, 0) * plate_keep(u32(round(i.op * 1000.0)), p);
+  let slot = u32(round(i.op * 1000.0));
+  if (u.plates[slot].x <= 0.0) { return textureLoad(tex1, p, 0); }
+  return textureLoad(tex1, p, 0) * step(plate_age(slot, textureLoad(lo, p, 0)), 0.99999);
 }
 
 // ── The finishing pass (DESIGN.md §1.21): the kept frame on its way to the screen. In this order:

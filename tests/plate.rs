@@ -283,3 +283,94 @@ fn new_ink_on_a_plate_is_there_at_once_without_condensing() {
         assert!(first == rest, "{m:?}: the stroke condensed ({:.4} differs)", diff(&first, &rest));
     }
 }
+
+/// The pixels of the box (x, y, w, h), RGB.
+fn px_in(px: &[u8], r: (u32, u32, u32, u32)) -> Vec<[u8; 3]> {
+    let mut v = vec![];
+    for y in r.1..r.1 + r.3 { for x in r.0..r.0 + r.2 { let i = ((y * W + x) * 4) as usize; v.push([px[i], px[i + 1], px[i + 2]]); } }
+    v
+}
+/// Tick from `from` up to `to` a frame at a time (the plate clock takes at most 0.1 s a tick), then draw.
+fn frame_after(o: &mut Offscreen, ui: &mut Ui<S, ()>, from: f32, to: f32) -> Vec<u8> {
+    let mut t = from;
+    while t + 1.0 / 60.0 < to { t += 1.0 / 60.0; ui.tick(t); }
+    frame(o, ui, to)
+}
+/// A dab's inside, away from its rounded ends and its edges.
+const INSIDE: (u32, u32, u32, u32) = (66, 62, 16, 6);
+
+#[test]
+fn ageing_ink_fades_as_its_coverage_with_no_pattern() {
+    let Ok(mut o) = Offscreen::try_new(W, H) else { eprintln!("no GPU adapter here: skipped"); return };
+    let fade = 4.0;
+    let mut never = mk(S { fade, ..s0(Material::Plain) });
+    let empty = frame(&mut o, &mut never, 2.0);
+    let mut ui = mk(S { fade, strokes: vec![(60.0, 60.0)], ..s0(Material::Plain) });
+    let fresh = frame(&mut o, &mut ui, 2.0);
+    set(&mut ui, |s| s.strokes.clear());
+    let (ink, paper) = (px_in(&fresh, INSIDE)[0], px_in(&empty, INSIDE)[0]);
+    let mut last = f32::MAX;
+    let mut at = 2.0;
+    for k in 0..=10 {
+        let a = 0.8 + 0.02 * k as f32;
+        let px = frame_after(&mut o, &mut ui, at, 2.0 + a * fade);
+        at = 2.0 + a * fade;
+        let amount = ink_in(&px, &empty, (56, 56, 36, 18));
+        assert!(amount <= last + 1.0, "a {a:.2}: the ink grew ({amount} after {last})");
+        last = amount;
+        if k != 5 { continue; }
+        // a = 0.9: 1 − smoothstep(0.8, 1, 0.9) = a half; every pixel inside the stroke the same.
+        let inside = px_in(&px, INSIDE);
+        for c in 0..3 {
+            let (lo, hi) = (inside.iter().map(|p| p[c]).min().unwrap(), inside.iter().map(|p| p[c]).max().unwrap());
+            assert!(hi - lo <= 2, "a 0.9: the stroke's inside spans {lo}..{hi} in channel {c}: a pattern");
+            let half = (ink[c] as f32 + paper[c] as f32) / 2.0;
+            assert!((inside[0][c] as f32 - half).abs() <= 0.03 * 255.0, "a 0.9: {} in channel {c}, not halfway between ink {} and paper {}", inside[0][c], ink[c], paper[c]);
+        }
+    }
+    // Just past the end of its fade (the plate clock goes in 1/120 s ticks): nothing.
+    let px = frame_after(&mut o, &mut ui, at, 2.0 + 1.02 * fade);
+    let left = ink_in(&px, &empty, (56, 56, 36, 18)); assert!(left < 1.0, "past the fade ink is left ({left}, {:.4} of the frame differs)", diff(&px, &empty));
+}
+
+#[test]
+fn an_old_stroke_near_its_end_has_at_most_55_percent_of_a_new_ones_ink() {
+    let Ok(mut o) = Offscreen::try_new(W, H) else { eprintln!("no GPU adapter here: skipped"); return };
+    let fade = 4.0;
+    let mut never = mk(S { fade, ..s0(Material::Plain) });
+    let empty = frame(&mut o, &mut never, 2.0);
+    let mut ui = mk(S { fade, strokes: vec![(30.0, 40.0)], ..s0(Material::Plain) });
+    frame(&mut o, &mut ui, 2.0);
+    set(&mut ui, |s| s.strokes = vec![(130.0, 90.0)]);
+    let t_new = 2.0 + 0.4 * fade;
+    let just = frame_after(&mut o, &mut ui, 2.0, t_new);
+    set(&mut ui, |s| s.strokes.clear());
+    // The old stroke at a 0.9, the new one at 0.5.
+    let px = frame_after(&mut o, &mut ui, t_new, 2.0 + 0.9 * fade);
+    let (old, new) = ((26, 36, 36, 18), (126, 86, 36, 18));
+    let same = px_in(&px, new).iter().zip(px_in(&just, new)).filter(|(a, b)| **a == *b).count() as f32 / (new.2 * new.3) as f32;
+    assert!(same >= 0.99, "the new stroke at a 0.5 is {:.1} % as just drawn", same * 100.0);
+    let (io, inew) = (ink_in(&px, &empty, old), ink_in(&px, &empty, new));
+    assert!(io <= 0.55 * inew, "the old stroke keeps {:.0} % of the new one's ink", io / inew * 100.0);
+}
+
+#[test]
+fn a_new_stroke_makes_new_only_the_old_ink_under_its_own_outline() {
+    let Ok(mut o) = Offscreen::try_new(W, H) else { eprintln!("no GPU adapter here: skipped"); return };
+    let fade = 4.0;
+    let mut never = mk(S { fade, ..s0(Material::Plain) });
+    let empty = frame(&mut o, &mut never, 2.0);
+    let mut ui = mk(S { fade, strokes: vec![(60.0, 60.0)], ..s0(Material::Plain) });
+    let fresh = frame(&mut o, &mut ui, 2.0);
+    // Later a second stroke overlaps the first one's right end (from x 74 on).
+    set(&mut ui, |s| s.strokes = vec![(74.0, 64.0)]);
+    frame_after(&mut o, &mut ui, 2.0, 2.0 + 0.5 * fade);
+    set(&mut ui, |s| s.strokes.clear());
+    let px = frame_after(&mut o, &mut ui, 2.0 + 0.5 * fade, 2.0 + 0.9 * fade);
+    // The first stroke's inside 2 px or more left of the second's outline is as old as the first.
+    let (ink, paper) = (px_in(&fresh, INSIDE)[0], px_in(&empty, INSIDE)[0]);
+    for p in px_in(&px, (62, 61, 10, 8)) { for c in 0..3 {
+        let half = (ink[c] as f32 + paper[c] as f32) / 2.0;
+        assert!((p[c] as f32 - half).abs() <= 0.03 * 255.0, "old ink left of the new stroke is {} in channel {c}, not the half {half}: the new stroke made it new", p[c]);
+    } }
+}

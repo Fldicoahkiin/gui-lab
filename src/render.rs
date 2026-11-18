@@ -70,8 +70,9 @@ const PLATE_AGE: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 /// The plate clock's step, s (24 bits of it last 38 hours).
 pub const PLATE_TICK: f32 = 1.0 / 120.0;
 
-/// One plate's kept images and the group that lays them on (binding 2: ink, 3: near, 10: age).
-struct PlateTex { ink: wgpu::TextureView, near: wgpu::TextureView, age: wgpu::TextureView, bind: wgpu::BindGroup }
+/// One plate's kept images and the group that lays them on (binding 2: ink, 3: near, 10: the ink's age,
+/// 9: the nearness's age).
+struct PlateTex { ink: wgpu::TextureView, near: wgpu::TextureView, age: wgpu::TextureView, near_age: wgpu::TextureView, bind: wgpu::BindGroup }
 const ATLAS_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg8Unorm;
 
 const MARKS_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg8Unorm;
@@ -241,12 +242,14 @@ pub struct Renderer {
     /// last; made when a slot is first used, emptied by `Cmd::ClearPlate` and a new window size.
     plates: [Option<PlateTex>; crate::scene::PLATES],
     /// Drawing into a plate, its age and laying it on the ink and the near image.
-    plate_pipes: [wgpu::RenderPipeline; 3],
+    plate_pipes: [wgpu::RenderPipeline; 4],
     /// The plate clock in `PLATE_TICK`s, and each slot's fade (`Plate::fade_s`, in ticks; 0: none).
     plate_now: f32,
     plate_fade: [[f32; 4]; 4],
     /// How many plates the last frame had (a plate that comes or goes redraws everything).
     had_plates: usize,
+    /// The last frame had ink ageing on a plate (the frame after it shows where the ageing ended).
+    was_ageing: bool,
     /// The last plate clearing applied (`Scene::plate_serial`).
     plate_serial: u64,
     group_pipe: wgpu::RenderPipeline,
@@ -402,6 +405,7 @@ impl Renderer {
             pipe("vs_inst", "fs_plate_age", PLATE_AGE, None, true),
             pipe("vs_group", "fs_plate_ink", INK, Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING), false),
             pipe("vs_group", "fs_plate_near", NEAR, Some(wgpu::BlendState { color: maxb, alpha: maxb }), false),
+            pipe("vs_inst", "fs_plate_age_near", PLATE_AGE, None, true),
         ];
         let ubuf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: std::mem::size_of::<Uniforms>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         // Only the mark atlas has mip levels; for every other texture the mipmap filter does nothing.
@@ -444,7 +448,7 @@ impl Renderer {
             pictures: HashMap::new(), picture_views: HashMap::new(), hold_group: None, instances, capacity, pipes, annots, annot_capacity: 256, up_pipe: None, shader, pl,
             ink: blank.clone(), lo: blank.clone(), lo_key: (0, 0, 0), material_up: material.clone(), auto: Default::default(), always_lo: false, no_map: false,
             near: blank, material_first: material.clone(), material, size: (0, 0), tiles, mesh, sim_rows: 0,
-            region: crate::dirty::Region::All, partial: true, frame_view: blank_view.clone(), prev: None, spare: (vec![], vec![]), zero, blit, group: None, group_pipe, had_groups: false, plates: Default::default(), plate_pipes, plate_now: 0.0, plate_fade: [[0.0; 4]; 4], had_plates: 0, plate_serial: 0, reduced: false, fade_s: 0.15, sbox: [0.0; 4], post: None, blit_group: blank_group, warm: None, condense: false, last_region: None, tr: [[0.0; 4]; 9], boxes: [[0.0; 4]; 16], tr_loose: 0.0, t_cont: 0.0,
+            region: crate::dirty::Region::All, partial: true, frame_view: blank_view.clone(), prev: None, spare: (vec![], vec![]), zero, blit, group: None, group_pipe, had_groups: false, plates: Default::default(), plate_pipes, plate_now: 0.0, plate_fade: [[0.0; 4]; 4], had_plates: 0, was_ageing: false, plate_serial: 0, reduced: false, fade_s: 0.15, sbox: [0.0; 4], post: None, blit_group: blank_group, warm: None, condense: false, last_region: None, tr: [[0.0; 4]; 9], boxes: [[0.0; 4]; 16], tr_loose: 0.0, t_cont: 0.0,
         };
         r.set_picture(u32::MAX, 1, 1, &[0, 0, 0, 255]);
         r.resize(w, h);
@@ -1134,10 +1138,11 @@ impl Renderer {
         let inputs = crate::dirty::Inputs {
             instances, annot, meshes: ui.scene().meshes.iter().map(|m| m.scene.fingerprint() ^ (m.rect[2].to_bits() as u64) << 32 ^ m.rect[3].to_bits() as u64).collect(),
             field: *ui.field(), look: *look, now, mclock: mt[0], gclock: mt[1], size: self.size, map: snap,
-            global: split[3] > 0.0 || tiles.is_some() || lo.is_some() || self.hide_glyphs || !ui.scene().groups.is_empty() || self.had_groups || ui.scene().plate_ageing || ui.scene().plate_serial != self.plate_serial || ui.scene().plates.len() != self.had_plates,
+            global: split[3] > 0.0 || tiles.is_some() || lo.is_some() || self.hide_glyphs || !ui.scene().groups.is_empty() || self.had_groups || ui.scene().plate_ageing || self.was_ageing || ui.scene().plate_serial != self.plate_serial || ui.scene().plates.len() != self.had_plates,
         };
         self.had_groups = !ui.scene().groups.is_empty();
         self.had_plates = ui.scene().plates.len();
+        self.was_ageing = ui.scene().plate_ageing;
         let region = match (&self.prev, self.partial) { (Some(p), true) => crate::dirty::region(p, &inputs, scale), _ => crate::dirty::Region::All };
         if let Some(old) = self.prev.replace(inputs) { self.spare = (old.instances, old.annot); }
         self.region = region;
@@ -1227,16 +1232,17 @@ impl Renderer {
         for p in &scene.plates {
             let slot = p.slot as usize;
             if self.plates[slot].is_none() {
-                let (ink, near, age) = (Self::target(&self.device, w, h, INK), Self::target(&self.device, w, h, NEAR), Self::target(&self.device, w, h, PLATE_AGE));
-                let bind = Self::bind(&self.device, &self.layout, &self.ubuf, &self.sampler, [&ink, &near, &self.marks_view, &self.palette_view, &self.chars_view, &self.blank, &self.blank, &self.fmap_view, &age]);
-                for v in [&ink, &near, &age] { let _ = clear(enc, v, wgpu::Color::TRANSPARENT); }
-                self.plates[slot] = Some(PlateTex { ink, near, age, bind });
+                let (ink, near) = (Self::target(&self.device, w, h, INK), Self::target(&self.device, w, h, NEAR));
+                let (age, near_age) = (Self::target(&self.device, w, h, PLATE_AGE), Self::target(&self.device, w, h, PLATE_AGE));
+                let bind = Self::bind(&self.device, &self.layout, &self.ubuf, &self.sampler, [&ink, &near, &self.marks_view, &self.palette_view, &self.chars_view, &self.blank, &near_age, &self.fmap_view, &age]);
+                for v in [&ink, &near, &age, &near_age] { let _ = clear(enc, v, wgpu::Color::TRANSPARENT); }
+                self.plates[slot] = Some(PlateTex { ink, near, age, near_age, bind });
             }
         }
         if scene.plate_serial == self.plate_serial { return; }
         self.plate_serial = scene.plate_serial;
         for &slot in &scene.plate_clear {
-            if let Some(pt) = &self.plates[slot as usize] { for v in [&pt.ink, &pt.near, &pt.age] { let _ = clear(enc, v, wgpu::Color::TRANSPARENT); } }
+            if let Some(pt) = &self.plates[slot as usize] { for v in [&pt.ink, &pt.near, &pt.age, &pt.near_age] { let _ = clear(enc, v, wgpu::Color::TRANSPARENT); } }
         }
     }
     fn stage1(&self, enc: &mut wgpu::CommandEncoder, scene: &Scene, ink: &wgpu::TextureView, near: &wgpu::TextureView, tiles: u32, scissor: Option<[u32; 4]>) {
@@ -1295,15 +1301,16 @@ impl Renderer {
                         pp.set_vertex_buffer(0, self.instances.slice(..));
                         draw(&mut pp, p.start, p.end);
                     }
-                    if k == 0 {
-                        let mut ap = load(enc, &pt.age);
+                    // When each pixel was drawn: where the ink is, and where its nearness reaches.
+                    for (target, pipe) in [(&pt.age, &self.plate_pipes[0]), (&pt.near_age, &self.plate_pipes[3])].into_iter().take(if k == 0 { 2 } else { 0 }) {
+                        let mut ap = load(enc, target);
                         if let Some([x, y, w, h]) = scissor { ap.set_scissor_rect(x, y, w, h); }
                         ap.set_vertex_buffer(0, self.instances.slice(..));
                         for b in &scene.batches {
                             let (s0, s1) = (b.start.max(p.start), b.end.min(p.end));
                             if s0 >= s1 { continue; }
                             let Some(group) = self.batch_group(b.picture) else { continue };
-                            ap.set_pipeline(&self.plate_pipes[0]);
+                            ap.set_pipeline(pipe);
                             ap.set_bind_group(0, group, &[]);
                             ap.draw(0..4, s0..s1);
                         }

@@ -1569,6 +1569,9 @@ impl<S, M: Clone> Ui<S, M> {
         // The plate clock stops while a hold lasts and never runs back (a rewind keeps the ink).
         if !held_now { self.pclock += dt; }
         self.scene.plate_now = self.pclock;
+        // Each frame draws a plate's ink again (and stamps it with the plate clock), so a plate with ink
+        // in the scene was drawn now, painted or not.
+        for p in &self.scene.plates { if p.end > p.start && let Some(s) = &mut self.plate_slots[p.slot as usize] { s.1 = self.pclock; } }
         self.scene.plate_ageing = self.plates_ageing();
         // The material clock runs only while something was moving.
         if self.moving && !self.timing.off.material_still { self.mclock += dt; }

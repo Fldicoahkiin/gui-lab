@@ -2564,14 +2564,18 @@ good) is the soft way.
 - At most 4 plates in a window, their images together at most twice the window's area; more are drawn as ordinary
   elements (keeping nothing) and `Ui::problems` reports `PlateOver`. A slot newly taken starts empty.
 
-The renderer keeps three images for each plate (ink, near, and when each pixel was drawn, in 1/120 s ticks as 24 bits);
-in the G-buffer stage the plate's instances of this frame are drawn into its ink and near images and its age, and the
+The renderer keeps four images for each plate: ink, near, and when each pixel was drawn, in 1/120 s ticks as 24 bits,
+twice (where the ink was drawn, and where its nearness reached). A new stroke's spread keeps its own outline alive
+without making the old ink under it new, so the line between old and new ink is the new stroke's outline, to within a
+pixel. In the G-buffer stage the plate's instances of this frame are drawn into its ink and near images and its ages, and the
 kept images are laid on in their place (premultiplied over the ink, max over the near image). The plate clock stops
 while a `Hold` lasts and never runs back: `Rewind` does not take ink back. A transition's mask acts on the plate's ink
 as on anything else, and the plate of a page that went is emptied when the page goes.
 
-**Ageing** (`fade_s` above 0): a pixel is as drawn until four fifths of `fade_s` have passed since it was last drawn,
-then thins out pixel by pixel (each at its own fixed moment, so the ink only lessens), and is gone at `fade_s`. While
+**Ageing** (`fade_s` above 0): a pixel is as drawn until four fifths of `fade_s` have passed since it was last drawn
+(`a` = 0.8), then its ink's coverage is multiplied by `1 − smoothstep(0.8, 1, a)`, so it fades as plain's condensing
+fades in, with no pattern of its own, and is gone at `fade_s`. The material draws what is left as it draws any ink with
+that coverage. The near image is a distance, which a fade would move, so it stays whole until `a` is 1. While
 only ageing moves, the runtime asks for at most 30 frames a second; when the last stroke has gone the page is the
 clean page and asks for none. With less motion it is the same. A plate with `fade_s` 0 keeps its ink without asking
 for frames; it belongs in music videos, the lab and pages that say they are a drawing board, not on ordinary pages.
@@ -2583,7 +2587,10 @@ Acceptance: `tests/plate.rs` (a stroke stays when the view no longer has it; the
 empty plate is as no plate in nine materials and both themes; with `fade_s` 4, `a` = 0.25 as just drawn, the ink
 unchanged before 0.5, never growing, empty at 1, at most 30 frames a second and none after; `fade_s` 2 empty 2 s after
 the last stroke with no frames after; ink on a plate loosening in dottr; clearing and inverting in one frame under 5 %
-of pixels changing; a `Hold(2)` byte for byte; five plates keeping four; a new window size emptying them; the same
+of pixels changing; at `a` 0.9 in plain every pixel inside a stroke within 2/255 of the others and halfway between
+ink and paper to within 3 %, the ink never growing from 0.8 to 1 in steps of 0.02 and none just past 1; an old stroke at
+0.9 with at most 55 % of the ink of a new one at 0.5, which is 99 % as just drawn; old ink 2 px from a new stroke's
+outline as old as the rest of it; a `Hold(2)` byte for byte; five plates keeping four; a new window size emptying them; the same
 timeline three times the same 300 frames; halfway through a crack the ink only in the pieces not yet turned and gone
 at the end; nothing on a plate in the accessibility mirror).
 
@@ -3697,9 +3704,10 @@ Layout, faces and plates (the fifth set of framework needs):
   done; the module still carries the material shaders.
 - Effect switches (§1.34): the field dots have no switch yet (see there).
 - Plates: ageing by material (the table of how each material lets a stroke go) and the field acting on a plate's
-  ink per pixel are not done; every material uses plain's thinning out over the last fifth, and the pointer and
-  fronts act on plate ink only as on any decoration drawn this frame (not on kept pixels). So the check that an
-  older stroke differs by more than 25 % at `a` 0.75 in dottr, charr and scribblr does not hold yet. A full-window
+  ink per pixel are not done; every material fades a stroke's coverage over the last fifth as plain does, and the
+  pointer and fronts act on plate ink only as on any decoration drawn this frame (not on kept pixels). The check that
+  an older stroke differs by more than 25 % at `a` 0.75 in dottr, charr and scribblr waits for that; until then an old
+  stroke at `a` 0.9 keeps at most 55 % of a new one's ink (`tests/plate.rs`). A full-window
   plate at 1440 × 900 costs on lavapipe (a CPU rasteriser) 2.7 ms a frame with ink kept (12.3 → 15.0 ms) and
   8.5 ms over a full redraw in a frame where ink ages (49.0 → 57.5 ms); the 0.6 ms budget is for a GPU and has not
   been measured on one. A see-through group (`El::opacity`) that contains a plate is drawn as if it ended where
