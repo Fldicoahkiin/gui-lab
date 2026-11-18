@@ -46,3 +46,48 @@ fn a_skip_link_moves_focus_into_its_target_and_is_drawn_only_while_focused() {
     assert!(ui.activate("skip"));
     assert_eq!(ui.focus(), Some("d"));
 }
+
+fn cui() -> Ui<(), M> { ui() }
+
+#[test]
+fn clearing_the_focus_leaves_nothing_focused_and_tab_goes_on_from_there() {
+    let mut ui = cui();
+    ui.tick(1.0);
+    ui.key(Key::Tab, false);
+    ui.key(Key::Tab, false);
+    ui.key(Key::Tab, false);
+    assert_eq!(ui.focus(), Some("a"));
+    ui.command(amenui::morph::Cmd::ClearFocus);
+    assert_eq!(ui.focus(), None, "the command clears the focus");
+    ui.key(Key::Tab, false);
+    assert_eq!(ui.focus(), Some("b"), "Tab goes on after the element that had it");
+    // Nothing focused: the command asks for nothing.
+    let mut ui = cui();
+    ui.tick(2.0);
+    let before = ui.needs_frame(2.0);
+    ui.clear_focus();
+    assert_eq!(ui.needs_frame(2.0), before, "clearing no focus asks for nothing");
+}
+
+#[test]
+fn the_corners_leave_a_cleared_focus_as_they_leave_any_focus_and_the_page_is_as_never_focused() {
+    let Ok(mut o) = amenui::offscreen::Offscreen::try_new(600, 400) else { eprintln!("no GPU adapter here: skipped"); return };
+    let look = amenui::style::Look { material: amenui::style::Material::Plain, ..amenui::style::Look::default() };
+    let run = |o: &mut amenui::offscreen::Offscreen, how: u8| -> Vec<Vec<u8>> {
+        let mut ui = cui();
+        ui.tick(1.0);
+        if how > 0 {
+            for _ in 0..3 { ui.key(Key::Tab, false); }
+            ui.tick(1.5);
+            let _ = o.render(&mut ui, &look);
+            match how {
+                1 => ui.clear_focus(),
+                _ => ui.command(amenui::morph::Cmd::ClearFocus),
+            }
+        }
+        (0..8).map(|f| { ui.tick(1.5 + 0.016 * (f + 1) as f32); o.render(&mut ui, &look) }).collect()
+    };
+    let (by_call, by_cmd, never) = (run(&mut o, 1), run(&mut o, 2), run(&mut o, 0));
+    assert!(by_call == by_cmd, "the method and the command leave the same way");
+    assert!(by_call.last() == never.last(), "once the corners have gone the page is as never focused");
+}

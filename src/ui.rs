@@ -392,6 +392,8 @@ pub struct Ui<S, M> {
     text_births: HashMap<u64, f32>,
     hover: Option<String>,
     focus: Option<String>,
+    /// The element that had the focus when it was cleared (`clear_focus`): Tab goes on from it.
+    after_focus: Option<String>,
     pressed: Option<String>,
     /// The element being dragged, if its press started a drag.
     capture: Option<Capture<M>>,
@@ -859,7 +861,7 @@ impl<S, M: Clone> Ui<S, M> {
         let mut ui = Self {
             state, view, update, text: Text::new(faces), size: (0.0, 0.0), scale, clock: 0.0, wall: 0.0, bclock: crate::beat::Clock::default(), sent: vec![], sets: vec![], nodes: vec![], scene: Scene::default(),
             owners: vec![], page_len: 0, field: Field::default(), scroll: HashMap::new(), births: HashMap::new(), ramp: None, text_births: HashMap::new(),
-            hover: None, focus: None, pressed: None, capture: None, modal_at: None, modal_key: None, return_focus: None, split: None, splits: 0,
+            hover: None, focus: None, after_focus: None, pressed: None, capture: None, modal_at: None, modal_key: None, return_focus: None, split: None, splits: 0,
             keyboard: false, marks: Marks::default(), sized: None, commands: None, unseen: vec![], base: vec![], tags: vec![], roles: vec![],
             run: None, painted_phase: 0, flows: HashMap::new(), ghosts: vec![], body_len: 0, animating: false, lifted: HashMap::new(),
             gaze_of: None, gaze_seen: HashMap::new(), annots: vec![], readout: gaze::Readout::default(), hovered: None, pointer_of: None, scripted: false, ticked: None, warm: None, warmed: None, owed: false, unused_key: None, shortcut: None, scrolled_of: None, released: None, input: None,
@@ -1978,6 +1980,14 @@ impl<S, M: Clone> Ui<S, M> {
         self.dirty = true;
         if self.node(key).is_some_and(|n| n.focusable) { self.keyboard = true; self.set_focus(Some(key.to_owned())); }
     }
+    /// Take the focus away (`Cmd::ClearFocus`): nothing has it, what is shown only with focus inside it
+    /// folds away, the caret and the input method go, and the corners leave as they do when the focus
+    /// moves on. The next Tab goes on from the element that had it. Nothing when nothing has the focus.
+    pub fn clear_focus(&mut self) {
+        let Some(k) = self.focus.clone() else { return };
+        self.after_focus = Some(k);
+        self.set_focus(None);
+    }
     /// Assistive technology activated the element `key` (a click on its mirror): the same message as a
     /// press or Enter, with the same front and commit. Returns whether it did anything.
     pub fn activate(&mut self, key: &str) -> bool {
@@ -2242,6 +2252,7 @@ impl<S, M: Clone> Ui<S, M> {
 
     fn set_focus(&mut self, to: Option<String>) {
         if to == self.focus { return; }
+        if to.is_some() { self.after_focus = None; }
         let old = std::mem::replace(&mut self.focus, to);
         let blur = old.and_then(|k| self.node(&k).and_then(|n| n.on_blur.clone()));
         if let Some(m) = blur { self.send(m); }
@@ -2256,7 +2267,8 @@ impl<S, M: Clone> Ui<S, M> {
         let mut order: Vec<usize> = (self.modal_at.unwrap_or(0)..self.nodes.len()).filter(|&i| self.nodes[i].focusable && self.nodes[i].tab_order >= 0).collect();
         order.sort_by_key(|&i| match self.nodes[i].tab_order { 0 => i32::MAX, t => t });
         if order.is_empty() { return; }
-        let cur = self.focus.as_deref().and_then(|f| order.iter().position(|&i| self.nodes[i].key == f));
+        // After `clear_focus`, Tab goes on from the element that had it.
+        let cur = self.focus.as_deref().or(self.after_focus.as_deref()).and_then(|f| order.iter().position(|&i| self.nodes[i].key == f));
         let n = order.len();
         let next = match (cur, back) {
             (None, false) => 0,
@@ -2434,6 +2446,7 @@ impl<S, M: Clone> Ui<S, M> {
                 Cmd::Press { key } => { self.scripted = true; self.activate(&key); self.scripted = false; }
                 Cmd::Pointer { x, y } => { let s = self.scale; self.field.pointer[0] = x * s; self.field.pointer[1] = y * s; self.dirty = true; }
                 Cmd::Focus { key } => self.focus_key(&key),
+                Cmd::ClearFocus => self.clear_focus(),
                 Cmd::ScrollTo { key } => self.scroll_to(&key),
                 Cmd::Scrub(at) => self.scrub(at),
                 Cmd::Hold(n) => {

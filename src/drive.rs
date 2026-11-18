@@ -68,6 +68,8 @@ pub enum CmdSpec {
     Rewind(f32),
     /// `Cmd::Set`: set one number of the look by its name.
     Set { name: String, value: f32 },
+    /// `Cmd::ClearFocus`: nothing has the focus.
+    ClearFocus,
 }
 fn one() -> f32 { 1.0 }
 fn radius() -> f32 { 120.0 }
@@ -92,6 +94,7 @@ impl CmdSpec {
             CmdSpec::Hold(n) => Cmd::Hold(n),
             CmdSpec::Retrigger => Cmd::Retrigger,
             CmdSpec::Rewind(b) => Cmd::Rewind(b),
+            CmdSpec::ClearFocus => Cmd::ClearFocus,
             CmdSpec::Set { name, value } => {
                 Look::default().set(&name, value).map_err(|e| DriveError::BadCommand(e.to_string()))?;
                 Cmd::Set { name, value }

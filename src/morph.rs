@@ -206,6 +206,9 @@ pub enum Cmd {
     Commit { x: f32, y: f32, scope: Option<String> },
     /// Give the element `key` the focus (as the keyboard would), after this layout.
     Focus { key: String },
+    /// Take the focus away: nothing has it, its corners leave as they do when it moves on, and the next
+    /// Tab goes on from the element that had it (`Ui::clear_focus`).
+    ClearFocus,
     /// Scroll so the element `key` is at the top of its scroller (an outline's link), after this layout.
     ScrollTo { key: String },
     /// Hold the morph in progress at this point of its flight (0 = the source's tiles, 1 = the target's),
