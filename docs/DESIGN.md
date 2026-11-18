@@ -117,7 +117,7 @@ height reaches the bottom of the last line.
 Acceptance: `tests/wrap.rs` reads the glyph atlas and checks that every inked pixel is at least
 `gap − 1` from the circle's ink (beside the circle, the horizontal distance in that line's band; above
 and below, the straight-line distance; with a control that ignores the obstacle). `tests/wrap_around.rs`
-measures, at twenty positions of the bust and in two languages, each line box (`Ui::line_boxes`) against
+measures, at twenty positions of the tree cut-out and in two languages, each line box (`Ui::line_boxes`) against
 the outline on both sides: in bands with text on both sides the two distances differ by at most 2 px, and
 a right piece is `gap` from the outline (plus or minus one grid step), except left pieces that stopped at
 the justification limit. The same file checks, at twenty positions and in two languages, that every piece
@@ -130,7 +130,7 @@ and puts it in this piece with a hyphen. The hyphen is one more glyph drawn afte
 after layout, and `line_boxes` counts it in the line width. `Around::hyphenate` is on by default and
 `track_max` can be set to 0 to turn tracking off; `tests/wrap_around.rs` also checks lines with
 hyphenation among the twenty positions. Glyphs never overlap each other (both languages). `check` item 8
-reads pixels back in the light theme to check the same (a circle and the bust silhouette, several gaps).
+reads pixels back in the light theme to check the same (a circle and the tree cut-out's outline, several gaps).
 
 Layers: a `modal` element, wherever it is written in the view, is lifted out by the runtime and made the
 root's last child, filling the window, so it is drawn on top. A face missing a glyph falls back to the
@@ -147,7 +147,7 @@ itself, in device pixels) and `resp` (how far the field may loosen it and how it
 - Glyphs: one instance per glyph. Each atlas pixel stores coverage and the signed distance to the
   nearest stroke (a distance transform, within 12 px).
 - Shapes: rectangles with an analytic distance, filled or border only.
-- Pictures: one instance per texture. Where a texture has alpha (a cutout such as `demo::CUTOUT`),
+- Pictures: one instance per texture. Where a texture has alpha (a cut-out such as `pictures::CUTOUT`),
   pixels under half alpha count as nothing: no ink written, not counted as picture, so the picture has
   a true outline.
 
@@ -785,7 +785,7 @@ after release, back to 0 within 1.5 s and no more frames wanted; two fingers nei
 finger on a slider captures at once and still changes its value dragged far outside it; a 10 px control
 can be pressed 8 px outside its edge but not more than 14 px from its center, is still drawn at 10 px, and
 shows the pointing hand when hovered in the grown area; cursor shapes: text for the input field and source,
-the hand for the side rail, `col-resize` for the divider (during a drag too), "grab" for the bust,
+the hand for the side rail, `col-resize` for the divider (during a drag too), "grab" for the tree cut-out,
 "grabbing" during a drag. On the web (SwiftShader, CDP `Input.dispatchTouchEvent` with time stamps 16 ms
 apart): one swipe scrolls ten thousand rows by 290 px, the fling starts on lift and stops at 716 px, a tap
 doesn't scroll, and the console has no errors.
@@ -2810,7 +2810,7 @@ style and two others, and in a 420 × 800 narrow window.
 | # | Address | Default style | What it is | Interaction | Parameters |
 |---|---|---|---|---|---|
 | 1 | `scene-opening` Opening | Neo-Dotmatrix | A screen full of dots (a passage made of ●) and a Start button. Pressed, the dots scatter into particles and gather into the title "The same mechanism", pause, then scatter again and assemble a page (title, search field, three picture cards, a switch, a number, a button, tabs). Then a "machine" operates the page on a beat: its mark is a pointer-like thing of about 34 px (a crosshair, four corner brackets, a center dot), framed by the annotation layer with its coordinates written beside it (`{xy}`), which also frames the control it is on and writes what it is doing. Each step the mark flies from the last control to the next (a §1.10 morph with a large stagger, so it is a short string of particles), acting only after landing, with a front where it acts; it types into the text field (each glyph condensing), flips the switch, adds 4 to the number, changes tab and presses Publish. A line at the bottom says what it is doing ("02 / 09  typing"). Any press, scroll or key hands control to you: the machine stops, the mark disappears, and the bottom line becomes "You took over" and "Continue the demo". When the demo ends the page is an ordinary page. | Start (button, Enter); any action takes over; continue; every control on the page | beat, flight, arc, pitch |
-| 2 | `scene-reading` Reading an article | Lo-Fi Print | An article of about 900 words, the body set with `.around` around obstacles: a plaster bust silhouette (a picture with alpha), a circle, or both. Where an obstacle splits a line into two pieces, each piece takes a line. | Drag the bust and the circle (the arrow keys move them too, Shift × 4), the body breaks again at every step; a segmented choice changes obstacles | gap, picture width, font size, line height |
+| 2 | `scene-reading` Reading an article | Lo-Fi Print | An article of about 900 words, the body set with `.around` around obstacles: the lone tree cut out of its ground (a picture with alpha), a circle, or both. Where an obstacle splits a line into two pieces, each piece takes a line. | Drag the tree and the circle (the arrow keys move them too, Shift × 4), the body breaks again at every step; a segmented choice changes obstacles | gap, picture width, font size, line height |
 | 3 | `scene-printing` How a picture prints | Cyberminimalism | A picture filling the whole stage (cropped to fit, centered), cut by four dividers into five windows, each the same picture in the same place with its own `Markr` slot (characters, palette-limited pixel art, strokes following form, light points, brick relief); above each window its number, mark set and pitch. The character window reads clearly even on a dark ground: pitch at least 9, 16 characters, original colour brightened. Dividers sit in the gaps between windows and labels above the picture, so every pixel on the picture is the picture's own. At rest it is the original; the pointer's lens is hard-edged (`Fx::lens_hard`): fully loose within its radius, which is this window's real marks, and untouched outside, with no half-loosened blocks. A second mode, "One mark set": the whole picture is one window, with mark set, pitch, levels and palette set by number in the parameter bar, and a compare line (`El::wipr`) with the original on the left and the marks on the right, moved by dragging the picture or the dot under it. | Move the pointer; drag the dividers or move them with the arrow keys; five / one; change picture; drag the compare line | five: pitch, levels, lens, looseness; one: pitch, levels, mark set, palette |
 | 4 | `scene-morph` Morph | Neo-Dotmatrix | Four forms in the same place, the stage filling almost the whole window: a very large heavy word (`El::weight`), a picture, the same picture's marks (held at looseness 1) and a complete small interface (a card with a title, a picture, a sentence, a Favourite switch, a Copies number and a Go button). Every change of form is a §1.10 morph: the source loosens, particles fly, the target closes. Once the small interface lands it can be used; pressing Go turns it back into the word. A row of steps under the stage (01 word — 02 picture — 03 marks — 04 interface) jumps to the step pressed; a Loop switch makes it hold each form for 2.6 s and go on by itself. | Press the stage, Next, → / Space / Enter, ← to go back; jump by step; the Loop switch; the small interface's controls | flight, arc, stagger, pitch |
 | 5 | `scene-xray` Taking it apart | Tech-Manual | A small application (a title, a picture, a list, a button). While Space (or the "Hold to take apart" button) is held, the top layer flows away to the right, and in its place its outline layer (borders only) and the G-buffer layer (the `near` material, panels unfilled, since a filled panel would cover the SDF of everything above it) condense, each labelled with its name; the annotation layer frames the title, picture, list and button with numbers, names and sizes. On release the top layer flies back and the other two loosen and fade. In narrow windows the three layers stack vertically. | Hold Space or the button; a "Keep apart" switch | layer spacing, annotation count, iso-line spacing |

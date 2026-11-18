@@ -11,7 +11,7 @@
 //! usage: sheet <out_dir>
 //!        sheet --material <name> [--loose 1,0.7,0.4,0.2,0 | --sweep <n>] [--theme <id>] [--arrival] [--out sheet.png]
 //! ```
-use amenui::pictures::{self, BUST, PICTURE_SIZES, SKY, TERRAIN};
+use amenui::pictures::{self, PICTURE_SIZES, SKY, TERRAIN, TREE};
 use amenui::el::{El, col, picture, row};
 use amenui::marks::{self, Atlas};
 use amenui::offscreen::{Offscreen, save_png};
@@ -22,17 +22,17 @@ const W: u32 = 1500;
 const H: u32 = 620;
 
 /// Two rows of the three pictures, fully loosened: row 1 uses slot 0, row 2 slot 1. With `wipe`,
-/// nothing is loosened at rest and the bust of row 2 gets the compare line (the field holds one).
+/// nothing is loosened at rest and the tree of row 2 gets the compare line (the field holds one).
 struct Sheet { wipe: Option<f32> }
 
 fn view(s: &Sheet) -> El<()> {
     let line = |slot: u8, r: usize| {
         let mut out = row().gap(12.0);
-        for id in [SKY, TERRAIN, BUST] {
+        for id in [SKY, TERRAIN, TREE] {
             let (w, h) = PICTURE_SIZES[id as usize];
             let mut p = picture(id, h as f32 / w as f32).markr(slot).key(format!("p{r}/{id}")).grow(1.0);
             match s.wipe {
-                Some(x) if r == 1 && id == BUST => p = p.wipr(x),
+                Some(x) if r == 1 && id == TREE => p = p.wipr(x),
                 Some(_) => {}
                 None => p = p.loose(1.0),
             }
