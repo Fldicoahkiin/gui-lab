@@ -5197,6 +5197,9 @@ fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], of
     });
     let mut style = style;
     crate::el::snap_style(&mut style);
+    // Every element is the box its absolutely placed children are pinned in (all four insets against
+    // its padding box, as CSS does for a positioned parent), not the window.
+    if style.position == taffy::Position::Static { style.position = taffy::Position::Relative; }
     built.styles.push(style);
     built.kids.push(vec![]);
     for (n, c) in children.into_iter().enumerate() {

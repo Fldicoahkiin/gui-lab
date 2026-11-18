@@ -290,3 +290,41 @@ fn a_row_in_a_box_as_wide_as_its_content_stays_on_one_line() {
         }
     }
 }
+
+/// A toast pinned by two of its four insets inside a card, the card `depth` levels down, in a scroll
+/// node or not, zoomed by `zoom`, the whole moved by `dx`.
+mod pinned {
+    use amenui::el::{El, Paint, col, text};
+    pub struct S { pub pair: usize, pub depth: usize, pub scroll: bool, pub zoom: f32, pub dx: f32 }
+    pub const PAIRS: [[bool; 4]; 6] = [[true, true, false, false], [true, false, true, false], [true, false, false, true], [false, true, true, false], [false, true, false, true], [false, false, true, true]];
+    pub fn view(s: &S) -> El<()> {
+        let p = PAIRS[s.pair];
+        let v = |on: bool| on.then_some(12.0);
+        let mut inner = col().key("card").width(320.0).height(200.0).pad(14.0, 10.0).fill(Paint::FAINT)
+            .child(text("Card", 14.0, Paint::TEXT))
+            .child(text("Saved", 13.0, Paint::TEXT).key("toast").absolute(v(p[0]), v(p[1]), v(p[2]), v(p[3])));
+        for d in 1..s.depth { inner = col().key(format!("wrap{d}")).pad(10.0, 10.0).child(inner); }
+        let inner = inner.zoom(s.zoom);
+        let mut page = col().key("page").pad(60.0 + s.dx, 40.0).fill_width().fill_height();
+        page = if s.scroll { page.child(col().key("scroller").scroll().height(500.0).child(inner)) } else { page.child(inner) };
+        page
+    }
+}
+
+#[test]
+fn an_absolute_element_is_pinned_by_all_four_insets_to_its_parent() {
+    let mk = |s: pinned::S| { let mut ui = amenui::ui::Ui::new(s, pinned::view, |_, _| {}, fonts(), 900, 700, 1.0); ui.tick(0.1); ui };
+    for pair in 0..6 { for depth in 1..=3 { for scroll in [false, true] { for zoom in [1.0f32, 0.75, 1.5] {
+        let ui = mk(pinned::S { pair, depth, scroll, zoom, dx: 0.0 });
+        // The padding box: the card has no border, so its rect.
+        let (c, t) = (ui.node("card").unwrap().rect, ui.node("toast").unwrap().rect);
+        let want = 12.0 * zoom;
+        let p = pinned::PAIRS[pair];
+        let got = [t.x - c.x, t.y - c.y, c.right() - t.right(), c.bottom() - t.bottom()];
+        for k in 0..4 { if p[k] { assert!((got[k] - want).abs() < 0.5, "pair {pair} depth {depth} scroll {scroll} zoom {zoom}: edge {k} is {} from the card's padding box, want {want}", got[k]); } }
+        let moved = mk(pinned::S { pair, depth, scroll, zoom, dx: 100.0 });
+        let t2 = moved.node("toast").unwrap().rect;
+        assert!((t2.x - t.x - 100.0).abs() < 0.5 && (t2.y - t.y).abs() < 0.5, "pair {pair}: the card moved 100 px, the toast {}", t2.x - t.x);
+    } } } }
+}
+
