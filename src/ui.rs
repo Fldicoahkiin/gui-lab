@@ -432,12 +432,14 @@ pub struct Ui<S, M> {
     /// ends on the settled page even when the motion ends between two frames.
     owed: bool,
     /// Frames a second for what moves by itself (`Ui::ambient_fps`), when the last input came and when
-    /// the last frame was drawn (runtime clock, s).
+    /// the last frame was drawn (the runtime's own clock, s).
     ambient: f32,
     input_t: f32,
     frame_t: f32,
-    /// The runtime's own clock (what `tick` was given).
+    /// The runtime's own clock (what `tick` was given), and the gap between the last two ticks (the
+    /// display's refresh, for a host that ticks on each one).
     wall: f32,
+    tick_gap: f32,
     /// Where the beat clock is against the runtime's.
     bclock: crate::beat::Clock,
     /// Commands sent from outside the application (`Ui::command`), taken with the next update's.
@@ -952,7 +954,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// Input came (`heard`, and pointer moves and releases, which a state is not told of): what it
     /// starts is not paced for a second (`Ui::ambient_fps`).
     fn heard(&mut self) {
-        if !self.scripted { self.input_t = self.clock; }
+        if !self.scripted { self.input_t = self.wall; }
         if !self.scripted && let Some(f) = self.input && f(&mut self.state) { self.relayout(); }
     }
     /// Pace what moves by itself to `n` frames a second (DESIGN.md §1.29): the map, its breath and
@@ -963,8 +965,11 @@ impl<S, M: Clone> Ui<S, M> {
     /// The time before which a frame wanted only by what moves by itself waits (`ambient_fps`), if any.
     fn paced_until(&self, now: f32) -> Option<f32> {
         if self.ambient >= 60.0 || now - self.input_t < 1.0 { return None; }
+        // A frame is due within half a refresh of its time, so 30 on a 60 Hz display is every second
+        // refresh even when the host's timestamps jitter.
         let next = self.frame_t + 1.0 / self.ambient;
-        (now + 1e-4 < next).then_some(next)
+        let tol = (0.5 * self.tick_gap).min(0.5 / self.ambient).max(1e-4);
+        (now + tol < next).then_some(next)
     }
     /// Tell the state when a key is let go; `f` returns whether the state changed.
     pub fn on_key_up(mut self, f: fn(&mut S, Key) -> bool) -> Self { self.released = Some(f); self }
@@ -988,7 +993,7 @@ impl<S, M: Clone> Ui<S, M> {
             hover: None, focus: None, after_focus: None, fit_short: vec![], fit_k: HashMap::new(), pressed: None, capture: None, modal_at: None, modal_key: None, return_focus: None, split: None, splits: 0,
             keyboard: false, marks: Marks::default(), sized: None, commands: None, unseen: vec![], base: vec![], tags: vec![], roles: vec![],
             run: None, painted_phase: 0, flows: HashMap::new(), ghosts: vec![], grows: vec![], ground_seen: None, ground_hold: None, body_len: 0, animating: false, lifted: HashMap::new(),
-            gaze_of: None, gaze_seen: HashMap::new(), annots: vec![], readout: gaze::Readout::default(), hovered: None, pointer_of: None, scripted: false, ticked: None, warm: None, warmed: None, owed: false, ambient: 60.0, input_t: -1e9, frame_t: -1e9, unused_key: None, shortcut: None, scrolled_of: None, released: None, input: None,
+            gaze_of: None, gaze_seen: HashMap::new(), annots: vec![], readout: gaze::Readout::default(), hovered: None, pointer_of: None, scripted: false, ticked: None, warm: None, warmed: None, owed: false, ambient: 60.0, input_t: -1e9, frame_t: -1e9, tick_gap: 1.0 / 60.0, unused_key: None, shortcut: None, scrolled_of: None, released: None, input: None,
             dirty: true, look_of: None, locale_of: None, timing: Timing::default(), wake_of: None, latest_birth: f32::NEG_INFINITY, gaze_until: f32::NEG_INFINITY,
             marks_moving: false, caret: None, caret_on: true, static_loose: false, mclock: 0.0, moving: false, gclock: 0.0, ground_moving: false,
             perf: crate::perf::Perf { quality: 1.0, ..Default::default() }, span: 0, painting: false, overlay: 0, overlay_at: 0.0, overlay_box: None, fade_s: REDUCED_FADE, came: vec![], arriving: HashMap::new(), sweeping: false, swept_nodes: vec![], remeasure: false, plate_slots: Default::default(), plate_clear: vec![], plate_over: vec![], pclock: 0.0, plate_frame: f32::NEG_INFINITY, assets: HashMap::new(), assets_asked: Default::default(), shape_seen: 0.0, hud_idle: false, rebuilt: 0,
@@ -1411,7 +1416,7 @@ impl<S, M: Clone> Ui<S, M> {
         self.dirty = false;
         self.owed = self.moving_at(self.beat_of(self.clock));
         self.plate_frame = self.clock;
-        self.frame_t = self.clock;
+        self.frame_t = self.wall;
     }
     /// Which node each plate this paint draws is in which slot: a plate keeps its slot while its element
     /// is there; a slot whose element has gone is emptied; beyond four plates, or twice the window's
@@ -1643,6 +1648,7 @@ impl<S, M: Clone> Ui<S, M> {
     pub fn tick(&mut self, t: f32) {
         crate::budget::begin_frame();
         let wall = t;
+        if t > self.wall && t - self.wall < 0.1 { self.tick_gap = t - self.wall; }
         self.wall = t;
         self.bclock.step(t);
         // A hold that has ended presents the page as the state has it now.
@@ -1800,7 +1806,7 @@ impl<S, M: Clone> Ui<S, M> {
     fn pointer_moved_now(&mut self, id: u64, kind: PointerKind, x: f32, y: f32) {
         let now = self.event_t.take().unwrap_or(self.clock);
         self.ev = now;
-        if !self.scripted { self.input_t = self.clock; }
+        if !self.scripted { self.input_t = self.wall; }
         if kind != PointerKind::Touch { self.touching = false; self.pointer_move_now(x, y); return; }
         let Some(t) = &mut self.touch else { return };
         if t.id != id || t.mode == TouchMode::Cancelled { return; }
@@ -1866,7 +1872,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// A pointer let go. A finger that scrolled flings on at its speed (at most `max_velocity`); one that
     /// did not is a tap: the press is sent now.
     pub fn pointer_up(&mut self, id: u64, kind: PointerKind, x: f32, y: f32) {
-        if !self.scripted { self.input_t = self.clock; }
+        if !self.scripted { self.input_t = self.wall; }
         self.settle();
         self.ev = self.event_t.take().unwrap_or(self.clock);
         if kind != PointerKind::Touch { self.release(x, y); return; }
@@ -1923,7 +1929,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// Logical px.
     pub fn pointer_move(&mut self, x: f32, y: f32) { self.ev = self.event_t.take().unwrap_or(self.clock); self.deferred(|ui| ui.pointer_move_now(x, y)) }
     fn pointer_move_now(&mut self, x: f32, y: f32) {
-        if !self.scripted { self.input_t = self.clock; }
+        if !self.scripted { self.input_t = self.wall; }
         self.dirty = true;
         let s = self.scale;
         self.keyboard = false;
@@ -2018,7 +2024,7 @@ impl<S, M: Clone> Ui<S, M> {
     }
     /// The pointer left the window.
     pub fn pointer_leave(&mut self) {
-        if !self.scripted { self.input_t = self.clock; }
+        if !self.scripted { self.input_t = self.wall; }
         self.settle();
         self.dirty = true;
         self.field.pointer = [-1e5, -1e5, 0.0, 0.0];
@@ -2106,7 +2112,7 @@ impl<S, M: Clone> Ui<S, M> {
 
     /// The mouse button came up at (`x`, `y`).
     pub fn release(&mut self, x: f32, y: f32) {
-        if !self.scripted { self.input_t = self.clock; }
+        if !self.scripted { self.input_t = self.wall; }
         self.settle();
         self.dirty = true;
         if let Some(k) = self.text_capture.take() && self.field_at().is_some_and(|f| self.nodes[f].key == k)

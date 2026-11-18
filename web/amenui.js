@@ -101,8 +101,10 @@ export async function mount(stage, opts) {
       axUpdate();
       fetchWanted();
       warmUpdate();
+      // A wait ends on an animation frame: the timer wakes a refresh early, so a frame due in one
+      // refresh (30 a second on a 60 Hz display) is drawn on that refresh and not the one after.
       if (d === 0) raf = requestAnimationFrame(loop);
-      else if (d > 0) timer = setTimeout(kick, d * 1000);
+      else if (d > 0) timer = setTimeout(kick, Math.max(0, d * 1000 - 20));
     };
     const kick = () => { if (!raf) raf = requestAnimationFrame(loop); };
     // The warm-up goes on in idle time, whether or not the page draws (a page at rest draws nothing):

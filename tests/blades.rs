@@ -358,6 +358,28 @@ fn frames_at_thirty_and_sixty_a_second_are_the_same_at_the_same_moment() {
 }
 
 #[test]
+fn thirty_a_second_on_a_sixty_hertz_display_is_every_second_refresh() {
+    // A host that ticks on every refresh of a 60 Hz display (16.67 ms), its timestamps a little off
+    // either way, as a browser's are, while a gust moves the map; no input.
+    let mut u = open(300, true);
+    u.ambient_fps(30.0);
+    let t0 = u.now() + 2.0;
+    u.tick(t0);
+    u.command(gust(0.79));
+    let mut drawn = vec![];
+    for k in 1..=240u32 {
+        let jitter = [0.0, -0.6, 0.4, -0.3, 0.7, -0.8][(k % 6) as usize] / 1000.0;
+        let t = t0 + k as f32 / 60.0 + jitter;
+        u.tick(t);
+        if u.needs_frame(t) { u.settle(); u.frame_drawn(); drawn.push(k); }
+    }
+    let n = drawn.len();
+    assert!((118..=121).contains(&n), "{n} frames in 4 s at 30 a second: {drawn:?}");
+    let gaps: Vec<u32> = drawn.windows(2).map(|w| w[1] - w[0]).collect();
+    assert!(gaps.iter().all(|&g| g == 2), "every second refresh: {gaps:?}");
+}
+
+#[test]
 fn three_thousand_blades_are_one_draw_that_costs_nothing_while_only_the_map_moves() {
     let cost = |n: usize| {
         let mut u = open(n, false);

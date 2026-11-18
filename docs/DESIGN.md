@@ -2465,8 +2465,10 @@ release, the page is identical pixel for pixel to how it was before and wants no
   are a cell apart; the GPU reads them bilinearly, so the edge is smooth, not in cells). With W-01's 6 s, a 40 px
   path's stalk leans over 3° 5.0 s after the pointer passed and is upright at 6.0 s.
 - **Pacing what moves by itself** (`Ui::ambient_fps(n)`, 60 by default, which is no pacing): a frame wanted only by
-  what moves by itself (the map, gusts, breath, flows, ticks) waits until `1 / n` s after the last drawn one;
-  `needs_frame` is false until then and `next_wake` gives that time. Input is never paced, and neither is what it
+  what moves by itself (the map, gusts, breath, flows, ticks) waits until `1 / n` s after the last drawn one,
+  within half the gap between the last two ticks (at most `0.5 / n` s), so at 30 on a 60 Hz display with
+  timestamps a little off it is every second refresh; `needs_frame` is false until then and `next_wake` gives
+  that time (`web/amenui.js` sets its timer 20 ms early, so the wait ends on the refresh it is due on). Input is never paced, and neither is what it
   starts until 1 s after the last input; after that it is what moves by itself (a trail that takes 6 s to close
   does not run at 60 frames a second). Everything goes by the clock, not by frames, so a frame at a given moment
   is the same bytes at 30 and at 60.
