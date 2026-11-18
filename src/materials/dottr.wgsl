@@ -64,7 +64,7 @@ fn m_dottr(frag: vec2f) -> vec3f {
   if (fmap_on() && !calm_at(gcen)) { lvl += fmap_e(gcen) * 0.95; gat = gcen + fmap_flow(gcen) * gp * 0.5; }
   lvl *= 1.0 - smoothstep(0.1, 0.35, near(gcen).r);
   let gu = unit(frag - gat, gp * 0.42 * clamp(lvl, 0.0, 1.0)) * step(0.05, lvl);
-  g = mix(g, u.fg.rgb, gu * 0.34);
+  g = mix(g, u.fg.rgb, gu * 0.34 * select(0.0, 1.0, ground_marks()));
   let out = mix(g, col, alpha);
   return mix(out, exact(frag), core);
 }

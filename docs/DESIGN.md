@@ -2645,13 +2645,12 @@ ends where it was going, and fronts in flight stop.
 | `decode` | `El::decode` text is there at once (§1.28) |
 | `material_still` | the materials' clocks stand (their rest pose: no drift, no slips, no wandering thread) and the beat stops |
 | `bloom` | no bloom pass (`post.bloom`) |
-
-The field dots (the ground's own marks in each material) have no switch yet: each material draws them in its own
-shader, and a switch for them comes with the uniforms every material shader gets for the console's plate.
+| `ground` | the field's dots, the ground's own marks (dottr's ground units, smudgr's paper grain), are not drawn: the ground is the theme's plain ground, the same under fronts, the pointer and the field map; a material copied with `amenui add material` reads the switch as `ground_marks()` |
 
 Acceptance: `tests/off.rs` (for each switch, the frame after what would set the effect off is byte for byte the frame
 the effect settles on, and the page asks for no frames in the 2 s after; a flow switched off mid-flight ends at once;
-everything is on by default).
+everything is on by default; with `ground` off the empty ground is the theme's ground under a front and the pointer,
+and no frames are asked for once the front is over).
 
 ## 2. Parameters must be exact
 

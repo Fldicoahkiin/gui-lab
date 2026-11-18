@@ -23,7 +23,7 @@ struct U {
   fg: vec4f,
   accent: vec4f,
   pointer: vec4f,  // x, y, strength (device px), how hard the lens's edge is
-  wipe: vec4f,     // half-plane source: line x, strength, _, _
+  wipe: vec4f,     // half-plane source: line x, strength; z: the ground's own marks off (Off::ground), _
   wipe_rect: vec4f,// where it acts: x0, y0, x1, y1
   split: vec4f,    // a commit: origin x, y (device px), start time, on
   fronts: array<vec4f, 8>, // x, y, start time, strength
@@ -70,6 +70,8 @@ fn mp(m: i32, i: i32) -> vec4f { return u.mats[m * 2 + i]; }
 fn eff_mat(code: f32) -> i32 { if (code >= 127.5) { return i32(round(code)) % 16; } return i32(u.fd.x); }
 fn hue_col(h: f32) -> vec3f { if (h > 1.5) { return u.third.rgb; } if (h > 0.5) { return u.second.rgb; } return u.accent.rgb; }
 fn loose_scale() -> f32 { return u.ground2.w; }
+/// The ground's own marks are drawn (`Off::ground` not set).
+fn ground_marks() -> bool { return u.wipe.z < 0.5; }
 
 // (strength now, signed distance to the front in device px; negative = already passed)
 fn front_at(p: vec2f, r: vec4f) -> vec2f {

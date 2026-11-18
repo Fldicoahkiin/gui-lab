@@ -1474,7 +1474,7 @@ impl Renderer {
             fb: [fx.wave_speed, fx.wave_life, fx.wave_width, fx.wave_tail],
             fc: [fx.push, fx.lens, fx.enter, flag(fx.square)],
             fd: [look.material.id() as f32, flag(self.out_format.is_srgb()), SPREAD as f32, marks::PALETTES.len() as f32],
-            bg, fg, accent, pointer: [field.pointer[0], field.pointer[1], field.pointer[2], fx.lens_hard], wipe: field.wipe, wipe_rect: field.wipe_rect, split, fronts: field.fronts, pics,
+            bg, fg, accent, pointer: [field.pointer[0], field.pointer[1], field.pointer[2], fx.lens_hard], wipe: [field.wipe[0], field.wipe[1], flag(look.off.ground), field.wipe[3]], wipe_rect: field.wipe_rect, split, fronts: field.fronts, pics,
             ground2: [th.ground2[0], th.ground2[1], th.ground2[2], look.loose_scale], second: c(th.second), third: c(th.third),
             burst: field.burst, burst_t: [field.burst_t[0], field.burst_t[1], field.burst_t[2], look.legible_cap], mats, calm: field.calm, qual, scopes: field.scopes,
             rip: [look.loose_max, if split[3] > 0.0 { self.tr_loose } else { 0.0 }, if split[3] > 0.0 { look.transition.steps.iter().rposition(|st| st.kind != crate::preset::StepKind::None).map_or(0.0, |i| i as f32 + 1.0) } else { 0.0 }, mt[1]],

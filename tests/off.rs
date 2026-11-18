@@ -169,3 +169,35 @@ fn turned_off_mid_flight_an_effect_ends_where_it_was_going() {
     let rest = shot(&mut o, &mut b, 9.0);
     assert!(cut == rest, "the flow went on ({:.4} differs)", diff(&cut, &rest));
 }
+
+#[test]
+fn ground_off_the_field_dots_are_not_drawn_and_ask_for_no_frames() {
+    let Ok(mut o) = Offscreen::try_new(W, H) else { eprintln!("no GPU adapter here: skipped"); return };
+    let bg = |px: &[u8]| -> usize {
+        // The empty ground at the bottom of the page: pixels that are not the theme's ground.
+        let g = [px[((H - 2) * W * 4 + 8) as usize], px[((H - 2) * W * 4 + 9) as usize], px[((H - 2) * W * 4 + 10) as usize]];
+        let mut n = 0;
+        for y in (H - 60)..H { for x in 0..W { let i = ((y * W + x) * 4) as usize; if (0..3).any(|c| (px[i + c] as i32 - g[c] as i32).abs() > 1) { n += 1; } } }
+        n
+    };
+    for (m, dark) in [(1u8, false), (1, true)] {
+        let on = { let mut a = mk(S { m, dark, ..S::default() }); shot(&mut o, &mut a, 2.0) };
+        let mut a = mk(S { m, dark, off: Off { ground: true, ..Off::default() }, ..S::default() });
+        let off = shot(&mut o, &mut a, 2.0);
+        assert!(bg(&on) > 0, "dottr draws its ground dots when on");
+        assert_eq!(bg(&off), 0, "ground off: {} px of the empty ground are marked", bg(&off));
+        // The pointer over the empty ground, and a front across the window: still no dots, and no
+        // frames once the front is over.
+        a.pointer_move(W as f32 * 0.5, H as f32 - 20.0);
+        a.state.cmds.push(Cmd::Ripplr { x: 10.0, y: H as f32 - 20.0, strength: 1.0 });
+        a.relayout();
+        let mut t = 2.0;
+        for _ in 0..30 { t += 1.0 / 60.0; let px = shot(&mut o, &mut a, t); assert_eq!(bg(&px), 0, "ground off: dots under the front"); }
+        let mut asked = 0;
+        for _ in 0..120 { t += 1.0 / 60.0; a.tick(t); if a.needs_frame(t) { asked += 1; shot(&mut o, &mut a, t); } }
+        assert!(asked <= 60, "ground off: {asked} frames asked in the 2 s after");
+        let mut late = 0;
+        for _ in 0..60 { t += 1.0 / 60.0; a.tick(t); if a.needs_frame(t) { late += 1; shot(&mut o, &mut a, t); } }
+        assert_eq!(late, 0, "ground off: still asking for frames 3 s after");
+    }
+}

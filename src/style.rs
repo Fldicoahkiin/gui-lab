@@ -681,6 +681,9 @@ pub struct Off {
     pub material_still: bool,
     /// The finishing pass's bloom (`post.bloom`): off, no bloom pass.
     pub bloom: bool,
+    /// The field's dots, the ground's own marks (dottr's ground units, smudgr's paper grain): off, the
+    /// ground is the theme's plain ground, still and the same under fronts, the pointer and the field map.
+    pub ground: bool,
 }
 pub use crate::fieldmap::MapFx;
 /// How marks on a 3D element follow its depth: nearer parts get larger marks (`depth_scale`: the
