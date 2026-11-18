@@ -47,28 +47,48 @@ pub fn panic_hook() {
 /// A pointer kind from the page: 0 mouse, 1 touch, 2 pen (DESIGN.md §1.8.2).
 pub fn pointer_kind(k: u32) -> PointerKind { match k { 1 => PointerKind::Touch, 2 => PointerKind::Pen, _ => PointerKind::Mouse } }
 
+/// Why a module could not start on its canvas (`Host::start`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StartError {
+    /// No graphics adapter: the browser has no WebGPU (or, with the `webgl` feature, no WebGL2 either),
+    /// or it would not give one for this canvas.
+    Adapter(String),
+    /// An adapter, but no device, surface or format the renderer can draw with.
+    Device(String),
+}
+impl StartError {
+    /// What the page is told (the module's `start_failure` export): `adapter` or `device`.
+    pub fn kind(&self) -> &'static str { match self { Self::Adapter(_) => "adapter", Self::Device(_) => "device" } }
+}
+impl std::fmt::Display for StartError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { match self { Self::Adapter(e) => write!(f, "no graphics adapter: {e}"), Self::Device(e) => write!(f, "{e}") } }
+}
+impl std::error::Error for StartError {}
+
 fn backend_name(b: wgpu::Backend) -> &'static str { match b { wgpu::Backend::BrowserWebGpu => "WebGPU", wgpu::Backend::Gl => "WebGL2", _ => "other" } }
 
 impl<S: App, M: Clone> Host<S, M> {
-    /// Start on a canvas: WebGPU where an adapter really exists, WebGL2 otherwise. `fonts` are the
+    /// Start on a canvas: WebGPU where an adapter really exists, WebGL2 otherwise (WebGPU only without
+    /// the `webgl` feature: a browser without it fails with `StartError::Adapter`). `fonts` are the
     /// bytes of the three main bundled faces, sans, pixel and mono (the page fetches them); Geist Pixel and the
     /// serif are compiled into the module. `hash` is the page's `location.hash` ([`App::route`]); an
     /// empty one leaves the application where `make` put it.
     pub async fn start(
         canvas: web_sys::HtmlCanvasElement, fonts: [Vec<u8>; 3], scale: f32, hash: &str,
         setup: impl FnOnce(&mut Renderer), make: impl FnOnce(Vec<Face>, u32, u32, f32) -> Ui<S, M>,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, StartError> {
         let (w, h) = (canvas.width().max(1), canvas.height().max(1));
         let instance = wgpu::util::new_instance_with_webgpu_detection(wgpu::InstanceDescriptor::new_without_display_handle()).await;
-        let surface = instance.create_surface(wgpu::SurfaceTarget::Canvas(canvas)).map_err(|e| e.to_string())?;
-        let adapter = instance.request_adapter(&wgpu::RequestAdapterOptions { compatible_surface: Some(&surface), ..Default::default() }).await.map_err(|e| e.to_string())?;
+        // With no backend left (no WebGPU, and WebGL2 not built in) there is no surface either.
+        let surface = instance.create_surface(wgpu::SurfaceTarget::Canvas(canvas)).map_err(|e| StartError::Adapter(e.to_string()))?;
+        let adapter = instance.request_adapter(&wgpu::RequestAdapterOptions { compatible_surface: Some(&surface), ..Default::default() }).await.map_err(|e| StartError::Adapter(e.to_string()))?;
         // WebGPU gets compute (the particle simulation's tier); WebGL2 has none.
         let base = if adapter.get_info().backend == wgpu::Backend::BrowserWebGpu { wgpu::Limits::downlevel_defaults() } else { wgpu::Limits::downlevel_webgl2_defaults() };
         let (device, queue) = adapter.request_device(&wgpu::DeviceDescriptor { required_limits: base.using_resolution(adapter.limits()), ..Default::default() })
-            .await.map_err(|e| e.to_string())?;
+            .await.map_err(|e| StartError::Device(e.to_string()))?;
         let caps = surface.get_capabilities(&adapter);
-        let format = caps.formats.iter().copied().find(|f| !f.is_srgb()).or_else(|| caps.formats.first().copied()).ok_or("the canvas offers no format")?;
-        let config = surface.get_default_config(&adapter, w, h).map(|mut c| { c.format = format; c }).ok_or("the canvas is not supported by the adapter")?;
+        let format = caps.formats.iter().copied().find(|f| !f.is_srgb()).or_else(|| caps.formats.first().copied()).ok_or_else(|| StartError::Device("the canvas offers no format".into()))?;
+        let config = surface.get_default_config(&adapter, w, h).map(|mut c| { c.format = format; c }).ok_or_else(|| StartError::Device("the canvas is not supported by the adapter".into()))?;
         surface.configure(&device, &config);
         // Made a piece at a time (DESIGN.md §1.9): the first frame is plain and comes at once; each frame
         // after it makes the next pieces within `WARM_MS` (`Host::frame`).
@@ -238,6 +258,7 @@ macro_rules! web_app {
             use $crate::app::web::__rt::wasm_bindgen::prelude::*;
             type H = $crate::app::web::Host<$state, $msg>;
             ::std::thread_local! { static HOST: $crate::app::slot::Slot<H> = const { $crate::app::slot::Slot::new() }; }
+            ::std::thread_local! { static FAILED: ::std::cell::Cell<&'static str> = const { ::std::cell::Cell::new("") }; }
             /// Run `f` on the running application, if it has started. After a panic in an earlier call the
             /// application goes on from where the panic left it (`amenui::app::slot`).
             pub fn host<R>(f: impl FnOnce(&mut H) -> R) -> ::std::option::Option<R> {
@@ -249,10 +270,13 @@ macro_rules! web_app {
             #[wasm_bindgen(wasm_bindgen = $crate::app::web::__rt::wasm_bindgen, wasm_bindgen_futures = $crate::app::web::__rt::wasm_bindgen_futures)]
             pub async fn start(canvas: $crate::app::web::__rt::web_sys::HtmlCanvasElement, sans: Vec<u8>, pixel: Vec<u8>, mono: Vec<u8>, scale: f32, hash: String) -> Result<(), JsValue> {
                 $crate::app::web::panic_hook();
-                let h = H::start(canvas, [sans, pixel, mono], scale, &hash, $setup, $make).await.map_err(|e| JsValue::from_str(&e))?;
+                let h = H::start(canvas, [sans, pixel, mono], scale, &hash, $setup, $make).await.map_err(|e| { FAILED.with(|f| f.set(e.kind())); JsValue::from_str(&e.to_string()) })?;
                 HOST.with(|s| s.set(h));
                 Ok(())
             }
+            /// Why `start` failed (`StartError::kind`: `adapter`, `device`), or empty.
+            #[wasm_bindgen(wasm_bindgen = $crate::app::web::__rt::wasm_bindgen)]
+            pub fn start_failure() -> String { FAILED.with(|f| f.get()).to_owned() }
             #[wasm_bindgen(wasm_bindgen = $crate::app::web::__rt::wasm_bindgen)]
             pub fn resize(w: u32, h: u32, scale: f32) { host(|s| s.resize(w, h, scale)); }
             /// The warm-up in idle time: 1 while pieces are left, plus 2 when a frame is wanted now. A call

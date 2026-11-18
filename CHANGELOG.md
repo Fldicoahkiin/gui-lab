@@ -10,6 +10,11 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
 
 ## Blades, gusts and pacing
 
+- The `webgl` feature (on by default) carries the WebGL2 backend on the web. Without it a web build has
+  only WebGPU, and a browser without WebGPU fails to start: `Host::start` returns `app::web::StartError`
+  (`Adapter` or `Device`; it was a `String`), the module's `start_failure()` export says which, and
+  `web/amenui.js` calls `opts.onFail(kind, message)`.
+
 - `Drawing::blade(Blade)` (`Mark::Blade`): a rooted stroke the field map bends from the flow at its root, worked
   out on the GPU every frame; its lean is its tip's tangent, its root leans 0.35 of that and it bends above its
   stiff part (`Blade::tangent`, `Blade::shape`), drawn in 10, 6 or 2 segments by its length; it keeps its length,

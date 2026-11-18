@@ -127,7 +127,9 @@ fn main() -> Result<(), amenui::error::WindowError> {
 
 On the web, `amenui::web_app!(Counter, Msg, setup, make)` in the crate built as a `cdylib` generates
 the module's exports, and [`web/amenui.js`](web/) (the `amenui` npm package) is the page side: one
-canvas, input, text and the input method, the clipboard and the accessibility mirror.
+canvas, input, text and the input method, the clipboard and the accessibility mirror. It draws with
+WebGPU, falling back to WebGL2; without the `webgl` feature (on by default) the module carries only
+WebGPU, and a browser without it fails to start with `opts.onFail('adapter', message)`.
 
 ## Documentation
 

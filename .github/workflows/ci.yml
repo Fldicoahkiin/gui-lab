@@ -31,6 +31,8 @@ jobs:
         run: cargo clippy --all-targets
       - name: Clippy (web)
         run: cargo clippy --lib --target wasm32-unknown-unknown
+      - name: Clippy (web, WebGPU only)
+        run: cargo clippy --lib --target wasm32-unknown-unknown --no-default-features --features gltf
       - name: Docs
         run: cargo doc --no-deps
         env:

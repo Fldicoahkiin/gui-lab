@@ -18,7 +18,10 @@ homepage = "https://github.com/amenui-dev/amenui"
 autoexamples = false
 
 [features]
-default = ["gltf", "window", "system-fonts"]
+default = ["gltf", "window", "system-fonts", "webgl"]
+# WebGL2 on the web where WebGPU is not there (`app::web`). Without it a web build carries only the
+# WebGPU backend, and a browser without WebGPU fails to start with `StartError::Adapter`.
+webgl = ["wgpu/webgl"]
 # A small glTF 2.0 reader (`mesh::load_gltf`): positions, normals, indices and node transforms.
 gltf = []
 # The native window (`app::native::run`): winit, and the system clipboard through arboard.
@@ -30,7 +33,7 @@ system-fonts = ["parley/system", "dep:fontique"]
 complex-scripts = ["parley/complex-scripts"]
 
 [dependencies]
-wgpu = { version = "30", default-features = false, features = ["wgsl", "webgl", "webgpu", "vulkan", "std"] }
+wgpu = { version = "30", default-features = false, features = ["wgsl", "webgpu", "vulkan", "std"] }
 parley = { version = "0.13", default-features = false, features = ["std"] }
 swash = "0.2"
 taffy = "0.15"

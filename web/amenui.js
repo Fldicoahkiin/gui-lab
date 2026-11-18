@@ -11,7 +11,9 @@
 //         onRoute(hash), keys (the element that takes keys; window by default), shortcuts (extra
 //         Ctrl/⌘ letters the application handles), after(module) (after every handled event),
 //         onWarm(done, total) (the renderer's warm-up, each step; (1, 1) when it is done),
-//         failed (the text shown when graphics cannot start),
+//         failed (the text shown when graphics cannot start), onFail(kind, message) (it could not start:
+//         kind 'adapter' when the browser gives no graphics adapter, as one without WebGPU does for a
+//         module built without WebGL2; 'device' for the rest; '' when something else threw),
 //         faces, assets (where a face or resource the page asks for is: a map of name → URL, or a
 //         function of the name; the framework fetches nothing itself, this shell does when
 //         `faces_wanted` / `assets_wanted` name something),
@@ -272,5 +274,13 @@ export async function mount(stage, opts) {
       locale: tag => { w.set_locale(tag || ''); after(); },
       focus: () => canvas.focus({ preventScroll: true }),
     };
-  } catch (e) { if (msg) msg.textContent = (opts.failed || 'This browser could not start graphics: ') + (e && e.message ? e.message : e); console.error(e); throw e; }
+  } catch (e) {
+    const text = e && e.message ? e.message : String(e);
+    let kind = '';
+    try { kind = opts.module.start_failure ? opts.module.start_failure() : ''; } catch (_) { /* not started */ }
+    if (msg) msg.textContent = (opts.failed || 'This browser could not start graphics: ') + text;
+    if (opts.onFail) opts.onFail(kind, text);
+    console.error(e);
+    throw e;
+  }
 }
