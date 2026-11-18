@@ -3673,15 +3673,15 @@ impl<S, M: Clone> Ui<S, M> {
                             // Its segments (6, or 2 when it is short) and its head, each worked out on the GPU
                             // from the map at its root (scene.rs `Instance::xf`).
                             let (rx, ry, len, w) = (ox + b.root.0 * k, oy + b.root.1 * k, b.len * k, (b.width * k).max(0.5));
-                            let segs = if b.len * k / s > 24.0 { 6u32 } else { 2 };
+                            let segs = crate::draw::Blade::segments(b.len * k / s) as u32;
                             let bounds = [rx - len - w, ry - len - w, 2.0 * (len + w), len + 2.0 * w];
                             let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round();
                             let lp = b.lean_paint;
                             let wq = (w * 16.0).round().min(4095.0);
                             for g in 0..segs {
-                                let inst = Instance { rect: bounds, uv: [b.stiff.clamp(0.0, 1.0), b.max_lean.abs().min(1.5), b.lean, g as f32 + 8.0 * segs as f32 + 64.0 * wq], paint: [b.paint.tone, b.paint.accent, b.paint.alpha, SHAPE], clip,
+                                let inst = Instance { rect: bounds, uv: [b.stiff.clamp(0.0, 1.0), b.max_lean.abs().min(1.5), b.lean, g as f32 + 16.0 * segs as f32 + 256.0 * wq], paint: [b.paint.tone, b.paint.accent, b.paint.alpha, SHAPE], clip,
                                     extra: [0.0, 1.0 + q(lp.tone) + 256.0 * q(lp.accent), 0.0, 0.0], look: [mat, b.paint.hue as f32, 0.0, 0.0], resp, xf: [0.0; 4] };
-                                put(&mut sink, inst, ident(&n.key, (j as u32 * 8 + g) | 0x2000_0000, 1), None);
+                                put(&mut sink, inst, ident(&n.key, (j as u32 * 16 + g) | 0x2000_0000, 1), None);
                             }
                             if let Some(h) = b.head {
                                 let face = h.font.resolve([0; 3]);
@@ -3700,7 +3700,7 @@ impl<S, M: Clone> Ui<S, M> {
                                     g.xf = [rx, ry, len, sq + 128.0 * mq];
                                     g.extra[1] = -(1.0 + lq);
                                     g.clip = clip;
-                                    put(&mut sink, g, ident(&n.key, (j as u32 * 8 + 7) | 0x2000_0000, 2), None);
+                                    put(&mut sink, g, ident(&n.key, (j as u32 * 16 + 15) | 0x2000_0000, 2), None);
                                 }
                             }
                             continue;

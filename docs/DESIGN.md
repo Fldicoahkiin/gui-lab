@@ -2169,17 +2169,18 @@ So the foundation changed in five places, with no special cases in the effect pa
   grass. `root`, `len`, `width` (at the root, 1.5 by default; the tip is half of it, 0.5 px at least), its own
   `lean` (0), `max_lean` (57°), `stiff` (0.5), `paint`, `lean_paint` and an optional `head` glyph. Its lean is
   `lean + max_lean · clamp(flow.x / drift, −1, 1)` with the flow read at the root, so vertical flow never lays
-  it down; its colour is `mix(paint, lean_paint, |lean| / max_lean)`. The lean is the angle of the chord from
-  root to tip. The shape (`Blade::shape`, the same in the shader) keeps the length (it is walked by arc length
-  in 18 steps), stays upright for the first 4 px (8 % of the blade when it is shorter than 50 px) and never turns
-  its tip past 85°. One parameter goes from straight to bent: up to its middle, an arc above the stiff part
-  (the lower `0.6 · stiff` of the blade) grows until its tip turns 85°; past it, the arc starts lower, down to
-  the foot, and bends harder at its start (its angle `85° · (1 − (1 − s)^k)`, `k` from 1 to 10). Every angle only
-  grows along the way, so the chord's angle does too and a bisection finds the lean. `stiff` 0 is one even arc
-  (above the foot); 1 keeps the lower 60 % straight as long as the lean allows (about 16°; past that the bend
-  moves down). An 80 px blade reaches 74°, one of 50 px or less 72.9°. It is drawn as 6 segments when it is
-  longer than 24 logical px and as 2 otherwise: strokes with round ends, tapering, the first and last pulled in
-  by half their width so the blade runs exactly from root to tip. The head's ink box has its bottom middle on
+  it down, and never past ±85°; its colour is `mix(paint, lean_paint, |lean| / max_lean)`. The lean is the
+  angle of the tip's tangent from upright. Along the blade, a share `s` of its length from the root, the tangent
+  is `lean · (0.35 + 0.65 · g(s))` (`Blade::tangent`): the root leans 0.35 of the tip. With `stiff` 0, `g(s) = s`,
+  one even bend from root to tip; with `stiff` above 0, `g` is 0 over the lower `0.6 · stiff` of the blade (that
+  part is straight) and then a smoothstep to 1 at the tip. What falls over is the head, not the whole stalk laid
+  flat: the chord's angle is about two thirds of the lean with `stiff` 0 (38° at 57°, 49° at 72°) and less when
+  it is stiffer (33° and 41° at 0.5). The shape
+  (`Blade::at`, `Blade::shape`, the same in the shader) is walked by arc length in 16 steps, so the length is kept.
+  It is drawn as 10 segments when it is longer than 48 logical px, 6 when longer than 24 and 2 otherwise, their
+  ends spaced evenly in `(s + 3 · g(s)) / 4` so the segments are shorter where it bends and no two neighbours
+  are more than 12° apart: strokes with round ends cut along the bisector where two meet, tapering, the first and
+  last pulled in by half their width so the blade runs exactly from root to tip. The head's ink box has its bottom middle on
   the tip and its up along the tip's tangent; the stem ends there. All of it is worked out in the vertex stage
   from the map at the root (`blade_seg`, `blade_head`): while only the map moves, nothing is laid out, painted
   or built on the CPU, and the instances stay as they are. A blade is never pushed by fronts or the flow (it
@@ -2391,9 +2392,16 @@ release, the page is identical pixel for pixel to how it was before and wants no
   the larger energy and, of each flow component, the larger in size with its sign (`FieldMap::encode`). So a trail
   under it keeps its own life, and the frame the band and its wake have left the scope (`Gust::gone`) the map's
   bytes are what they would have been without it and no frame is wanted. With reduced motion it puts no flow.
-- **Lives by area** (`El::map_life(energy_life, flow_life)`, 0.1–30 s): nodes inside the element's visible box take
-  these lives instead of the look's (the first such box a node is in). The linear term is the same, so the map
-  still returns to exactly 0 (with 6 s, from full energy within `settle_time(1, 6)`, 4.5 s).
+- **Lives by area** (`El::map_life(energy_life, flow_life)`, 0.1–30 s): a life is the time after which what was put
+  in inside the element's visible box is back at rest, byte for byte, however much and however wide it was (a node
+  takes the first such box it is in). The map there is the look's slowed down, with nothing spread: no bleed and no
+  creep, so a thin path neither soaks away nor closes early; each node goes down from what was last put in it along
+  the look's curve from 1 (`(1 + a) e^(−t/τ) − a`, `a = 0.15 τ`, the exponential less the linear floor) stretched so
+  that it is under half a byte step exactly at the life, energy and flow each by their own; the meander turns the
+  flow as many times slower. All the nodes of one stroke keep their shares of each other, so a path keeps its width
+  and closes all at once, the part walked first first. Stirs narrower than a cell are put in a cell wide (the nodes
+  are a cell apart; the GPU reads them bilinearly, so the edge is smooth, not in cells). With W-01's 6 s, a 40 px
+  path's stalk leans over 3° 5.0 s after the pointer passed and is upright at 6.0 s.
 - **Pacing what moves by itself** (`Ui::ambient_fps(n)`, 60 by default, which is no pacing): a frame wanted only by
   what moves by itself (the map, gusts, breath, flows, ticks) waits until `1 / n` s after the last drawn one;
   `needs_frame` is false until then and `next_wake` gives that time. Input is never paced, and neither is what it
@@ -2424,11 +2432,16 @@ under Normcore the map is never written and two seconds draw 0 frames; a press w
 reduced motion the flow stays 0; `Cmd::Stir` in its element and path forms); `tests/render.rs` (the same arguments
 with a drag rendered three times are byte-identical); `check` item 19; `bench … map` (one step plus upload at
 1280 × 800 within 0.2 ms); `craft <dir> stirr` (eight frames each in `plain`, `dottr`, `smudgr` and `glitchr`). Blades and
-gusts: `tests/blades.rs` (an 80 px blade at 0, 19, 38, 57 and 72° and `stiff` 0, 0.5 and 1: the chord within 1°,
-the length within 2 %, upright within 3° over its first 4 px, its tip within 85°; the GPU draws it on its shape,
+gusts: `tests/blades.rs` (an 80 px blade at 0, 19, 38, 57 and 72° and `stiff` 0, 0.5 and 1: the tip's tangent
+within 1° of the lean, its lowest 4 px within 2° of 0.35 of it, with `stiff` 1 the lower 48 px within 0.5 px of a
+straight line, neighbouring segments at most 12° apart, the length within 2 %; the GPU draws it on its shape,
 its head along the tip's tangent; a gust of 0.79 over one blade with `max_lean` 72° peaks at 57° ± 0.5°, sways
 back once to 6° ± 0.5° within 0.5 s of the trailing edge and is upright from 1.25 s after the peak, after which
-the map is byte-identical to before and no frame is wanted; a gust over a path with 6 s lives leaves the path's
+the map is byte-identical to before and no frame is wanted; a pointer's walk with `map_life(6, 6)`, 40 px wide:
+its last stalk over 3° at 5.0 s and upright at 6.0 ± 0.1 s, the end walked first upright first, then the map
+byte-identical to before with no frame wanted, and a box with lives of its own away from it changing nothing;
+paths 20, 40 and 80 px wide on and between the nodes' rows close within 0.1 s of each other at 6 s and keep their
+width (where the stalks lean half their most) within a cell, fresh and at 5 s; a gust over a path with 6 s lives leaves the path's
 bytes and its closing time as they were alone; the same schedule three times gives the same map bytes and frame;
 frames at 30 and 60 a second are the same at the same moments, input is not paced and what it starts is a second
 later; 3,000 blades are one draw, and while a gust crosses them the runtime's time a frame is within 0.1 ms of the

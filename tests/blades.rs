@@ -1,9 +1,9 @@
-//! Blades (`draw::Blade`, DESIGN.md §1.26) and gusts (`Cmd::Gust`, DESIGN.md §1.29): a blade leans by
-//! the angle of its chord, keeps its length and stands upright at its foot; the GPU draws it where its
+//! Blades (`draw::Blade`, DESIGN.md §1.26) and gusts (`Cmd::Gust`, DESIGN.md §1.29): a blade's tip
+//! leans by its lean, its foot by a third of it, it keeps its length and bends only above its stiff part; the GPU draws it where its
 //! shape says; a gust leans it and its wake sways it back once, and then the map is as it was and asks
 //! for nothing; a gust leaves a path's schedule as it was; the same schedule draws the same bytes; a
 //! field of 3,000 blades is one draw that costs the runtime nothing while only the map moves.
-use amenui::draw::{BLADE_STEPS, Blade, Drawing, Head};
+use amenui::draw::{Blade, Drawing, Head};
 use amenui::el::{El, Font, Paint, Scope, canvas, col};
 use amenui::fieldmap::Gust;
 use amenui::morph::{Cmd, StirAt};
@@ -13,34 +13,36 @@ use amenui::ui::Ui;
 
 fn fonts() -> Vec<amenui::text::Face> { amenui::text::load_bundled(concat!(env!("CARGO_MANIFEST_DIR"), "/assets")).expect("fonts") }
 fn deg(r: f32) -> f32 { r.to_degrees() }
-fn chord(p: &[[f32; 2]]) -> f32 { let t = p[p.len() - 1]; t[0].atan2(-t[1]) }
 fn length(p: &[[f32; 2]]) -> f32 { p.windows(2).map(|w| ((w[1][0] - w[0][0]).powi(2) + (w[1][1] - w[0][1]).powi(2)).sqrt()).sum() }
 
 #[test]
-fn a_blade_leans_by_its_chord_keeps_its_length_and_stands_upright_at_its_foot() {
+fn a_blade_leans_by_its_tip_keeps_its_length_and_bends_where_it_is_not_stiff() {
+    let dir = |a: [f32; 2], b: [f32; 2]| (b[0] - a[0]).atan2(a[1] - b[1]);
     for stiff in [0.0, 0.5, 1.0] {
         for a in [0.0f32, 19.0, 38.0, 57.0, 72.0] {
             for sign in [1.0, -1.0] {
-                let (p, tip) = Blade::shape(sign * a.to_radians(), stiff, 80.0);
-                assert!((deg(chord(&p)) - sign * a).abs() < 1.0, "stiff {stiff}, {a}°: the chord leans {}°", deg(chord(&p)));
-                // Drawn as six segments ending on every third step.
-                let six: Vec<[f32; 2]> = p.iter().step_by(BLADE_STEPS / 6).copied().collect();
-                assert!((length(&six) - 80.0).abs() < 1.6 && (length(&p) - 80.0).abs() < 1.6, "stiff {stiff}, {a}°: {} / {} px long", length(&six), length(&p));
-                // Upright over the first 4 px (the first step is 4.4 px).
-                let foot = (p[1][0]).atan2(-p[1][1]);
-                assert!(deg(foot).abs() < 3.0, "stiff {stiff}, {a}°: its foot leans {}°", deg(foot));
-                assert!(deg(tip).abs() <= 85.01, "stiff {stiff}, {a}°: the tip turns {}°", deg(tip));
+                let lean = sign * a.to_radians();
+                let at = |s: f32| Blade::at(s, lean, stiff, 80.0);
+                let tip = deg(dir(at(0.995), at(1.0)));
+                assert!((tip - sign * a).abs() < 1.0, "stiff {stiff}, {a}°: the tip's tangent is {tip}°");
+                let foot = deg(dir(at(0.0), at(4.0 / 80.0)));
+                assert!((foot - 0.35 * sign * a).abs() < 2.0, "stiff {stiff}, {a}°: the lowest 4 px lean {foot}°");
+                if stiff == 1.0 {
+                    // The lower 48 px on the line from the root at the root's angle.
+                    let (ux, uy) = ((0.35 * lean).sin(), -(0.35 * lean).cos());
+                    let off = (0..=48).map(|k| { let p = at(k as f32 / 80.0); (p[0] * uy - p[1] * ux).abs() }).fold(0.0, f32::max);
+                    assert!(off < 0.5, "{a}°: the stiff lower 48 px are {off} px off a line");
+                }
+                let p = Blade::shape(lean, stiff, 80.0, 1.0);
+                assert_eq!(p.len(), 11, "an 80 px blade is ten segments");
+                let turns: Vec<f32> = p.windows(3).map(|w| deg(dir(w[1], w[2]) - dir(w[0], w[1])).abs()).collect();
+                assert!(turns.iter().all(|t| *t <= 12.0), "stiff {stiff}, {a}°: segments turn {turns:?}");
+                assert!((length(&p) - 80.0).abs() < 1.6, "stiff {stiff}, {a}°: {} px long", length(&p));
+                assert!((deg(dir(p[9], p[10])) - sign * a).abs() < 7.0, "stiff {stiff}, {a}°: the last segment");
             }
         }
     }
-    // Stiff: the lower 60 % straight where the lean allows it; not stiff: one even arc.
-    let (p, _) = Blade::shape(19f32.to_radians(), 1.0, 80.0);
-    assert!(p[..=10].iter().all(|q| q[0].abs() < 0.05), "{:?}", &p[..=10]);
-    let (p, tip) = Blade::shape(19f32.to_radians(), 0.0, 80.0);
-    let turns: Vec<f32> = p.windows(3).skip(1).map(|w| (w[2][0] - w[1][0]).atan2(w[1][1] - w[2][1]) - (w[1][0] - w[0][0]).atan2(w[0][1] - w[1][1])).collect();
-    assert!(turns.iter().all(|t| (t - turns[0]).abs() < 0.002), "{turns:?}");
-    // Twice its chord, a little more for the upright foot.
-    assert!((deg(tip) - 39.0).abs() < 1.5, "an even arc's tip turns twice its chord: {}", deg(tip));
+    assert_eq!((Blade::segments(60.0), Blade::segments(30.0), Blade::segments(12.0)), (10, 6, 2));
 }
 
 const W: u32 = 240;
@@ -60,7 +62,8 @@ fn shot(o: &mut Offscreen, s: One) -> Vec<u8> {
     o.r.partial = false;
     o.render(&mut u, &l)
 }
-fn px(f: &[u8], x: f32, y: f32) -> [i32; 3] { let i = ((y.round() as u32 * W + x.round() as u32) * 4) as usize; [f[i] as i32, f[i + 1] as i32, f[i + 2] as i32] }
+/// The pixel the point is in.
+fn px(f: &[u8], x: f32, y: f32) -> [i32; 3] { let i = ((y.floor() as u32 * W + x.floor() as u32) * 4) as usize; [f[i] as i32, f[i + 1] as i32, f[i + 2] as i32] }
 fn inked(f: &[u8], bare: &[u8], x: f32, y: f32) -> bool { let (a, b) = (px(f, x, y), px(bare, x, y)); (0..3).map(|c| (a[c] - b[c]).abs()).max().unwrap_or(0) > 40 }
 
 #[test]
@@ -69,24 +72,24 @@ fn the_gpu_draws_a_blade_where_its_shape_says_with_its_head_on_the_tip() {
     let bare = { let mut u = Ui::new(One { lean: 0.0, head: false }, |_: &One| -> El<()> { col().key("page").width(W as f32).height(H as f32) }, |_, _| {}, fonts(), W, H, 1.0).on_look(|_| Look { material: Material::Plain, theme: DARK, ..Look::default() }); u.tick(3.0); let l = u.look(); o.r.partial = false; o.render(&mut u, &l) };
     for a in [0.0f32, 19.0, 38.0, 57.0, 72.0, -38.0] {
         let f = shot(&mut o, One { lean: a, head: false });
-        let (p, _) = Blade::shape(a.to_radians(), 0.5, 80.0);
+        if let Ok(d) = std::env::var("DUMP") { std::fs::write(format!("{d}/stem-{a}.png"), amenui::offscreen::png_bytes(W, H, &f)).unwrap(); }
         // On the shape from just above the root to just below the tip; not on its mirror.
-        for q in &p[1..BLADE_STEPS] {
+        let p: Vec<[f32; 2]> = (1..20).map(|k| Blade::at(k as f32 / 20.0, a.to_radians(), 0.5, 80.0)).collect();
+        for q in &p {
             assert!(inked(&f, &bare, 120.0 + q[0], 120.0 + q[1]), "{a}°: no ink at {q:?}");
             if q[0].abs() > 6.0 { assert!(!inked(&f, &bare, 120.0 - q[0], 120.0 + q[1]), "{a}°: ink on the mirror of {q:?}"); }
         }
-        // Nothing past the tip along the chord.
-        let t = p[BLADE_STEPS];
-        let (l, ux, uy) = { let l = (t[0] * t[0] + t[1] * t[1]).sqrt(); (l, t[0] / l, t[1] / l) };
-        assert!(!inked(&f, &bare, 120.0 + ux * (l + 4.0), 120.0 + uy * (l + 4.0)), "{a}°: ink past the tip");
+        // Nothing past the tip along its tangent.
+        let t = Blade::at(1.0, a.to_radians(), 0.5, 80.0);
+        let (ux, uy) = (a.to_radians().sin(), -a.to_radians().cos());
+        assert!(!inked(&f, &bare, 120.0 + t[0] + ux * 4.0, 120.0 + t[1] + uy * 4.0), "{a}°: ink past the tip");
     }
     // The head: its ink starts at the tip and goes on along the tip's tangent; the stem is the blade's paint.
     for a in [0.0f32, 57.0] {
         let f = shot(&mut o, One { lean: a, head: true });
         if let Ok(d) = std::env::var("DUMP") { std::fs::write(format!("{d}/head-{a}.png"), amenui::offscreen::png_bytes(W, H, &f)).unwrap(); }
-        let (p, tip) = Blade::shape(a.to_radians(), 0.5, 80.0);
-        let t = p[BLADE_STEPS];
-        let (sx, sy) = (tip.sin(), -tip.cos());
+        let t = Blade::at(1.0, a.to_radians(), 0.5, 80.0);
+        let (sx, sy) = (a.to_radians().sin(), -a.to_radians().cos());
         // The accent (orange) at a thin stroke's coverage: red well over blue; the stem is grey.
         let near = |q: [i32; 3]| q[0] - q[2] > 40;
         let along = (2..14).filter(|d| near(px(&f, 120.0 + t[0] + sx * *d as f32, 120.0 + t[1] + sy * *d as f32))).count();
@@ -97,7 +100,7 @@ fn the_gpu_draws_a_blade_where_its_shape_says_with_its_head_on_the_tip() {
 
 /// A field page: blades in rows over the window's lower part, `n` of them, and a gust's scope.
 #[derive(Clone)]
-struct Field { n: usize, cmds: Vec<Cmd>, life: bool }
+struct Field { n: usize, cmds: Vec<Cmd>, life: Option<(f32, f32)>, corner: bool }
 const FW: u32 = 640;
 const FH: u32 = 200;
 fn field(s: &Field) -> El<()> {
@@ -111,15 +114,14 @@ fn field(s: &Field) -> El<()> {
     // One blade alone, rooted on a node of the map.
     if s.n == 1 { d = Drawing::new(FW as f32, FH as f32); d.blade(Blade { root: (256.0, 96.0), len: 40.0, max_lean: 72f32.to_radians(), ..Blade::default() }); }
     let page = col().key("page").width(FW as f32).height(FH as f32).child(canvas(d).key("field").width(FW as f32));
-    if s.life { page.map_life(6.0, 6.0) } else { page }
+    // A box with lives of its own in the lower right corner, away from everything else.
+    let page = if s.corner { page.child(col().key("corner").width(64.0).height(32.0).absolute(Some(FW as f32 - 64.0), Some(FH as f32 - 32.0), None, None).map_life(6.0, 6.0)) } else { page };
+    if let Some((e, f)) = s.life { page.map_life(e, f) } else { page }
 }
-fn open(n: usize, life: bool) -> Ui<Field, ()> {
-    let mut u = Ui::new(Field { n, cmds: vec![], life }, field, |_, _| {}, fonts(), FW, FH, 1.0)
-        .on_look(|s| {
-            // A path that keeps to its lives: nothing spread to the nodes beside it.
-            let map = amenui::fieldmap::MapFx { bleed: if s.life { 0.0 } else { 0.2 }, ..Default::default() };
-            Look { material: Material::Plain, theme: DARK, map, ..Look::default() }
-        })
+fn open(n: usize, life: bool) -> Ui<Field, ()> { open_field(Field { n, cmds: vec![], life: life.then_some((6.0, 6.0)), corner: false }) }
+fn open_field(f: Field) -> Ui<Field, ()> {
+    let mut u = Ui::new(f, field, |_, _| {}, fonts(), FW, FH, 1.0)
+        .on_look(|_| Look { material: Material::Plain, theme: DARK, ..Look::default() })
         .on_commands(|s| std::mem::take(&mut s.cmds));
     for k in 1..=60 { u.tick(k as f32 / 60.0); u.settle(); u.frame_drawn(); }
     u
@@ -200,13 +202,90 @@ fn a_gust_leaves_a_six_second_path_on_its_schedule() {
     let last = *differs.last().unwrap_or(&0);
     // The gust crosses 640 px and its band and wake behind it by (640 + 330 + 240) / 480 s.
     assert!((last as f32 / 60.0) < 0.2 + 1210.0 / 480.0 + 0.1, "the map differs until {} s", last as f32 / 60.0);
-    let nonzero = |m: &std::rc::Rc<Vec<u8>>| m.chunks_exact(4).any(|p| p[0] != 0 || p[1] != 128 || p[2] != 128);
-    let close = |v: &[std::rc::Rc<Vec<u8>>]| v.iter().rposition(nonzero).map(|k| (k + 1) as f32 / 60.0);
-    let (ca, cb) = (close(&alone), close(&with));
+    let (ca, cb) = (closes(&alone), closes(&with));
     assert_eq!(ca, cb, "the path closes when it would alone");
-    let ca = ca.expect("the path");
-    assert!((3.5..7.0).contains(&ca), "a path with 6 s lives closes at {ca} s");
+    assert!((ca - 6.0).abs() <= 0.1, "a path with 6 s lives closes at {ca} s");
     assert!(last as f32 / 60.0 < ca - 1.0, "the path outlives the gust");
+}
+
+/// A pointer's walk along y = `y` from x 40 to 600 over half a second, `width` px wide (W-01: `10 + 60 × 0.5`
+/// = 40): each 60th of a second the part walked in it.
+fn walk_at(y: f32, width: f32) -> Vec<(f32, Cmd)> {
+    let line = std::rc::Rc::new(vec![[40.0, y], [600.0, y]]);
+    (0..30).map(|k| (k as f32 / 60.0, Cmd::Stir { at: StirAt::Path { points: line.clone(), from: k as f32 / 30.0, to: (k + 1) as f32 / 30.0 }, v: [1.0, 0.0], energy: 1.0, radius: width * 0.5, scope: Scope::Global })).collect()
+}
+fn walk() -> Vec<(f32, Cmd)> { walk_at(96.0, 40.0) }
+/// The flow along x at (x, y) in a frame of the map, read as the GPU does (bilinear between the nodes,
+/// 16 px apart, two more columns than fit), as a lean of 72° × it.
+fn lean_in(snap: &[u8], x: f32, y: f32) -> f32 {
+    let cols = FW as usize / 16 + 2;
+    let (qx, qy) = (x / 16.0, y / 16.0);
+    let (i, j) = (qx.floor() as usize, qy.floor() as usize);
+    let (fx, fy) = (qx - i as f32, qy - j as f32);
+    let n = |i: usize, j: usize| snap[(j * cols + i) * 4 + 1] as f32 / 255.0;
+    let v = (n(i, j) * (1.0 - fx) + n(i + 1, j) * fx) * (1.0 - fy) + (n(i, j + 1) * (1.0 - fx) + n(i + 1, j + 1) * fx) * fy;
+    let f = (v * 255.0 - 128.0) / 127.0;
+    if f.abs() < 0.5 / 127.0 { 0.0 } else { 72.0 * f.clamp(-1.0, 1.0) }
+}
+/// When the last byte of the map goes back to rest, s.
+fn closes(frames: &[std::rc::Rc<Vec<u8>>]) -> f32 {
+    let busy = |m: &std::rc::Rc<Vec<u8>>| m.chunks_exact(4).any(|p| p[0] != 0 || p[1] != 128 || p[2] != 128);
+    frames.iter().rposition(busy).map_or(0.0, |k| (k + 1) as f32 / 60.0)
+}
+
+#[test]
+fn a_path_with_six_second_lives_is_back_at_rest_at_six_seconds_where_it_was_walked_first_first() {
+    let mut u = open(0, true);
+    let before = u.fieldmap().snapshot().clone();
+    let frames = schedule(&mut u, 8.0, &walk());
+    // The last stalk on the path was walked over at 29/60 s; the first at 0.
+    let (first, last) = (48.0, 592.0);
+    let at = |t: f32| &frames[((t * 60.0).round() as usize).saturating_sub(1)];
+    let walked = 29.0 / 60.0;
+    // The look's flow curve slowed to end at 6 s: over 3° at 5.0 s (and 2.8° at 5.1 s), then down to 0.
+    let l50 = lean_in(at(walked + 5.0), last, 96.0);
+    assert!(l50 > 3.0, "5.0 s after the walk the last stalk leans {l50}°");
+    let stands = |x: f32| (0..frames.len()).rev().find(|&k| lean_in(&frames[k], x, 96.0) != 0.0).map(|k| (k + 1) as f32 / 60.0).expect("it leans");
+    let (sf, sl) = (stands(first), stands(last));
+    eprintln!("the first stalk stands at {sf} s, the last at {sl} s; 5.0 s after the walk it leans {l50}°");
+    assert!((sl - walked - 6.0).abs() <= 0.1, "the last stalk stands {} s after the walk", sl - walked);
+    assert!(sf < sl, "the end walked first stands first: {sf} s, {sl} s");
+    // Then the map is as it was and asks for nothing.
+    assert_eq!(*u.fieldmap().snapshot(), before, "the map after the path");
+    assert!(!u.needs_frame(u.now() + 0.1), "a closed path asks for frames");
+    // Outside the box with lives of its own the map is the look's, byte for byte.
+    let mut a = open(0, false);
+    let mut b = open_field(Field { n: 0, cmds: vec![], life: None, corner: true });
+    let (fa, fb) = (schedule(&mut a, 3.0, &walk()), schedule(&mut b, 3.0, &walk()));
+    assert!(fa.iter().any(|f| f.chunks_exact(4).any(|p| p[1] != 128)), "the path shows");
+    assert!(fa == fb, "a box with lives of its own away from the path changes the map");
+}
+
+#[test]
+fn paths_of_any_width_close_together_and_keep_their_width() {
+    let mut shut = vec![];
+    for y in [96.0f32, 104.0, 101.0] {
+        for width in [20.0f32, 40.0, 80.0] {
+            let mut u = open(0, true);
+            let frames = schedule(&mut u, 8.0, &walk_at(y, width));
+            let c = closes(&frames);
+            // How wide the stalks lean across the path at x = 320 (by half of the most they lean there),
+            // while it is fresh and late.
+            let across = |t: f32| {
+                let f = &frames[(t * 60.0) as usize];
+                let l: Vec<f32> = (0..=200).map(|d| lean_in(f, 320.0, y - 100.0 + d as f32 + 0.5)).collect();
+                let most = l.iter().copied().fold(0.0, f32::max);
+                l.iter().filter(|&&v| v >= most * 0.5 && most > 0.0).count() as f32
+            };
+            let (w1, w5) = (across(1.0), across(5.0));
+            eprintln!("y {y}, {width} px: closes at {c} s; {w1} px wide at 1 s, {w5} px at 5 s");
+            assert!((w1 - width).abs() <= 16.0 && (w5 - width).abs() <= 16.0, "y {y}, a {width} px path is {w1} px wide at 1 s, {w5} px at 5 s");
+            shut.push(c);
+        }
+    }
+    let (lo, hi) = shut.iter().fold((f32::MAX, f32::MIN), |a, &c| (a.0.min(c), a.1.max(c)));
+    assert!(hi - lo <= 0.1, "paths close at {shut:?}");
+    assert!((hi - 29.0 / 60.0 - 6.0).abs() <= 0.1, "paths close {} s after the walk", hi - 29.0 / 60.0);
 }
 
 #[test]

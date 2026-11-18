@@ -20,10 +20,10 @@ pub enum Mark {
 /// A rooted stroke that the field map bends (DESIGN.md §1.26): a stalk of grass. It stands on `root`
 /// and is `len` long, `width` wide at the root and half that at the tip (0.5 px at least). The GPU bends
 /// it from the field map's flow at its root every frame: it leans `lean + max_lean × flow.x / drift`
-/// (radians, clockwise; the flow's part within ±`max_lean`), measured as the angle of the chord from root
-/// to tip. It stays upright for its first 4 px (8 % of it when it is shorter) and keeps its length;
-/// `stiff` says how much of it stays straight (0: one even arc; 1: the lower 60 %, as far as the lean
-/// allows), and its tip never turns past 85° (`Blade::shape`). Its colour goes from
+/// (radians, clockwise; the flow's part within ±`max_lean`, all of it within ±85°), measured as the
+/// angle of its tip's tangent from upright. Its root leans 0.35 of that and it bends toward the tip
+/// (`Blade::tangent`); `stiff` says how much of it stays straight (0: an even bend from root to tip; 1:
+/// the lower 60 % straight); it keeps its length (`Blade::shape`). Its colour goes from
 /// `paint` to `lean_paint` as it leans. A `head` glyph rides the tip, the bottom centre of its ink on
 /// it, turned with the tip. While only the map moves, nothing of it is worked out on the CPU.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -50,50 +50,50 @@ pub struct Blade {
 impl Default for Blade {
     fn default() -> Self { Self { root: (0.0, 0.0), len: 40.0, width: 1.5, lean: 0.0, max_lean: 57f32.to_radians(), stiff: 0.5, paint: Paint::INK, lean_paint: Paint::INK, head: None } }
 }
-/// The steps a blade's shape is worked out in (the shader's `BLADE_N`): its segments end on them.
-pub const BLADE_STEPS: usize = 18;
-/// The most a blade's tip turns from upright.
-const BLADE_TIP: f32 = 85.0 * std::f32::consts::PI / 180.0;
-/// How sharply a blade bends at its foot when it leans far.
-const BLADE_BEND: f32 = 10.0;
+/// The steps of a blade's walk to one point (the shader's `BLADE_M`).
+const BLADE_WALK: usize = 16;
+/// The most a blade leans, its tip from upright.
+pub const BLADE_MOST: f32 = 85.0 * std::f32::consts::PI / 180.0;
 impl Blade {
-    /// The angle from upright at a share `u` of the length, on the way `t` (0 straight, 1 bent the most)
-    /// for a stiffness `s` and an upright foot of `h` (a share of the length). Up to `t` = ½ one arc above
-    /// the stiff part grows to 85° at its tip; then the arc starts lower, down to the foot, and bends more
-    /// at its start: every angle only grows, so the chord's angle does too.
-    fn angle(u: f32, t: f32, s: f32, h: f32) -> f32 {
-        let b0 = h.max(0.6 * s);
-        let (tip, b, k) = if t <= 0.5 { (BLADE_TIP * t * 2.0, b0, 1.0) } else { let w = (t - 0.5) * 2.0; (BLADE_TIP, b0 + (h - b0) * w, 1.0 + (BLADE_BEND - 1.0) * w) };
-        let sp = ((u - b) / (1.0 - b)).clamp(0.0, 1.0);
-        tip * (1.0 - (1.0 - sp).max(1e-6).powf(k))
+    /// How far its bend has come at a share `s` of its length (0 at the root, 1 at the tip): `s` itself
+    /// when it is not stiff; with `stiff`, 0 over the lower `0.6 × stiff` and then a smoothstep to 1.
+    pub fn bend(s: f32, stiff: f32) -> f32 {
+        if stiff <= 0.0 { return s.clamp(0.0, 1.0); }
+        let t = ((s - 0.6 * stiff) / (1.0 - 0.6 * stiff)).clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
     }
-    fn walk(t: f32, s: f32, h: f32, len: f32) -> [[f32; 2]; BLADE_STEPS + 1] {
-        let mut p = [[0.0; 2]; BLADE_STEPS + 1];
-        let d = len / BLADE_STEPS as f32;
-        for j in 0..BLADE_STEPS {
-            let a = Self::angle((j as f32 + 0.5) / BLADE_STEPS as f32, t, s, h);
-            p[j + 1] = [p[j][0] + a.sin() * d, p[j][1] - a.cos() * d];
+    /// Its tangent's angle from upright at a share `s` of its length, leaning `lean` (the tip's angle):
+    /// `lean × (0.35 + 0.65 × bend)`, so the root leans 0.35 × `lean`.
+    pub fn tangent(s: f32, lean: f32, stiff: f32) -> f32 { lean * (0.35 + 0.65 * Self::bend(s, stiff)) }
+    /// How many segments it is drawn in, `len` logical px long: 10 over 48 px, 6 over 24, else 2.
+    pub fn segments(len: f32) -> usize { if len > 48.0 { 10 } else if len > 24.0 { 6 } else { 2 } }
+    /// Where the `k`th of `n` segment ends is, as a share of the length: evenly by `(s + 3 bend) / 4`,
+    /// so the segments are shorter where it bends (each turns at most `(lean − 0.35 lean) × 4 / 3n`).
+    pub fn joint(k: usize, n: usize, stiff: f32) -> f32 {
+        let want = k as f32 / n as f32;
+        let (mut lo, mut hi) = (0.0f32, 1.0f32);
+        for _ in 0..20 {
+            let m = (lo + hi) * 0.5;
+            if (m + 3.0 * Self::bend(m, stiff)) * 0.25 < want { lo = m } else { hi = m }
+        }
+        (lo + hi) * 0.5
+    }
+    /// The point a share `s` along it, `len` px long, from the root at (0, 0) (up is −y): walked by its
+    /// length, so the length is kept.
+    pub fn at(s: f32, lean: f32, stiff: f32, len: f32) -> [f32; 2] {
+        let d = s * len / BLADE_WALK as f32;
+        let mut p = [0.0f32; 2];
+        for j in 0..BLADE_WALK {
+            let a = Self::tangent((j as f32 + 0.5) / BLADE_WALK as f32 * s, lean, stiff);
+            p = [p[0] + a.sin() * d, p[1] - a.cos() * d];
         }
         p
     }
-    /// Its shape (as the shader works it out) leaning `lean` radians, `len` device px long: the points
-    /// at each of `BLADE_STEPS` steps from the root at (0, 0), up being −y, and the tip's angle from
-    /// upright. The length is kept; the chord's angle is `lean` as far as an 85° tip allows (about 73°
-    /// for a blade of 50 px or more).
-    pub fn shape(lean: f32, stiff: f32, len: f32) -> ([[f32; 2]; BLADE_STEPS + 1], f32) {
-        let (th, s) = (lean.abs(), stiff.clamp(0.0, 1.0));
-        let h = 4f32.min(0.08 * len) / len.max(1e-3);
-        let (mut lo, mut hi) = (0.0f32, 1.0f32);
-        for _ in 0..16 {
-            let m = (lo + hi) * 0.5;
-            let p = Self::walk(m, s, h, len)[BLADE_STEPS];
-            if p[0].atan2(-p[1]) < th { lo = m } else { hi = m }
-        }
-        let t = if th > 0.0 { (lo + hi) * 0.5 } else { 0.0 };
-        let mut p = Self::walk(t, s, h, len);
-        let sg = if lean < 0.0 { -1.0 } else { 1.0 };
-        for q in &mut p { q[0] *= sg; }
-        (p, sg * Self::angle(1.0, t, s, h))
+    /// Its joints as the shader draws it, `len` logical px long (`segments`) and `len × scale` device
+    /// px: root, the ends of its segments, tip.
+    pub fn shape(lean: f32, stiff: f32, len: f32, scale: f32) -> Vec<[f32; 2]> {
+        let n = Self::segments(len);
+        (0..=n).map(|k| Self::at(Self::joint(k, n, stiff), lean, stiff, len * scale)).collect()
     }
 }
 /// The glyph on a blade's tip: which, its size (in the drawing's space) and face, and its paint.

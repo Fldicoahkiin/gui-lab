@@ -210,6 +210,11 @@ pub struct FieldMap {
     v: Vec<f32>,
     /// How much ink each node has (0..1, for `creep`), and whether it was taken for this scene.
     ink: Vec<f32>,
+    /// Each node's energy and flow length when something was last put in, and the time since (s): a node
+    /// inside a box with lives of its own goes down from them along the look's curve (`FieldMap::step`).
+    put_e: Vec<f32>,
+    put_f: Vec<f32>,
+    age: Vec<f32>,
     /// Time owed to steps not taken yet, and the map's own clock (s), which runs only while it moves.
     acc: f64,
     /// The map's own clock (s).
@@ -243,7 +248,7 @@ impl FieldMap {
         let cell = cell.max(1.0).max(w / (MAX_NODES - 2) as f32).max(h / (MAX_NODES - 2) as f32);
         let (cols, rows) = ((w / cell).floor() as usize + 2, (h / cell).floor() as usize + 2);
         let n = cols * rows;
-        let mut m = Self { cols, rows, cell, e: vec![0.0; n], u: vec![0.0; n], v: vec![0.0; n], ink: vec![0.0; n], acc: 0.0, clock: 0.0, calm: vec![], reduced: false, written: false, lives: vec![], gusts: vec![], snap: Snapshot::default(), scratch: Default::default() };
+        let mut m = Self { cols, rows, cell, e: vec![0.0; n], u: vec![0.0; n], v: vec![0.0; n], ink: vec![0.0; n], put_e: vec![0.0; n], put_f: vec![0.0; n], age: vec![0.0; n], acc: 0.0, clock: 0.0, calm: vec![], reduced: false, written: false, lives: vec![], gusts: vec![], snap: Snapshot::default(), scratch: Default::default() };
         m.encode();
         m
     }
@@ -319,8 +324,9 @@ impl FieldMap {
     pub fn stir(&mut self, s: Stir) { self.put(s); self.encode(); }
     fn put(&mut self, s: Stir) {
         if s.energy <= 0.0 && s.flow <= 0.0 { return; }
-        let r = s.radius.max(1.0);
+        // The nodes are a cell apart: what is narrower is put in a cell wide.
         let c = self.cell;
+        let r = s.radius.max(c);
         let (i0, i1) = (((s.at[0] - r) / c).floor().max(0.0) as usize, (((s.at[0] + r) / c).ceil().max(0.0) as usize).min(self.cols - 1));
         let (j0, j1) = (((s.at[1] - r) / c).floor().max(0.0) as usize, (((s.at[1] + r) / c).ceil().max(0.0) as usize).min(self.rows - 1));
         let flow = if self.reduced { 0.0 } else { s.flow };
@@ -346,6 +352,7 @@ impl FieldMap {
                     self.u[k] = u * g;
                     self.v[k] = v * g;
                 }
+                (self.put_e[k], self.put_f[k], self.age[k]) = (self.e[k], (self.u[k] * self.u[k] + self.v[k] * self.v[k]).sqrt(), 0.0);
                 self.written = true;
             }
         }
@@ -397,6 +404,17 @@ impl FieldMap {
             if bx.0 == usize::MAX { self.clock += dt; return; }
             (bx.0.saturating_sub(1), bx.1.saturating_sub(1), (bx.2 + 1).min(cols - 1), (bx.3 + 1).min(rows - 1))
         };
+        // Boxes with lives of their own (`El::map_life`): a node takes the first box it is in. A life is
+        // when what is put in there is back at rest, however much and however wide: nothing spreads there
+        // (no bleed, no creep), and each node goes down from what was last put in it along the look's
+        // curve from 1 (`curve`) slowed to end at the life, for energy and flow each (the meander turning
+        // the flow as many times slower). Every node of a stroke put in at once keeps its share of the
+        // others, so a path keeps its width and closes all at once, the part put in first first.
+        let own: Vec<Own> = self.lives.iter().map(|&(b, e, f)| {
+            let (e, f) = (life(e.clamp(0.1, 30.0)), life(f.clamp(0.1, 30.0)));
+            Own { b, e, f, slow: f / settle_time(1.0, lf) }
+        }).collect();
+        let own_at = |i: usize, j: usize| { let (x, y) = (i as f32 * self.cell, j as f32 * self.cell); own.iter().find(|o| x >= o.b[0] && y >= o.b[1] && x < o.b[2] && y < o.b[3]) };
         if bleed > 0.0 {
             // Last step's values (kept buffers), and each box row's sums over three columns (the rows
             // and columns outside the box hold zero), so a bare node's 3 × 3 mean is three additions.
@@ -413,6 +431,7 @@ impl FieldMap {
             }
             for j in j0..=j1 {
                 for i in i0..=i1 {
+                    if own_at(i, j).is_some() { continue; }
                     let k = j * cols + i;
                     let ik = self.ink[k];
                     let (mut se, mut su, mut sv, mut sw) = (0.0, 0.0, 0.0, 0.0);
@@ -440,8 +459,6 @@ impl FieldMap {
         }
         let ke = (-dt / le).exp();
         let kf = (-dt / lf).exp();
-        // Boxes with lives of their own (`El::map_life`): a node takes the first box it is in.
-        let own: Vec<([f32; 4], f32, f32)> = self.lives.iter().map(|&(b, e, f)| (b, (-dt / life(e.clamp(0.1, 30.0))).exp(), (-dt / life(f.clamp(0.1, 30.0))).exp())).collect();
         let turn = fx.meander.clamp(0.0, 1.0) * 40f32.to_radians() * dt;
         let t = self.clock;
         let c = self.cell;
@@ -457,16 +474,26 @@ impl FieldMap {
             for i in i0..=i1 {
                 let k = j * cols + i;
                 let (x, y) = (i as f32 * c, j as f32 * c);
-                let (ke, kf) = own.iter().find(|(b, _, _)| x >= b[0] && y >= b[1] && x < b[2] && y < b[3]).map_or((ke, kf), |o| (o.1, o.2));
-                self.e[k] = (self.e[k] * ke - FLOOR * dt).max(0.0).max(floor(x, y));
+                let o = own_at(i, j);
+                let l0 = (self.u[k] * self.u[k] + self.v[k] * self.v[k]).sqrt();
+                // In a box with lives of its own: what was put in, down the curve, never more than now (a
+                // node cleared stays clear).
+                let (ne, nl, ft) = match o {
+                    Some(o) => {
+                        self.age[k] += dt;
+                        let a = self.age[k];
+                        ((self.put_e[k] * curve(a / o.e, le, 0.5 / 255.0)).min(self.e[k]), (self.put_f[k] * curve(a / o.f, lf, 0.5 / 127.0)).min(l0), o.slow)
+                    }
+                    None => ((self.e[k] * ke - FLOOR * dt).max(0.0), (l0 * kf - FLOOR * dt).max(0.0), 1.0),
+                };
+                self.e[k] = ne.max(floor(x, y));
                 let (u, v) = (self.u[k], self.v[k]);
-                let l = (u * u + v * v).sqrt();
+                let l = l0;
                 if l > 0.0 {
-                    let nl = (l * kf - FLOOR * dt).max(0.0);
                     // The meander turns the flow by a slow noise; turning leaves its length alone.
                     // (At most 0.7° a step: sin a ≈ a and cos a ≈ 1 − a²/2 change the length by under
                     // a⁴/8, and the length is set again just below.)
-                    let a = if turn > 0.0 { wx[i - i0] * wy[j - j0] * turn } else { 0.0 };
+                    let a = if turn > 0.0 { wx[i - i0] * wy[j - j0] * turn / ft } else { 0.0 };
                     let (s, co) = (a, 1.0 - 0.5 * a * a);
                     let g = nl / l;
                     self.u[k] = (u * co - v * s) * g;
@@ -516,6 +543,21 @@ impl FieldMap {
             self.snap = Snapshot { cols: self.cols, rows: self.rows, cell: self.cell, bytes: Rc::new(b), nonzero };
         }
     }
+}
+
+/// A box with lives of its own, worked out for a step (`FieldMap::step`): its energy's and flow's lives
+/// (s) and how many times slower its flow runs than the look's map.
+struct Own { b: [f32; 4], e: f32, f: f32, slow: f32 }
+
+/// The look's curve from 1 for a life of `tau` (exponential, less the floor), a share `x` of the way to
+/// rest: 1 at 0, and at 1 it is `rest`, under which no byte shows it (half a byte step), so the bytes are
+/// back at rest there; 0 from 1 on.
+fn curve(x: f32, tau: f32, rest: f32) -> f32 {
+    if x >= 1.0 { return 0.0; }
+    let a = FLOOR * tau;
+    // (1 + a) e^(−t/τ) − a, with t/τ running from 0 to where it comes down to `rest`.
+    let end = ((1.0 + a) / (a + rest)).ln();
+    ((1.0 + a) * (-x * end).exp() - a).clamp(0.0, 1.0)
 }
 
 /// How long a disturbance of `e0` takes to reach zero at most, for an energy life of `tau` seconds.

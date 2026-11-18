@@ -153,59 +153,55 @@ fn exact_i(iv: VOut) -> VOut {
 // ── Blades (draw.rs Blade, DESIGN.md §1.26) ───────────────────────────────────────────────────────
 // A blade's segments and its head are instances whose shape is worked out here from the map's flow at the
 // root, every frame, the same way as draw.rs `Blade::shape`.
-const BLADE_N: i32 = 18;
-const BLADE_TIP: f32 = 1.4835299; // 85°
-const BLADE_BEND: f32 = 10.0;
-fn blade_angle(u: f32, t: f32, s: f32, h: f32) -> f32 {
-  let b0 = max(h, 0.6 * s);
-  var tip = BLADE_TIP * t * 2.0; var b = b0; var k = 1.0;
-  if (t > 0.5) { let w = (t - 0.5) * 2.0; tip = BLADE_TIP; b = b0 + (h - b0) * w; k = 1.0 + (BLADE_BEND - 1.0) * w; }
-  let sp = clamp((u - b) / (1.0 - b), 0.0, 1.0);
-  return tip * (1.0 - pow(max(1.0 - sp, 1e-6), k));
+const BLADE_M: i32 = 16;
+const BLADE_MOST: f32 = 1.4835299; // 85°
+fn blade_bend(s: f32, st: f32) -> f32 {
+  if (st <= 0.0) { return clamp(s, 0.0, 1.0); }
+  let t = clamp((s - 0.6 * st) / (1.0 - 0.6 * st), 0.0, 1.0);
+  return t * t * (3.0 - 2.0 * t);
 }
-/// The point `upto` steps along (root at 0, up −y), for the way `t`.
-fn blade_walk(upto: i32, t: f32, s: f32, h: f32, len: f32) -> vec2f {
+fn blade_tangent(s: f32, th: f32, st: f32) -> f32 { return th * (0.35 + 0.65 * blade_bend(s, st)); }
+/// Where the `k`th of `n` joints is, as a share of the length (`Blade::joint`).
+fn blade_joint(k: f32, n: f32, st: f32) -> f32 {
+  let want = k / n;
+  var lo = 0.0; var hi = 1.0;
+  for (var j = 0; j < 20; j++) {
+    let m = (lo + hi) * 0.5;
+    if ((m + 3.0 * blade_bend(m, st)) * 0.25 < want) { lo = m; } else { hi = m; }
+  }
+  return (lo + hi) * 0.5;
+}
+/// The point a share `s` along it (root at 0, up −y), `len` device px long (`Blade::at`).
+fn blade_at(s: f32, th: f32, st: f32, len: f32) -> vec2f {
+  let d = s * len / f32(BLADE_M);
   var p = vec2f(0.0);
-  let d = len / f32(BLADE_N);
-  for (var j = 0; j < upto; j++) {
-    let a = blade_angle((f32(j) + 0.5) / f32(BLADE_N), t, s, h);
+  for (var j = 0; j < BLADE_M; j++) {
+    let a = blade_tangent((f32(j) + 0.5) / f32(BLADE_M) * s, th, st);
     p += vec2f(sin(a), -cos(a)) * d;
   }
   return p;
 }
-/// The way (0..1) whose chord leans `th` (≥ 0).
-fn blade_way(th: f32, s: f32, h: f32, len: f32) -> f32 {
-  if (th <= 0.0) { return 0.0; }
-  var lo = 0.0; var hi = 1.0;
-  for (var k = 0; k < 16; k++) {
-    let m = (lo + hi) * 0.5;
-    let p = blade_walk(BLADE_N, m, s, h, len);
-    if (atan2(p.x, -p.y) < th) { lo = m; } else { hi = m; }
-  }
-  return (lo + hi) * 0.5;
-}
-/// A blade's lean now: its own, and the map's flow at its root within ±max_lean.
+fn blade_point(k: f32, n: f32, th: f32, st: f32, len: f32) -> vec2f { return blade_at(blade_joint(k, n, st), th, st, len); }
+/// A blade's lean now (its tip's angle): its own, and the map's flow at its root within ±max_lean.
 fn blade_lean(root: vec2f, own: f32, most: f32) -> f32 {
-  return clamp(own + most * clamp(fmap_flow(root).x, -1.0, 1.0), -1.43, 1.43);
+  return clamp(own + most * clamp(fmap_flow(root).x, -1.0, 1.0), -BLADE_MOST, BLADE_MOST);
 }
 /// A blade's segment as a stroke with round ends (a canvas line): uv.x stiffness, uv.y the most lean,
-/// uv.z its own lean, uv.w which segment + 8 × how many + 64 × its width × 16; extra.y 1 + the lean paint's
-/// tone + 256 × its accent (255ths); rect the box it can reach, the root at its bottom middle less the width.
+/// uv.z its own lean, uv.w which segment + 16 × how many + 256 × its width × 16; extra.y 1 + the lean
+/// paint's tone + 256 × its accent (255ths); rect the box it can reach, the root at its bottom middle
+/// less the width.
 fn blade_seg(iv: VIn) -> VIn {
   var i = iv;
   let code = i.uv.w;
-  let wq = floor(code / 64.0); let rem = code - wq * 64.0;
-  let segs = floor(rem / 8.0); let g = rem - segs * 8.0;
+  let wq = floor(code / 256.0); let rem = code - wq * 256.0;
+  let segs = floor(rem / 16.0); let g = rem - segs * 16.0;
   let w = wq / 16.0;
   let len = i.rect.z * 0.5 - w;
   let root = vec2f(i.rect.x + i.rect.z * 0.5, i.rect.y + i.rect.w - w);
   let th = blade_lean(root, i.uv.z, i.uv.y);
-  let h = min(4.0, 0.08 * len) / max(len, 1e-3);
-  let t = blade_way(abs(th), i.uv.x, h, len);
-  let per = BLADE_N / i32(segs);
-  let sg = vec2f(select(1.0, -1.0, th < 0.0), 1.0);
-  var a = blade_walk(i32(g) * per, t, i.uv.x, h, len) * sg;
-  var b = blade_walk((i32(g) + 1) * per, t, i.uv.x, h, len) * sg;
+  let st = i.uv.x;
+  var a = blade_point(g, segs, th, st, len);
+  var b = blade_point(g + 1.0, segs, th, st, len);
   let dir = normalize(b - a + vec2f(0.0, -1e-6));
   let across = vec2f(-dir.y, dir.x);
   // Where it meets the segments before and after it, it is cut along the joint's bisector (`inst`), so
@@ -213,12 +209,12 @@ fn blade_seg(iv: VIn) -> VIn {
   // segment's own frame + 4 (1: no cut, an end of the blade).
   var cuts = vec2f(1.0);
   if (g > 0.5) {
-    let d0 = normalize(a - blade_walk((i32(g) - 1) * per, t, iv.uv.x, h, len) * sg + vec2f(0.0, -1e-6));
+    let d0 = normalize(a - blade_point(g - 1.0, segs, th, st, len) + vec2f(0.0, -1e-6));
     let n = normalize(d0 + dir);
     cuts.x = 4.0 + atan2(dot(n, across), dot(n, dir));
   }
   if (g < segs - 1.5) {
-    let d1 = normalize(blade_walk((i32(g) + 2) * per, t, iv.uv.x, h, len) * sg - b + vec2f(0.0, -1e-6));
+    let d1 = normalize(blade_point(g + 2.0, segs, th, st, len) - b + vec2f(0.0, -1e-6));
     let n = normalize(dir + d1);
     cuts.y = 4.0 + atan2(dot(n, across), dot(n, dir));
   }
@@ -243,21 +239,16 @@ fn blade_seg(iv: VIn) -> VIn {
 }
 /// A blade's head (a glyph): rect upright, the bottom middle of its ink on the upright tip; xf the root
 /// (x, y), the length, stiffness × 100 + 128 × the most lean (0.1°); extra.y −(1 + (own lean + 90°) × 10).
-/// Turned about that point with the tip's tangent and moved onto the tip.
+/// Turned about that point with the tip's tangent (the lean) and moved onto the tip.
 fn blade_head(iv: VIn) -> VIn {
   var i = iv;
   let root = i.xf.xy; let len = i.xf.z;
-  let mq = floor(i.xf.w / 128.0); let s = (i.xf.w - mq * 128.0) / 100.0;
+  let mq = floor(i.xf.w / 128.0); let st = (i.xf.w - mq * 128.0) / 100.0;
   let most = radians(mq / 10.0);
   let own = radians((-i.extra.y - 1.0) / 10.0 - 90.0);
   let th = blade_lean(root, own, most);
-  let h = min(4.0, 0.08 * len) / max(len, 1e-3);
-  let t = blade_way(abs(th), s, h, len);
-  let sg = select(1.0, -1.0, th < 0.0);
-  var tip = blade_walk(BLADE_N, t, s, h, len);
-  tip.x *= sg;
-  let phi = sg * blade_angle(1.0, t, s, h);
-  let cs = cos(phi); let sn = sin(phi);
+  let tip = blade_at(1.0, th, st, len);
+  let cs = cos(th); let sn = sin(th);
   let up = root + vec2f(0.0, -len);
   let mid = i.rect.xy + i.rect.zw * 0.5 - up;
   let m2 = root + tip + vec2f(cs * mid.x - sn * mid.y, sn * mid.x + cs * mid.y);

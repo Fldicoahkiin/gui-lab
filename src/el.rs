@@ -632,8 +632,8 @@ pub struct El<M> {
     /// Fronts pass this subtree by: nothing in its box is pushed or loosened by them (a scene's
     /// controls while the page is shaken).
     pub calm: bool,
-    /// The field map keeps what is put in it inside this subtree's box for lives of its own (energy, flow;
-    /// s, 0.1–30): `El::map_life`.
+    /// What is put in the field map inside this subtree's box is back at rest after lives of its own
+    /// (energy, flow; s, 0.1–30): `El::map_life`.
     pub map_life: Option<(f32, f32)>,
     /// A text field: takes text input while focused (see `TextInput`); `multiline` lets the runtime move
     /// the caret by lines and Enter insert a line break.
@@ -949,9 +949,10 @@ impl<M> El<M> {
     pub fn wipr(mut self, x: f32) -> Self { self.wipe = Some(x); self }
     /// Fronts do not push or loosen anything in this element's box.
     pub fn calm(mut self) -> Self { self.calm = true; self }
-    /// What the field map holds inside this subtree's box lives `energy_life` and `flow_life` seconds
-    /// (0.1–30) instead of the look's (`MapFx`): a trail that takes six seconds to close on one piece of a
-    /// page (DESIGN.md §1.29). It still ends exactly at rest.
+    /// What is put in the field map inside this subtree's box is back at rest `energy_life` and
+    /// `flow_life` seconds (0.1–30) after it was put in, however much and however wide: the look's map
+    /// slowed down there, with nothing spread (DESIGN.md §1.29). A trail that takes six seconds to close
+    /// on one piece of a page.
     pub fn map_life(mut self, energy_life: f32, flow_life: f32) -> Self { self.map_life = Some((energy_life.clamp(0.1, 30.0), flow_life.clamp(0.1, 30.0))); self }
     /// The focus marks frame it only when it has keyboard focus, never on hover.
     pub fn unframed(mut self) -> Self { self.ripple.unframed = true; self }

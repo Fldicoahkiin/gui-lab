@@ -11,13 +11,16 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
 ## Blades, gusts and pacing
 
 - `Drawing::blade(Blade)` (`Mark::Blade`): a rooted stroke the field map bends from the flow at its root, worked
-  out on the GPU every frame; it leans by its chord, keeps its length, stays upright at its foot, tapers to half
-  its width and can carry a head glyph on its tip (DESIGN.md §1.26). `Mark` has `Blade`, so exhaustive matches
+  out on the GPU every frame; its lean is its tip's tangent, its root leans 0.35 of that and it bends above its
+  stiff part (`Blade::tangent`, `Blade::shape`), drawn in 10, 6 or 2 segments by its length; it keeps its length,
+  tapers to half its width and can carry a head glyph on its tip, turned with it (DESIGN.md §1.26). `Mark` has `Blade`, so exhaustive matches
   need the new arm.
 - `Cmd::Gust { gust, scope }` (`fieldmap::Gust`): a band that crosses a scope with a wake behind it, worked out from
   the clock and laid over the map, never put into it: once it has passed, the map is as it was and nothing is
   asked for (DESIGN.md §1.29). `Cmd` has `Gust`.
-- `El::map_life(energy_life, flow_life)`: the map's lives within an element's box.
+- `El::map_life(energy_life, flow_life)`: what is put in the map within an element's box is back at rest after
+  these lives, however much and however wide: nothing spreads there, and each node goes down the look's curve
+  slowed to end at the life. A stir narrower than a cell is put in a cell wide.
 - The warm-up goes on in idle time (`Renderer::warm_idle`; the web module's `warm_idle`, which `web/amenui.js`
   calls from `requestIdleCallback`): a page that draws nothing after its first frame is still warm soon, and its
   pieces no longer land in the frames of the next input. A warm-up step no longer asks for a frame of its own.
