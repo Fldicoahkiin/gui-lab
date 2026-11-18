@@ -557,8 +557,8 @@ frame with a blend-only pipeline that honours each instance's own `xf`, used onl
   ink, dashed, with a dashed leader from a corner of it to its drawn outline and an `INK w×h` label (§1.31). `Gaze::echo` (0 by
   default) keeps up to that many earlier INK boxes of a moving element as thin outlines (no label, no fill), one
   taken every `echo_ms` (200 ms, snapped to the beat grid, §1.32), the newest at most one interval old; the k-th (from
-  1) of n is drawn at `0.6 × (1 − (k − 1) ÷ n)` of the live box's opacity (0.6, 0.4, 0.2 for three), and an echo goes
-  once it is n intervals old. A hold takes none and fades none (`Ui::echo_times`).
+  1) of n is drawn at `0.6 × (1 − (k − 1) ÷ n)` of the live box's opacity (0.6, 0.4, 0.2 for three), under the live element: nothing of an echo is drawn
+  inside the live INK box. An echo goes once it is n intervals old. A hold takes none and fades none (`Ui::echo_times`).
   Two labels on the same corner step aside to the right. The last three are readouts of the whole scope,
   not tied to elements: always present in "all" mode, and in hover and focus-path modes while the pointer
   is in the scope; what they drew is recorded in `Ui::readout()` (`gaze::Readout`).
