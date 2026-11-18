@@ -157,7 +157,7 @@ fn tree_at(discs: &[Disc], x: f32, y: f32, sharp: f32) -> (f32, [f32; 3]) {
         let (dx, dy) = (x - d.x, (y - d.y) * 1.12);
         if dx.abs() > d.r + 6.0 || dy.abs() > d.r + 6.0 { continue; }
         let c = ((d.r - (dx * dx + dy * dy).sqrt() - wobble) * sharp + 0.5).clamp(0.0, 1.0);
-        if c > cov { shade = (0.20 - ((x - d.x) * 0.6 + (y - d.y) * 0.75) / d.r * 0.7).clamp(0.0, 1.0); cov = c; }
+        if c > cov { shade = (0.50 - ((x - d.x) * 0.6 + (y - d.y) * 0.75) / d.r * 0.55).clamp(0.0, 1.0); cov = c; }
     }
     // Sky holes in the crown's lower-middle band.
     if cov > 0.0 && y > -150.0 && y < -90.0 && fbm(x / 22.0 + 44.8, y / 22.0 + 20.6, 3) > 0.735 { cov = 0.0; }
@@ -264,13 +264,13 @@ fn cloud(x: f32, y: f32, sh: f32, k: f32) -> f32 {
 /// The horizon, v = 0.70, raised into a rise under the tree.
 fn ground_line(u: f32, sh: f32) -> f32 { let r = (u - 0.62) / 0.22; (0.70 - 0.050 * exp_d(-r * r)) * sh }
 /// The cut-out's slip of the rise (one sample, cut-out px at 520 × 400): x 90 to 390, its top broken
-/// into stalk tips, its ends fading out over 25 px.
+/// into stalk tips, its ends fading out over 4 px.
 fn slip(x: f32, y: f32) -> (f32, [f32; 3]) {
     if !(90.0..390.0).contains(&x) || !(340.0..393.0).contains(&y) { return (0.0, [0.0; 3]); }
     let (b, t) = ((x - 240.0) / 105.0, (x - 240.0) / 120.0);
     let tips = (2.0 + 14.0 * smooth(0.3, 0.75, fbm(x / 2.2 + 4.0, 0.0, 2))) * exp_d(-t * t);
     let top = 372.0 - 12.0 * exp_d(-b * b) - tips;
-    let ends = ((x - 90.0) / 25.0).min((390.0 - x) / 25.0).clamp(0.0, 1.0);
+    let ends = ((x - 90.0) / 4.0).min((390.0 - x) / 4.0).clamp(0.0, 1.0);
     let a = ((y - top) * 3.0 + 0.5).clamp(0.0, 1.0) * ((392.0 - y) * 0.6).clamp(0.0, 1.0) * ends;
     (a, scale3(hex(0xb89a4a), 0.75 + 0.5 * fbm(x / 2.0 + 12.0, y / 14.0, 3)))
 }
@@ -496,9 +496,18 @@ mod tests {
             if x < 130 && (124..128).contains(&y) { add(&mut horizon); }
         } }
         let f = |c: [u32; 2]| c[0] as f32 / c[1] as f32;
-        assert!(f(crown) > 0.70, "crown {:.3} ink over {} px", f(crown), crown[1]);
+        assert!(f(crown) > 0.55 && f(crown) < 0.70, "crown {:.3} ink over {} px", f(crown), crown[1]);
         assert!((0.20..0.50).contains(&f(field)), "field {:.3} ink", f(field));
         assert!(f(horizon) <= 0.75 * f(top), "sky ink {:.3} at the top, {:.3} at the horizon", f(top), f(horizon));
+    }
+
+    #[test]
+    fn the_crown_has_a_lit_side_and_a_shaded_side() {
+        let px = picture();
+        let mut l: Vec<f32> = (0..H).flat_map(|y| (0..W).map(move |x| (x, y))).filter(|&(x, y)| tree_here(x, y).1).map(|(x, y)| luma(&px[((y * W + x) * 4) as usize..])).collect();
+        l.sort_by(f32::total_cmp);
+        let (p10, p90) = (l[l.len() / 10], l[l.len() * 9 / 10]);
+        assert!(p90 >= 0.55 && p10 <= 0.24, "crown luminance: 10th percentile {p10:.3}, 90th {p90:.3}");
     }
 
     #[test]
@@ -564,6 +573,6 @@ mod tests {
         let fnv = |b: &[u8]| b.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &x| (h ^ x as u64).wrapping_mul(0x100_0000_01b3));
         let (p, c) = (picture(), cutout_pixels(520, 400));
         assert_eq!(p, picture());
-        assert_eq!((fnv(&p), fnv(&c)), (14_585_934_577_113_153_037, 17_751_255_081_525_652_210), "the tree's bytes changed: pin the new hashes once the picture is meant to change");
+        assert_eq!((fnv(&p), fnv(&c)), (17_608_907_510_665_606_868, 13_922_497_693_935_686_505), "the tree's bytes changed: pin the new hashes once the picture is meant to change");
     }
 }
