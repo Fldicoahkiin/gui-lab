@@ -1277,7 +1277,7 @@ impl<S, M: Clone> Ui<S, M> {
     pub fn needs_frame(&self, now: f32) -> bool {
         if self.paced_until(now).is_some() { return false; }
         let b = self.beat_of(now);
-        self.dirty || self.stale_layout || self.stale_paint || self.owed || self.warm.is_some() || self.prep.pending() || self.held(now) || self.moving_at(b) || self.wake_at(b).is_some_and(|w| w <= b) || (self.sweeping && !self.arriving.is_empty())
+        self.dirty || self.stale_layout || self.stale_paint || self.owed || self.prep.pending() || self.held(now) || self.moving_at(b) || self.wake_at(b).is_some_and(|w| w <= b) || (self.sweeping && !self.arriving.is_empty())
             || (self.plates_ageing() && self.clock - self.plate_frame >= PLATE_FRAME - 1e-4)
     }
     /// A `Cmd::Hold` is going on: frames go on (the same) until it ends.
@@ -1286,9 +1286,9 @@ impl<S, M: Clone> Ui<S, M> {
     /// when only input can change anything.
     pub fn next_wake(&self, now: f32) -> Option<f32> {
         let b = self.beat_of(now);
-        let wanted = self.dirty || self.owed || self.warm.is_some() || self.prep.pending() || self.held(now) || self.moving_at(b) || (self.sweeping && !self.arriving.is_empty());
+        let wanted = self.dirty || self.owed || self.prep.pending() || self.held(now) || self.moving_at(b) || (self.sweeping && !self.arriving.is_empty());
         if wanted && let Some(t) = self.paced_until(now) { return Some(t); }
-        if self.dirty || self.owed || self.warm.is_some() || self.prep.pending() || self.held(now) || self.moving_at(b) || (self.sweeping && !self.arriving.is_empty()) { return Some(now); }
+        if self.dirty || self.owed || self.prep.pending() || self.held(now) || self.moving_at(b) || (self.sweeping && !self.arriving.is_empty()) { return Some(now); }
         if self.plates_ageing() { return Some((self.plate_frame + PLATE_FRAME).max(now)); }
         // A wake on the beat clock is that much later on the runtime's.
         self.wake_at(b).map(|w| (w + now - b).max(now))
@@ -1323,12 +1323,15 @@ impl<S, M: Clone> Ui<S, M> {
     /// once (`Renderer::new`) never says anything, so this stays `None`.
     pub fn warm(&self) -> Option<crate::render::Progress> { self.warm }
     /// The host says how far the warm-up is (`Renderer::warm_frame` does it); one that says
-    /// `Stage::Ready` is `None`. While it is `Some` frames go on, so the last step's frame is drawn.
+    /// `Stage::Ready` is `None`. A step asks for no frame of its own (the host steps the warm-up in idle
+    /// time, `Renderer::warm_idle`): only the step after which the look's material can be drawn does
+    /// (the page condenses into it), and one whose `on_warm` changed the state.
     pub fn set_warm(&mut self, p: Option<crate::render::Progress>) {
         let p = p.filter(|p| p.stage != crate::render::Stage::Ready);
         if p == self.warm { return; }
+        let plain = |w: Option<crate::render::Progress>| w.is_some_and(|w| w.stage == crate::render::Stage::Plain);
+        if plain(self.warm) && !plain(p) { self.dirty = true; }
         self.warm = p;
-        self.dirty = true;
         if let Some(f) = self.warmed && f(&mut self.state, p) { self.relayout(); }
     }
     /// The renderer says how far its warm-up is (`render::Warmup`).

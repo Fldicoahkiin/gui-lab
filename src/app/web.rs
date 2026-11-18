@@ -198,6 +198,14 @@ impl<S: App, M: Clone> Host<S, M> {
         self.ui.next_wake(t).map_or(-1.0, |w| (w - t).max(0.0))
     }
 
+    /// The warm-up in idle time (`Renderer::warm_idle`), for up to `budget_ms`: 1 while pieces are
+    /// left, 0 once it is done, plus 2 when the page wants a frame now (the look's material can be drawn).
+    /// It draws nothing: the page shell calls it from `requestIdleCallback` until it says 0 or 2.
+    pub fn warm_idle(&mut self, budget_ms: f32, t: f32) -> u32 {
+        let more = self.r.warm_idle(&mut self.ui, budget_ms);
+        u32::from(more) + if self.ui.needs_frame(t) { 2 } else { 0 }
+    }
+
     /// How far the renderer's warm-up is, `[done, total]` (`Ui::warm`); empty once it is done.
     pub fn warm(&self) -> Vec<u32> { self.ui.warm().map(|p| vec![p.done, p.total]).unwrap_or_default() }
 
@@ -247,6 +255,9 @@ macro_rules! web_app {
             }
             #[wasm_bindgen(wasm_bindgen = $crate::app::web::__rt::wasm_bindgen)]
             pub fn resize(w: u32, h: u32, scale: f32) { host(|s| s.resize(w, h, scale)); }
+            /// The warm-up in idle time: 1 while pieces are left, plus 2 when a frame is wanted now.
+            #[wasm_bindgen(wasm_bindgen = $crate::app::web::__rt::wasm_bindgen)]
+            pub fn warm_idle(budget_ms: f32, t: f32) -> u32 { host(|s| s.warm_idle(budget_ms, t)).unwrap_or(0) }
             #[wasm_bindgen(wasm_bindgen = $crate::app::web::__rt::wasm_bindgen)]
             pub fn pointer_move(id: u32, k: u32, x: f32, y: f32, t: f32, te: f32) { host(|s| s.pointer_move(id, k, (x, y), t, te)); }
             #[wasm_bindgen(wasm_bindgen = $crate::app::web::__rt::wasm_bindgen)]

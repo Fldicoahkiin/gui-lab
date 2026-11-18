@@ -387,9 +387,16 @@ impl<S: App, M: Clone> ApplicationHandler<accesskit_winit::Event> for Shell<S, M
         // caret's blink, a clock), the next report, a frame to save or the time to close.
         let now = self.now();
         self.report(now);
-        let Some(s) = &self.run else { return };
+        let Some(s) = &mut self.run else { return };
         let mut wake = s.ui.next_wake(now);
         if wake.is_some_and(|w| w <= now) { s.window.request_redraw(); wake = None; }
+        // The warm-up goes on while nothing is drawn (a page at rest asks for no frames): the next pieces,
+        // no frame, and back here at once while pieces are left (DESIGN.md §1.9).
+        else if s.r.warm_progress().stage != crate::render::Stage::Ready {
+            let more = s.r.warm_idle(&mut s.ui, crate::render::WARM_MS);
+            if s.ui.needs_frame(now) { s.window.request_redraw(); }
+            if more { wake = Some(now); }
+        }
         let report = self.opts.report.then_some(self.reported + 2.0);
         let others = [report, self.opts.shots.first().map(|(_, t)| t / 1000.0), self.opts.exit_after.map(|t| t / 1000.0)];
         let next = others.into_iter().flatten().chain(wake).fold(f32::INFINITY, f32::min);

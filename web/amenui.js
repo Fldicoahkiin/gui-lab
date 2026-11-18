@@ -103,6 +103,19 @@ export async function mount(stage, opts) {
       else if (d > 0) timer = setTimeout(kick, d * 1000);
     };
     const kick = () => { if (!raf) raf = requestAnimationFrame(loop); };
+    // The warm-up goes on in idle time, whether or not the page draws (a page at rest draws nothing):
+    // each idle period makes the next pieces and draws nothing; a frame only when the material arrives.
+    // Without requestIdleCallback, an animation frame that does warm-up work only.
+    const idle = window.requestIdleCallback ? f => requestIdleCallback(f, { timeout: 200 }) : f => requestAnimationFrame(() => f(null));
+    const warmIdle = d => {
+      if (!w.warm_idle) return;
+      const ms = d && !d.didTimeout ? Math.max(1, Math.min(d.timeRemaining(), 6)) : 6;
+      const r = w.warm_idle(ms, now());
+      if (r & 2) kick();
+      warmUpdate();
+      if (r & 1) idle(warmIdle);
+    };
+    idle(warmIdle);
     // Text: while a text field has focus the hidden text element sits at its caret and has the keyboard.
     const ta = stage.querySelector('.ta');
     const syncText = () => {

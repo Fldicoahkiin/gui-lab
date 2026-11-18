@@ -255,7 +255,6 @@ fn the_host_path_warms_within_the_budget_and_tells_the_page_how_far_it_is() {
         steps.push((p.done - before, ms));
         seen.push(p);
         if p.stage == Stage::Ready { break; }
-        assert!(a.needs_frame(t), "frames go on while it warms");
         t += 1.0 / 60.0;
         a.tick(t);
     }
@@ -290,4 +289,50 @@ fn the_host_path_warms_within_the_budget_and_tells_the_page_how_far_it_is() {
     assert!(ui.state.seen.iter().flatten().collect::<Vec<_>>().windows(2).all(|w| w[0].0 < w[1].0));
     // The view shows it: the line reads as the page's own state says.
     assert!(ui.node("line").is_some());
+}
+
+#[test]
+fn a_page_at_rest_warms_up_in_idle_time_and_input_later_makes_no_pieces() {
+    let Ok(mut cold) = Offscreen::try_warming(W, H) else { eprintln!("no GPU adapter here: skipped"); return };
+    let mut a = page();
+    let look = Look { material: Material::Dottr, ..a.look() };
+    let mut t = 0.5;
+    a.tick(t);
+    // The first frame, and its warm-up step, as the host does it.
+    cold.render(&mut a, &look);
+    cold.r.warm_frame(&mut a, amenui::render::WARM_MS);
+    let mut now = 0.0f64;
+    let mut clock = move || { now += 0.9; now };
+    // Quiet: the page asks for no frames; the host steps the warm-up in idle time (one call each 16 ms),
+    // drawing only when the page asks (the material arriving and condensing into the look).
+    let (mut idles, mut drawn, mut asked_quiet) = (0, 0, 0);
+    while cold.r.warm_progress().stage != Stage::Ready {
+        t += 1.0 / 60.0;
+        a.tick(t);
+        let before = cold.r.warm_progress().done;
+        let more = cold.r.warm_idle_timed(&mut a, amenui::render::WARM_MS, &mut clock);
+        idles += 1;
+        assert!(cold.r.warm_progress().done > before || !more, "each idle call makes a piece");
+        if a.needs_frame(t) { cold.render(&mut a, &look); drawn += 1; } else { asked_quiet += 1; }
+        assert!(idles < 60, "the warm-up ends in idle time");
+    }
+    eprintln!("idle warm-up: {idles} idle calls, {drawn} frames drawn, {asked_quiet} without a frame");
+    assert!(a.warm().is_none(), "the page hears the end");
+    assert!(asked_quiet > 0, "warm-up steps draw nothing of their own");
+    // Settled, the page asks for nothing.
+    let end = t + 3.0;
+    for k in 0..240 { a.tick(t + k as f32 / 60.0); if a.needs_frame(t + k as f32 / 60.0) { cold.render(&mut a, &look); } }
+    a.tick(end);
+    cold.render(&mut a, &look);
+    assert!(!a.needs_frame(end + 0.5), "a page at rest after its warm-up asks for frames");
+    // Input later: its frames make no warm-up pieces.
+    let mut t = end + 1.0;
+    for k in 0..30 {
+        t += 1.0 / 60.0;
+        a.tick(t);
+        a.pointer_move(100.0 + k as f32, 100.0);
+        cold.render(&mut a, &look);
+        let p = cold.r.warm_frame(&mut a, amenui::render::WARM_MS);
+        assert!(p.stage == Stage::Ready && a.warm().is_none(), "a warm-up piece in an input frame");
+    }
 }

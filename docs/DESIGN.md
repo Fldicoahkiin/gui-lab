@@ -1080,9 +1080,16 @@ leaving; fingers have no hover).
   triangles), because some adapters refuse a buffer under a megabyte (SwiftShader refused 760 176 bytes).
 - Both hosts start with `Renderer::begin` and warm the renderer up after each frame they draw
   (`Renderer::warm_frame(ui, WARM_MS)`, 6 ms, §1.23), so the first frame is the plain page and the material arrives a
-  few frames later. The runtime is told how far it is (`Ui::warm`, `Ui::on_warm` for the state); while it is not done
-  frames go on. On the web the exported `warm()` returns `[done, total]` (empty once warm), and `web/amenui.js` sets
-  `aria-busy` on the canvas while it warms and calls `opts.onWarm(done, total)` each time it moves on.
+  few frames later. The runtime is told how far it is (`Ui::warm`, `Ui::on_warm` for the state). A page at rest
+  draws nothing, so the warm-up does not wait for frames: the hosts also step it in idle time
+  (`Renderer::warm_idle`), which draws nothing and asks for no frame except the one after which the look's material
+  can be drawn (the page then condenses into it). The native host does it before it waits, coming straight back while
+  pieces are left; on the web the exported `warm_idle(budget_ms, t)` (1 while pieces are left, plus 2 when a frame is
+  wanted) is called by `web/amenui.js` from `requestIdleCallback` (an animation frame that does only warm-up work
+  where there is none). A page that asks for no frames after its first is warm within a bounded time of quiet, and
+  later input frames make no pieces. On the web the exported `warm()` returns `[done, total]` (empty once warm), and
+  `web/amenui.js` sets `aria-busy` on the canvas while it warms and calls `opts.onWarm(done, total)` each time it
+  moves on.
 - A frame drawn while something is moving owes one more frame: when a motion ends between two frames, the next
   frame draws the settled page rather than leaving the last one mid-motion (`Ui::needs_frame` and `next_wake` count
   it; §1.11).
@@ -2066,7 +2073,8 @@ over 99 % of the pixels in each legible element's ink box, grown by 2 px, are th
 after arrival as in the plain frame, or as at rest where the material has a look of its own at rest), and no element's looseness changes
 by more than 0.2 from one frame to the next at 60 Hz. `Renderer::new` is the same thing
 done in one go, for offline rendering and tests, with the same bytes; `Offscreen::try_warming` is an offscreen
-target that warms up. The hosts call `Renderer::warm_frame(ui, WARM_MS)` once a frame (§1.9): it makes pieces until
+target that warms up. The hosts call `Renderer::warm_frame(ui, WARM_MS)` once a frame drawn, and `Renderer::warm_idle`
+in idle time (§1.9): it makes pieces until
 6 ms are spent, and stops early rather than start a piece whose kind has before taken more than 1.5 × the budget left
 (a kind not yet timed counts as too long, so after the first piece of a frame it waits for the next). It tells the
 runtime how far it is (`Ui::warm`; `Ui::on_warm(fn(&mut S, Option<Progress>) -> bool)` hands it to the state, `None`

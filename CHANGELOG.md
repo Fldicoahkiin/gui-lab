@@ -18,6 +18,10 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
   the clock and laid over the map, never put into it: once it has passed, the map is as it was and nothing is
   asked for (DESIGN.md §1.29). `Cmd` has `Gust`.
 - `El::map_life(energy_life, flow_life)`: the map's lives within an element's box.
+- The warm-up goes on in idle time (`Renderer::warm_idle`; the web module's `warm_idle`, which `web/amenui.js`
+  calls from `requestIdleCallback`): a page that draws nothing after its first frame is still warm soon, and its
+  pieces no longer land in the frames of the next input. A warm-up step no longer asks for a frame of its own.
+  A page shell of its own calls `warm_idle` the same way.
 - `Ui::ambient_fps(n)`: frames for what moves by itself at most `n` a second; input and what it starts are not
   paced until a second after the last input.
 

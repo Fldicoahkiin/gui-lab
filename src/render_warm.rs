@@ -131,6 +131,19 @@ impl Renderer {
     }
 }
 
+impl Renderer {
+    /// A host's warm-up in idle time (DESIGN.md §1.9): the next pieces within `budget_ms`, with no frame
+    /// drawn, so the warm-up ends on a page that asks for no frames (the web host calls it from
+    /// `requestIdleCallback`, the native one before it waits). Whether anything is left. A step draws
+    /// nothing and asks for no frame, except the one after which the look's material can be drawn
+    /// (`Ui::set_warm`).
+    pub fn warm_idle<S, M: Clone>(&mut self, ui: &mut crate::ui::Ui<S, M>, budget_ms: f32) -> bool { self.warm_idle_timed(ui, budget_ms, &mut crate::perf::now_ms) }
+    /// `warm_idle` timed by `clock` (ms) instead of the wall clock (see `warm_step_timed`).
+    pub fn warm_idle_timed<S, M: Clone>(&mut self, ui: &mut crate::ui::Ui<S, M>, budget_ms: f32, clock: &mut dyn FnMut() -> f64) -> bool {
+        self.warm_frame_timed(ui, budget_ms, clock).stage != Stage::Ready
+    }
+}
+
 /// How long a host gives the warm-up of each frame, ms.
 pub const WARM_MS: f32 = 6.0;
 
