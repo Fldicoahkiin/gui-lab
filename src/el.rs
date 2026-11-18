@@ -951,7 +951,7 @@ impl<M> El<M> {
     pub fn loosen(mut self, k: f32) -> Self { self.loosen = k; self }
     /// Place this element just below the element `key` (see `anchor`).
     pub fn anchor(mut self, key: impl Into<String>) -> Self { self.anchor = Some(key.into()); self }
-    /// Clip the children to this element's box: what lies outside is not drawn and cannot be hit.
+    /// Clip the children inside this element's border: what lies outside is not drawn and cannot be hit.
     pub fn clip(mut self) -> Self { self.clips = true; self.style.overflow = taffy::Point { x: taffy::Overflow::Clip, y: taffy::Overflow::Clip }; self }
     /// Take this element out of the flow and pin it to its parent's edges (logical px; `None` is auto).
     pub fn absolute(mut self, left: Option<f32>, top: Option<f32>, right: Option<f32>, bottom: Option<f32>) -> Self {
@@ -1064,8 +1064,8 @@ impl<M> El<M> {
     /// clipped by this container, without a layer: nothing beneath it is held loose, focus is not kept
     /// inside it, a press outside the container or Esc sends no dismiss, input outside is not blocked,
     /// and assistive technology is not told it is modal. What is drawn only with focus (`focus_shown`,
-    /// a skip link) is always drawn. The controls inside are pressed and focused as usual. It clips its
-    /// children to its box.
+    /// a skip link) is always drawn, over its siblings as when it has focus. The controls inside are
+    /// pressed and focused as usual. It clips its children inside its border.
     pub fn preview(mut self, on: bool) -> Self { self.preview = on; if on { self = self.clip(); } self }
     /// The pointer over this element and dragging on it, as one handler: `Some(Point)` while it moves
     /// over it (`down` false: a mouse or pen hovering) or presses and drags (`down` true until let go;

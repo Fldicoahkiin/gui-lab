@@ -170,7 +170,11 @@ changed text does (§1.16). With `around` it does not clamp yet (`ClampAround` i
 **Previews** (`El::preview(true)`): a modal element inside (a sheet, a context menu, a dialog) is drawn where it is
 written, laid out and clipped by the preview, without a layer: nothing beneath it is held loose, focus is not kept
 inside, a press outside or Esc sends no dismiss, input elsewhere is not blocked and the mirror does not call it
-modal. What is drawn only with focus (`focus_shown`, a skip link) is always drawn. For galleries and documents.
+modal. What is drawn only with focus (`focus_shown`, a skip link) is always drawn, over its siblings as when it has
+focus, so its fill covers the ink beneath it. The preview clips a pixel inside its border, so a sheet docked to its
+edges draws no second line along the border. (Any element that clips, clips inside its border.) For galleries and
+documents. `tests/menu.rs`
+(`in_a_preview_a_skip_link_covers_what_is_under_it_and_a_sheet_keeps_inside_the_border`).
 
 ### 1.3 The scene (`scene.rs`)
 

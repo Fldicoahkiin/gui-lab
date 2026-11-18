@@ -69,6 +69,9 @@ pub struct Node<M> {
     pub skip_to: Option<String>,
     /// `El::focus_shown`.
     pub focus_shown: bool,
+    /// `El::preview`: it clips a pixel inside its border, so what is docked to its edges in it does not
+    /// draw a second line along the border.
+    pub preview: bool,
     /// Takes no input (it or an ancestor was marked disabled) and is drawn faint.
     pub disabled: bool,
     /// For scroll nodes: length of what they hold along their axis, so offsets can be clamped.
@@ -3051,7 +3054,8 @@ impl<S, M: Clone> Ui<S, M> {
             let (b, p) = (l.border, l.padding);
             let inner_border = n.rect.inset(b.left, b.top, b.right, b.bottom);
             n.inner = inner_border.inset(p.left, p.top, p.right, p.bottom);
-            inside[i] = if n.scroll { clip.intersect(&inner_border) } else if n.clips { clip.intersect(&n.rect) } else { clip };
+            // A box clips inside its border, so what it holds never covers it.
+            inside[i] = if n.preview { clip.intersect(&inner_border.inset(1.0, 1.0, 1.0, 1.0)) } else if n.scroll || n.clips { clip.intersect(&inner_border) } else { clip };
             if n.virt.is_some() { self.virt_views.insert(n.key.clone(), n.rect.h); }
         }
         // Who came into view or left it (`El::on_visible`); what is gone is forgotten, so it is told
@@ -5656,6 +5660,11 @@ fn hoist<M>(el: &mut El<M>, out: &mut Vec<El<M>>) {
 fn in_preview<M>(el: &mut El<M>) {
     el.modal = None;
     el.focus_shown = false;
+    // What is drawn only with focus is drawn over its siblings, as when it has focus: its fill covers
+    // the ink beneath it.
+    let (over, kids): (Vec<El<M>>, Vec<El<M>>) = std::mem::take(&mut el.children).into_iter().partition(|c| c.focus_shown);
+    el.children = kids;
+    el.children.extend(over);
     for c in &mut el.children { in_preview(c); }
 }
 
@@ -5697,7 +5706,7 @@ fn measure_key(c: &Content) -> u64 {
 /// A virtual list's rows are built here, for what its viewport shows.
 #[allow(clippy::too_many_arguments)]
 fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], off: (bool, bool), flow: Option<(Rc<str>, usize)>, inh: Inherit, vx: &mut VirtCtx, built: &mut Built, nodes: &mut Vec<Node<M>>) -> usize {
-    let El { key, mut style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, mut on_text, multiline, selectable, cursor, virt, access, ripple, mut on_pick, mut on_wheel, mut on_move, guide, skeleton, rtl, on_visible, on_outline, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview: _, fit, clamp, plate, mut children } = el;
+    let El { key, mut style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, mut on_text, multiline, selectable, cursor, virt, access, ripple, mut on_pick, mut on_wheel, mut on_move, guide, skeleton, rtl, on_visible, on_outline, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview, fit, clamp, plate, mut children } = el;
     let mut inh = inh;
     if let Some(r) = rtl { inh.rtl = r; }
     style.direction = if inh.rtl { taffy::Direction::Rtl } else { taffy::Direction::Ltr };
@@ -5757,7 +5766,7 @@ fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], of
     }
     let placeholder = NodeId::from(0u64);
     nodes.push(Node {
-        key, parent, rect: Rect::default(), clip: Rect::default(), inner: Rect::default(), scroll, horizontal, focusable, tab_order, skip_to, focus_shown, disabled: off, extent: 0.0,
+        key, parent, rect: Rect::default(), clip: Rect::default(), inner: Rect::default(), scroll, horizontal, focusable, tab_order, skip_to, focus_shown, preview, disabled: off, extent: 0.0,
         content, fill, border, radius, on_press, on_key, on_drag, on_blur, loose, wipe, bar, reveal, commit, modal, hidden, shift, shed, flow_field, stirr, trace, flow: flow.clone(),
         mat: inh.code(), loosen: inh.loosen, annotate, scope: gaze_scope, anchor, clips, calm, on_text, multiline, selectable: inh.select, cursor,
         virt: virt_info, access, respond, legible, ripple: inh.scope.clone(), ripple_scope: ripple.container || commit_scope, recompose, recompose_always: is_text && ripple.recompose == Some(true), unframed: ripple.unframed, keyed,

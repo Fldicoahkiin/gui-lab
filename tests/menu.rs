@@ -108,3 +108,54 @@ fn a_preview_draws_modal_components_in_place_without_their_layer() {
     } }
     assert_eq!(diff, 0, "{diff} px outside the preview differ from the page with an empty box");
 }
+
+/// A preview's skip link and sheet, as `preview-modals.png` has them.
+mod preview_parts {
+    use amenui::el::{El, Paint, col, text};
+    pub struct S { pub empty: bool, pub nav: bool }
+    pub fn view(s: &S) -> El<()> {
+        let card = |k: &str, body: El<()>| { let c = col().key(k).width(300.0).height(230.0).border(1.0, Paint::DIM).radius(8.0); if s.empty { c } else { c.preview(true).child(body) } };
+        let sheet = amenui::widgets::sheet("pv/sheet", true, "Filter", 180.0, (), text("Conditions", 13.0, Paint::TEXT));
+        let skip = col().fill_width().fill_height().pad(12.0, 12.0).gap(8.0).child(amenui::widgets::skip_link("pv/skip", "Skip to content", "pv/main"))
+            .child(text(if s.nav { "Navigation" } else { "" }, 12.0, Paint::TEXT).key("pv/nav")).child(text("Content", 12.0, Paint::TEXT).key("pv/main"));
+        col().key("page").fill_width().fill_height().pad(20.0, 20.0).gap(14.0).child(amenui::el::row().gap(16.0).child(card("pv-a", sheet)).child(card("pv-b", skip)))
+    }
+}
+
+#[test]
+fn in_a_preview_a_skip_link_covers_what_is_under_it_and_a_sheet_keeps_inside_the_border() {
+    use preview_parts::{S, view};
+    let Ok(mut o) = amenui::offscreen::Offscreen::try_new(700, 300) else { eprintln!("no GPU adapter here: skipped"); return };
+    let look = amenui::style::Look { material: amenui::style::Material::Dottr, theme: amenui::style::LIGHT, ..amenui::style::Look::default() };
+    let mut ui = Ui::new(S { empty: false, nav: true }, view, |_, _| {}, fonts(), 700, 300, 1.0).on_look(|_| amenui::style::Look { material: amenui::style::Material::Dottr, theme: amenui::style::LIGHT, ..amenui::style::Look::default() });
+    ui.tick(3.0);
+    o.r.partial = false;
+    let px = o.render(&mut ui, &look);
+    o.r.hide_glyphs = true;
+    ui.invalidate();
+    let ground = o.render(&mut ui, &look);
+    o.r.hide_glyphs = false;
+    let found = amenui::audit::audit(&mut ui, &px, &ground);
+    let p0: Vec<_> = found.iter().filter(|f| f.level == amenui::audit::Level::P0).collect();
+    assert!(p0.is_empty(), "P0 findings in the previews: {p0:?}");
+    // Within the skip link's fill there is only its own label: the frame there is the frame without the
+    // text beneath it.
+    let skip = ui.node("pv/skip").unwrap().rect;
+    let nav = ui.node("pv/nav").unwrap().rect;
+    assert!(skip.intersect(&nav).w > 0.0, "the skip link is over the line beneath it ({skip:?}, {nav:?})");
+    let mut bare = Ui::new(S { empty: false, nav: false }, view, |_, _| {}, fonts(), 700, 300, 1.0);
+    bare.tick(3.0);
+    let without = o.render(&mut bare, &look);
+    let mut through = 0;
+    for y in skip.y as u32..skip.bottom() as u32 { for x in skip.x as u32 + 1..skip.right() as u32 - 1 { let i = ((y * 700 + x) * 4) as usize; if (0..3).any(|c| (px[i + c] as i32 - without[i + c] as i32).abs() > 2) { through += 1; } } }
+    assert_eq!(through, 0, "{through} px of the line beneath show through the skip link");
+    // The sheet does not cover the preview's border: the border's column beside the sheet is as with an
+    // empty box.
+    let mut e = Ui::new(S { empty: true, nav: true }, view, |_, _| {}, fonts(), 700, 300, 1.0);
+    e.tick(3.0);
+    let empty = o.render(&mut e, &look);
+    let b = ui.node("pv-a").unwrap().rect;
+    let mut differ = 0;
+    for x in [(b.right() - 2.0) as u32, (b.right() - 1.0) as u32] { for y in (b.y + 10.0) as u32..(b.bottom() - 10.0) as u32 { let i = ((y * 700 + x) * 4) as usize; if (0..3).any(|c| (px[i + c] as i32 - empty[i + c] as i32).abs() > 2) { differ += 1; } } }
+    assert_eq!(differ, 0, "{differ} px along the right border differ from the empty box: a second line");
+}
