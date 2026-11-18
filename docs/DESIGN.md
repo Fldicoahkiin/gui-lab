@@ -1243,17 +1243,19 @@ inside its clip at both ends is inside it all the way. Unpaired instances of the
 loosening to 1 and fading out within `out_ms`; new instances of the new page fade in over `fade_ms`.
 
 A subtree with a picture on both pages grows instead (an index's window into its piece, and back): its first
-picture on each page are paired whatever their places in the subtrees, and the picture is drawn as one, its
+picture on each page are paired whatever their places in the subtrees (a picture, not cells that read one:
+`el::cells` is a picture instance too), and the picture is drawn as one, its
 box going from the old one to the new one and shown only inside the part of it that shows, which goes from
 the old one's (the window) to the new one's (the full view); both on whole pixels every frame. It is drawn
 in the page pass as the page's last picture, after everything that dissolves, so it is above every other
 window, and what rides on it is ink over a picture (its own colour and size). Nothing else of the subtree is
 paired, since the two pages lay out different things over the picture: the rest of the old subtree (notes,
 boxes, labels) rides with the picture at its own size and colour, its centre where the picture takes it,
-inside the part that shows, without loosening, and fades over `out_ms`; what of it lies along the edge of the
-part that showed (its centre within 3 px of it: a frame round the window) is the window's, and fades over
-`out_ms` where it was, under the picture. The rest of the new subtree, and everything new outside the flows,
-comes in over `fade_ms` once the picture has landed. A picture that grows keeps the look's ground the old
+inside the part that shows, without loosening, whole until the picture lands; what of it lies along the edge
+of the part that showed (its centre within 3 px of it: a frame round the window) is the window's, and fades
+over `out_ms` where it was, under the picture. The rest of the new subtree is there at once when the picture
+lands, as the old goes, so each note over the picture is drawn once every frame and never missing; everything
+new outside the flows comes in over `fade_ms` once the picture has landed. A picture that grows keeps the look's ground the old
 page's until then (`Ui::look`), so around it is the page it came from, and the new page's ground comes in
 under a picture that covers it. A picture that shrinks takes its page with it: the look's ground is the new
 page's at once, what else of the old page lies in the part that showed rides with the picture too, and what

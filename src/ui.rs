@@ -5025,12 +5025,13 @@ impl<S, M: Clone> Ui<S, M> {
         if flight > 0.0 {
             let mut first_old: HashMap<Rc<str>, usize> = HashMap::new();
             for (k, o) in old.iter().enumerate() {
-                if let Some(t) = &o.tag && o.inst.paint[3] == PICTURE && !new_ids.contains(&o.id) { first_old.entry(t.flow.clone()).or_insert(k); }
+                // A picture, not the cells that read one (`el::cells`, a picture instance with its ramp in extra.x).
+                if let Some(t) = &o.tag && o.inst.paint[3] == PICTURE && o.inst.extra[0] <= 0.5 && !new_ids.contains(&o.id) { first_old.entry(t.flow.clone()).or_insert(k); }
             }
             for i in 0..self.page_len {
                 let id = self.owners[i].1;
                 let Some(t) = self.tags[i].clone() else { continue };
-                if self.base[i].paint[3] != PICTURE || old_ids.contains(&id) || grow_of.contains_key(&t.flow) { continue; }
+                if self.base[i].paint[3] != PICTURE || self.base[i].extra[0] > 0.5 || old_ids.contains(&id) || grow_of.contains_key(&t.flow) { continue; }
                 let Some(&k) = first_old.get(&t.flow) else { continue };
                 let (o, n) = (old[k].inst, self.base[i]);
                 let g = self.grows.len();
@@ -5058,13 +5059,15 @@ impl<S, M: Clone> Ui<S, M> {
         }
         // What is new on the page fades in over `fade_ms` as the old fades out, with or without less
         // motion: it is never drawn whole over the old page from the first frame. While a picture grows,
-        // it comes in once the picture has landed.
+        // it comes in once the picture has landed; what is new over the picture itself is there at once
+        // then, as what rode on it goes (each note drawn once, every frame).
         let fade = (spec.fade_ms / 1000.0).max(1e-3);
         let wait = if grow_of.is_empty() { 0.0 } else { flight };
         for i in 0..self.page_len {
             let id = self.owners[i].1;
             if old_ids.contains(&id) || self.flows.contains_key(&id) { continue; }
-            self.flows.insert(id, FlowRec { from: self.base[i].rect, clip: self.base[i].clip, start: now, dur: wait + fade, loose: 0.0, src: None, fade_in: Some([now + wait, now + wait + fade]), grow: None });
+            let fade = if grows(&self.tags[i]) { 0.0 } else { fade };
+            self.flows.insert(id, FlowRec { from: self.base[i].rect, clip: self.base[i].clip, start: now, dur: wait + fade.max(1e-3), loose: 0.0, src: None, fade_in: Some([now + wait, now + wait + fade]), grow: None });
         }
         let out = if self.fmap.reduced { self.fade_s } else { spec.out_ms / 1000.0 };
         // Around a picture that grows is the page it grows out of; one that shrinks takes the page it
@@ -5076,6 +5079,8 @@ impl<S, M: Clone> Ui<S, M> {
         for (k, o) in old.iter().enumerate() {
             if used[k] || new_ids.contains(&o.id) || spec.out_ms <= 0.0 { continue; }
             let mut ride = o.tag.as_ref().and_then(|t| grow_of.get(&t.flow)).copied();
+            // The rest of the picture's own subtree rides with it, whole, until it lands.
+            let on_it = ride.is_some();
             if ride.is_none() && let Some(g) = shrinks {
                 let (r, b) = (self.grows[g].r0, o.inst.rect);
                 if b[0] < r[0] || b[1] < r[1] || b[0] + b[2] > r[2] || b[1] + b[3] > r[3] { continue; }
@@ -5089,7 +5094,8 @@ impl<S, M: Clone> Ui<S, M> {
                 let (cx, cy) = (b[0] + b[2] * 0.5, b[1] + b[3] * 0.5);
                 if cx < r[0] + 3.0 || cy < r[1] + 3.0 || cx > r[2] - 3.0 || cy > r[3] - 3.0 { (ride, loosen) = (None, false); }
             }
-            self.ghosts.push(Ghost { inst: o.inst, start: now, dur: out, loosen, ride });
+            let (start, dur) = if on_it && ride.is_some() { (now + flight - 1e-4, 1e-4) } else { (now, out) };
+            self.ghosts.push(Ghost { inst: o.inst, start, dur, loosen, ride });
         }
         if grows_out && let Some(g) = self.ground_seen { self.ground_hold = Some((g, now + flight)); }
         self.animating = true;

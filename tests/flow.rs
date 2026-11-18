@@ -4,7 +4,7 @@
 //! as they fade and the new ones coming in once it has landed; the title is drawn once, over the picture;
 //! the picture does not start over.
 use amenui::draw::Drawing;
-use amenui::el::{El, Font, Paint, canvas, col, picture, text};
+use amenui::el::{Cells, El, Font, Paint, canvas, cells, col, picture, text};
 use amenui::morph::{Cmd, Ease, FlowSpec};
 use amenui::offscreen::Offscreen;
 use amenui::scene::{Instance, PICTURE};
@@ -40,6 +40,7 @@ fn layer(key: &str, (w, h): (f32, f32), pic: u32, note: (f32, f32), bx: [f32; 4]
         .child(at(canvas(d).key(format!("{key}/marks")).width(w).pass(true), 0.0, 0.0))
         .child(at(col().key(format!("{key}/shade")).width(30.0).height(12.0).fill(SHADE), note.0, note.1 + 20.0))
         .child(at(text("note", 11.0, Paint::ACCENT).font(Font::Mono).key(format!("{key}/note")), note.0, note.1))
+        .child(at(cells(Cells { over: format!("{key}/picture"), pitch: [7.0, 10.0], ramp: ":=+*".into(), size: 9.0, ..Cells::default() }, 6, 3).key(format!("{key}/scan")), note.0, note.1 + 40.0))
 }
 /// The window's frame: four lines in the accent, drawn over it.
 fn frame(key: &str, w: f32, h: f32) -> El<()> {
@@ -93,7 +94,7 @@ fn pixels(w: u32, h: u32, tint: u8) -> Vec<u8> {
 }
 fn shows(i: &Instance) -> [f32; 4] { [i.rect[0].max(i.clip[0]), i.rect[1].max(i.clip[1]), (i.rect[0] + i.rect[2]).min(i.clip[2]), (i.rect[1] + i.rect[3]).min(i.clip[3])] }
 fn visible(i: &Instance) -> bool { let s = shows(i); i.paint[2] > 0.002 && s[2] > s[0] && s[3] > s[1] }
-fn pictures(u: &Ui<Site, ()>, id: u32) -> Vec<Instance> { u.scene().instances.iter().filter(|i| i.paint[3] == PICTURE && i.extra[1] as u32 == id && visible(i)).copied().collect() }
+fn pictures(u: &Ui<Site, ()>, id: u32) -> Vec<Instance> { u.scene().instances.iter().filter(|i| i.paint[3] == PICTURE && i.extra[0] <= 0.5 && i.extra[1] as u32 == id && visible(i)).copied().collect() }
 
 /// The flow one way (`back`: from the piece to the index) at 40, 80, 200 and 350 ms: one picture, in
 /// one rect on whole pixels where the ease puts it, never starting over; the index's ground around it;
@@ -156,9 +157,17 @@ fn flight(back: bool) {
         if ms >= 200.0 {
             let mut off = 0;
             for y in (0..H).step_by(3) { for x in (0..W).step_by(3) {
-                if inside(x, y, 1.0) || near_title(x, y) { continue; }
+                if inside(x, y, 0.0) || near_title(x, y) { continue; }
                 if (0..3).any(|c| (px(&f, x, y)[c] - ground[c]).abs() > 2) { off += 1; if off < 4 { eprintln!("{way} {ms} ms: ({x}, {y}) is {:?}, the ground {ground:?}", px(&f, x, y)); } }
             } }
+            // No rim: every pixel just outside the picture's edges is the ground.
+            let (x0, y0, x1, y1) = (r[0] as i32 - 1, r[1] as i32 - 1, r[2] as i32, r[3] as i32);
+            let ring = (x0..=x1).flat_map(|x| [(x, y0), (x, y1)]).chain((y0..=y1).flat_map(|y| [(x0, y), (x1, y)]));
+            for (x, y) in ring {
+                if x < 0 || y < 0 || x >= W as i32 || y >= H as i32 || near_title(x as u32, y as u32) { continue; }
+                let c = px(&f, x as u32, y as u32);
+                if (0..3).any(|k| (c[k] - ground[k]).abs() > 2) { off += 1; if off < 4 { eprintln!("{way} {ms} ms: the rim at ({x}, {y}) is {c:?}, the ground {ground:?}"); } }
+            }
             assert_eq!(off, 0, "{way} {ms} ms: pixels outside the picture that are not the index's ground");
         } else {
             for (x, y) in [(700, 560), (760, 300), (600, 30), (780, 10)] { if !inside(x, y, 1.0) { assert_eq!(px(&f, x, y), ground, "{way} {ms} ms: ({x}, {y})"); } }
@@ -179,7 +188,7 @@ fn flight(back: bool) {
         }
         // The window's frame and its live line leave by their opacity within `out_ms`, under the picture
         // (going in), or wait for it to land (going back): never drawn over it.
-        let pic_at = u.scene().instances.iter().position(|i| i.paint[3] == PICTURE && i.extra[1] as u32 == PIC_A && visible(i)).unwrap_or(0);
+        let pic_at = u.scene().instances.iter().position(|i| i.paint[3] == PICTURE && i.extra[0] <= 0.5 && i.extra[1] as u32 == PIC_A && visible(i)).unwrap_or(0);
         let overlaps = |i: &Instance| { let s = shows(i); s[0] < r[2] && s[2] > r[0] && s[1] < r[3] && s[3] > r[1] };
         for (k, i) in u.scene().instances.iter().enumerate().filter(|(_, i)| visible(i)) {
             let same = |q: &Instance| q.rect == i.rect && q.paint[..2] == i.paint[..2] && q.paint[3] == i.paint[3];
@@ -194,6 +203,13 @@ fn flight(back: bool) {
         assert_eq!(edge, 0, "{way} {ms} ms: the window's frame line shows in the picture");
         let beta = (0..W * H).filter(|&k| { let (x, y) = (k % W, k / W); inside(x, y, -1.0) && { let c = px(&f, x, y); (80..=100).contains(&c[2]) && (c[0] - c[1] / 2).abs() <= 4 && c[1] > 60 } }).count();
         assert_eq!(beta, 0, "{way} {ms} ms: the other window's picture shows in the picture");
+        // Each note once, over the picture, inside it: the text's four glyphs and the scan's cells.
+        let over: Vec<&Instance> = u.scene().instances[pic_at + 1..].iter().filter(|i| visible(i) && !title.contains(i)).collect();
+        let notes = over.iter().filter(|i| i.paint[3] == 0.0 && i.paint[1] == 1.0 && overlaps(i)).count();
+        let scans: Vec<&&Instance> = over.iter().filter(|i| i.paint[3] == PICTURE && i.extra[0] > 0.5).collect();
+        assert_eq!(notes, 4, "{way} {ms} ms: the note's glyphs over the picture drawn {notes} times");
+        assert_eq!(scans.len(), 1, "{way} {ms} ms: the scan's cells drawn {} times over the picture", scans.len());
+        for c in &scans { let sh = shows(c); assert!(sh[0] >= r[0] && sh[1] >= r[1] && sh[2] <= r[2] && sh[3] <= r[3], "{way} {ms} ms: the scan's cells are drawn outside the picture: {sh:?} in {r:?}"); }
         // The title once, over the picture, whole and opaque.
         assert_eq!(title.len(), 5, "{way} {ms} ms: the title's glyphs drawn {} times", title.len());
         for t in &title {

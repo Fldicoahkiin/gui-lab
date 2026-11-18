@@ -10,6 +10,9 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
 
 ## Islands under labels
 
+- Flow: cells that read a picture (`el::cells`) are not taken for the subtree's picture, so they are not drawn a
+  second time as one that grows. What rides on a growing picture stays whole until it lands, and the new
+  subtree's notes are there at once then: each note is drawn once every frame (DESIGN.md §1.10).
 - `Blade::lean_from` and `Blade::lean_full`: the blade's colour (and its head's) goes to `lean_paint` from the one
   lean to the other on a smoothstep; both 0 (the default) keep the mix linear over `max_lean`, byte for byte
   (`Blade::mix`, DESIGN.md §1.26). Code that builds a `Blade` with every field named needs the two new ones.
