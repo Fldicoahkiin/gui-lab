@@ -46,12 +46,20 @@ fn distance(mask: &[bool]) -> Vec<f32> {
     for y in 0..h { for x in 0..w {
         let i = y * w + x;
         if x > 0 { d[i] = d[i].min(d[i - 1] + a); }
-        if y > 0 { d[i] = d[i].min(d[i - w] + a); if x > 0 { d[i] = d[i].min(d[i - w - 1] + b); } if x + 1 < w { d[i] = d[i].min(d[i - w + 1] + b); } }
+        if y > 0 {
+            d[i] = d[i].min(d[i - w] + a);
+            if x > 0 { d[i] = d[i].min(d[i - w - 1] + b); }
+            if x + 1 < w { d[i] = d[i].min(d[i - w + 1] + b); }
+        }
     } }
     for y in (0..h).rev() { for x in (0..w).rev() {
         let i = y * w + x;
         if x + 1 < w { d[i] = d[i].min(d[i + 1] + a); }
-        if y + 1 < h { d[i] = d[i].min(d[i + w] + a); if x + 1 < w { d[i] = d[i].min(d[i + w + 1] + b); } if x > 0 { d[i] = d[i].min(d[i + w - 1] + b); } }
+        if y + 1 < h {
+            d[i] = d[i].min(d[i + w] + a);
+            if x + 1 < w { d[i] = d[i].min(d[i + w + 1] + b); }
+            if x > 0 { d[i] = d[i].min(d[i + w - 1] + b); }
+        }
     } }
     d
 }
@@ -121,7 +129,7 @@ fn the_hold_is_an_island_round_the_glyphs_not_a_box() {
     let d = distance(&ink);
     let (_, r1) = radii(14.0);
     let (mut x0, mut y0, mut x1, mut y1) = (W as f32, H as f32, 0.0f32, 0.0f32);
-    for i in 0..n { if ink[i] { let (x, y) = ((i as u32 % W) as f32, (i as u32 / W) as f32); x0 = x0.min(x); y0 = y0.min(y); x1 = x1.max(x + 1.0); y1 = y1.max(y + 1.0); } }
+    for (i, _) in ink.iter().enumerate().take(n).filter(|(_, k)| **k) { let (x, y) = ((i as u32 % W) as f32, (i as u32 / W) as f32); x0 = x0.min(x); y0 = y0.min(y); x1 = x1.max(x + 1.0); y1 = y1.max(y + 1.0); }
     let rect = (x1 - x0 + 2.0 * r1) * (y1 - y0 + 2.0 * r1);
     let island = (0..n).filter(|&i| d[i] <= r1).count() as f32;
     eprintln!("hold area {island} of the grown ink box {rect}: {:.2}", island / rect);

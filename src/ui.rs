@@ -5501,6 +5501,7 @@ fn ident(key: &str, part: u32, glyph: u32) -> u64 {
 /// start to its end), the stand-in's glyph for the same character, standing where the new one is,
 /// where it has not; each glyph's looseness within `SWEEP_LOOSE` of its change, a sine up to `cap`.
 /// With less motion both are drawn where the new ones are, the new fading in over `REDUCED_FADE`.
+#[allow(clippy::too_many_arguments)]
 fn sweep_glyphs(text: &mut Text, para: Para<'_>, origin: (f32, f32), proto: Instance, s: f32, rows: Option<(f32, f32)>, (at, d): (f32, crate::text::FaceDecl), reduced: bool, cap: f32) -> Vec<(Instance, u32, f32)> {
     let mut new: Vec<(Instance, u32, [f32; 4])> = vec![];
     text.emit_pens(para, origin, proto, s, rows, |i, g, p| new.push((i, g, p)));
@@ -5520,8 +5521,7 @@ fn sweep_glyphs(text: &mut Text, para: Para<'_>, origin: (f32, f32), proto: Inst
         Some((i, g))
     };
     let mut out = vec![];
-    for k in 0..new.len() {
-        let (inst, g, p) = new[k];
+    for (k, &(inst, g, p)) in new.iter().enumerate() {
         if reduced {
             let a = (at / REDUCED_FADE).clamp(0.0, 1.0);
             if a < 1.0 && let Some((mut o, og)) = moved(k) { o.paint[2] *= 1.0 - a; out.push((o, og, 0.0)); }
@@ -5635,8 +5635,7 @@ fn measure_key(c: &Content) -> u64 {
 /// A virtual list's rows are built here, for what its viewport shows.
 #[allow(clippy::too_many_arguments)]
 fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], off: (bool, bool), flow: Option<(Rc<str>, usize)>, inh: Inherit, vx: &mut VirtCtx, built: &mut Built, nodes: &mut Vec<Node<M>>) -> usize {
-    let El { key, style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, mut on_text, multiline, selectable, cursor, virt, access, ripple, mut on_pick, mut on_wheel, mut on_move, guide, skeleton, rtl, on_visible, on_outline, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview: _, fit, clamp, plate, mut children } = el;
-    let mut style = style;
+    let El { key, mut style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, mut on_text, multiline, selectable, cursor, virt, access, ripple, mut on_pick, mut on_wheel, mut on_move, guide, skeleton, rtl, on_visible, on_outline, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview: _, fit, clamp, plate, mut children } = el;
     let mut inh = inh;
     if let Some(r) = rtl { inh.rtl = r; }
     style.direction = if inh.rtl { taffy::Direction::Rtl } else { taffy::Direction::Ltr };
@@ -5702,7 +5701,6 @@ fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], of
         virt: virt_info, access, respond, legible, ripple: inh.scope.clone(), ripple_scope: ripple.container || commit_scope, recompose, recompose_always: is_text && ripple.recompose == Some(true), unframed: ripple.unframed, keyed,
         on_pick, on_wheel, on_move, guide, on_visible, on_outline, decode, skeleton: inh.skeleton, form, turn, xf: None, reveal_by, ongoing: ongoing || parent.is_some_and(|p| nodes[p].ongoing), pass, opacity, opacity_all: opacity * parent.map_or(1.0, |p| nodes[p].opacity_all), commit_scope, fit, clamp, shown: None, plate, local: taffy::Layout::new(), tid: placeholder,
     });
-    let mut style = style;
     crate::el::snap_style(&mut style);
     // Every element is the box its absolutely placed children are pinned in (all four insets against
     // its padding box, as CSS does for a positioned parent), not the window.

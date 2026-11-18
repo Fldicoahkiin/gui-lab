@@ -59,8 +59,10 @@ fn a_face_added_before_the_first_frame_is_never_seen_standing_in() {
     assert!(a.faces_wanted().is_empty());
 }
 
+/// One arrival: each frame's pixels, the title's glyph instances, layouts, the frame at rest.
+type Arrival = (Vec<Vec<u8>>, Vec<Vec<amenui::scene::Instance>>, u64, Vec<u8>);
 /// Each frame from frame 30 at 60 fps with the serif added then: the pixels, the title's glyph instances.
-fn arrival(o: &mut Offscreen, m: Material, both: bool) -> (Vec<Vec<u8>>, Vec<Vec<amenui::scene::Instance>>, u64, Vec<u8>) {
+fn arrival(o: &mut Offscreen, m: Material, both: bool) -> Arrival {
     let s = S { body2: both.then_some(amenui::text::GEIST_PIXEL[1]), ..page(m) };
     let mut ui = mk(s, declared());
     let mut t = 1.0;
