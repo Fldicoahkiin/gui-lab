@@ -10,6 +10,10 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
 
 ## Islands under labels
 
+- `Blade::lean_from` and `Blade::lean_full`: the blade's colour (and its head's) goes to `lean_paint` from the one
+  lean to the other on a smoothstep; both 0 (the default) keep the mix linear over `max_lean`, byte for byte
+  (`Blade::mix`, DESIGN.md §1.26). Code that builds a `Blade` with every field named needs the two new ones.
+
 - The ink under text to read is held at looseness 0, not at `legible_cap`: a label reads on its ground's colour at
   rest (DESIGN.md §1.15).
 - A filled control whose own fill is loosened keeps one island: its content's ink box grown by `max(5, 0.36 × size)`,

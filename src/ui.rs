@@ -3495,7 +3495,8 @@ impl<S, M: Clone> Ui<S, M> {
                 if let Some(a) = &turned && !inst.blade() { a.instance(&mut inst, s); }
                 // A negative push marks what fronts pass by whatever its element says (the caret, a
                 // selection's halo).
-                inst.resp = if inst.resp[1] < 0.0 { [0.0; 4] } else { resp };
+                // A blade keeps its own spare numbers (`resp` z, w: its colour's lean range).
+                inst.resp = if inst.resp[1] < 0.0 { [0.0; 4] } else if inst.blade() { [resp[0], resp[1], inst.resp[2], inst.resp[3]] } else { resp };
                 inst.look[2] = reads;
                 // A picture or a 3D view loosens where the map is, in place: its flow never carries it
                 // off its own box (so a trail never shows the page under a picture, §1.29).
@@ -3719,10 +3720,13 @@ impl<S, M: Clone> Ui<S, M> {
                             let bounds = [rx - len - w, ry - len - w, 2.0 * (len + w), len + 2.0 * w];
                             let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round();
                             let lp = b.lean_paint;
+                            // Where its colour starts towards the lean paint and where it is all of it (radians;
+                            // in the spare numbers of `resp`, which a blade is never pushed by).
+                            let mix = if b.lean_full > b.lean_from { (b.lean_from.abs(), b.lean_full.abs()) } else { (0.0, 0.0) };
                             let wq = (w * 16.0).round().min(4095.0);
                             for g in 0..segs {
                                 let inst = Instance { rect: bounds, uv: [b.stiff.clamp(0.0, 1.0), b.max_lean.abs().min(1.5), b.lean, g as f32 + 16.0 * segs as f32 + 256.0 * wq], paint: [b.paint.tone, b.paint.accent, b.paint.alpha, SHAPE], clip,
-                                    extra: [0.0, 1.0 + q(lp.tone) + 256.0 * q(lp.accent), 0.0, 0.0], look: [mat, b.paint.hue as f32, 0.0, 0.0], resp, xf: [0.0; 4] };
+                                    extra: [0.0, 1.0 + q(lp.tone) + 256.0 * q(lp.accent), 0.0, 0.0], look: [mat, b.paint.hue as f32, 0.0, 0.0], resp: [resp[0], resp[1], mix.0, mix.1], xf: [0.0; 4] };
                                 put(&mut sink, inst, ident(&n.key, (j as u32 * 16 + g) | 0x2000_0000, 1), None);
                             }
                             if let Some(h) = b.head {
@@ -3742,6 +3746,7 @@ impl<S, M: Clone> Ui<S, M> {
                                     g.xf = [rx, ry, len, sq + 128.0 * mq];
                                     g.extra[1] = -(1.0 + lq);
                                     g.extra[0] = 1.0 + q(lp.tone) + 256.0 * q(lp.accent);
+                                    g.resp = [0.0, 0.0, mix.0, mix.1];
                                     g.clip = clip;
                                     put(&mut sink, g, ident(&n.key, (j as u32 * 16 + 15) | 0x2000_0000, 2), None);
                                 }

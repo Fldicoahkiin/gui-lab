@@ -2220,7 +2220,10 @@ So the foundation changed in five places, with no special cases in the effect pa
   `lean` (0), `max_lean` (57°), `stiff` (0.5), `paint`, `lean_paint` and an optional `head` glyph. Its lean is
   `lean + max_lean · clamp(flow.x / drift, −1, 1)` with the flow read at the root, so vertical flow never lays
   it down: its own lean and the flow's add, all of it within ±`max_lean` (and ±85°); its colour is
-  `mix(paint, lean_paint, |lean| / max_lean)`, and its head's `mix(head.paint, lean_paint, |lean| / max_lean)`. The lean is the
+  `mix(paint, lean_paint, m)` and its head's `mix(head.paint, lean_paint, m)`, where `m` (`Blade::mix`) is
+  `|lean| / max_lean` by default (`lean_from` 0, `lean_full` 0), and with `lean_full` above `lean_from` 0 up to
+  `lean_from`, 1 from `lean_full` and a smoothstep between (a field that greens only once it really leans: 8° and
+  20° on the website). The lean is the
   angle of the tip's tangent from upright. Along the blade, a share `s` of its length from the root, the tangent
   is `lean · (0.35 + 0.65 · g(s))` (`Blade::tangent`): the root leans 0.35 of the tip. With `stiff` 0, `g(s) = s`,
   one even bend from root to tip; with `stiff` above 0, `g` is 0 over the lower `0.6 · stiff` of the blade (that
@@ -2407,7 +2410,10 @@ release, the page is identical pixel for pixel to how it was before and wants no
 - **Reading**: the G-buffer stage's `own_loose` takes `w = max(w, fmap_e(this point))` and then the existing
   `k + clamp(w, 0, max(resp.x − k, 0))`, so responses and the legibility cap need nothing new: 0 for `Ignore` and
   `Nudge`, up to 0.15 for legible text, up to 1 for decoration. The vertex stage translates by the flow at the
-  center, `flow × drift × scale`, only for instances that fronts push; pictures and 3D elements are not translated
+  center, `flow × drift × scale`, only for instances that fronts push (so `Response::Ignore` keeps an element, a
+  title in a field a gust crosses, exactly where it is; `El::calm` does too and clears the map over its box);
+  the map is sampled between its nodes, so a scope's edge is soft over one cell on both sides. Pictures and 3D
+  elements are not translated
   (they loosen in place, so the page ground never shows inside a picture's box as a trail passes, `check` 19.5).
   The shading stage: dottr's ground dots add `fmap_e` to their swell and the lattice leans along the flow by at most
   half a pitch; glitchr's row slips take `fmap_e` as looseness on the ground (not on ink). Other materials' grounds
@@ -2489,7 +2495,10 @@ with a drag rendered three times are byte-identical); `check` item 19; `bench �
 gusts: `tests/blades.rs` (an 80 px blade at 0, 19, 38, 57 and 72° and `stiff` 0, 0.5 and 1: the tip's tangent
 within 1° of the lean, its lowest 4 px within 2° of 0.35 of it, with `stiff` 1 the lower 48 px within 0.5 px of a
 straight line, neighbouring segments at most 12° apart, the length within 2 %; the GPU draws it on its shape,
-its head along the tip's tangent and in its own paint upright, the lean paint at 72° of 72°; a gust of 0.79 over one blade with `max_lean` 72° peaks at 57° ± 0.5°, sways
+its head along the tip's tangent and in its own paint upright, the lean paint at 72° of 72°; with `lean_from` 8°
+and `lean_full` 20° stem and head in their paint at 5°, half way at 14°, in the lean paint at ±25°, and the default
+mix linear; a title with `Response::Ignore` under a crossing gust draws the same pixels as at rest while text
+beside it that reads the map moves; a gust of 0.79 over one blade with `max_lean` 72° peaks at 57° ± 0.5°, sways
 back once to 6° ± 0.5° within 0.5 s of the trailing edge and is upright from 1.25 s after the peak, after which
 the map is byte-identical to before and no frame is wanted; a pointer's walk with `map_life(6, 6)`, 40 px wide:
 its last stalk over 3° at 5.0 s and upright at 6.0 ± 0.1 s, the end walked first upright first, then the map

@@ -189,9 +189,11 @@ fn blade_lean(root: vec2f, own: f32, most: f32) -> f32 {
   return clamp(own + most * clamp(fmap_flow(root).x, -1.0, 1.0), -m, m);
 }
 /// A paint going to a blade's lean paint (`1 +` its tone + 256 × its accent, 255ths) as it leans `th`
-/// of the most `most`.
-fn blade_paint(p: vec4f, code: f32, th: f32, most: f32) -> vec4f {
-  let f = clamp(abs(th) / max(most, 1e-3), 0.0, 1.0);
+/// (draw.rs `Blade::mix`): with `range` (lean_from, lean_full; resp.zw) rising, a smoothstep over it;
+/// otherwise `|th|` of the most `most`.
+fn blade_paint(p: vec4f, code: f32, th: f32, most: f32, range: vec2f) -> vec4f {
+  var f = clamp(abs(th) / max(most, 1e-3), 0.0, 1.0);
+  if (range.y > range.x) { f = smoothstep(range.x, range.y, abs(th)); }
   let lp = code - 1.0;
   let la = floor(lp / 256.0); let lt = lp - la * 256.0;
   return vec4f(mix(p.x, lt / 255.0, f), mix(p.y, la / 255.0, f), p.z, p.w);
@@ -238,7 +240,7 @@ fn blade_seg(iv: VIn) -> VIn {
   i.rect = vec4f(c.x - (l + ww) * 0.5, c.y - ww * 0.5, l + ww, ww);
   i.uv = vec4f(ww * 0.5, 0.0, cuts);
   i.xf = vec4f(dir.x - 1.0, -dir.y, dir.y, dir.x - 1.0);
-  i.paint = blade_paint(i.paint, i.extra.y, th, iv.uv.y);
+  i.paint = blade_paint(i.paint, i.extra.y, th, iv.uv.y, iv.resp.zw);
   i.extra.y = 0.0;
   i.look.z = 0.0; i.look.w = 0.0;
   i.resp.y = 0.0;
@@ -262,7 +264,7 @@ fn blade_head(iv: VIn) -> VIn {
   let m2 = root + tip + vec2f(cs * mid.x - sn * mid.y, sn * mid.x + cs * mid.y);
   i.rect = vec4f(m2 - i.rect.zw * 0.5, i.rect.zw);
   i.xf = vec4f(cs - 1.0, -sn, sn, cs - 1.0);
-  i.paint = blade_paint(i.paint, i.extra.x, th, most);
+  i.paint = blade_paint(i.paint, i.extra.x, th, most, iv.resp.zw);
   i.extra.x = 0.0; i.extra.y = 0.0;
   i.look.z = 0.0; i.look.w = 0.0;
   i.resp.y = 0.0;

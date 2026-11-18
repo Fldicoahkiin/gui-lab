@@ -24,7 +24,7 @@ pub enum Mark {
 /// angle of its tip's tangent from upright. Its root leans 0.35 of that and it bends toward the tip
 /// (`Blade::tangent`); `stiff` says how much of it stays straight (0: an even bend from root to tip; 1:
 /// the lower 60 % straight); it keeps its length (`Blade::shape`). Its colour goes from
-/// `paint` to `lean_paint` as it leans. A `head` glyph rides the tip, the bottom centre of its ink on
+/// `paint` to `lean_paint` as it leans (`Blade::mix`). A `head` glyph rides the tip, the bottom centre of its ink on
 /// it, turned with the tip, its colour going from its own paint to `lean_paint` with the stroke's. While only the map moves, nothing of it is worked out on the CPU.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Blade {
@@ -42,19 +42,33 @@ pub struct Blade {
     pub stiff: f32,
     /// Its colour upright.
     pub paint: Paint,
-    /// Its colour leaning `max_lean`.
+    /// Its colour leaning `max_lean` (or `lean_full`).
     pub lean_paint: Paint,
+    /// From how far it leans (radians, either way) its colour starts towards `lean_paint` (`Blade::mix`).
+    pub lean_from: f32,
+    /// How far it leans when its colour is all `lean_paint`; 0 (the default): `max_lean`, the mix linear.
+    pub lean_full: f32,
     /// A glyph on its tip.
     pub head: Option<Head>,
 }
 impl Default for Blade {
-    fn default() -> Self { Self { root: (0.0, 0.0), len: 40.0, width: 1.5, lean: 0.0, max_lean: 57f32.to_radians(), stiff: 0.5, paint: Paint::INK, lean_paint: Paint::INK, head: None } }
+    fn default() -> Self { Self { root: (0.0, 0.0), len: 40.0, width: 1.5, lean: 0.0, max_lean: 57f32.to_radians(), stiff: 0.5, paint: Paint::INK, lean_paint: Paint::INK, lean_from: 0.0, lean_full: 0.0, head: None } }
 }
 /// The steps of a blade's walk to one point (the shader's `BLADE_M`).
 const BLADE_WALK: usize = 16;
 /// The most a blade leans, its tip from upright.
 pub const BLADE_MOST: f32 = 85.0 * std::f32::consts::PI / 180.0;
 impl Blade {
+    /// How much of the way from `paint` to `lean_paint` its colour (and its head's) is, leaning `lean`
+    /// (the shader's `blade_paint`): with `lean_full` above `lean_from`, 0 up to `lean_from`, 1 from
+    /// `lean_full` and a smoothstep between; otherwise (the default, `lean_full` 0) `|lean| / max_lean`.
+    pub fn mix(&self, lean: f32) -> f32 {
+        let a = lean.abs();
+        if self.lean_full > self.lean_from {
+            let t = ((a - self.lean_from) / (self.lean_full - self.lean_from)).clamp(0.0, 1.0);
+            t * t * (3.0 - 2.0 * t)
+        } else { (a / self.max_lean.abs().clamp(1e-3, 1.5)).clamp(0.0, 1.0) }
+    }
     /// How far its bend has come at a share `s` of its length (0 at the root, 1 at the tip): `s` itself
     /// when it is not stiff; with `stiff`, 0 over the lower `0.6 × stiff` and then a smoothstep to 1.
     pub fn bend(s: f32, stiff: f32) -> f32 {

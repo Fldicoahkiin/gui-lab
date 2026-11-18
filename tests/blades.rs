@@ -395,3 +395,86 @@ fn three_thousand_blades_are_one_draw_that_costs_nothing_while_only_the_map_move
     u.tick(t);
     assert!(!u.needs_frame(t), "a still field asks for frames");
 }
+
+#[derive(Clone, Copy)]
+struct Ranged { lean: f32, from: f32, full: f32 }
+fn ranged(s: &Ranged) -> El<()> {
+    let mut d = Drawing::new(W as f32, H as f32);
+    let head = Some(Head { ch: 'l', size: 14.0, font: Font::Mono, paint: Paint::INK });
+    d.blade(Blade { root: (120.0, 120.0), len: 80.0, width: 4.0, lean: s.lean.to_radians(), max_lean: 72f32.to_radians(), lean_paint: Paint::ACCENT, lean_from: s.from.to_radians(), lean_full: s.full.to_radians(), head, ..Blade::default() });
+    col().key("page").width(W as f32).height(H as f32).child(canvas(d).key("field").width(W as f32))
+}
+
+#[test]
+fn a_blades_colour_goes_to_its_lean_paint_over_its_range_and_its_heads_with_it() {
+    // The mix: linear over max_lean by default; with a range, 0 below it, 1 above it, a smoothstep between.
+    let b = Blade { max_lean: 72f32.to_radians(), ..Blade::default() };
+    for a in [0.0f32, 18.0, 36.0, 72.0, 80.0] { assert!((b.mix(a.to_radians()) - (a / 72.0).min(1.0)).abs() < 1e-5, "default at {a}°"); }
+    let r = Blade { lean_from: 8f32.to_radians(), lean_full: 20f32.to_radians(), ..b };
+    assert_eq!(r.mix(5f32.to_radians()), 0.0);
+    assert_eq!(r.mix(25f32.to_radians()), 1.0);
+    assert!((r.mix(14f32.to_radians()) - 0.5).abs() < 1e-4);
+    assert!((r.mix(-14f32.to_radians()) - 0.5).abs() < 1e-4);
+    // Drawn: the reddest pixel on the stem's middle and on the head (the accent is red over blue, the
+    // ink is not), against the same blade in each paint all the way.
+    let mut o = Offscreen::new(W, H);
+    let mut shot = |s: Ranged| { let mut u = Ui::new(s, ranged, |_, _| {}, fonts(), W, H, 1.0).on_look(|_| Look { material: Material::Plain, theme: DARK, ..Look::default() }); u.tick(3.0); let l = u.look(); o.r.partial = false; o.render(&mut u, &l) };
+    let red = |f: &[u8], a: f32, s0: f32, s1: f32| {
+        let mut most = -255;
+        for k in 0..=40 {
+            let s = s0 + (s1 - s0) * k as f32 / 40.0;
+            let p = if s <= 1.0 { Blade::at(s, a.to_radians(), 0.5, 80.0) } else { let t = Blade::at(1.0, a.to_radians(), 0.5, 80.0); [t[0] + a.to_radians().sin() * (s - 1.0) * 80.0, t[1] - a.to_radians().cos() * (s - 1.0) * 80.0] };
+            for (dx, dy) in [(0.0, 0.0), (1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] { let q = px(f, 120.0 + p[0] + dx, 120.0 + p[1] + dy); most = most.max(q[0] - q[2]); }
+        }
+        most
+    };
+    for (a, want) in [(5.0f32, 0.0f32), (14.0, 0.5), (25.0, 1.0), (-25.0, 1.0)] {
+        let f = shot(Ranged { lean: a, from: 8.0, full: 20.0 });
+        let ink = shot(Ranged { lean: a, from: 80.0, full: 81.0 });
+        let lean = shot(Ranged { lean: a, from: 0.0, full: 0.001 });
+        for (what, s0, s1) in [("stem", 0.4f32, 0.6f32), ("head", 1.03, 1.12)] {
+            let (r, r0, r1) = (red(&f, a, s0, s1), red(&ink, a, s0, s1), red(&lean, a, s0, s1));
+            let got = (r - r0) as f32 / (r1 - r0).max(1) as f32;
+            assert!(r1 - r0 > 100, "{a}° {what}: the two paints apart by {}", r1 - r0);
+            assert!((got - want).abs() < 0.12, "{a}° {what}: {got} of the way to the lean paint, not {want}");
+        }
+    }
+}
+
+#[derive(Clone)]
+struct Titled { cmds: Vec<Cmd> }
+fn titled(_: &Titled) -> El<()> {
+    use amenui::el::{Response, text};
+    let mut d = Drawing::new(FW as f32, FH as f32);
+    for k in 0..200 { d.blade(Blade { root: (3.0 + k as f32 * 3.2, 190.0), len: 30.0, ..Blade::default() }); }
+    col().key("page").width(FW as f32).height(FH as f32)
+        .child(canvas(d).key("field").width(FW as f32).absolute(Some(0.0), Some(0.0), None, None))
+        .child(text("touch grass", 28.0, Paint::INK).key("title").respond(Response::Ignore).absolute(Some(40.0), Some(40.0), None, None))
+        .child(text("touch grass", 28.0, Paint::INK).key("moved").absolute(Some(40.0), Some(110.0), None, None))
+}
+
+#[test]
+fn text_that_ignores_the_field_stays_put_as_a_gust_crosses_it() {
+    let Ok(mut o) = Offscreen::try_new(FW, FH) else { return };
+    let mut u = Ui::new(Titled { cmds: vec![] }, titled, |_, _| {}, fonts(), FW, FH, 1.0)
+        .on_look(|_| Look { material: Material::Plain, theme: DARK, ..Look::default() })
+        .on_commands(|s| std::mem::take(&mut s.cmds));
+    u.tick(1.0);
+    let rest = { let l = u.look(); o.r.partial = false; o.render(&mut u, &l) };
+    u.state.cmds.push(Cmd::Gust { gust: Gust { from: [0.0, 100.0], strength: 0.8, ..Gust::default() }, scope: Scope::Global });
+    u.relayout();
+    let t0 = u.now();
+    let (mut title, mut moved) = (0, 0);
+    for k in 1..=90 {
+        u.tick(t0 + k as f32 / 60.0);
+        u.settle();
+        if k % 10 != 0 { u.frame_drawn(); continue; }
+        let l = u.look(); o.r.partial = false;
+        let f = o.render(&mut u, &l);
+        let differs = |y0: u32, y1: u32| (y0..y1).flat_map(|y| (0..FW).map(move |x| ((y * FW + x) * 4) as usize)).filter(|&i| (0..3).any(|c| f[i + c] != rest[i + c])).count();
+        title += differs(30, 80);
+        moved += differs(100, 150);
+    }
+    assert!(moved > 100, "the text that reads the map moved only {moved} px");
+    assert_eq!(title, 0, "the text that ignores the field moved");
+}
