@@ -162,6 +162,8 @@ struct Slot { x: u32, y: u32, w: u32, h: u32, left: i32, top: i32 }
 
 /// Text, face, size bits, line bits, width bits, what it flows around, tracking bits.
 type MeasureKey = (String, u8, u32, u32, u32, u64, u32);
+/// A text's pieces for `El::reveal_by`: each piece's boxes.
+pub type Pieces = Rc<Vec<Vec<crate::ui::Rect>>>;
 
 struct Family { name: String, pixel: Option<f32>, data: Arc<Vec<u8>>, blob: u64, fallback: bool }
 
@@ -205,6 +207,11 @@ pub struct Text {
     /// Shaped and broken paragraphs by text, face, size, line height, width and obstacles: this
     /// generation's and the last one's (a paragraph not used for a whole generation is dropped).
     cache: [HashMap<MeasureKey, Rc<Layout<()>>>; 2],
+    /// Each text's pieces for `El::reveal_by` from its content box's corner, by the layout's key and
+    /// how it is cut; kept in two generations as the layouts are.
+    pieces: [HashMap<(MeasureKey, u8), Pieces>; 2],
+    /// Pieces found (cache misses), for the work counters.
+    reveals: u64,
     /// RG8: coverage, nearness-to-ink.
     pub pixels: Vec<u8>,
     /// The atlas changed since the renderer last uploaded it.
@@ -235,7 +242,7 @@ impl Text {
         Self {
             fonts: FontContext { collection, source_cache: Default::default() },
             layouts: LayoutContext::new(), scaler: ScaleContext::new(), families, scale: 1.0,
-            slots: HashMap::new(), full: false, measured: HashMap::new(), cache: [HashMap::new(), HashMap::new()], pixels: vec![0; (ATLAS * ATLAS * 2) as usize], dirty: true, pen: (1, 1, 0), shaped: 0, shape_ms: 0.0, log_shapes: false, shape_log: vec![],
+            slots: HashMap::new(), full: false, measured: HashMap::new(), cache: [HashMap::new(), HashMap::new()], pieces: [HashMap::new(), HashMap::new()], reveals: 0, pixels: vec![0; (ATLAS * ATLAS * 2) as usize], dirty: true, pen: (1, 1, 0), shaped: 0, shape_ms: 0.0, log_shapes: false, shape_log: vec![],
         }
     }
 
@@ -255,6 +262,8 @@ impl Text {
     }
     /// How many paragraphs have been shaped (parley layouts built) so far.
     pub fn shaped(&self) -> u64 { self.shaped }
+    /// How many texts' pieces (`El::reveal_by`) have been found so far.
+    pub fn reveals(&self) -> u64 { self.reveals }
     /// How much of the glyph atlas is used, 0..1 (by rows).
     pub fn atlas_use(&self) -> f32 { ((self.pen.1 + self.pen.2) as f32 / ATLAS as f32).min(1.0) }
     /// Whether `face` is a pixel face.
@@ -265,7 +274,7 @@ impl Text {
 
     /// Device px per logical px (pixel faces snap in device px); a change empties the layout cache.
     pub fn set_scale(&mut self, scale: f32) {
-        if scale != self.scale { self.scale = scale; self.measured.clear(); self.cache = [HashMap::new(), HashMap::new()]; }
+        if scale != self.scale { self.scale = scale; self.measured.clear(); self.cache = [HashMap::new(), HashMap::new()]; self.pieces = [HashMap::new(), HashMap::new()]; }
     }
 
     /// The logical size a face is really drawn at: pixel faces go to the nearest whole multiple (at
@@ -424,6 +433,19 @@ impl Text {
             let h = if Self::hyphenated(&p, ln.text_range().end) { hy } else { 0.0 };
             crate::ui::Rect::new(origin.0 + m.offset + m.inline_min_coord, origin.1 + m.block_min_coord, (m.advance - m.hanging_advance).max(0.0) + h, m.block_max_coord - m.block_min_coord)
         }).collect()
+    }
+    /// The pieces of [`Text::reveal_groups`] from the content box's corner, found once for the same text,
+    /// face, size, line height, width and setting (each paint of a page asks again).
+    pub fn reveal_pieces(&mut self, p: Para<'_>, by: crate::el::Reveal) -> Pieces {
+        let w = Some(p.width).filter(|w| w.is_finite()).unwrap_or(-1.0);
+        let k = ((p.s.to_owned(), p.face, p.size.to_bits(), p.line.to_bits(), w.to_bits(), p.around.map_or(0, Around::id), p.track.to_bits()), by as u8);
+        if let Some(g) = self.pieces[0].get(&k) { return g.clone(); }
+        if let Some(g) = self.pieces[1].remove(&k) { self.pieces[0].insert(k, g.clone()); return g; }
+        let g = Rc::new(self.reveal_groups(p, (0.0, 0.0), by));
+        self.reveals += 1;
+        if self.pieces[0].len() >= LAYOUT_CACHE { self.pieces.swap(0, 1); self.pieces[0].clear(); }
+        self.pieces[0].insert(k, g.clone());
+        g
     }
     /// The pieces text is shown or taken away by under `El::reveal_by` (logical px boxes from `origin`,
     /// one or more per piece): each line, or each word with the punctuation that follows it (each CJK

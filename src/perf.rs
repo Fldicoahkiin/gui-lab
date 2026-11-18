@@ -31,6 +31,8 @@ pub struct Counters {
     pub views: u64,
     /// Scenes built from the laid-out nodes.
     pub scenes: u64,
+    /// Texts' words or lines found for `El::reveal_by` (a cache miss: once per text, width and face).
+    pub reveals: u64,
 }
 
 /// The readout's numbers. The runtime adds update / layout and scene time as it spends it; the

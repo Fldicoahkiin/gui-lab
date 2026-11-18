@@ -1200,7 +1200,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// The performance counters, to change (a shell sets the backend and adapter names).
     pub fn perf_mut(&mut self) -> &mut crate::perf::Perf { &mut self.perf }
     /// The work counters (layout passes, paragraphs shaped, views, scenes).
-    pub fn counters(&self) -> crate::perf::Counters { let mut c = self.perf.counters; c.shaped = self.text.shaped(); c }
+    pub fn counters(&self) -> crate::perf::Counters { let mut c = self.perf.counters; c.shaped = self.text.shaped(); c.reveals = self.text.reveals(); c }
     fn span_begin(&mut self) -> (f64, f32) { self.span += 1; (crate::perf::now_ms(), self.perf.pending.scene) }
     fn span_end(&mut self, (t0, scene0): (f64, f32)) {
         self.span -= 1;
@@ -3029,7 +3029,8 @@ impl<S, M: Clone> Ui<S, M> {
                     // Whole words or lines (`El::reveal_by`): a pose fades a word as one, and a word the
                     // clip or the window cuts is not drawn at all.
                     if n.reveal_by != crate::el::Reveal::Glyph {
-                        let groups = self.text.reveal_groups(para, n.origin(), n.reveal_by);
+                        // The pieces from the content box's corner, kept while the text is the same.
+                        let groups = self.text.reveal_pieces(para, n.reveal_by);
                         let window = [0.0, 0.0, self.size.0 * s, self.size.1 * s];
                         crate::form::reveal_whole(&mut posed, &groups, (ox, oy), [clip[0].max(window[0]), clip[1].max(window[1]), clip[2].min(window[2]), clip[3].min(window[3])]);
                     }
