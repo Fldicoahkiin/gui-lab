@@ -4844,8 +4844,9 @@ impl<S, M: Clone> Ui<S, M> {
             let keep_until = match first {
                 None => f32::NEG_INFINITY,
                 Some(g) => {
-                    let inside = |i: &Instance| { let (cx, cy) = (i.rect[0] + i.rect[2] * 0.5, i.rect[1] + i.rect[3] * 0.5); cx >= g.rect[0] && cy >= g.rect[1] && cx < g.rect[0] + g.rect[2] && cy < g.rect[1] + g.rect[3] };
-                    let mine: Vec<&RTile> = rtiles.iter().filter(|t| t.dst.iter().any(inside)).collect();
+                    // Where a tile lands: its cell (the pieces are placed relative to it).
+                    let inside = |t: &RTile| { let (cx, cy) = (t.p.ab[2] + t.p.misc[1] * 0.5, t.p.ab[3] + t.p.misc[1] * 0.5); cx >= g.rect[0] && cy >= g.rect[1] && cx < g.rect[0] + g.rect[2] && cy < g.rect[1] + g.rect[3] };
+                    let mine: Vec<&RTile> = rtiles.iter().filter(|t| !t.dst.is_empty() && inside(t)).collect();
                     let mut at = dur;
                     let mut t = 0.0;
                     while t < dur {
@@ -5528,7 +5529,12 @@ fn recompose_tiles(prev: Vec<Unit>, src: &[Instance], dst: &[Instance], spec: &M
     if appear && n0 == 0 {
         // In the order of the glyphs (`dst` is in reading order), then top to bottom and left to right
         // within one; each cell shows its pieces at once from its turn.
-        let glyph = |at: [f32; 2]| dst.iter().position(|i| piece(i, [at[0], at[1], at[0] + tile, at[1] + tile]).is_some()).unwrap_or(usize::MAX);
+        // A cell is the glyph's whose centre is nearest (glyph boxes carry a margin and overlap).
+        let glyph = |at: [f32; 2]| {
+            let c = [at[0] + tile * 0.5, at[1] + tile * 0.5];
+            let d = |i: &Instance| (i.rect[0] + i.rect[2] * 0.5 - c[0]).powi(2) + (i.rect[1] + i.rect[3] * 0.5 - c[1]).powi(2);
+            (0..dst.len()).min_by(|&a, &b| d(&dst[a]).total_cmp(&d(&dst[b]))).unwrap_or(0)
+        };
         let mut cells: Vec<(usize, Unit)> = tdust.into_iter().map(|u| (glyph(u.0), u)).collect();
         cells.sort_by(|a, b| (a.0, a.1.0[1] as i64, a.1.0[0] as i64).cmp(&(b.0, b.1.0[1] as i64, b.1.0[0] as i64)));
         let n = cells.len().max(1) as f32;
