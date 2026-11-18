@@ -210,6 +210,8 @@ pub struct Renderer {
     pub partial: bool,
     frame_view: wgpu::TextureView,
     prev: Option<crate::dirty::Inputs>,
+    /// The lists of the frame before `prev`, kept to be filled again (no allocation per frame).
+    spare: (Vec<Instance>, Vec<Instance>),
     zero: [wgpu::RenderPipeline; 2],
     blit: wgpu::RenderPipeline,
     /// A see-through group (`El::opacity`): its own ink image, and the pass that lays it on the ink.
@@ -400,7 +402,7 @@ impl Renderer {
             pictures: HashMap::new(), instances, capacity, pipes, annots, annot_capacity: 256, up_pipe: None, shader, pl,
             ink: blank.clone(), lo: blank.clone(), lo_key: (0, 0, 0), material_up: material.clone(), auto: Default::default(), always_lo: false, no_map: false,
             near: blank, material_first: material.clone(), material, size: (0, 0), tiles, mesh, sim_rows: 0,
-            region: crate::dirty::Region::All, partial: true, frame_view: blank_view.clone(), prev: None, zero, blit, group: None, group_pipe, had_groups: false, reduced: false, sbox: [0.0; 4], post: None, blit_group: blank_group, warm: None, condense: false, last_region: None, tr: [[0.0; 4]; 9], boxes: [[0.0; 4]; 16], tr_loose: 0.0, t_cont: 0.0,
+            region: crate::dirty::Region::All, partial: true, frame_view: blank_view.clone(), prev: None, spare: (vec![], vec![]), zero, blit, group: None, group_pipe, had_groups: false, reduced: false, sbox: [0.0; 4], post: None, blit_group: blank_group, warm: None, condense: false, last_region: None, tr: [[0.0; 4]; 9], boxes: [[0.0; 4]; 16], tr_loose: 0.0, t_cont: 0.0,
         };
         r.set_picture(u32::MAX, 1, 1, &[0, 0, 0, 255]);
         r.resize(w, h);
@@ -1070,14 +1072,19 @@ impl Renderer {
         }
         self.fmap_u = if snap.nonzero && !self.no_map { [snap.cell * scale, look.map.drift * scale, snap.cols as f32, snap.rows as f32] } else { [0.0; 4] };
         // What changed since the last frame (DESIGN.md §1.19).
+        let (mut instances, mut annot) = std::mem::take(&mut self.spare);
+        instances.clear();
+        instances.extend_from_slice(&ui.scene().instances);
+        annot.clear();
+        annot.extend_from_slice(&ui.scene().annot);
         let inputs = crate::dirty::Inputs {
-            instances: ui.scene().instances.clone(), annot: ui.scene().annot.clone(), meshes: ui.scene().meshes.iter().map(|m| m.scene.fingerprint() ^ (m.rect[2].to_bits() as u64) << 32 ^ m.rect[3].to_bits() as u64).collect(),
+            instances, annot, meshes: ui.scene().meshes.iter().map(|m| m.scene.fingerprint() ^ (m.rect[2].to_bits() as u64) << 32 ^ m.rect[3].to_bits() as u64).collect(),
             field: *ui.field(), look: *look, now, mclock: mt[0], gclock: mt[1], size: self.size, map: snap,
             global: split[3] > 0.0 || tiles.is_some() || lo.is_some() || self.hide_glyphs || !ui.scene().groups.is_empty() || self.had_groups,
         };
         self.had_groups = !ui.scene().groups.is_empty();
         let region = match (&self.prev, self.partial) { (Some(p), true) => crate::dirty::region(p, &inputs, scale), _ => crate::dirty::Region::All };
-        self.prev = Some(inputs);
+        if let Some(old) = self.prev.replace(inputs) { self.spare = (old.instances, old.annot); }
         self.region = region;
         self.frame_q(target, Frame { scene: ui.scene(), field: ui.field(), look, lib: ui.meshes(), scale, t: now, mt, split, tiles, grid }, true, lo);
         let submit = (crate::perf::now_ms() - started) as f32;
