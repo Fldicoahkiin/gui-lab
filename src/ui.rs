@@ -232,6 +232,22 @@ impl Split {
     }
 }
 
+/// One laid-out line of a text element and its ink (`Ui::line_inks`), logical px, window coordinates.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LineInk {
+    /// The line's box, as `Ui::line_boxes` gives it.
+    pub line: Rect,
+    /// The box round its glyphs' true outlines at rest (what they cover more than half), out to whole
+    /// device pixels; loosened marks are not in it.
+    pub ink: Rect,
+    /// Its baseline.
+    pub baseline: f32,
+    /// Where its face's capitals reach up to (the baseline less the cap height).
+    pub cap_top: f32,
+    /// Where its face's lowercase reaches up to (the baseline less the x height).
+    pub x_top: f32,
+}
+
 /// The four accent corners that frame the hovered or focused element. They are on their target in the
 /// frame the target changes (the pointer's frame); the only easing is `MARKS_SETTLE`, a cosmetic close
 /// of a few pixels and the fade in, never a glide behind the pointer.
@@ -973,6 +989,16 @@ impl<S, M: Clone> Ui<S, M> {
         let Some(p) = n.para() else { return vec![] };
         let o = n.origin();
         self.text.line_boxes(p, o)
+    }
+    /// Each line of text element `key` with its ink (window coordinates, logical px): `LineInk`. Known
+    /// once it is laid out, no frame drawn; asking again shapes nothing.
+    pub fn line_inks(&mut self, key: &str) -> Vec<LineInk> {
+        let Some(n) = self.nodes.iter().find(|n| n.key == key) else { return vec![] };
+        let Some(p) = n.para() else { return vec![] };
+        let o = n.origin();
+        self.text.line_inks(p, o, self.scale).into_iter().map(|v| LineInk {
+            line: Rect::new(v[0], v[1], v[2], v[3]), ink: Rect::new(v[4], v[5], v[6], v[7]), baseline: v[8], cap_top: v[9], x_top: v[10],
+        }).collect()
     }
     /// How many lines of text element `key` end in a hyphenated break (`Around::hyphenate`).
     pub fn hyphenated_lines(&mut self, key: &str) -> usize {

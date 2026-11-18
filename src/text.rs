@@ -447,6 +447,64 @@ impl Text {
         self.pieces[0].insert(k, g.clone());
         g
     }
+    /// Each laid-out line's ink (`Ui::line_inks`): its box as `line_boxes` gives it, the box round the
+    /// pixels its glyphs cover more than half at rest (true outlines, out to whole device px), its
+    /// baseline, and where its face's capitals and lowercase reach up to (cap height, x height), all
+    /// logical px from `origin`. A line with no ink has its ink box empty at its start on the baseline.
+    pub fn line_inks(&mut self, p: Para<'_>, origin: (f32, f32), scale: f32) -> Vec<[f32; 11]> {
+        let boxes = self.line_boxes(p, origin);
+        let l = self.layout(p.s, p.face, p.size, p.line, Some(p.width), p.setting());
+        let para_pixel = self.is_pixel(p.face);
+        let (ox, oy) = if para_pixel { ((origin.0 * scale).round(), (origin.1 * scale).round()) } else { (origin.0 * scale, origin.1 * scale) };
+        let mut out = vec![];
+        for (li, ln) in l.lines().enumerate() {
+            let m = ln.metrics();
+            let base = origin.1 + m.baseline;
+            let (mut cap, mut xh) = (base - 0.7 * p.size, base - 0.5 * p.size);
+            let mut ink = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+            let hyphen = Self::hyphenated(&p, ln.text_range().end);
+            let items: Vec<_> = ln.items().collect();
+            let last_run = items.iter().rposition(|i| matches!(i, PositionedLayoutItem::GlyphRun(_)));
+            let mut first = true;
+            for (ii, item) in items.into_iter().enumerate() {
+                let PositionedLayoutItem::GlyphRun(gr) = item else { continue };
+                let run = gr.run();
+                let font = run.font();
+                let Some(fref) = swash::FontRef::from_index(font.data.as_ref(), font.index as usize) else { continue };
+                let pixel = self.families.iter().any(|f| f.pixel.is_some() && f.blob == font.data.id());
+                let fsize = run.font_size() * scale;
+                let coords: Vec<i16> = run.normalized_coords().iter().map(|c| c.to_bits()).collect();
+                if first {
+                    // The face's own numbers, at the size the run is set in.
+                    let fm = fref.metrics(&coords).scale(run.font_size());
+                    if fm.cap_height > 0.0 { cap = base - fm.cap_height; }
+                    if fm.x_height > 0.0 { xh = base - fm.x_height; }
+                    first = false;
+                }
+                let mut scaler = self.scaler.builder(fref).size(fsize).hint(false).normalized_coords(coords.iter().copied()).build();
+                let mut glyphs: Vec<parley::Glyph> = gr.positioned_glyphs().collect();
+                if hyphen && Some(ii) == last_run && let Some(g) = glyphs.last().copied() {
+                    glyphs.push(parley::Glyph { id: fref.charmap().map('-') as u32, x: g.x + g.advance, ..g });
+                }
+                for g in glyphs {
+                    let (gx, gy) = (ox + g.x * scale, (oy + g.y * scale).round());
+                    let gx = if pixel { gx.round() } else { gx };
+                    let sub = if pixel { 0 } else { ((gx.fract() * 4.0) as u8).min(3) };
+                    let Some(img) = Render::new(&[Source::Outline]).format(Format::Alpha).offset(Vector::new(sub as f32 / 4.0, 0.0)).render(&mut scaler, g.id as _) else { continue };
+                    let (w, h) = (img.placement.width as usize, img.placement.height as usize);
+                    for y in 0..h { for x in 0..w {
+                        if img.data[y * w + x] < 128 { continue; }
+                        let (px, py) = (gx.floor() + (img.placement.left + x as i32) as f32, gy - img.placement.top as f32 + y as f32);
+                        ink = [ink[0].min(px), ink[1].min(py), ink[2].max(px + 1.0), ink[3].max(py + 1.0)];
+                    } }
+                }
+            }
+            let b = boxes.get(li).copied().unwrap_or_default();
+            let ink = if ink[0] > ink[2] { [b.x, base, 0.0, 0.0] } else { [ink[0].floor() / scale, ink[1].floor() / scale, (ink[2].ceil() - ink[0].floor()) / scale, (ink[3].ceil() - ink[1].floor()) / scale] };
+            out.push([b.x, b.y, b.w, b.h, ink[0], ink[1], ink[2], ink[3], base, cap, xh]);
+        }
+        out
+    }
     /// The pieces text is shown or taken away by under `El::reveal_by` (logical px boxes from `origin`,
     /// one or more per piece): each line, or each word with the punctuation that follows it (each CJK
     /// ideograph is a word of its own); `Reveal::Glyph` has none.

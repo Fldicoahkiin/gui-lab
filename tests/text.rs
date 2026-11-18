@@ -133,3 +133,55 @@ fn multiline_keeps_line_breaks() {
     assert_eq!(TextEdit::default().handle(&TextInput::Paste("a\nb".into()), 99, false).unwrap().text, "a b");
     assert_eq!(TextEdit::default().handle(&TextInput::Paste("a\r\nb".into()), 99, true).unwrap().text, "a\nb");
 }
+
+/// One line of text in one face, alone on a light page (`ink` tests).
+mod inks {
+    use amenui::el::{El, Font, Paint, col, text};
+    pub struct S { pub face: u8, pub size: f32, pub s: &'static str }
+    pub fn view(s: &S) -> El<()> {
+        col().key("page").fill_width().fill_height().pad(20.0, 20.0)
+            .child(text(s.s, s.size, Paint::INK).font(Font::Body).fonts([s.face, s.face, s.face]).key("t"))
+    }
+    pub fn look(_: &S) -> amenui::style::Look { amenui::style::Look { material: amenui::style::Material::Plain, theme: amenui::style::LIGHT, ..amenui::style::Look::default() } }
+}
+
+#[test]
+fn line_inks_match_the_drawn_ink_and_the_faces_numbers() {
+    use amenui::ui::Ui;
+    let fonts = || amenui::text::load_bundled(concat!(env!("CARGO_MANIFEST_DIR"), "/assets")).expect("fonts");
+    let (w, h) = (900u32, 160u32);
+    let gpu = amenui::offscreen::Offscreen::try_new(w, h).ok();
+    let mut gpu = gpu;
+    let strings = ["sense", "Tj dolly", "HEXAGON", "Mixed caps", "quick, brown", "WAVE 42"];
+    for face in [0u8, 1, 2, 3, 8] { for size in [11.0f32, 14.0, 20.0, 48.0] { for s in strings {
+        let mut ui = Ui::new(inks::S { face, size, s }, inks::view, |_, _| {}, fonts(), w, h, 1.0).on_look(inks::look);
+        ui.tick(1.0);
+        let shaped = ui.counters().shaped;
+        let li = ui.line_inks("t");
+        assert_eq!(li.len(), 1, "face {face} {size} {s:?}: one line");
+        let l = li[0];
+        assert!(l.cap_top < l.baseline && l.x_top < l.baseline && l.cap_top <= l.x_top + 0.01, "face {face} {size} {s:?}: {l:?}");
+        // Caps sit on the baseline and reach the cap height.
+        if s.chars().all(|c| c.is_ascii_uppercase() || c == ' ' || c.is_ascii_digit()) && face != 1 && face != 2 {
+            assert!((l.ink.bottom() - l.baseline).abs() <= 1.0, "face {face} {size} {s:?}: caps end at {} on a baseline at {}", l.ink.bottom(), l.baseline);
+            assert!((l.ink.y - l.cap_top).abs() <= 1.0 + 0.02 * size, "face {face} {size} {s:?}: caps start at {} under a cap top at {}", l.ink.y, l.cap_top);
+        }
+        // Moving the pointer shapes nothing.
+        for k in 0..60 { ui.pointer_move(30.0 + k as f32, 40.0); }
+        let _ = ui.line_inks("t");
+        assert_eq!(ui.counters().shaped, shaped, "face {face} {size} {s:?}: the pointer shaped text");
+        let Some(o) = gpu.as_mut() else { continue };
+        let look = ui.look();
+        let px = o.render(&mut ui, &look);
+        let ground = [px[0] as i32, px[1] as i32, px[2] as i32];
+        let lum = |p: &[u8]| (p[0] as i32 - ground[0]).abs() + (p[1] as i32 - ground[1]).abs() + (p[2] as i32 - ground[2]).abs();
+        let full = 3 * 200;
+        let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0u32, 0u32);
+        for y in 0..h { for x in 0..w { let i = ((y * w + x) * 4) as usize; if lum(&px[i..i + 3]) * 2 > full { x0 = x0.min(x); y0 = y0.min(y); x1 = x1.max(x + 1); y1 = y1.max(y + 1); } } }
+        let r = l.ink;
+        for (a, b, edge) in [(r.x, x0 as f32, "left"), (r.y, y0 as f32, "top"), (r.right(), x1 as f32, "right"), (r.bottom(), y1 as f32, "bottom")] {
+            assert!((a - b).abs() <= 1.0, "face {face} {size} {s:?}: the ink's {edge} is {a}, drawn {b}");
+        }
+    } } }
+}
+
