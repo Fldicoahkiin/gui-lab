@@ -84,10 +84,14 @@ pub struct Scene {
     pub meshes: Vec<MeshDraw>,
     /// The see-through groups, in order, never overlapping.
     pub groups: Vec<Group>,
+    /// Text to read and controls drawn over others' ink: the instance, and how far round its true
+    /// outline it holds the looseness beneath to the legibility cap, `r0` fully and fading out by `r1`
+    /// (device px; DESIGN.md §1.15).
+    pub holds: Vec<(u32, [f32; 2])>,
 }
 
 impl Scene {
-    pub fn clear(&mut self) { self.instances.clear(); self.batches.clear(); self.layer = None; self.annot.clear(); self.meshes.clear(); self.groups.clear(); }
+    pub fn clear(&mut self) { self.instances.clear(); self.batches.clear(); self.layer = None; self.annot.clear(); self.meshes.clear(); self.groups.clear(); self.holds.clear(); }
     /// Everything pushed from now on is in the modal layer.
     pub fn begin_layer(&mut self) { self.layer = Some(self.instances.len() as u32); }
     pub fn push(&mut self, i: Instance) {
@@ -108,6 +112,7 @@ impl Scene {
         self.batches.retain(|b| (b.start as usize) < n);
         if let Some(b) = self.batches.last_mut() { b.end = b.end.min(n as u32); }
         self.groups.retain(|g| (g.start as usize) < n);
+        self.holds.retain(|h| (h.0 as usize) < n);
         if let Some(g) = self.groups.last_mut() { g.end = g.end.min(n as u32); }
     }
 }

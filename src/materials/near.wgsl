@@ -19,7 +19,7 @@ fn m_near(p: vec2f) -> vec3f {
   let tint = select(u.second.rgb, u.accent.rgb, sd > 0.0);
   col = mix(col, tint, line * 0.85);
   col = mix(col, u.fg.rgb, clamp(1.0 - abs(sd) / (0.8 * s), 0.0, 1.0));
-  col = mix(col, u.third.rgb, clamp(loose_t(p) + half_plane(p), 0.0, 1.0) * 0.35 * step(0.5, n.r));
+  col = mix(col, u.third.rgb, clamp(loose_t(p) + half_plane(p), 0.0, 1.0) * 0.35 * step(0.5, n.r) * (1.0 - hold_at(p)));
   // Text keeps its own ink whole, the bands around it: a glyph's outline alone is too thin to read
   // at text sizes, and on a filled panel (a selected row, a button) the panel's nearness, max-blended
   // over the glyph's, leaves it no outline at all. (Text in the ground's colour is written in the ink's

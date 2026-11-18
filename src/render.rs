@@ -62,6 +62,7 @@ struct Uniforms {
 
 const INK: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const NEAR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+const HOLD: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
 const ATLAS_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg8Unorm;
 
 const MARKS_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg8Unorm;
@@ -154,6 +155,13 @@ pub struct Renderer {
     chars_view: wgpu::TextureView,
     /// A 1 × 1 texture for bindings a pass does not read.
     blank: wgpu::TextureView,
+    /// Where text to read holds the looseness under and around it to the cap (R8, max-blended; scene.rs
+    /// `Scene::holds`, DESIGN.md §1.15), its pipeline, and the instances drawn into it this frame.
+    hold: wgpu::TextureView,
+    hold_pipe: wgpu::RenderPipeline,
+    holds: wgpu::Buffer,
+    hold_cap: usize,
+    hold_n: u32,
     /// The field map's texture (`fieldmap::MAX_NODES` square; the map's nodes in its top left), the
     /// bytes last uploaded, and what the uniforms say about it this frame.
     fmap: wgpu::Texture,
@@ -170,6 +178,10 @@ pub struct Renderer {
     marks_ready: bool,
     /// Stage-1 bind groups: atlas plus one picture each. Id `u32::MAX` has a blank picture.
     pictures: HashMap<u32, wgpu::BindGroup>,
+    /// The pictures' textures, so their groups can be made again when the hold image is (`resize`).
+    picture_views: HashMap<u32, wgpu::TextureView>,
+    /// The group the hold image is drawn with (the glyph atlas; it does not read the hold image).
+    hold_group: Option<wgpu::BindGroup>,
     instances: wgpu::Buffer,
     capacity: usize,
     pipes: [wgpu::RenderPipeline; 6], // ink, near, near for the modal layer, material, annotations, ink for the modal layer
@@ -319,7 +331,7 @@ impl Renderer {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: None, entries: &[
             wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::VERTEX_FRAGMENT, count: None, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None } },
             wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::FRAGMENT, count: None, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering) },
-            tex_entry(2), tex_entry(3), tex_entry(4), tex_entry(5), tex_entry(6), tex_entry(7), tex_entry(9),
+            tex_entry(2), tex_entry(3), tex_entry(4), tex_entry(5), tex_entry(6), tex_entry(7), tex_entry(9), tex_entry(10),
             // The field map is read in the vertex stage too (its flow pushes instances), by textureLoad.
             wgpu::BindGroupLayoutEntry { binding: 8, visibility: wgpu::ShaderStages::VERTEX_FRAGMENT, count: None, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false } },
         ] });
@@ -357,6 +369,7 @@ impl Renderer {
             pipe("vs_annot", "fs_annot", out_format, Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING), true),
             pipe("vs_inst", "fs_ink_top", INK, Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING), true),
         ];
+        let hold_pipe = pipe("vs_hold", "fs_hold", HOLD, Some(wgpu::BlendState { color: maxb, alpha: maxb }), true);
         let tiles = Self::tiles(&device);
         let mesh = Self::mesh_gpu(&device);
         let zero = [pipe("vs_full", "fs_zero", INK, None, false), pipe("vs_full", "fs_zero", out_format, None, false)];
@@ -393,13 +406,14 @@ impl Renderer {
             dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba8Unorm, usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST, view_formats: &[],
         }, wgpu::util::TextureDataOrder::LayerMajor, &[0u8, 128, 128, 0].repeat((n * n) as usize));
         let fmap_view = fmap.create_view(&Default::default());
-        let material = Self::bind(&device, &layout, &ubuf, &sampler, [&blank, &blank, &marks_view, &palette_view, &chars_view, &blank, &blank, &fmap_view]);
+        let material = Self::bind(&device, &layout, &ubuf, &sampler, [&blank, &blank, &marks_view, &palette_view, &chars_view, &blank, &blank, &fmap_view, &blank]);
+        let holds = Self::instance_buffer(&device, 64);
         let annots = Self::instance_buffer(&device, 256);
         let (blank_view, blank_group) = (blank.clone(), material.clone());
         let mut r = Self {
             device, queue, out_format, layout, ubuf, sampler, atlas, atlas_view, marks, marks_view, palette_view, chars, chars_view,
-            before: blank.clone(), blank: blank.clone(), fmap, fmap_view: fmap_view.clone(), fmap_seen: None, fmap_u: [0.0; 4], split_seen: 0, split: [0.0; 4], last_look: None, marks_ready: false, hide_glyphs: false,
-            pictures: HashMap::new(), instances, capacity, pipes, annots, annot_capacity: 256, up_pipe: None, shader, pl,
+            before: blank.clone(), blank: blank.clone(), hold: blank.clone(), hold_pipe, holds, hold_cap: 64, hold_n: 0, fmap, fmap_view: fmap_view.clone(), fmap_seen: None, fmap_u: [0.0; 4], split_seen: 0, split: [0.0; 4], last_look: None, marks_ready: false, hide_glyphs: false,
+            pictures: HashMap::new(), picture_views: HashMap::new(), hold_group: None, instances, capacity, pipes, annots, annot_capacity: 256, up_pipe: None, shader, pl,
             ink: blank.clone(), lo: blank.clone(), lo_key: (0, 0, 0), material_up: material.clone(), auto: Default::default(), always_lo: false, no_map: false,
             near: blank, material_first: material.clone(), material, size: (0, 0), tiles, mesh, sim_rows: 0,
             region: crate::dirty::Region::All, partial: true, frame_view: blank_view.clone(), prev: None, spare: (vec![], vec![]), zero, blit, group: None, group_pipe, had_groups: false, reduced: false, sbox: [0.0; 4], post: None, blit_group: blank_group, warm: None, condense: false, last_region: None, tr: [[0.0; 4]; 9], boxes: [[0.0; 4]; 16], tr_loose: 0.0, t_cont: 0.0,
@@ -596,7 +610,7 @@ impl Renderer {
         let b = &self.blank;
         // The mesh pass reads nothing; mask reads normal + depth and id; h the mask; v the mask, h, normal and id.
         let groups = [group([b, b, &views[1], &views[2]]), group([&views[4], b, b, b]), group([&views[4], &views[5], &views[1], &views[2]]), group([b, b, b, b])];
-        let stage1 = Self::bind(d, &self.layout, &self.ubuf, &self.sampler, [&views[6], &views[0], &self.marks_view, &self.palette_view, &self.chars_view, b, b, &self.fmap_view]);
+        let stage1 = Self::bind(d, &self.layout, &self.ubuf, &self.sampler, [&views[6], &views[0], &self.marks_view, &self.palette_view, &self.chars_view, b, b, &self.fmap_view, b]);
         let capacity = 64;
         let copies = d.create_buffer(&wgpu::BufferDescriptor { label: None, size: (capacity * std::mem::size_of::<MeshCopy>()) as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         MeshTarget { size, ubuf, copies, capacity, views, groups, stage1, drawn: None }
@@ -633,7 +647,7 @@ impl Renderer {
     /// Every pass uses one layout: uniforms, sampler, then six textures (stage 1: glyph atlas and a
     /// picture; stage 2: ink and near), the mark atlas, the palettes, the character tiles and the frame
     /// before the last commit.
-    fn bind(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, ubuf: &wgpu::Buffer, sampler: &wgpu::Sampler, t: [&wgpu::TextureView; 8]) -> wgpu::BindGroup {
+    fn bind(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, ubuf: &wgpu::Buffer, sampler: &wgpu::Sampler, t: [&wgpu::TextureView; 9]) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout, entries: &[
             wgpu::BindGroupEntry { binding: 0, resource: ubuf.as_entire_binding() },
             wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
@@ -645,6 +659,7 @@ impl Renderer {
             wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::TextureView(t[5]) },
             wgpu::BindGroupEntry { binding: 9, resource: wgpu::BindingResource::TextureView(t[6]) },
             wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::TextureView(t[7]) },
+            wgpu::BindGroupEntry { binding: 10, resource: wgpu::BindingResource::TextureView(t[8]) },
         ] })
     }
 
@@ -655,8 +670,9 @@ impl Renderer {
             dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba8Unorm, usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST, view_formats: &[],
         }, wgpu::util::TextureDataOrder::LayerMajor, rgba);
         let view = tex.create_view(&Default::default());
-        let group = Self::bind(&self.device, &self.layout, &self.ubuf, &self.sampler, [&self.atlas_view, &view, &self.marks_view, &self.palette_view, &self.chars_view, &self.blank, &self.blank, &self.fmap_view]);
+        let group = Self::bind(&self.device, &self.layout, &self.ubuf, &self.sampler, [&self.atlas_view, &view, &self.marks_view, &self.palette_view, &self.chars_view, &self.blank, &self.blank, &self.fmap_view, &self.hold]);
         self.pictures.insert(id, group);
+        self.picture_views.insert(id, view);
     }
 
     /// Device px.
@@ -667,16 +683,23 @@ impl Renderer {
         self.ink = Self::target(&self.device, w, h, INK);
         self.group = None;
         self.near = Self::target_with(&self.device, w, h, NEAR, wgpu::TextureUsages::COPY_SRC);
+        self.hold = Self::target(&self.device, w, h, HOLD);
+        // Stage 1 reads the hold image (a shape scribblr fades keeps its fill where text holds it).
+        for (id, view) in &self.picture_views {
+            let g = Self::bind(&self.device, &self.layout, &self.ubuf, &self.sampler, [&self.atlas_view, view, &self.marks_view, &self.palette_view, &self.chars_view, &self.blank, &self.blank, &self.fmap_view, &self.hold]);
+            self.pictures.insert(*id, g);
+        }
+        self.hold_group = self.picture_views.get(&u32::MAX).map(|v| Self::bind(&self.device, &self.layout, &self.ubuf, &self.sampler, [&self.atlas_view, v, &self.marks_view, &self.palette_view, &self.chars_view, &self.blank, &self.blank, &self.fmap_view, &self.blank]));
         self.before = Self::target(&self.device, w, h, self.out_format);
-        self.material = Self::bind(&self.device, &self.layout, &self.ubuf, &self.sampler, [&self.ink, &self.near, &self.marks_view, &self.palette_view, &self.chars_view, &self.before, &self.blank, &self.fmap_view]);
-        self.material_first = Self::bind(&self.device, &self.layout, &self.ubuf, &self.sampler, [&self.ink, &self.near, &self.marks_view, &self.palette_view, &self.chars_view, &self.blank, &self.blank, &self.fmap_view]);
+        self.material = Self::bind(&self.device, &self.layout, &self.ubuf, &self.sampler, [&self.ink, &self.near, &self.marks_view, &self.palette_view, &self.chars_view, &self.before, &self.blank, &self.fmap_view, &self.hold]);
+        self.material_first = Self::bind(&self.device, &self.layout, &self.ubuf, &self.sampler, [&self.ink, &self.near, &self.marks_view, &self.palette_view, &self.chars_view, &self.blank, &self.blank, &self.fmap_view, &self.hold]);
         self.lo_key = (0, 0, 0);
         let frame = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("frame"), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,
             dimension: wgpu::TextureDimension::D2, format: self.out_format, usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC, view_formats: &[],
         });
         self.frame_view = frame.create_view(&Default::default());
-        self.blit_group = Self::bind(&self.device, &self.layout, &self.ubuf, &self.sampler, [&self.frame_view, &self.blank, &self.marks_view, &self.palette_view, &self.chars_view, &self.blank, &self.blank, &self.fmap_view]);
+        self.blit_group = Self::bind(&self.device, &self.layout, &self.ubuf, &self.sampler, [&self.frame_view, &self.blank, &self.marks_view, &self.palette_view, &self.chars_view, &self.blank, &self.blank, &self.fmap_view, &self.blank]);
         self.prev = None;
         // The old frame is gone with the old size.
         self.split = [0.0; 4];
@@ -914,7 +937,7 @@ impl Renderer {
         if key != self.lo_key {
             self.lo_key = key;
             self.lo = Self::target(&self.device, w, h, self.out_format);
-            self.material_up = Self::bind(&self.device, &self.layout, &self.ubuf, &self.sampler, [&self.ink, &self.near, &self.marks_view, &self.palette_view, &self.chars_view, &self.before, &self.lo, &self.fmap_view]);
+            self.material_up = Self::bind(&self.device, &self.layout, &self.ubuf, &self.sampler, [&self.ink, &self.near, &self.marks_view, &self.palette_view, &self.chars_view, &self.before, &self.lo, &self.fmap_view, &self.hold]);
         }
         (w, h)
     }
@@ -1127,6 +1150,25 @@ impl Renderer {
         } else {
             self.queue.write_buffer(&self.instances, 0, bytemuck::cast_slice(&scene.instances));
         }
+        // What text to read holds: its instances as they are now, with the hold's reach in paint.xy.
+        let holds: Vec<Instance> = scene.holds.iter().filter_map(|&(k, r)| scene.instances.get(k as usize).map(|i| { let mut i = *i; i.paint[0] = r[0]; i.paint[1] = r[1]; i })).collect();
+        if holds.len() > self.hold_cap {
+            self.hold_cap = holds.len().next_power_of_two();
+            self.holds = Self::instance_buffer(&self.device, self.hold_cap);
+        }
+        if !holds.is_empty() { self.queue.write_buffer(&self.holds, 0, bytemuck::cast_slice(&holds)); }
+        self.hold_n = holds.len() as u32;
+    }
+    /// The hold image for this frame: cleared, then each instance of text to read that sits on others'
+    /// ink drawn into it (always whole: it is small, and a partial frame reads it anywhere).
+    fn hold_pass(&self, enc: &mut wgpu::CommandEncoder) {
+        let mut pass = clear(enc, &self.hold, wgpu::Color::TRANSPARENT);
+        if self.hold_n == 0 { return; }
+        let Some(group) = &self.hold_group else { return };
+        pass.set_pipeline(&self.hold_pipe);
+        pass.set_bind_group(0, group, &[]);
+        pass.set_vertex_buffer(0, self.holds.slice(..));
+        pass.draw(0..4, 0..self.hold_n);
     }
 
     /// Stage 1: every instance into ink and near. The page first, then `tiles` morph tiles (if any),
@@ -1255,7 +1297,7 @@ impl Renderer {
         self.prepare_meshes(&mut enc, scene, f.lib, f.look.marks);
         if !scene.groups.is_empty() && self.group.is_none() {
             let view = Self::target(&self.device, self.size.0, self.size.1, INK);
-            let bind = Self::bind(&self.device, &self.layout, &self.ubuf, &self.sampler, [&view, &self.blank, &self.marks_view, &self.palette_view, &self.chars_view, &self.blank, &self.blank, &self.fmap_view]);
+            let bind = Self::bind(&self.device, &self.layout, &self.ubuf, &self.sampler, [&view, &self.blank, &self.marks_view, &self.palette_view, &self.chars_view, &self.blank, &self.blank, &self.fmap_view, &self.blank]);
             self.group = Some((view, bind));
         }
         let (ink, near) = (self.ink.clone(), self.near.clone());
@@ -1268,6 +1310,7 @@ impl Renderer {
         self.last_region = boxes.map(|(a, b)| (a.unwrap_or([0; 4]), b.unwrap_or([0; 4])));
         let frame_view = self.frame_view.clone();
         let out = if with_before { &frame_view } else { target };
+        self.hold_pass(&mut enc);
         match boxes {
             None => self.stage1(&mut enc, scene, &ink, &near, tiles, None),
             Some((Some(b), _)) => self.stage1(&mut enc, scene, &ink, &near, tiles, Some(b)),

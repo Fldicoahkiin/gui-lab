@@ -59,6 +59,7 @@ struct U {
 @group(0) @binding(7) var before: texture_2d<f32>;   // the frame before the last commit
 @group(0) @binding(8) var fmap_t: texture_2d<f32>;   // the field map: r energy, g b 128 + 127 × flow (fieldmap.rs)
 @group(0) @binding(9) var lo: texture_2d<f32>;       // the material at reduced resolution (DESIGN.md §1.12)
+@group(0) @binding(10) var hold: texture_2d<f32>;    // r: how firmly text to read holds the looseness here to the cap (DESIGN.md §1.15)
 
 const PLAIN: i32 = 0; const DOTTR: i32 = 1; const HALFTONR: i32 = 2; const CHARR: i32 = 3; const SMUDGR: i32 = 4;
 const CARVR: i32 = 5; const GLITCHR: i32 = 6; const NEAR: i32 = 7; const SCRIBBLR: i32 = 8;
@@ -284,6 +285,8 @@ fn rm_fade(i: VOut) -> f32 { return select(1.0, clamp((u.scrq.y - i.extra.w) / 0
 fn ink_of(i: VOut, solid: bool) -> vec4f {
   let s = inst(i);
   var a = s.x * i.paint.z * rm_fade(i);
+  // A shape scribblr fades (its alpha before the fade in uv.y) keeps its fill where text to read holds it.
+  if (i.paint.w > 0.5 && i.paint.w < 1.5 && i.uvr.y > 0.0) { a = mix(a, s.x * i.uvr.y * rm_fade(i), hold_at(i.pos.xy)); }
   if (i.paint.w > 2.5) {
     // Flat shading in the theme's colours: the lit share of the object's tone and accent, so the
     // material decodes it like any shape (code 0.07 above the hue: a shape, and a mesh).
@@ -328,6 +331,15 @@ fn near_of(i: VOut) -> vec4f {
   // glyphs, so text set in its own material does not change the shape it sits on.
   if (i.look.x >= 127.5 && s.y > select(0.02, 0.42, i.paint.w < 0.5)) { code = i.look.x / 255.0; }
   return vec4f(s.y * step(0.01, i.paint.z), slot, loose, code);
+}
+// Text to read over others' ink (scene.rs Scene::holds): 1 on its own ink and within paint.x device px of
+// its true outline, falling smoothly to 0 at paint.y; max-blended into the hold image.
+@vertex fn vs_hold(i: VIn) -> VOut { return vs_pad(i, i.paint.y); }
+@fragment fn fs_hold(iv: VOut) -> @location(0) vec4f {
+  let i = exact_i(iv);
+  let s = inst(i);
+  let d = max(s.w, 0.0);
+  return vec4f(1.0 - smoothstep(i.paint.x, i.paint.y, d), 0.0, 0.0, 0.0);
 }
 // ── Stage 3: annotations, exactly, in the gaze colour (paint.y mixes toward the page ground, for
 // the plates under labels) ─────────────────────────────────────────────────────────────────────────
@@ -422,7 +434,21 @@ fn lens(p: vec2f) -> f32 {
 fn enc_loose(k: f32, owns: bool) -> f32 { return select(round(125.0 * k), 128.0 + round(127.0 * k), owns) / 255.0; }
 fn dec_loose(b: f32) -> f32 { let v = round(b * 255.0); return select(v / 125.0, (v - 128.0) / 127.0, v >= 128.0); }
 /// How loose the ink (or the halo) at an exact texel is.
-fn loose_t(p: vec2f) -> f32 { return dec_loose(near_t(p).b); }
+/// The looseness here: what the near image holds, no more than the legibility cap where text to read
+/// holds the ink under it and around it (the hold image: 1 on it and within r0, falling to 0 at r1).
+/// How firmly text to read holds the looseness here (0 nowhere near any, 1 on it and within r0).
+fn hold_at(p: vec2f) -> f32 { return textureLoad(hold, vec2i(clamp(floor(p), vec2f(0.0), u.res.xy - 1.0)), 0).r; }
+/// The most looseness a hold of `h` allows.
+fn hold_cap(h: f32) -> f32 { return mix(1.0, u.burst_t.w, h); }
+/// The hold where the pixel being shaded is (`shade`): a material that takes a mark's looseness from
+/// somewhere else (a cell's centre) still draws this pixel no looser than its own hold allows.
+var<private> hold_here: f32 = 1.0;
+fn loose_t(p: vec2f) -> f32 {
+  let k = dec_loose(near_t(p).b);
+  let h = hold_at(p);
+  if (h <= 0.0 && hold_here >= 1.0) { return k; }
+  return min(min(k, hold_cap(h)), hold_here);
+}
 fn ink(p: vec2f) -> vec4f { return textureSampleLevel(tex0, samp, p / u.res.xy, 0.0); }
 fn near(p: vec2f) -> vec4f { return textureSampleLevel(tex1, samp, p / u.res.xy, 0.0); }
 // Exact texels (no filtering), for averaging cells and for pitch 1 to be the image itself.
@@ -940,6 +966,7 @@ fn binary_px(p: vec2f, col: vec3f, is_pic: bool) -> vec3f {
 // `shade_new` is called from one place only: it holds every material, and each call site is compiled in
 // full (several made the material pipeline too big to build on a CPU rasteriser).
 fn shade(p: vec2f) -> vec3f {
+  hold_here = hold_cap(hold_at(p));
   var s: TS;
   s.m = 1.0; s.offn = vec2f(0.0); s.offo = vec2f(0.0); s.tint = vec4f(0.0); s.fade = 0.0; s.split = 0.0; s.toner = 0.0;
   if (u.split.w > 0.5) {

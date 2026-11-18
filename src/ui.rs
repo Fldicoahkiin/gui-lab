@@ -3216,6 +3216,7 @@ impl<S, M: Clone> Ui<S, M> {
             _ => (i, now, r),
         });
         if let Some((_, reset, _)) = self.caret { self.caret_on = ((now - reset).max(0.0) / BLINK).floor() as i64 % 2 == 0; }
+        self.scene.holds = self.holds();
         self.dirty = true;
         self.page_len = self.scene.instances.len();
         self.base = self.scene.instances.clone();
@@ -3225,6 +3226,43 @@ impl<S, M: Clone> Ui<S, M> {
         self.outline_pass();
         self.decode_pass();
         self.finish();
+    }
+    /// What text to read and controls hold (DESIGN.md §1.15): each of their instances that has some ink
+    /// of something else (not legible) drawn before it within `r1` of it holds the looseness there to the
+    /// legibility cap. `r0 = max(3, size / 4)` and `r1 = r0 + max(6, size / 2)` logical px, by the type
+    /// size of the text, or for a control the label in it (a heading is a title: it holds nothing).
+    fn holds(&self) -> Vec<(u32, [f32; 2])> {
+        let s = self.scale;
+        let insts = &self.scene.instances;
+        let sp = crate::text::SPREAD as f32;
+        let ink = |i: &Instance| if i.paint[3] == GLYPH { [i.rect[0] + sp, i.rect[1] + sp, i.rect[0] + i.rect[2] - sp, i.rect[1] + i.rect[3] - sp] } else { [i.rect[0], i.rect[1], i.rect[0] + i.rect[2], i.rect[1] + i.rect[3]] };
+        let mut under: Vec<(usize, [f32; 4])> = vec![];
+        let mut out = vec![];
+        let mut size_of: HashMap<usize, f32> = HashMap::new();
+        for (k, inst) in insts.iter().enumerate() {
+            let Some(&(ni, _)) = self.owners.get(k) else { break };
+            let n = &self.nodes[ni];
+            if inst.paint[2] <= 0.0 { continue; }
+            if !n.legible {
+                under.push((k, ink(inst)));
+                continue;
+            }
+            if under.is_empty() || n.access.as_ref().is_some_and(|a| a.role == Some(crate::el::Role::Heading)) || !(inst.paint[3] == GLYPH || inst.paint[3] == SHAPE) { continue; }
+            let size = *size_of.entry(ni).or_insert_with(|| match &n.content {
+                Content::Text { size, .. } => *size,
+                _ => self.nodes.iter().enumerate().skip(ni + 1).take_while(|(j, _)| within(&self.nodes, *j, ni))
+                    .find_map(|(_, m)| if let Content::Text { size, .. } = m.content { Some(size) } else { None }).unwrap_or(14.0),
+            });
+            let r0 = (0.25 * size).max(3.0) * s;
+            let mut r1 = r0 + (0.5 * size).max(6.0) * s;
+            // A glyph's nearness reaches SPREAD device px from its outline: the hold fades out by there.
+            if inst.paint[3] == GLYPH { r1 = r1.min(sp); }
+            let r0 = r0.min(r1 - 1.0);
+            let b = ink(inst);
+            let g = [b[0] - r1, b[1] - r1, b[2] + r1, b[3] + r1];
+            if under.iter().any(|(_, u)| u[0] < g[2] && u[2] > g[0] && u[1] < g[3] && u[3] > g[1]) { out.push((k as u32, [r0, r1])); }
+        }
+        out
     }
     /// Start what appears and what went (DESIGN.md §1.28), and keep each decoding element's instances.
     fn decode_pass(&mut self) {
@@ -3502,7 +3540,7 @@ impl<S, M: Clone> Ui<S, M> {
     fn paint_strands(&mut self) {
         use crate::strand::{self, Kind, Seg};
         // Last frame's fades undone: looseness is measured on the element as it is.
-        for (&i, &a) in &self.strand_faded { if let Some(inst) = self.scene.instances.get_mut(i) { inst.paint[2] = a; } }
+        for (&i, &a) in &self.strand_faded { if let Some(inst) = self.scene.instances.get_mut(i) { inst.paint[2] = a; if inst.paint[3] == SHAPE { inst.uv[1] = 0.0; } } }
         self.strand_faded.clear();
         self.strand_drawn.clear();
         self.trace_drawn.clear();
@@ -3693,7 +3731,13 @@ impl<S, M: Clone> Ui<S, M> {
             self.strand_drawn.push((n.key.clone(), k, segs));
         }
         self.strand_hold.retain(|k, _| keep_hold.contains(k));
-        for (i, a, f) in fades { self.strand_faded.insert(i, a); self.scene.instances[i].paint[2] = a * f; }
+        for (i, a, f) in fades {
+            self.strand_faded.insert(i, a);
+            let inst = &mut self.scene.instances[i];
+            inst.paint[2] = a * f;
+            // Its alpha before the fade, for where text to read holds it (a shape's uv.y is free).
+            if inst.paint[3] == SHAPE && f < 1.0 { inst.uv[1] = a; }
+        }
         self.scene.instances.reserve(out.len());
         for i in out { self.scene.push(i); }
     }
