@@ -4748,7 +4748,8 @@ impl<S, M: Clone> Ui<S, M> {
         let now = self.clock;
         let new_ids: HashSet<u64> = self.owners.iter().map(|o| o.1).collect();
         let old_ids: HashSet<u64> = old.iter().map(|o| o.id).collect();
-        let by_tag: HashMap<&Tag, usize> = old.iter().enumerate().filter(|(_, o)| !new_ids.contains(&o.id)).filter_map(|(k, o)| o.tag.as_ref().map(|t| (t, k))).collect();
+        // With no flight (`flow_ms` 0) nothing is shared: the old page fades out and the new in.
+        let by_tag: HashMap<&Tag, usize> = if spec.flow_ms <= 0.0 { HashMap::new() } else { old.iter().enumerate().filter(|(_, o)| !new_ids.contains(&o.id)).filter_map(|(k, o)| o.tag.as_ref().map(|t| (t, k))).collect() };
         let mut used = vec![false; old.len()];
         for i in 0..self.page_len {
             let id = self.owners[i].1;

@@ -1233,7 +1233,8 @@ its route fade), and what comes and goes fades over the same time (`tests/transf
 
 With or without less motion, what is new on the page (not shared with the old one) fades in over `fade_ms` where it
 is laid out while the old page fades out, so a route change never draws the new page whole over the old from its first
-frame. A new window size during the flow (a bar that goes with the old page) moves what fades in with the page, and
+frame. With no flight (`flow_ms` 0, an opacity change) nothing is shared: the whole old page fades out and the whole
+new one in, shared parts too. A new window size during the flow (a bar that goes with the old page) moves what fades in with the page, and
 shared parts fly on to where they now are. `tests/transform.rs`
 (`a_flow_fades_the_new_page_in_and_goes_on_through_a_resize`: with 120 ms the new page is under half its opacity at
 40 ms and the frames at 40 and 80 ms differ from both ends; with the 420 ms default the shared tile grows at 60, 200

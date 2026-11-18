@@ -199,12 +199,17 @@ fn with_less_motion_a_flow_fades_over_its_own_duration() {
         ui.set_reduced_motion(true);
         ui.tick(5.0);
         assert!((ui.reduced_fade() - 0.15).abs() < 1e-6, "150 ms until a flow says otherwise");
-        let only = ui.instances_of("p1/only").len();
+        // With no flight nothing is shared: the whole old page fades out (the text only on it, the box
+        // and the title) and the new one in.
+        let only = ["p1/only", "p1/box", "p1/title"].iter().map(|k| ui.instances_of(k).len()).sum::<usize>();
         ui.state.second = true;
         ui.state.cmds.push(Cmd::Flow(FlowSpec { flow_ms: 0.0, flow_loose: 0.0, fade_ms, ..FlowSpec::default() }));
         ui.relayout();
         assert!((ui.reduced_fade() - fade_ms / 1000.0).abs() < 1e-6);
         assert_eq!(ui.dissolving(), only);
+        ui.tick(5.0 + fade_ms / 2000.0);
+        let a = ui.instances_of("p2/box")[0].paint[2];
+        assert!(a > 0.2 && a < 0.8, "{fade_ms} ms: the new box at {a} of its opacity half-way");
         // Just before the end the old page is still fading; just after it, it has gone.
         ui.tick(5.0 + fade_ms / 1000.0 - 0.01);
         assert_eq!(ui.dissolving(), only, "{fade_ms} ms: gone too early");
