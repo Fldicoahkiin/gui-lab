@@ -10,6 +10,8 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
 
 ## Islands under labels
 
+- Web: when the WebGPU device fails, the full build starts on WebGL2 before it reports `device`; the canvas is
+  given a WebGPU context only once a WebGPU device is there.
 - Flow: cells that read a picture (`el::cells`) are not taken for the subtree's picture, so they are not drawn a
   second time as one that grows. What rides on a growing picture stays whole until it lands, and the new
   subtree's notes are there at once then: each note is drawn once every frame (DESIGN.md §1.10).

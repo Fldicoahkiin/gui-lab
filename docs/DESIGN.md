@@ -6,7 +6,8 @@ kind: explanation
 
 A self-drawn interface framework. Anything on screen (text, pictures, shapes, controls) can loosen along
 its own true outline, morph, and come back together; the look is a swappable material. Rust and wgpu,
-one codebase for native and web (WebGPU, falling back to WebGL2; WebGPU only without the `webgl` feature, where
+one codebase for native and web (WebGPU, falling back to WebGL2 when there is no WebGPU adapter or its device
+fails, the canvas left untouched until a WebGPU device is there; WebGPU only without the `webgl` feature, where
 a browser without it fails to start with `app::web::StartError::Adapter`, which the module's `start_failure()`
 export and `web/amenui.js`'s `opts.onFail(kind, message)` tell the page).
 

@@ -67,9 +67,54 @@ impl std::error::Error for StartError {}
 
 fn backend_name(b: wgpu::Backend) -> &'static str { match b { wgpu::Backend::BrowserWebGpu => "WebGPU", wgpu::Backend::Gl => "WebGL2", _ => "other" } }
 
+/// An adapter and a device, from `instance`, for `surface` where one is given (WebGL2's adapter needs it).
+async fn open(instance: &wgpu::Instance, surface: Option<&wgpu::Surface<'static>>) -> Result<(wgpu::Adapter, wgpu::Device, wgpu::Queue), StartError> {
+    let adapter = instance.request_adapter(&wgpu::RequestAdapterOptions { compatible_surface: surface, ..Default::default() }).await.map_err(|e| StartError::Adapter(e.to_string()))?;
+    // WebGPU gets compute (the particle simulation's tier); WebGL2 has none.
+    let base = if adapter.get_info().backend == wgpu::Backend::BrowserWebGpu { wgpu::Limits::downlevel_defaults() } else { wgpu::Limits::downlevel_webgl2_defaults() };
+    let (device, queue) = adapter.request_device(&wgpu::DeviceDescriptor { required_limits: base.using_resolution(adapter.limits()), ..Default::default() })
+        .await.map_err(|e| StartError::Device(e.to_string()))?;
+    Ok((adapter, device, queue))
+}
+
+/// The canvas's surface, adapter and device: WebGPU first, its surface made only once its device is
+/// there (a canvas that has given a WebGPU context can give no other); then, with the `webgl` feature,
+/// WebGL2 on the untouched canvas, when the browser has no WebGPU adapter or its device fails. A device
+/// failure is reported as `Device` only when WebGL2 fails too.
+async fn gpu(canvas: web_sys::HtmlCanvasElement) -> Result<(wgpu::Surface<'static>, wgpu::Adapter, wgpu::Device, wgpu::Queue), StartError> {
+    let desc = |backends| wgpu::InstanceDescriptor { backends, ..wgpu::InstanceDescriptor::new_without_display_handle() };
+    let mut failed = StartError::Adapter("the browser has no WebGPU".into());
+    if wgpu::util::is_browser_webgpu_supported().await {
+        let instance = wgpu::Instance::new(desc(wgpu::Backends::BROWSER_WEBGPU));
+        match open(&instance, None).await {
+            Ok((adapter, device, queue)) => {
+                let surface = instance.create_surface(wgpu::SurfaceTarget::Canvas(canvas)).map_err(|e| StartError::Device(e.to_string()))?;
+                return Ok((surface, adapter, device, queue));
+            }
+            Err(e) => { log(&format!("amenui: WebGPU: {e}")); failed = e; }
+        }
+    }
+    #[cfg(feature = "webgl")]
+    {
+        let instance = wgpu::Instance::new(desc(wgpu::Backends::GL));
+        let gl = match instance.create_surface(wgpu::SurfaceTarget::Canvas(canvas)) {
+            Ok(surface) => open(&instance, Some(&surface)).await.map(|(a, d, q)| (surface, a, d, q)),
+            Err(e) => Err(StartError::Adapter(e.to_string())),
+        };
+        match gl {
+            Ok(g) => return Ok(g),
+            // A WebGPU device that failed is still the reason, whatever WebGL2 says.
+            Err(e) => { log(&format!("amenui: WebGL2: {e}")); if !matches!(failed, StartError::Device(_)) { failed = e; } }
+        }
+    }
+    #[cfg(not(feature = "webgl"))]
+    drop(canvas);
+    Err(failed)
+}
+
 impl<S: App, M: Clone> Host<S, M> {
-    /// Start on a canvas: WebGPU where an adapter really exists, WebGL2 otherwise (WebGPU only without
-    /// the `webgl` feature: a browser without it fails with `StartError::Adapter`). `fonts` are the
+    /// Start on a canvas: WebGPU where an adapter and a device really exist, WebGL2 otherwise (WebGPU
+    /// only without the `webgl` feature: a browser without it fails with `StartError::Adapter`). `fonts` are the
     /// bytes of the three main bundled faces, sans, pixel and mono (the page fetches them); Geist Pixel and the
     /// serif are compiled into the module. `hash` is the page's `location.hash` ([`App::route`]); an
     /// empty one leaves the application where `make` put it.
@@ -78,14 +123,7 @@ impl<S: App, M: Clone> Host<S, M> {
         setup: impl FnOnce(&mut Renderer), make: impl FnOnce(Vec<Face>, u32, u32, f32) -> Ui<S, M>,
     ) -> Result<Self, StartError> {
         let (w, h) = (canvas.width().max(1), canvas.height().max(1));
-        let instance = wgpu::util::new_instance_with_webgpu_detection(wgpu::InstanceDescriptor::new_without_display_handle()).await;
-        // With no backend left (no WebGPU, and WebGL2 not built in) there is no surface either.
-        let surface = instance.create_surface(wgpu::SurfaceTarget::Canvas(canvas)).map_err(|e| StartError::Adapter(e.to_string()))?;
-        let adapter = instance.request_adapter(&wgpu::RequestAdapterOptions { compatible_surface: Some(&surface), ..Default::default() }).await.map_err(|e| StartError::Adapter(e.to_string()))?;
-        // WebGPU gets compute (the particle simulation's tier); WebGL2 has none.
-        let base = if adapter.get_info().backend == wgpu::Backend::BrowserWebGpu { wgpu::Limits::downlevel_defaults() } else { wgpu::Limits::downlevel_webgl2_defaults() };
-        let (device, queue) = adapter.request_device(&wgpu::DeviceDescriptor { required_limits: base.using_resolution(adapter.limits()), ..Default::default() })
-            .await.map_err(|e| StartError::Device(e.to_string()))?;
+        let (surface, adapter, device, queue) = gpu(canvas).await?;
         let caps = surface.get_capabilities(&adapter);
         let format = caps.formats.iter().copied().find(|f| !f.is_srgb()).or_else(|| caps.formats.first().copied()).ok_or_else(|| StartError::Device("the canvas offers no format".into()))?;
         let config = surface.get_default_config(&adapter, w, h).map(|mut c| { c.format = format; c }).ok_or_else(|| StartError::Device("the canvas is not supported by the adapter".into()))?;
