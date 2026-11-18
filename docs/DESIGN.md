@@ -790,6 +790,16 @@ the hand for the side rail, `col-resize` for the divider (during a drag too), "g
 apart): one swipe scrolls ten thousand rows by 290 px, the fling starts on lift and stops at 716 px, a tap
 doesn't scroll, and the console has no errors.
 
+**Events a frame brings together** (`Ui::coalesce`, on in both hosts). A host hands over every pointer move and
+wheel event as it comes, several in one frame, and ticks before each. With coalescing on, a pointer move, a wheel
+and a tick change the state at once (every message is delivered, in order) but lay out and paint once, before the
+frame is drawn (`Ui::settle`, which `Renderer::draw` calls first): eight moves in a frame are one layout, not
+eight. A move is hit-tested against the page as last laid out. Every other input (a press, a release, a key, text,
+the clipboard, assistive technology, a command) lays out what was left waiting first, so it acts on the page the
+state describes. Off (the default, for tests and tools that drive a `Ui` by hand), each lays out at once. Each
+pointer event carries when it happened (`Point::t`, `Drag::t`: the host's event time on the runtime's clock), so a
+speed is measured between the moves themselves, not between frames (`experiment::Pointer::hear`).
+
 ### 1.8.3 How scrolling looks
 
 Text "aliasing and shimmering" while scrolling had five sources (the `scroll` tool's sample
@@ -932,6 +942,13 @@ leaving; fingers have no hover).
   `hashchange` (links, back) it switches to that page, and after every input it writes the current page's
   name back to the hash. Page names are lowercase letters, digits and hyphens (`#button`, `#marks-chars`).
   Input methods and the clipboard are in §1.8.1.
+- Web: a panic does not stop the page. The module has no unwinding, so a panic traps the call it happens in and
+  nothing that call held is released; the running application is kept in a `app::slot::Slot` that holds no
+  borrow across a call, and the panic hook (`app::web::panic_hook`) marks the panic, so the next call goes on
+  with the application as the panic left it (and says so on the console) instead of failing for good with
+  "already borrowed". A GPU error the browser reports (a buffer the adapter refuses) is logged, not a panic. The
+  mesh pass puts the library's vertices in buffers of at most 256 KB (`render::MESH_CHUNK`, cut at whole
+  triangles), because some adapters refuse a buffer under a megabyte (SwiftShader refused 760 176 bytes).
 - Both hosts start with `Renderer::begin` and warm the renderer up after each frame they draw
   (`Renderer::warm_frame(ui, WARM_MS)`, 6 ms, §1.23), so the first frame is the plain page and the material arrives a
   few frames later. The runtime is told how far it is (`Ui::warm`, `Ui::on_warm` for the state); while it is not done
@@ -1255,6 +1272,12 @@ second time. `compute_layout_with_measure` runs only if something changed (`Coun
 recomputes only the dirty paths, using its cache for clean subtrees; if nothing changed (only colours, a
 selection background or anything else that doesn't affect size) it doesn't run (`layouts_skipped`) and last
 time's boxes are used.
+
+**The pieces of text by words or lines** (`El::reveal_by`, `Text::reveal_pieces`) are found once for the same
+text, face, size, line height, width and setting and kept with the layouts, in two generations; every paint asks
+again and gets them from there (`Counters::reveals` counts the misses). A glyph's piece is found in its line's
+boxes (the boxes sorted by their top), the last glyph's piece and the next one looked at first, rather than among
+all the text's pieces.
 
 **The text layout cache** (`Text::layout`): parley's layouts are cached by (text, face, size, line height,
 width, obstacles) in two generations: when the current one reaches 2048 entries it becomes the previous one,

@@ -8,6 +8,20 @@ crate and the `amenui` npm package (`web/`) always carry the same version, becau
 match the module that `web_app!` generates. The minimum Rust is the one CI builds with (`rust-version`
 in Cargo.toml); raising it is a breaking change before 1.0 only in the second number.
 
+## Coalesced input, cached word pieces, and a web page that survives a panic
+
+- Breaking: `el::Point` and `el::Drag` have `t`, when the event happened on the runtime's clock, so struct
+  literals of them need it. `experiment::Pointer::hear` measures speed between the events' own times.
+- `Ui::coalesce` (on in both hosts): pointer moves, wheels and ticks lay out and paint once a frame, before it
+  is drawn (`Ui::settle`, called by `Renderer::draw`); every other input lays out what waits first. Eight
+  moves in a frame cost one layout instead of eight.
+- The words and lines of a text drawn by `El::reveal_by` are found once per text and width, not on every
+  paint (`Counters::reveals`); each glyph's word is looked up in its own line.
+- The renderer reuses the lists it compares frames with instead of copying the scene into new ones.
+- Web: a panic in a call no longer leaves every later call failing with "already borrowed": the application
+  goes on as the panic left it (`app::slot`). GPU errors are logged, not panics, and mesh vertices go in
+  buffers of at most 256 KB (`render::MESH_CHUNK`).
+
 ## Controls that hold under effects, the warm-up in the hosts, opacity and scoped commits
 
 - Breaking: `Cmd::Commit` has a `scope: Option<String>` (`None` is the old behaviour); `MorphSpec` is

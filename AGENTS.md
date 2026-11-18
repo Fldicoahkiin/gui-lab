@@ -210,6 +210,8 @@ hyphenate the next word (`Around::hyphenate`, on by default); a piece that would
   Mark decoration `respond(Response::Loosen)`; mark a showcase `legible(false)`.
 - No third-party or character images in the repository.
 - Verify with pictures *and* data: render a frame and read its tree.
+- A `Ui` you drive by hand lays out at each input. To see what a host does with several moves a frame, turn
+  on `ui.coalesce(true)` and call `ui.settle()` (or draw) before reading the tree.
 
 ## How to verify
 
