@@ -3982,7 +3982,8 @@ impl<S, M: Clone> Ui<S, M> {
     /// The old title's glyphs fly to the new one's, glyph by glyph in order, each whole (DESIGN.md
     /// §1.10): straight, eased in and out on a sine, its size and colour going over, in a material loosened
     /// by `0.6 × sin(π × p)` on the way; each 12 ms after the last (in all at most 15 % of the duration), in
-    /// the word's order from the end that faces the way it goes, so the last lands at the duration. Glyphs one side has
+    /// the word's order from the end that faces the way it goes (the way projected onto the text's direction;
+    /// under 10 % of the way, as going straight down, there is no stagger and all go together), so the last lands at the duration. Glyphs one side has
     /// more of fade where they are: the old over the first 30 %, the new over the last 30 %. With less
     /// motion nothing flies: the old fades out where it was and the new in where it is, 150 ms each.
     fn morph_last(&mut self) {
@@ -3997,16 +3998,24 @@ impl<S, M: Clone> Ui<S, M> {
         let (sg, so): (Vec<Instance>, Vec<Instance>) = src.into_iter().partition(glyph);
         let (dg, d_other): (Vec<usize>, Vec<usize>) = dst.into_iter().partition(|&i| glyph(&self.base[i]));
         let n = if reduced { 0 } else { sg.len().min(dg.len()) };
-        let per = if n > 1 { 0.012f32.min(0.15 * dur / (n - 1) as f32) } else { 0.0 };
-        let travel = dur - per * n.saturating_sub(1) as f32;
-        // In the word's order, from the end that faces the way it goes: the glyph in front leaves first,
-        // so the glyphs open out a little on the way and never run into the ones ahead of them.
+        // In the word's order, from the end that faces the way it goes: the way projected onto the
+        // word's own direction (first glyph to last). Going on along it, the last glyph leaves first;
+        // going back, the first does; so the glyphs open out a little on the way and never run into
+        // the ones ahead. Where that projection is under 10 % of the way (near square to the text,
+        // as straight down a page), no end is in front: all glyphs go together.
         let centre = |r: [f32; 4]| [r[0] + r[2] * 0.5, r[1] + r[3] * 0.5];
         let mean = |c: &mut dyn Iterator<Item = [f32; 2]>| { let (mut s, mut m) = ([0.0f32; 2], 0.0f32); for p in c { s[0] += p[0]; s[1] += p[1]; m += 1.0; } [s[0] / m.max(1.0), s[1] / m.max(1.0)] };
         let (a, b) = (mean(&mut sg[..n].iter().map(|i| centre(i.rect))), mean(&mut dg[..n].iter().map(|&i| centre(self.base[i].rect))));
         let way = [b[0] - a[0], b[1] - a[1]];
-        let ahead = |k: usize| { let c = centre(sg[k].rect); (c[0] - a[0]) * way[0] + (c[1] - a[1]) * way[1] };
-        let front_first = n > 1 && ahead(n - 1) > ahead(0);
+        let along = if n > 1 {
+            let (f, l) = (centre(sg[0].rect), centre(sg[n - 1].rect));
+            let td = [l[0] - f[0], l[1] - f[1]];
+            (way[0] * td[0] + way[1] * td[1]) / td[0].hypot(td[1]).max(1e-6)
+        } else { 0.0 };
+        let staggered = n > 1 && along.abs() >= 0.1 * way[0].hypot(way[1]);
+        let front_first = along > 0.0;
+        let per = if staggered { 0.012f32.min(0.15 * dur / (n - 1) as f32) } else { 0.0 };
+        let travel = dur - per * n.saturating_sub(1) as f32;
         for k in 0..n {
             let i = dg[k];
             let id = self.owners[i].1;
