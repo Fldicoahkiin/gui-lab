@@ -11,7 +11,12 @@
 //         onRoute(hash), keys (the element that takes keys; window by default), shortcuts (extra
 //         Ctrl/⌘ letters the application handles), after(module) (after every handled event),
 //         onWarm(done, total) (the renderer's warm-up, each step; (1, 1) when it is done),
-//         failed (the text shown when graphics cannot start) }
+//         failed (the text shown when graphics cannot start),
+//         faces, assets (where a face or resource the page asks for is: a map of name → URL, or a
+//         function of the name; the framework fetches nothing itself, this shell does when
+//         `faces_wanted` / `assets_wanted` name something),
+//         preload (face names to fetch together with the module, added before the first frame so the
+//         page never shows their stand-ins) }
 
 const bytes = async f => f instanceof Uint8Array ? f : f instanceof ArrayBuffer ? new Uint8Array(f) : new Uint8Array(await (await fetch(f)).arrayBuffer());
 
@@ -47,8 +52,24 @@ export async function mount(stage, opts) {
     const fit = () => { const r = stage.getBoundingClientRect(); canvas.width = Math.max(1, Math.floor(r.width * dpr)); canvas.height = Math.max(1, Math.floor(r.height * dpr)); };
     fit();
     const w = opts.module;
+    const urlOf = (src, name) => (typeof src === 'function' ? src(name) : src && src[name]);
+    const pre = Promise.all((opts.preload || []).map(n => { const u = urlOf(opts.faces, n); return u ? bytes(u).then(b => [n, b], () => null) : null; }));
     const [sans, pixel, mono] = await Promise.all(opts.fonts.map(bytes));
     await w.start(canvas, sans, pixel, mono, dpr, opts.hash || '');
+    // Faces and resources the page asks for: each fetched once; when its bytes come the page takes it.
+    const asked = new Set();
+    for (const p of await pre) if (p && w.add_face) { asked.add(p[0]); w.add_face(p[0], p[1], performance.now() / 1000); }
+    const fetchWanted = () => {
+      for (const [list, src, add] of [[w.faces_wanted, opts.faces, w.add_face], [w.assets_wanted, opts.assets, w.add_asset]]) {
+        if (!list || !src || !add) continue;
+        for (const name of JSON.parse(list())) {
+          if (asked.has(name)) continue;
+          asked.add(name);
+          const u = urlOf(src, name);
+          if (u) bytes(u).then(b => { add(name, b, now()); kick(); }, () => {});
+        }
+      }
+    };
     if (msg) msg.remove();
     canvas.focus();
     const now = () => performance.now() / 1000;
@@ -76,6 +97,7 @@ export async function mount(stage, opts) {
       raf = 0; if (timer) { clearTimeout(timer); timer = 0; }
       const d = w.frame(now());
       axUpdate();
+      fetchWanted();
       warmUpdate();
       if (d === 0) raf = requestAnimationFrame(loop);
       else if (d > 0) timer = setTimeout(kick, d * 1000);

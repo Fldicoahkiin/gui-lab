@@ -530,6 +530,18 @@ pub struct Ui<S, M> {
     overlay_box: Option<Rect>,
     /// The fade with less motion, seconds (`Ui::reduced_fade`).
     fade_s: f32,
+    /// Faces whose bytes came since the last tick (`add_face`), with what stood in for them: they
+    /// change together, in one layout.
+    came: Vec<(u8, crate::text::FaceDecl)>,
+    /// Faces changing now: when, and what stood in for them (DESIGN.md §1.6.5).
+    arriving: HashMap<u8, (f32, crate::text::FaceDecl)>,
+    /// The last paint swept a face along a line on screen.
+    sweeping: bool,
+    /// Faces changed: the next layout measures every text again.
+    remeasure: bool,
+    /// Resources the host added (`add_asset`), and the names asked for that are not there.
+    assets: HashMap<String, Vec<u8>>,
+    assets_asked: std::cell::RefCell<std::collections::BTreeSet<String>>,
     /// The shaping time at the last frame, so the readout shows what this frame spent.
     shape_seen: f64,
     /// The readout last said the page is idle (so it does not ask for another frame).
@@ -897,7 +909,7 @@ impl<S, M: Clone> Ui<S, M> {
             gaze_of: None, gaze_seen: HashMap::new(), annots: vec![], readout: gaze::Readout::default(), hovered: None, pointer_of: None, scripted: false, ticked: None, warm: None, warmed: None, owed: false, unused_key: None, shortcut: None, scrolled_of: None, released: None, input: None,
             dirty: true, look_of: None, locale_of: None, timing: Timing::default(), wake_of: None, latest_birth: f32::NEG_INFINITY, gaze_until: f32::NEG_INFINITY,
             marks_moving: false, caret: None, caret_on: true, static_loose: false, mclock: 0.0, moving: false, gclock: 0.0, ground_moving: false,
-            perf: crate::perf::Perf { quality: 1.0, ..Default::default() }, span: 0, painting: false, overlay: 0, overlay_at: 0.0, overlay_box: None, fade_s: REDUCED_FADE, shape_seen: 0.0, hud_idle: false, rebuilt: 0,
+            perf: crate::perf::Perf { quality: 1.0, ..Default::default() }, span: 0, painting: false, overlay: 0, overlay_at: 0.0, overlay_box: None, fade_s: REDUCED_FADE, came: vec![], arriving: HashMap::new(), sweeping: false, remeasure: false, assets: HashMap::new(), assets_asked: Default::default(), shape_seen: 0.0, hud_idle: false, rebuilt: 0,
             text_capture: None, sel: None, sel_drag: false, clicks: (f32::NEG_INFINITY, 0.0, 0.0, 0), a11y_sent: HashMap::new(), a11y_focus: None,
             tree: TaffyTree::new(), tids: HashMap::new(), mkeys: HashMap::new(), virt_views: HashMap::new(), virt_made: HashMap::new(),
             scrolling: Scrolling::default(), touch: None, touches: HashSet::new(), touching: false, fling: None, over: HashMap::new(), motion: HashMap::new(), scroll_paint: false, event_t: None, ev: 0.0,
@@ -981,6 +993,47 @@ impl<S, M: Clone> Ui<S, M> {
     pub fn meshes(&self) -> &crate::mesh::Library { &self.meshes }
     /// Add a mesh (one made in code, or read with `mesh::load_gltf`); views name it by the id returned.
     pub fn add_mesh(&mut self, m: crate::mesh::Mesh) -> crate::mesh::MeshId { self.dirty = true; self.meshes.add(m) }
+    /// Declare a face that comes later (DESIGN.md §1.6.5): its number now, for themes and `El::fonts`.
+    /// Until its bytes come (`add_face`) text in it is set, read and laid out in `stand_in` at `scale`
+    /// times its size, at rest, in its final colour, size and line height. A name already there keeps
+    /// its number.
+    pub fn declare_face(&mut self, name: &str, decl: crate::text::FaceDecl) -> u8 {
+        let known = self.text.face_named(name).is_some();
+        let id = self.text.declare(name, decl);
+        if !known { self.relayout(); }
+        id
+    }
+    /// A face's bytes came: a declared one changes over from its stand-in (all that come before the
+    /// next tick together, in one layout; each line sweeps from left to right over 240 ms, 150 ms fading
+    /// in place with less motion; before any frame was drawn, at once), a new name is registered and
+    /// numbered. Bytes that are not a font are refused: the face keeps its stand-in for good and is no
+    /// longer in `faces_wanted`; nothing changes on screen.
+    pub fn add_face(&mut self, name: &str, bytes: Vec<u8>) -> Result<u8, crate::error::FontError> {
+        let before = self.text.face_named(name).and_then(|i| self.text.stand_in(i));
+        let id = self.text.add(name, bytes)?;
+        match before {
+            Some(d) => { self.came.push((id, d)); self.dirty = true; }
+            None => { self.remeasure = true; self.relayout(); }
+        }
+        Ok(id)
+    }
+    /// The declared faces that have not come and that the page laid out last uses, by name: what the
+    /// host should fetch now (read it after each frame or page change). The framework fetches nothing.
+    pub fn faces_wanted(&self) -> Vec<String> { self.text.wanted() }
+    /// A resource the host fetched (a component's source, a registry): kept by name for `asset`.
+    pub fn add_asset(&mut self, name: &str, bytes: Vec<u8>) {
+        self.assets_asked.borrow_mut().remove(name);
+        self.assets.insert(name.to_owned(), bytes);
+        self.relayout();
+    }
+    /// The resource `name`, if it has come; asking for one that has not puts it in `assets_wanted`.
+    pub fn asset(&self, name: &str) -> Option<&[u8]> {
+        let a = self.assets.get(name).map(Vec::as_slice);
+        if a.is_none() { self.assets_asked.borrow_mut().insert(name.to_owned()); }
+        a
+    }
+    /// The resources asked for with `asset` that have not come, by name.
+    pub fn assets_wanted(&self) -> Vec<String> { self.assets_asked.borrow().iter().cloned().collect() }
     /// The drawn page instances of a node and its descendants, as they are this frame.
     /// How many recomposition tiles are alive now, over the whole window (bounded by
     /// `Recompose::max_tiles`).
@@ -1170,7 +1223,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// input or `next_wake`.
     pub fn needs_frame(&self, now: f32) -> bool {
         let b = self.beat_of(now);
-        self.dirty || self.stale_layout || self.stale_paint || self.owed || self.warm.is_some() || self.prep.pending() || self.held(now) || self.moving_at(b) || self.wake_at(b).is_some_and(|w| w <= b)
+        self.dirty || self.stale_layout || self.stale_paint || self.owed || self.warm.is_some() || self.prep.pending() || self.held(now) || self.moving_at(b) || self.wake_at(b).is_some_and(|w| w <= b) || (self.sweeping && !self.arriving.is_empty())
     }
     /// A `Cmd::Hold` is going on: frames go on (the same) until it ends.
     fn held(&self, now: f32) -> bool { self.timing.beat.on() && self.bclock.hold.is_some_and(|(_, until)| now < until) }
@@ -1178,7 +1231,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// when only input can change anything.
     pub fn next_wake(&self, now: f32) -> Option<f32> {
         let b = self.beat_of(now);
-        if self.dirty || self.owed || self.warm.is_some() || self.prep.pending() || self.held(now) || self.moving_at(b) { return Some(now); }
+        if self.dirty || self.owed || self.warm.is_some() || self.prep.pending() || self.held(now) || self.moving_at(b) || (self.sweeping && !self.arriving.is_empty()) { return Some(now); }
         // A wake on the beat clock is that much later on the runtime's.
         self.wake_at(b).map(|w| (w + now - b).max(now))
     }
@@ -1442,6 +1495,21 @@ impl<S, M: Clone> Ui<S, M> {
             // Preparation in the spare time (`Ui::prepare`): what it changed is shown.
             if ui.prep.run(&mut ui.state) { ui.relayout(); }
         });
+        // Faces that came since the last tick change together, in one layout; a frame drawn already
+        // showed their stand-ins, so they sweep in (DESIGN.md §1.6.5).
+        if !self.came.is_empty() {
+            let shown = self.perf.drawn > 0;
+            for (f, d) in std::mem::take(&mut self.came) { if shown { self.arriving.insert(f, (t, d)); } }
+            // Before any frame the atlas starts over, so it holds what a page that had the faces from
+            // the start holds, where it holds it.
+            if !shown { self.text.refill(); }
+            self.remeasure = true;
+            self.relayout();
+        }
+        let sweep_end = if self.fmap.reduced { REDUCED_FADE } else { SWEEP + SWEEP_LOOSE };
+        let n = self.arriving.len();
+        self.arriving.retain(|_, (t0, _)| t < *t0 + sweep_end);
+        if self.arriving.len() != n { self.dirty = true; }
         let before = (self.marks.at, self.marks.alpha);
         self.aim_marks();
         self.marks_moving = before != (self.marks.at, self.marks.alpha) || self.marks_settling();
@@ -1467,7 +1535,8 @@ impl<S, M: Clone> Ui<S, M> {
         if self.step_map(dt) { self.dirty = true; }
         // The readout: switched on or off, or a second past the last frame (it then says idle, once).
         let hud = self.timing.overlay != self.overlay || (self.overlay > 0 && !self.hud_idle && t >= self.overlay_at + 1.05);
-        if repaint || scrolled || hud { self.paint(); } else { self.finish(); }
+        let sweep = !self.arriving.is_empty() && self.sweeping;
+        if repaint || scrolled || hud || sweep { self.paint(); } else { self.finish(); }
         self.track_motion(dt);
         if self.marks_moving { self.dirty = true; }
         self.moving = self.field_moving_at(t);
@@ -2563,6 +2632,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// differs (DESIGN.md §1.13) → absolute rects → scene.
     fn layout(&mut self) {
         if self.look_of.is_some() { self.timing = Timing::of(&self.look()); }
+        self.text.begin_pass();
         self.perf.counters.views += 1;
         if let Some(f) = self.locale_of { crate::i18n::set_current(f(&self.state)); }
         let mut el = (self.view)(&self.state);
@@ -2579,6 +2649,7 @@ impl<S, M: Clone> Ui<S, M> {
             fit_apply(&mut el, &ks);
         }
         let mut nodes = self.lay_pass(el);
+        self.remeasure = false;
         self.finish_layout(&mut nodes);
     }
     /// One layout pass of a view: lifted layers, the flattened nodes, the taffy tree brought up to date
@@ -2627,7 +2698,7 @@ impl<S, M: Clone> Ui<S, M> {
                     if leaf {
                         if self.tree.child_count(t) > 0 { let _ = self.tree.set_children(t, &[]); changed = true; }
                         let _ = self.tree.set_node_context(t, Some(i));
-                        if self.mkeys.get(&t) != Some(&mk) { let _ = self.tree.mark_dirty(t); changed = true; }
+                        if self.remeasure || self.mkeys.get(&t) != Some(&mk) { let _ = self.tree.mark_dirty(t); changed = true; }
                     } else {
                         let _ = self.tree.set_node_context(t, None);
                         if self.tree.children(t).map_or(true, |c| c != kids) { let _ = self.tree.set_children(t, &kids); changed = true; }
@@ -2978,6 +3049,7 @@ impl<S, M: Clone> Ui<S, M> {
     fn paint(&mut self) {
         if self.defer > 0 { self.stale_paint = true; self.dirty = true; return; }
         self.stale_paint = false;
+        self.sweeping = false;
         self.paint_once();
         // The glyph atlas filled up (many sizes over a long run): start it over and paint again, so every
         // glyph on the page is in the new one. What was kept from before (tiles, ghosts) is dropped.
@@ -3201,7 +3273,23 @@ impl<S, M: Clone> Ui<S, M> {
                     // Lines the clip hides are not made into instances at all.
                     let rows = Some((clip[1], clip[3]));
                     let mut glyphs: Vec<(Instance, u32)> = vec![];
-                    self.text.emit_in(para, n.origin(), proto, s, rows, |mut inst, glyph| { inst.extra[0] = wpx; glyphs.push((inst, glyph)); });
+                    // A face arriving (DESIGN.md §1.6.5) sweeps along each line of text on screen.
+                    let window = Rect::new(0.0, 0.0, self.size.0, self.size.1);
+                    let arriving = self.arriving.get(&para.face).copied().filter(|_| { let r = n.rect.intersect(&n.clip).intersect(&window); r.w > 0.0 && r.h > 0.0 });
+                    let mut swept: Vec<f32> = vec![];
+                    match arriving {
+                        None => self.text.emit_in(para, n.origin(), proto, s, rows, |mut inst, glyph| { inst.extra[0] = wpx; glyphs.push((inst, glyph)); }),
+                        Some((t0, d)) => {
+                            self.sweeping = true;
+                            let heading = n.access.as_ref().is_some_and(|a| a.role == Some(crate::el::Role::Heading));
+                            let cap = if self.timing.material == crate::style::Material::Plain.id() || self.fmap.reduced { 0.0 } else if heading { 0.6 } else { self.timing.legible_cap };
+                            for (mut inst, glyph, l) in sweep_glyphs(&mut self.text, para, n.origin(), proto, s, rows, (now - t0, d), self.fmap.reduced, cap) {
+                                inst.extra[0] = wpx;
+                                glyphs.push((inst, glyph));
+                                swept.push(l);
+                            }
+                        }
+                    }
                     // Each glyph's number in the text, depth, and where layout put it (its centre in the
                     // content box), kept through poses, sorting and thinning for identities and hits.
                     let (ox, oy) = (n.inner.x, n.inner.y);
@@ -3266,6 +3354,8 @@ impl<S, M: Clone> Ui<S, M> {
                     for g in &posed {
                         let at = sink.scene.instances.len();
                         if put(&mut sink, g.inst, ident(&n.key, g.seq as u32, g.glyph), Some(g.glyph)) {
+                            // Loosened by the material as its face changes.
+                            if let Some(&l) = swept.get(g.seq) && let Some(last) = sink.scene.instances.last_mut() { last.extra[2] = last.extra[2].max(l); }
                             drawn[g.seq] = true;
                             self.glyphs.log.push(crate::hit::DrawnGlyph { inst: at, node: i, i: g.seq, z: g.z, at: g.at });
                         }
@@ -5109,6 +5199,10 @@ const IGNORE: [f32; 4] = [0.0, -1.0, 0.0, 0.0];
 /// How long what comes and goes fades when the viewer asked for less motion, s, until a flow says
 /// otherwise (`FlowSpec::fade_ms`).
 pub const REDUCED_FADE: f32 = 0.15;
+/// How long a face arriving takes to sweep along a line, s (DESIGN.md §1.6.5).
+pub const SWEEP: f32 = 0.24;
+/// How long before and after its change a glyph loosens and draws back in, s.
+pub const SWEEP_LOOSE: f32 = 0.06;
 
 
 struct DecodeRun { start: f32, reverse: bool, spec: crate::decode::Decode, plan: Option<crate::decode::Plan>, ghost: Vec<Instance>, clip: Option<[f32; 4]>, drawn: Option<f32> }
@@ -5303,6 +5397,51 @@ fn ident(key: &str, part: u32, glyph: u32) -> u64 {
     let mut h = DefaultHasher::new();
     (key, part, glyph).hash(&mut h);
     h.finish()
+}
+
+/// A paragraph whose face is arriving, `at` seconds into the change, with `d` the stand-in it had: the
+/// new face's glyphs where the sweep along their line has passed (it takes `SWEEP` from the line's
+/// start to its end), the stand-in's glyph for the same character, standing where the new one is,
+/// where it has not; each glyph's looseness within `SWEEP_LOOSE` of its change, a sine up to `cap`.
+/// With less motion both are drawn where the new ones are, the new fading in over `REDUCED_FADE`.
+fn sweep_glyphs(text: &mut Text, para: Para<'_>, origin: (f32, f32), proto: Instance, s: f32, rows: Option<(f32, f32)>, (at, d): (f32, crate::text::FaceDecl), reduced: bool, cap: f32) -> Vec<(Instance, u32, f32)> {
+    let mut new: Vec<(Instance, u32, [f32; 4])> = vec![];
+    text.emit_pens(para, origin, proto, s, rows, |i, g, p| new.push((i, g, p)));
+    let stand = Para { face: d.stand_in, size: para.size * d.scale, width: f32::INFINITY, around: None, ..para };
+    let mut old: Vec<(Instance, u32, [f32; 4])> = vec![];
+    text.emit_pens(stand, origin, proto, s, None, |i, g, p| old.push((i, g, p)));
+    let pixel = text.is_pixel(d.stand_in);
+    // The stand-in's glyph for the new glyph `k` (in text order), moved to where that one is.
+    let moved = |k: usize| -> Option<(Instance, u32)> {
+        if old.is_empty() { return None; }
+        let j = if old.len() == new.len() { k } else { (k * old.len() / new.len().max(1)).min(old.len() - 1) };
+        let (mut i, g, p) = old[j];
+        let (dx, dy) = (new[k].2[0] - p[0], new[k].2[1] - p[1]);
+        let dx = if pixel { dx.round() } else { dx };
+        i.rect[0] += dx;
+        i.rect[1] += dy.round();
+        Some((i, g))
+    };
+    let mut out = vec![];
+    for k in 0..new.len() {
+        let (inst, g, p) = new[k];
+        if reduced {
+            let a = (at / REDUCED_FADE).clamp(0.0, 1.0);
+            if a < 1.0 && let Some((mut o, og)) = moved(k) { o.paint[2] *= 1.0 - a; out.push((o, og, 0.0)); }
+            let mut n = inst;
+            n.paint[2] *= a;
+            out.push((n, g, 0.0));
+            continue;
+        }
+        let when = SWEEP * ((p[0] - p[2]) / p[3]).clamp(0.0, 1.0);
+        let dt = at - when;
+        let l = if cap > 0.0 && dt.abs() < SWEEP_LOOSE { cap * (std::f32::consts::PI * (dt + SWEEP_LOOSE) / (2.0 * SWEEP_LOOSE)).sin() } else { 0.0 };
+        match (dt >= 0.0, moved(k)) {
+            (false, Some((o, og))) => out.push((o, og, l)),
+            _ => out.push((inst, g, l)),
+        }
+    }
+    out
 }
 
 /// Whether a view has a box marked `El::fit`.

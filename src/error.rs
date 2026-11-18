@@ -15,6 +15,12 @@ pub enum FontError {
         #[source]
         source: std::io::Error,
     },
+    #[error("the bytes given for face `{name}` are not a font file (OpenType or TrueType). The face keeps its stand-in and is not asked for again; pass the file's bytes as fetched, not text or a compressed archive.")]
+    /// The bytes added for a face are not a font.
+    Bad {
+        /// The face's name.
+        name: String,
+    },
 }
 
 /// A material, theme or page named by an id that does not exist.

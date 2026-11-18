@@ -79,7 +79,8 @@ impl<S: App, M: Clone> Host<S, M> {
         r.set_particle_tier(crate::render::particle_tier(&adapter));
         setup(&mut r);
         let [sans, pixel, mono] = fonts;
-        let faces = crate::text::with_serif(crate::text::with_geist(crate::text::bundled(sans, pixel, mono), crate::text::geist_bytes()), crate::text::serif_bytes());
+        // Geist Pixel and the serif come later, when the page uses them (`faces_wanted`, `add_face`).
+        let faces = crate::text::with_declared(crate::text::bundled(sans, pixel, mono));
         let mut ui = make(faces, w, h, scale);
         // The page hands over every pointer move and wheel; they are laid out once a frame.
         ui.coalesce(true);
@@ -147,6 +148,14 @@ impl<S: App, M: Clone> Host<S, M> {
     pub fn set_locale(&mut self, tag: &str) {
         if let Some(l) = crate::i18n::Locale::from_tag(tag) && self.ui.state.set_locale(l) { self.ui.relayout(); }
     }
+    /// The faces the page uses that have not come, by name (`Ui::faces_wanted`), as JSON.
+    pub fn faces_wanted(&self) -> String { serde_json::to_string(&self.ui.faces_wanted()).unwrap_or_else(|_| "[]".into()) }
+    /// A face's bytes came (`Ui::add_face`); returns its number, or -1 when they are not a font.
+    pub fn add_face(&mut self, name: &str, bytes: Vec<u8>, t: f32) -> i32 { self.ui.tick(t); self.ui.add_face(name, bytes).map_or(-1, i32::from) }
+    /// The resources asked for that have not come, by name (`Ui::assets_wanted`), as JSON.
+    pub fn assets_wanted(&self) -> String { serde_json::to_string(&self.ui.assets_wanted()).unwrap_or_else(|_| "[]".into()) }
+    /// A resource came (`Ui::add_asset`).
+    pub fn add_asset(&mut self, name: &str, bytes: Vec<u8>, t: f32) { self.ui.tick(t); self.ui.add_asset(name, bytes); }
     /// `prefers-reduced-motion: reduce`, at start and when it changes.
     pub fn set_reduced_motion(&mut self, on: bool) { self.ui.state.set_reduced_motion(on); self.ui.set_reduced_motion(on); }
     /// `prefers-color-scheme: dark` and `prefers-contrast: more`, at start and when they change.
@@ -285,6 +294,16 @@ macro_rules! web_app {
             pub fn set_locale(tag: &str) { host(|s| s.set_locale(tag)); }
             #[wasm_bindgen(wasm_bindgen = $crate::app::web::__rt::wasm_bindgen)]
             pub fn set_reduced_motion(on: bool) { host(|s| s.set_reduced_motion(on)); }
+            /// The faces the page uses that have not come, as a JSON list of names: fetch each, then `add_face`.
+            #[wasm_bindgen(wasm_bindgen = $crate::app::web::__rt::wasm_bindgen)]
+            pub fn faces_wanted() -> String { host(|s| s.faces_wanted()).unwrap_or_else(|| "[]".into()) }
+            #[wasm_bindgen(wasm_bindgen = $crate::app::web::__rt::wasm_bindgen)]
+            pub fn add_face(name: &str, bytes: Vec<u8>, t: f32) -> i32 { host(|s| s.add_face(name, bytes, t)).unwrap_or(-1) }
+            /// The resources asked for that have not come, as a JSON list of names.
+            #[wasm_bindgen(wasm_bindgen = $crate::app::web::__rt::wasm_bindgen)]
+            pub fn assets_wanted() -> String { host(|s| s.assets_wanted()).unwrap_or_else(|| "[]".into()) }
+            #[wasm_bindgen(wasm_bindgen = $crate::app::web::__rt::wasm_bindgen)]
+            pub fn add_asset(name: &str, bytes: Vec<u8>, t: f32) { host(|s| s.add_asset(name, bytes, t)); }
             #[wasm_bindgen(wasm_bindgen = $crate::app::web::__rt::wasm_bindgen)]
             pub fn set_appearance(dark: bool, high_contrast: bool) { host(|s| s.set_appearance(dark, high_contrast)); }
             #[wasm_bindgen(wasm_bindgen = $crate::app::web::__rt::wasm_bindgen)]

@@ -65,18 +65,23 @@ pub struct Face {
     pub pixel: Option<f32>,
     /// Used only for characters the other faces lack.
     pub fallback: bool,
+    /// A face declared to come later (`Face::declared`): its name and stand-in.
+    declared: Option<(String, FaceDecl)>,
 }
 impl Face {
     /// An outline face, drawn at any size.
-    pub fn outline(data: Vec<u8>) -> Self { Self { data, pixel: None, fallback: false } }
+    pub fn outline(data: Vec<u8>) -> Self { Self { data, pixel: None, fallback: false, declared: None } }
     /// A pixel face whose glyphs are drawn at whole multiples of `size` px.
-    pub fn pixel(data: Vec<u8>, size: f32) -> Self { Self { data, pixel: Some(size), fallback: false } }
+    pub fn pixel(data: Vec<u8>, size: f32) -> Self { Self { data, pixel: Some(size), fallback: false, declared: None } }
     /// A face used only for characters the others lack.
-    pub fn fallback(data: Vec<u8>) -> Self { Self { data, pixel: None, fallback: true } }
+    pub fn fallback(data: Vec<u8>) -> Self { Self { data, pixel: None, fallback: true, declared: None } }
+    /// A face whose bytes come later (`Ui::declare_face`, DESIGN.md §1.6.5), numbered here in order:
+    /// text in it is set in `decl.stand_in` until `Ui::add_face` brings it.
+    pub fn declared(name: &str, decl: FaceDecl) -> Self { Self { data: vec![], pixel: None, fallback: false, declared: Some((name.to_owned(), decl)) } }
     /// The system's installed fonts, after every given face, for characters none of them has (native
     /// builds with the `system-fonts` feature; elsewhere it is ignored). The bundled faces still decide
     /// everything they cover, so pages look the same on every machine for the text they were made with.
-    pub fn system() -> Self { Self { data: vec![], pixel: None, fallback: true } }
+    pub fn system() -> Self { Self { data: vec![], pixel: None, fallback: true, declared: None } }
     /// Put it last: faces are numbered in the order given, and this one takes no number.
     fn is_system(&self) -> bool { self.fallback && self.data.is_empty() }
 }
@@ -94,12 +99,22 @@ pub fn with_serif(mut faces: Vec<Face>, serif: Vec<u8>) -> Vec<Face> {
     faces.push(Face::outline(serif));
     faces
 }
+/// The bundled faces with Geist Pixel's five shapes and the serif declared to come later, numbered as
+/// `with_geist` and `with_serif` number them: what the web page starts with, so the module carries only
+/// the three main faces. Each is named by its file in `assets/` (`GEIST_FILES`, `SERIF_FILE`), which is
+/// what `Ui::faces_wanted` asks for; Geist Pixel stands in as the pixel face, the serif as the sans.
+pub fn with_declared(mut faces: Vec<Face>) -> Vec<Face> {
+    faces.extend(GEIST_FILES.iter().map(|f| Face::declared(f, FaceDecl { stand_in: PIXEL, scale: 1.0 })));
+    faces.push(Face::declared(SERIF_FILE, FaceDecl { stand_in: SANS, scale: 1.0 }));
+    faces
+}
 /// Where the bundled fonts are on disk: this crate's `assets/` (a checkout, or Cargo's copy of it), for
 /// tests and tools of applications built on amenui (`load_bundled(text::ASSETS)`).
 #[cfg(not(target_arch = "wasm32"))]
 pub const ASSETS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/assets");
 /// Read the bundled faces from a directory, Geist Pixel and the serif included (native only; the web
-/// page passes the three main faces' bytes in and carries Geist Pixel and the serif in the module).
+/// page passes the three main faces' bytes in and adds Geist Pixel and the serif when they are wanted,
+/// `with_declared`).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn load_bundled(dir: &str) -> Result<Vec<Face>, crate::error::FontError> {
     let r = |f: &str| { let path = format!("{dir}/{f}"); std::fs::read(&path).map_err(|source| crate::error::FontError::Missing { path, source }) };
@@ -114,9 +129,11 @@ pub fn embedded() -> Vec<Face> {
         include_bytes!("../assets/DepartureMono-Regular.otf").to_vec());
     with_serif(with_geist(main, geist_bytes()), serif_bytes())
 }
-/// The serif, compiled in (the web build).
+/// The serif, compiled in (native builds; the web page adds it when it is wanted, `Ui::add_face`).
+#[cfg(not(target_arch = "wasm32"))]
 pub fn serif_bytes() -> Vec<u8> { include_bytes!("../assets/SourceSerif4-8pt-subset.ttf").to_vec() }
-/// Geist Pixel's five faces, compiled in (the web build).
+/// Geist Pixel's five faces, compiled in (native builds; the web page adds them when they are wanted).
+#[cfg(not(target_arch = "wasm32"))]
 pub fn geist_bytes() -> [Vec<u8>; 5] {
     [include_bytes!("../assets/GeistPixel-Square.otf").to_vec(), include_bytes!("../assets/GeistPixel-Grid.otf").to_vec(), include_bytes!("../assets/GeistPixel-Circle.otf").to_vec(),
      include_bytes!("../assets/GeistPixel-Triangle.otf").to_vec(), include_bytes!("../assets/GeistPixel-Line.otf").to_vec()]
@@ -165,7 +182,21 @@ type MeasureKey = (String, u8, u32, u32, u32, u64, u32);
 /// A text's pieces for `El::reveal_by`: each piece's boxes.
 pub type Pieces = Rc<Vec<Vec<crate::ui::Rect>>>;
 
-struct Family { name: String, pixel: Option<f32>, data: Arc<Vec<u8>>, blob: u64, fallback: bool }
+/// A registered face: its family name in the collection, what the host calls it, and, while its bytes
+/// have not come (`Text::declare`), the face standing in for it.
+struct Family { name: String, called: String, pixel: Option<f32>, data: Arc<Vec<u8>>, blob: u64, fallback: bool, pending: Option<FaceDecl>, broken: bool }
+
+/// A face that is declared before its bytes come (`Ui::declare_face`): text set in it is set in
+/// `stand_in` at `scale` times its size (the line height stays the theme's) until it arrives.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FaceDecl {
+    /// The face already there that stands in for it.
+    pub stand_in: u8,
+    /// The stand-in's size as a multiple of the size asked for (1 by default; a pixel stand-in still
+    /// keeps to whole multiples of its native size).
+    pub scale: f32,
+}
+impl Default for FaceDecl { fn default() -> Self { Self { stand_in: SANS, scale: 1.0 } } }
 
 /// One glyph rasterised on its own (for the mark atlas): coverage rows, placement, and the face's
 /// advance and line box at that size, px.
@@ -224,6 +255,8 @@ pub struct Text {
     pub log_shapes: bool,
     /// The texts shaped while `log_shapes` was on.
     pub shape_log: Vec<String>,
+    /// Declared faces that have not come and were asked for since `begin_pass`.
+    asked: std::collections::BTreeSet<u8>,
 }
 
 impl Text {
@@ -232,17 +265,18 @@ impl Text {
         let system = cfg!(all(feature = "system-fonts", not(target_arch = "wasm32"))) && faces.iter().any(Face::is_system);
         let mut collection = Collection::new(CollectionOptions { shared: false, system_fonts: system });
         let families: Vec<Family> = faces.into_iter().filter(|f| !f.is_system()).map(|f| {
+            if let Some((called, d)) = f.declared { return Family { name: String::new(), called, pixel: None, data: Arc::new(vec![]), blob: 0, fallback: false, pending: Some(d), broken: false }; }
             let data = Arc::new(f.data);
             let blob = Blob::new(data.clone());
             let id = blob.id();
             let reg = collection.register_fonts(blob, None);
             let name = reg.first().and_then(|(id, _)| collection.family_name(*id).map(str::to_owned)).unwrap_or_default();
-            Family { name, pixel: f.pixel, data, blob: id, fallback: f.fallback }
+            Family { called: name.clone(), name, pixel: f.pixel, data, blob: id, fallback: f.fallback, pending: None, broken: false }
         }).collect();
         Self {
             fonts: FontContext { collection, source_cache: Default::default() },
             layouts: LayoutContext::new(), scaler: ScaleContext::new(), families, scale: 1.0,
-            slots: HashMap::new(), full: false, measured: HashMap::new(), cache: [HashMap::new(), HashMap::new()], pieces: [HashMap::new(), HashMap::new()], reveals: 0, pixels: vec![0; (ATLAS * ATLAS * 2) as usize], dirty: true, pen: (1, 1, 0), shaped: 0, shape_ms: 0.0, log_shapes: false, shape_log: vec![],
+            slots: HashMap::new(), full: false, measured: HashMap::new(), cache: [HashMap::new(), HashMap::new()], pieces: [HashMap::new(), HashMap::new()], reveals: 0, pixels: vec![0; (ATLAS * ATLAS * 2) as usize], dirty: true, pen: (1, 1, 0), shaped: 0, shape_ms: 0.0, log_shapes: false, shape_log: vec![], asked: Default::default(),
         }
     }
 
@@ -270,7 +304,60 @@ impl Text {
     pub fn is_pixel(&self, face: u8) -> bool { self.family(face).pixel.is_some() }
     /// Native size of a pixel face, px.
     pub fn native(&self, face: u8) -> Option<f32> { self.family(face).pixel }
-    fn family(&self, face: u8) -> &Family { &self.families[(face as usize).min(self.families.len() - 1)] }
+    fn family(&self, face: u8) -> &Family { &self.families[self.real(face).0] }
+    /// The family text in `face` is really set in, and the size factor: a declared face that has not
+    /// come is set in its stand-in.
+    fn real(&self, face: u8) -> (usize, f32) {
+        let fi = (face as usize).min(self.families.len() - 1);
+        match self.families[fi].pending { Some(d) => ((d.stand_in as usize).min(self.families.len() - 1), d.scale), None => (fi, 1.0) }
+    }
+    /// Note that text in `face` was asked for (`wanted`).
+    fn note(&mut self, face: u8) {
+        let fi = (face as usize).min(self.families.len() - 1);
+        if self.families[fi].pending.is_some() && !self.families[fi].broken { self.asked.insert(fi as u8); }
+    }
+    /// Declare a face whose bytes come later (`Ui::declare_face`): its number now, text in it set in the
+    /// stand-in meanwhile. A name already registered or declared keeps its number.
+    pub fn declare(&mut self, name: &str, decl: FaceDecl) -> u8 {
+        if let Some(i) = self.face_named(name) { return i; }
+        let stand_in = (decl.stand_in as usize).min(self.families.len().saturating_sub(1)) as u8;
+        self.families.push(Family { name: String::new(), called: name.to_owned(), pixel: None, data: Arc::new(vec![]), blob: 0, fallback: false, pending: Some(FaceDecl { stand_in, scale: if decl.scale > 0.0 { decl.scale } else { 1.0 } }), broken: false });
+        (self.families.len() - 1) as u8
+    }
+    /// The number of the face the host calls `name` (as declared or added; a bundled face by its family
+    /// name).
+    pub fn face_named(&self, name: &str) -> Option<u8> { self.families.iter().position(|f| f.called == name).map(|i| i as u8) }
+    /// Whether `face` was declared and has not come (it is drawn in its stand-in).
+    pub fn is_pending(&self, face: u8) -> bool { self.families.get(face as usize).is_some_and(|f| f.pending.is_some()) }
+    /// What stands in for `face` while it has not come.
+    pub fn stand_in(&self, face: u8) -> Option<FaceDecl> { self.families.get(face as usize).and_then(|f| f.pending) }
+    /// The bytes of the face `name` came (`Ui::add_face`): a declared face is set in itself from now on,
+    /// a new name is registered. Bytes that are not a font are refused: the face keeps its stand-in and
+    /// is not asked for again. Every layout is made again.
+    pub fn add(&mut self, name: &str, bytes: Vec<u8>) -> Result<u8, crate::error::FontError> {
+        let at = self.face_named(name);
+        if at.is_some_and(|i| self.families[i as usize].pending.is_none()) { return Ok(at.unwrap_or_default()); }
+        if swash::FontRef::from_index(&bytes, 0).is_none() {
+            if let Some(i) = at { self.families[i as usize].broken = true; self.asked.remove(&i); }
+            return Err(crate::error::FontError::Bad { name: name.to_owned() });
+        }
+        let data = Arc::new(bytes);
+        let blob = Blob::new(data.clone());
+        let id = blob.id();
+        let reg = self.fonts.collection.register_fonts(blob, None);
+        let fam = reg.first().and_then(|(id, _)| self.fonts.collection.family_name(*id).map(str::to_owned)).unwrap_or_default();
+        let f = Family { name: fam, called: name.to_owned(), pixel: None, data, blob: id, fallback: false, pending: None, broken: false };
+        let i = match at { Some(i) => { self.families[i as usize] = f; i } None => { self.families.push(f); (self.families.len() - 1) as u8 } };
+        self.asked.remove(&i);
+        self.measured.clear();
+        self.cache = [HashMap::new(), HashMap::new()];
+        Ok(i)
+    }
+    /// Start a layout pass: what is asked for from now on is what the page uses.
+    pub fn begin_pass(&mut self) { self.asked.clear(); }
+    /// The declared faces that have not come, are not broken, and were asked for since the pass began,
+    /// by the names they were declared with.
+    pub fn wanted(&self) -> Vec<String> { self.asked.iter().map(|&i| self.families[i as usize].called.clone()).collect() }
 
     /// Device px per logical px (pixel faces snap in device px); a change empties the layout cache.
     pub fn set_scale(&mut self, scale: f32) {
@@ -280,6 +367,7 @@ impl Text {
     /// The logical size a face is really drawn at: pixel faces go to the nearest whole multiple (at
     /// least one) of their native size in device px, since anything between would smear their pixels.
     pub fn size_for(&self, face: u8, size: f32) -> f32 {
+        let size = size * self.real(face).1;
         match self.family(face).pixel {
             Some(native) => ((size * self.scale / native).round().max(1.0) * native) / self.scale,
             None => size,
@@ -290,6 +378,7 @@ impl Text {
     /// size, line height, width and obstacles); only a miss shapes (and counts in `shaped`).
     fn layout(&mut self, s: &str, face: u8, size: f32, line: f32, max_width: Option<f32>, set: Setting<'_>) -> Rc<Layout<()>> {
         let Setting { around, track } = set;
+        self.note(face);
         let max_width = max_width.filter(|w| w.is_finite());
         let k = (s.to_owned(), face, size.to_bits(), line.to_bits(), max_width.unwrap_or(-1.0).to_bits(), around.map_or(0, Around::id), track.to_bits());
         if let Some(l) = self.cache[0].get(&k) { return l.clone(); }
@@ -330,7 +419,7 @@ impl Text {
         let Setting { around, track } = set;
         if self.log_shapes { self.shape_log.push(s.to_owned()); }
         let size = self.size_for(face, size);
-        let fi = (face as usize).min(self.families.len() - 1);
+        let fi = self.real(face).0;
         let track = track * size;
         let mut l = self.build(s, fi, size, line, track, &[]);
         match around {
@@ -379,6 +468,7 @@ impl Text {
     /// line) and tracked (`Setting`).
     pub fn measure_around(&mut self, s: &str, face: u8, size: f32, line: f32, max_width: Option<f32>, set: Setting<'_>) -> (f32, f32) {
         let Setting { around, track } = set;
+        self.note(face);
         let k = (s.to_owned(), face, size.to_bits(), line.to_bits(), max_width.unwrap_or(-1.0).to_bits(), around.map_or(0, Around::id), track.to_bits());
         if let Some(v) = self.measured.get(&k) { return *v; }
         if self.measured.len() > 4096 { self.measured.clear(); }
@@ -616,6 +706,11 @@ impl Text {
     /// The same, leaving out lines entirely outside `rows` (device px, top and bottom): what a clip
     /// hides is not even made into instances.
     pub fn emit_in(&mut self, p: Para<'_>, origin: (f32, f32), proto: Instance, scale: f32, rows: Option<(f32, f32)>, mut out: impl FnMut(Instance, u32)) {
+        self.emit_pens(p, origin, proto, scale, rows, |i, g, _| out(i, g))
+    }
+    /// The same, with where each glyph's pen is and its line (device px): `[x, baseline, line's start x,
+    /// line's width]` (a face arriving sweeps along its lines by them).
+    pub fn emit_pens(&mut self, p: Para<'_>, origin: (f32, f32), proto: Instance, scale: f32, rows: Option<(f32, f32)>, mut out: impl FnMut(Instance, u32, [f32; 4])) {
         let l = self.layout(p.s, p.face, p.size, p.line, Some(p.width), p.setting());
         let para_pixel = self.is_pixel(p.face);
         // A pixel face starts on a whole device pixel so its pixels land on the screen's.
@@ -629,6 +724,8 @@ impl Text {
                 if y1 + pad < top || y0 - pad > bottom { continue; }
             }
             let hyphen = Self::hyphenated(&p, ln.text_range().end);
+            let lm = ln.metrics();
+            let (lx, lw) = (ox + lm.offset * scale, (lm.advance * scale).max(1.0));
             let items: Vec<_> = ln.items().collect();
             let last_run = items.iter().rposition(|i| matches!(i, PositionedLayoutItem::GlyphRun(_)));
             for (ii, item) in items.into_iter().enumerate() {
@@ -670,7 +767,7 @@ impl Text {
                     inst.uv = [sl.x as f32 / a, sl.y as f32 / a, (sl.x + sl.w) as f32 / a, (sl.y + sl.h) as f32 / a];
                     inst.paint[3] = GLYPH;
                     inst.extra[1] = p.print;
-                    out(inst, g.id);
+                    out(inst, g.id, [gx, gy, lx, lw]);
                 }
             }
         }
