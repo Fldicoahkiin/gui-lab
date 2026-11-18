@@ -147,6 +147,9 @@ let _ = (stage, blurb, board);
   its bytes when they come (`Ui::add_face`); fetch what `Ui::faces_wanted()` lists. Text stands in meanwhile.
 - `Ui::clear_focus()` / `Cmd::ClearFocus` after a route change; `El::preview(true)` to show a sheet or menu in place.
 - Plates are for music videos, the lab and drawing boards, not ordinary pages; `Cmd::ClearPlate { key }` empties one.
+  Put text to read and controls beside a plate (its siblings), never inside it: `Ui::problems` reports `OnPlate`.
+- A clamped text copies what it shows, without the ellipsis; the accessibility tree has the whole text.
+- `Look::off.ground` turns the field's dots (the ground's own marks) off.
 
 ## Meshes, particles, presets
 
