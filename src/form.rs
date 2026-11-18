@@ -127,11 +127,23 @@ pub fn arrange(glyphs: &mut Vec<Posed>, fx: Option<&FormFx>, atlas: &[u8]) {
 /// glyphs' ink the clip cuts is not drawn at all.
 pub fn reveal_whole(glyphs: &mut [Posed], groups: &[Vec<crate::ui::Rect>], origin: (f32, f32), clip: [f32; 4]) {
     if groups.is_empty() { return; }
-    let of = |g: &Posed| {
-        let (x, y) = (g.at.0 + origin.0, g.at.1 + origin.1);
-        groups.iter().position(|bs| bs.iter().any(|r| r.inset(-0.5, -0.5, -0.5, -0.5).contains(x, y)))
+    let holds = |w: usize, x: f32, y: f32| groups[w].iter().any(|r| r.inset(-0.5, -0.5, -0.5, -0.5).contains(x, y));
+    // Every box by its top (a line's boxes share their top and height): a glyph is looked for among the
+    // boxes of the line it is on. Glyphs come in reading order, as the pieces do, so the last glyph's
+    // piece and the one after it are looked at first.
+    let mut boxes: Vec<(crate::ui::Rect, usize)> = groups.iter().enumerate().flat_map(|(w, bs)| bs.iter().map(move |r| (r.inset(-0.5, -0.5, -0.5, -0.5), w))).collect();
+    boxes.sort_by(|a, b| a.0.y.total_cmp(&b.0.y).then(a.1.cmp(&b.1)));
+    let on_line = |x: f32, y: f32| {
+        let end = boxes.partition_point(|(r, _)| r.y <= y);
+        boxes[..end].iter().rev().take_while(|(r, _)| r.y + r.h >= y).filter(|(r, _)| r.contains(x, y)).map(|&(_, w)| w).min()
     };
-    let which: Vec<Option<usize>> = glyphs.iter().map(of).collect();
+    let mut last = 0;
+    let which: Vec<Option<usize>> = glyphs.iter().map(|g| {
+        let (x, y) = (g.at.0 + origin.0, g.at.1 + origin.1);
+        let w = [last, last + 1].into_iter().filter(|&w| w < groups.len()).find(|&w| holds(w, x, y)).or_else(|| on_line(x, y));
+        if let Some(w) = w { last = w; }
+        w
+    }).collect();
     // Each piece's opacity is its faintest glyph's (relative to the text's own), so a word fades as one and
     // is gone as soon as any of it would be.
     let mut least = vec![(f32::INFINITY, false); groups.len()];
