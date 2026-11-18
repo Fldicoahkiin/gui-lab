@@ -3285,7 +3285,8 @@ impl<S, M: Clone> Ui<S, M> {
             let mut sink = Sink { scene: &mut self.scene, owners: &mut self.owners, tags: &mut self.tags, unseen: &mut self.unseen, counters: &mut counters, latest: &mut latest, loose: &mut any_loose };
             let nk = { use std::hash::{Hash, Hasher}; let mut h = std::hash::DefaultHasher::new(); n.key.hash(&mut h); h.finish() };
             let text_born = self.text_births.get(&nk).copied();
-            let drawn = matches!(n.content, Content::Canvas(_));
+            // A drawing's marks, and ink on a plate (`El::plate`: what is drawn is there at once).
+            let drawn = matches!(n.content, Content::Canvas(_)) || plate.is_some();
             // Under scribblr, text to read and controls hold where they are: the map's flow never carries
             // them (DESIGN.md §1.30).
             let in_place = n.legible && self.timing.material == crate::style::Material::Scribblr.id();

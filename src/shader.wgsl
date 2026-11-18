@@ -1221,8 +1221,9 @@ struct GOut { @builtin(position) pos: vec4f, @location(0) @interpolate(flat) op:
 // bits in rgb (a: drawn at all); laid on, a pixel older than 0.8 of the plate's fade thins out (pixel by
 // pixel), and at the fade it is gone. The slot comes in the vertex numbers (3 × slot), as a group's opacity does.
 @fragment fn fs_plate_age(iv: VOut) -> @location(0) vec4f {
-  let c = ink_of(exact_i(iv), false);
-  if (c.a <= 0.0) { discard; }
+  let i = exact_i(iv);
+  // Where its ink or its nearness reaches (the near image's spread round the outline ages with it).
+  if (ink_of(i, false).a <= 0.0 && near_of(i).r <= 0.0) { discard; }
   let t = u.plate.x;
   return vec4f(floor(t / 65536.0) / 255.0, (floor(t / 256.0) % 256.0) / 255.0, (t % 256.0) / 255.0, 1.0);
 }

@@ -268,3 +268,18 @@ fn what_is_on_a_plate_is_not_in_the_accessibility_tree() {
     let keys: Vec<String> = ui.a11y().into_iter().map(|n| n.key).collect();
     assert!(keys.iter().any(|k| k == "off") && !keys.iter().any(|k| k == "on" || k == "board"), "{keys:?}");
 }
+
+#[test]
+fn new_ink_on_a_plate_is_there_at_once_without_condensing() {
+    let Ok(mut o) = Offscreen::try_new(W, H) else { eprintln!("no GPU adapter here: skipped"); return };
+    for m in [Material::Plain, Material::Dottr] {
+        let mut ui = mk(s0(m));
+        frame(&mut o, &mut ui, 2.0);
+        set(&mut ui, |s| s.strokes = vec![(60.0, 60.0)]);
+        let first = frame(&mut o, &mut ui, 2.0 + 1.0 / 60.0);
+        // The same stroke long settled on the page from the start.
+        let mut settled = mk(S { strokes: vec![(60.0, 60.0)], ..s0(m) });
+        let rest = frame(&mut o, &mut settled, 9.0);
+        assert!(first == rest, "{m:?}: the stroke condensed ({:.4} differs)", diff(&first, &rest));
+    }
+}
