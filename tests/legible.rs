@@ -249,8 +249,9 @@ fn specks(f: &[u8], bare: &[u8], pick: &dyn Fn(usize) -> bool, paper: [u8; 3], i
 }
 
 /// What each material's edge round a label must not do (DESIGN.md §1.15): charr keeps no solid box past the
-/// island, halftonr draws no line of colour where its screens part and leaves no speck smaller than a dot, dottr leaves no seam of paper round the
-/// island, scribblr has no soft rim beyond it and glitchr copies no part of the label anywhere.
+/// island, halftonr draws no line of colour where its screens part and leaves no speck smaller than a dot,
+/// dottr leaves no seam of paper round the island, scribblr has no soft rim beyond it and glitchr copies no
+/// part of the label anywhere.
 #[test]
 fn the_edge_of_the_island_has_no_box_seam_rim_or_copy() {
     let Ok(mut o) = Offscreen::try_new(W, H) else { eprintln!("no GPU adapter here: skipped"); return };
