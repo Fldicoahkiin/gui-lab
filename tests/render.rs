@@ -239,3 +239,54 @@ fn zoom_scales_a_shift_with_every_other_length() {
         assert!(shot(&mut o, k, false) == shot(&mut o, k, true), "k {k}: zoomed and written by hand differ");
     }
 }
+
+/// A row that may wrap, of 3 to 12 texts and boxes with fractional widths and gaps, in a column as
+/// wide as its content (or `less` px narrower than that).
+mod wrapfit {
+    use amenui::el::{El, Paint, col, row, space, text};
+    pub struct S { pub seed: u64, pub zoom: f32, pub less: Option<f32> }
+    fn rnd(s: &mut u64) -> f32 { *s ^= *s << 13; *s ^= *s >> 7; *s ^= *s << 17; (*s % 10000) as f32 / 10000.0 }
+    pub fn line(seed: u64) -> El<()> {
+        let mut s = seed.wrapping_mul(2654435761).max(1);
+        let n = 3 + (rnd(&mut s) * 10.0) as usize;
+        let mut r = row().key("wrap").wrap().gap(3.0 + rnd(&mut s) * 9.0);
+        let words = ["Alpha", "beta", "Gamma", "delta", "iiii", "WWW", "x", "mm", "Tj", "dolly", "e"];
+        for i in 0..n {
+            r = r.child(if rnd(&mut s) < 0.3 { space(4.0 + rnd(&mut s) * 40.0, 10.0).fill(Paint::FAINT).key(format!("w{i}")) }
+                else { text(words[(rnd(&mut s) * 11.0) as usize % 11], 11.0 + rnd(&mut s) * 7.3, Paint::TEXT).tracking(rnd(&mut s) * 0.05).key(format!("w{i}")) });
+        }
+        r
+    }
+    pub fn view(s: &S) -> El<()> {
+        let mut c = col().key("box").child(line(s.seed));
+        if let Some(w) = s.less { c = c.width(w); }
+        col().key("page").fill_width().fill_height().align(taffy::AlignItems::START).child(c.zoom(s.zoom))
+    }
+}
+
+#[test]
+fn a_row_in_a_box_as_wide_as_its_content_stays_on_one_line() {
+    let lines = |ui: &amenui::ui::Ui<wrapfit::S, ()>| {
+        let mut ys: Vec<f32> = ui.nodes().iter().filter(|n| n.key.len() > 1 && n.key.starts_with('w') && n.key[1..].bytes().all(|c| c.is_ascii_digit())).map(|n| n.rect.y).collect();
+        ys.sort_by(f32::total_cmp);
+        ys.dedup_by(|a, b| (*a - *b).abs() < 1.0);
+        ys.len()
+    };
+    for seed in 0..200u64 {
+        for scale in [1.0f32, 1.25, 1.5, 2.0, 3.0] {
+            for zoom in [1.0f32, 0.75, 1.5] {
+                let mk = |less| { let mut ui = amenui::ui::Ui::new(wrapfit::S { seed, zoom, less }, wrapfit::view, |_, _| {}, fonts(), (2400.0 * scale) as u32, (300.0 * scale) as u32, scale); ui.tick(0.1); ui };
+                let ui = mk(None);
+                let (b, r) = (ui.node("box").unwrap().rect, ui.node("wrap").unwrap().rect);
+                let one = ui.node("w0").unwrap().rect.h.max(1.0);
+                assert_eq!(lines(&ui), 1, "seed {seed} scale {scale} zoom {zoom}: the row wraps in a box {b:?} as wide as it");
+                assert!(r.h <= b.h + 0.01 && r.h <= one.max(r.h), "seed {seed} scale {scale} zoom {zoom}: the row {r:?} is taller than its box {b:?}");
+                if scale == 1.0 && zoom == 1.0 {
+                    // One px narrower than the content: it wraps as it should.
+                    let ui = mk(Some(b.w - 1.0));
+                    assert_eq!(lines(&ui), 2, "seed {seed}: a box 1 px too narrow keeps the row on one line");
+                }
+            }
+        }
+    }
+}

@@ -1057,19 +1057,26 @@ pub fn space<M>(w: f32, h: f32) -> El<M> { El::new(Style { size: Size { width: l
 pub fn text<M>(s: impl Into<String>, size: f32, paint: Paint) -> El<M> {
     El::new(Style::default(), Content::Text { s: s.into(), size, line: (size * 1.6).round(), paint, font: Font::Body, print: 0.0, caret: None, weight: 0.0, around: None, select: None, mark: None, nowrap: false, pose: None, track: 0.0 })
 }
-/// Scale one taffy length by `k` (lengths only; percentages, auto and the rest stay).
-fn zoom_lp(v: LengthPercentage, k: f32) -> LengthPercentage { match v.expand() { taffy::style::ExpandedLengthPercentage::Length(x) => LengthPercentage::length(x * k), _ => v } }
-fn zoom_lpa(v: LengthPercentageAuto, k: f32) -> LengthPercentageAuto { match v.expand() { taffy::style::ExpandedLengthPercentageAuto::Length(x) => LengthPercentageAuto::length(x * k), _ => v } }
-fn zoom_dim(v: Dimension, k: f32) -> Dimension { match v.expand() { taffy::style::ExpandedDimension::Length(x) => Dimension::length(x * k), _ => v } }
-fn zoom_style(s: &mut Style, k: f32) {
-    s.size = Size { width: zoom_dim(s.size.width, k), height: zoom_dim(s.size.height, k) };
-    s.min_size = Size { width: zoom_lpa(s.min_size.width, k), height: zoom_lpa(s.min_size.height, k) };
-    s.max_size = Size { width: zoom_lpa(s.max_size.width, k), height: zoom_lpa(s.max_size.height, k) };
-    s.flex_basis = zoom_dim(s.flex_basis, k);
-    s.gap = Size { width: zoom_lp(s.gap.width, k), height: zoom_lp(s.gap.height, k) };
-    for r in [&mut s.padding, &mut s.border] { *r = Rect { left: zoom_lp(r.left, k), right: zoom_lp(r.right, k), top: zoom_lp(r.top, k), bottom: zoom_lp(r.bottom, k) }; }
-    for r in [&mut s.margin, &mut s.inset] { *r = Rect { left: zoom_lpa(r.left, k), right: zoom_lpa(r.right, k), top: zoom_lpa(r.top, k), bottom: zoom_lpa(r.bottom, k) }; }
+/// Map every length (not percentages, auto and the rest) of a taffy value through `f`.
+fn map_lp(v: LengthPercentage, f: impl Fn(f32) -> f32) -> LengthPercentage { match v.expand() { taffy::style::ExpandedLengthPercentage::Length(x) => LengthPercentage::length(f(x)), _ => v } }
+fn map_lpa(v: LengthPercentageAuto, f: impl Fn(f32) -> f32) -> LengthPercentageAuto { match v.expand() { taffy::style::ExpandedLengthPercentageAuto::Length(x) => LengthPercentageAuto::length(f(x)), _ => v } }
+fn map_dim(v: Dimension, f: impl Fn(f32) -> f32) -> Dimension { match v.expand() { taffy::style::ExpandedDimension::Length(x) => Dimension::length(f(x)), _ => v } }
+fn map_style(s: &mut Style, f: impl Fn(f32) -> f32 + Copy) {
+    s.size = Size { width: map_dim(s.size.width, f), height: map_dim(s.size.height, f) };
+    s.min_size = Size { width: map_lpa(s.min_size.width, f), height: map_lpa(s.min_size.height, f) };
+    s.max_size = Size { width: map_lpa(s.max_size.width, f), height: map_lpa(s.max_size.height, f) };
+    s.flex_basis = map_dim(s.flex_basis, f);
+    s.gap = Size { width: map_lp(s.gap.width, f), height: map_lp(s.gap.height, f) };
+    for r in [&mut s.padding, &mut s.border] { *r = Rect { left: map_lp(r.left, f), right: map_lp(r.right, f), top: map_lp(r.top, f), bottom: map_lp(r.bottom, f) }; }
+    for r in [&mut s.margin, &mut s.inset] { *r = Rect { left: map_lpa(r.left, f), right: map_lpa(r.right, f), top: map_lpa(r.top, f), bottom: map_lpa(r.bottom, f) }; }
 }
+fn zoom_style(s: &mut Style, k: f32) { map_style(s, |x| x * k); }
+/// The step every length is laid out on (logical px): a binary fraction, so lengths that are sums of
+/// others (a box measured from its content, a row deciding whether its children fit) come out the same
+/// whichever order they are added in, and a row as wide as its content is one line.
+pub const LAYOUT_STEP: f32 = 1.0 / 64.0;
+/// Put every length of a style on `LAYOUT_STEP` (the layout does this to every element).
+pub fn snap_style(s: &mut Style) { map_style(s, |x| (x / LAYOUT_STEP).round() * LAYOUT_STEP); }
 impl<M> El<M> {
     /// Every length in this subtree times `k`: sizes, gaps, padding, margins, insets, corner radii,
     /// borders (never thinner than a hairline), type, `shift`, a print lattice's pitch, `Around`'s
