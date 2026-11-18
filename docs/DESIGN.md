@@ -1235,20 +1235,40 @@ raised by a bump of `flow_loose × sin(π e)`, loosest in mid-flight and sharp o
 drawn on a layer above the page (pictures and shapes first, then text), so they never pass beneath other
 things and are never taken for a picture below. Interpolation is on the CPU: the runtime keeps each
 instance as laid out and, each frame (`tick`), edits a copy by the flow and morph ramps; nothing is done
-without animation. Unpaired instances of the old page stay in the scene, loosening to 1 and fading out
-within `out_ms`; new instances of the new page condense as usual.
+without animation. A flier's clip goes from its old clip to its new one in step with its rect, so what was
+inside its clip at both ends is inside it all the way. Unpaired instances of the old page stay in the scene,
+loosening to 1 and fading out within `out_ms`; new instances of the new page fade in over `fade_ms`.
+
+A subtree with a picture on both pages grows instead (an index's window into its piece, and back): its first
+picture on each page are paired whatever their places in the subtrees, and the picture is drawn as one, its
+box going from the old one to the new one and shown only inside the part of it that shows, which goes from
+the old one's (the window) to the new one's (the full view); both on whole pixels every frame, on the layer
+above the page. Nothing else of the subtree is paired, since the two pages lay out different things over the
+picture: the rest of the old subtree (notes, boxes, labels) rides with the picture at its own size and colour,
+its centre where the picture takes it, inside the part that shows, without loosening, and fades over
+`out_ms`; the rest of the new subtree, and everything new outside the flows, comes in over `fade_ms` once the
+picture has landed. Until then the look's ground is the old page's (`Ui::look`), so around the picture is the
+page it came from, and the new page's ground comes in under a picture that covers it. Text that flows with it
+(a title) is paired as above and drawn over the picture; neighbouring windows are old instances that dissolve
+under it.
 
 On the website: on a page change, the page title (`page-title`) and the side rail's selection background
 (`rail-selection`) flow, the selection sliding from the old item to the new one; on the page-change page,
 the cards' pictures and titles flow into the detail view. Parameters (`FlowSpec`): `flow_ms` 420,
-`flow_loose` 0.25, `out_ms` 180.
+`flow_loose` 0.25, `out_ms` 180. The works index into a piece: `flow_ms` 420, `flow_loose` 0, `out_ms` 180,
+`fade_ms` 180.
 
 **Acceptance.** `cargo test`: pairing (every cell used, the pair count, deterministic, non-crossing), the
 easing's ends, exact landing, reversing starts from current progress and returns to the start, and the
 count limit enlarges cells by whole multiples; the runtime's phase times (half loosened, before and after
 the hand-off, the target appears at looseness 1 without condensing, the end), reversing in flight and while
 loosening; flow rects at t = 0 / ½ / 1, kept birth times, unpaired instances dissolving, a straight swap
-without a flow command; the commands of two website pages. `check`: the hand-off frame (source at looseness 1
+without a flow command; the commands of two website pages; `tests/flow.rs` (an index window growing into
+its piece at 420 ms: at 40, 80, 200 and 350 ms one picture in one rect on whole pixels where the ease puts it
+between the window and the full view, its birth time kept, the index's ground around it, every other
+instance drawn at a size and colour one of the pages draws and not loosened over the picture, the title's
+glyphs once each, over the picture and inside their clips; landed, the piece as at rest on its own ground;
+and back, the piece's ground around it until it is in its window). `check`: the hand-off frame (source at looseness 1
 against particles at t = 0) and the landing frame (particles at t = 1 against the target at looseness 1),
 under `plain` and `dottr`, differ by ≤ 2/255 per pixel within the elements' bounds (in fact 0); in the light
 theme mid-flight there are particles outside both elements (with a control). `film` gives samples for every

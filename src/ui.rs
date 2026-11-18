@@ -289,9 +289,40 @@ struct FlowRec {
     src: Option<Instance>,
     /// Comes in over these times (s) where it is, its alpha from 0.
     fade_in: Option<[f32; 2]>,
+    /// The picture of a flow subtree that grows (`Ui::grows`): drawn in the box the grow has then, and
+    /// only inside the part of it that shows.
+    grow: Option<usize>,
 }
-/// An instance of the old page that has no place on the new one: it loosens (`loosen`) and fades.
-struct Ghost { inst: Instance, start: f32, dur: f32, loosen: bool }
+/// An instance of the old page that has no place on the new one: it loosens (`loosen`) and fades; one
+/// of a subtree whose picture grows (`ride`) rides with the picture at its own size instead.
+struct Ghost { inst: Instance, start: f32, dur: f32, loosen: bool, ride: Option<usize> }
+/// A look's ground and second ground.
+type Grounds = ([f32; 3], [f32; 3]);
+/// A flow subtree's picture on its way (`Cmd::Flow`): its box (x, y, w, h) and the part of it that shows
+/// (x0, y0, x1, y1), old and new, device px. In between both go in a straight line, whole pixels; what
+/// else of the subtree is old rides with the picture at its own size and fades, what is new waits until
+/// it lands.
+struct Grow { p0: [f32; 4], p1: [f32; 4], r0: [f32; 4], r1: [f32; 4], start: f32, dur: f32 }
+impl Grow {
+    fn ease(&self, now: f32) -> f32 { Ease::InOutCubic.at(((now - self.start) / self.dur.max(1e-4)).clamp(0.0, 1.0)) }
+    /// The picture's box at `e` of the way, its edges on whole pixels.
+    fn picture(&self, e: f32) -> [f32; 4] {
+        let p: [f32; 4] = std::array::from_fn(|k| self.p0[k] + (self.p1[k] - self.p0[k]) * e);
+        let (x0, y0, x1, y1) = (p[0].round(), p[1].round(), (p[0] + p[2]).round(), (p[1] + p[3]).round());
+        [x0, y0, x1 - x0, y1 - y0]
+    }
+    /// The part that shows at `e` of the way, on whole pixels.
+    fn shows(&self, e: f32) -> [f32; 4] { std::array::from_fn(|k| (self.r0[k] + (self.r1[k] - self.r0[k]) * e).round()) }
+    /// Where a rect of the old subtree is at `e` of the way: its centre where the picture takes it, its
+    /// size its own.
+    fn ride(&self, r: [f32; 4], e: f32) -> [f32; 4] {
+        let p = self.picture(e);
+        let (cx, cy) = (r[0] + r[2] * 0.5, r[1] + r[3] * 0.5);
+        let (u, v) = ((cx - self.p0[0]) / self.p0[2].max(1e-3), (cy - self.p0[1]) / self.p0[3].max(1e-3));
+        let (nx, ny) = (p[0] + u * p[2], p[1] + v * p[3]);
+        [r[0] + nx - cx, r[1] + ny - cy, r[2], r[3]]
+    }
+}
 /// A page instance as it was drawn, kept across a relayout for `Cmd::Flow`.
 struct Old { id: u64, tag: Option<Tag>, inst: Instance }
 
@@ -464,6 +495,12 @@ pub struct Ui<S, M> {
     painted_phase: u8,
     flows: HashMap<u64, FlowRec>,
     ghosts: Vec<Ghost>,
+    /// The pictures of flow subtrees on their way (`Grow`), for `flows` and `ghosts` to point at.
+    grows: Vec<Grow>,
+    /// The ground of the look as last ticked, and the old page's ground held while a picture grows over
+    /// the page (until then the old page's ground is around it).
+    ground_seen: Option<Grounds>,
+    ground_hold: Option<(Grounds, f32)>,
     /// Page instances plus ghosts: where the marks start.
     body_len: usize,
     animating: bool,
@@ -948,7 +985,7 @@ impl<S, M: Clone> Ui<S, M> {
             owners: vec![], page_len: 0, field: Field::default(), scroll: HashMap::new(), births: HashMap::new(), ramp: None, text_births: HashMap::new(),
             hover: None, focus: None, after_focus: None, fit_short: vec![], fit_k: HashMap::new(), pressed: None, capture: None, modal_at: None, modal_key: None, return_focus: None, split: None, splits: 0,
             keyboard: false, marks: Marks::default(), sized: None, commands: None, unseen: vec![], base: vec![], tags: vec![], roles: vec![],
-            run: None, painted_phase: 0, flows: HashMap::new(), ghosts: vec![], body_len: 0, animating: false, lifted: HashMap::new(),
+            run: None, painted_phase: 0, flows: HashMap::new(), ghosts: vec![], grows: vec![], ground_seen: None, ground_hold: None, body_len: 0, animating: false, lifted: HashMap::new(),
             gaze_of: None, gaze_seen: HashMap::new(), annots: vec![], readout: gaze::Readout::default(), hovered: None, pointer_of: None, scripted: false, ticked: None, warm: None, warmed: None, owed: false, ambient: 60.0, input_t: -1e9, frame_t: -1e9, unused_key: None, shortcut: None, scrolled_of: None, released: None, input: None,
             dirty: true, look_of: None, locale_of: None, timing: Timing::default(), wake_of: None, latest_birth: f32::NEG_INFINITY, gaze_until: f32::NEG_INFINITY,
             marks_moving: false, caret: None, caret_on: true, static_loose: false, mclock: 0.0, moving: false, gclock: 0.0, ground_moving: false,
@@ -1157,6 +1194,8 @@ impl<S, M: Clone> Ui<S, M> {
     /// The look the state asks for (`on_look`), or the default one.
     pub fn look(&self) -> Look {
         let mut l = self.look_of.map_or_else(Look::default, |f| f(&self.state));
+        // While a picture grows over the page, the old page's ground is around it.
+        if let Some((g, until)) = self.ground_hold && self.clock < until { (l.theme.ground, l.theme.ground2) = g; }
         // Names were checked when they were set.
         for (n, v) in &self.sets { let _ = l.set(n, *v); }
         // What is turned off (DESIGN.md §1.34) is turned off in the look the renderer draws with.
@@ -1621,7 +1660,7 @@ impl<S, M: Clone> Ui<S, M> {
         if self.moving && !self.timing.off.material_still { self.mclock += dt; }
         if self.ground_moving && !self.timing.off.material_still { self.gclock += dt; }
         self.clock = t;
-        if self.look_of.is_some() { self.timing = Timing::of(&self.look()); }
+        if self.look_of.is_some() { let l = self.look(); self.timing = Timing::of(&l); self.ground_seen = Some((l.theme.ground, l.theme.ground2)); }
         self.cut_what_is_off();
         self.ramp_births();
         // What the state's tick changed is laid out: once, before the frame is drawn, when input is
@@ -1664,6 +1703,7 @@ impl<S, M: Clone> Ui<S, M> {
         };
         // (A flight is over at its end, to within a tenth of a millisecond of the clock's steps.)
         self.flows.retain(|_, f| t < f.start + f.dur - 1e-4);
+        if self.flows.is_empty() && self.ghosts.iter().all(|g| g.ride.is_none()) { self.grows.clear(); }
         self.recomps.retain(|_, r| t < r.end);
         self.slides.retain(|_, sl| t < sl.start + sl.dur);
         let scrolled = self.step_scrolling(dt);
@@ -4539,7 +4579,13 @@ impl<S, M: Clone> Ui<S, M> {
                         _ => {}
                     }
                 }
-                if let Some(f) = self.flows.get(&id) {
+                if let Some(f) = self.flows.get(&id) && let Some(g) = f.grow.and_then(|g| self.grows.get(g)) {
+                    // A growing picture: in its box on whole pixels, only the part that shows.
+                    let e = g.ease(now);
+                    inst.rect = g.picture(e);
+                    inst.clip = g.shows(e);
+                    if now < g.start + g.dur && self.scene.layer.is_none() { lifted.push((i, inst)); inst.rect = [0.0; 4]; }
+                } else if let Some(f) = self.flows.get(&id) {
                     let p = ((now - f.start) / f.dur.max(1e-4)).clamp(0.0, 1.0);
                     // A glyph flying from the last frame eases in and out on a sine, which leaves its
                     // ends sooner than the cubic.
@@ -4579,7 +4625,8 @@ impl<S, M: Clone> Ui<S, M> {
                         if !plain { inst.extra[2] = inst.extra[2].max(0.6 * (std::f32::consts::PI * e).sin()); }
                     }
                     if let Some([a, b]) = f.fade_in { inst.paint[2] *= ((now - a) / (b - a).max(1e-4)).clamp(0.0, 1.0); }
-                    if p < 1.0 && !still { inst.clip = [f.clip[0].min(inst.clip[0]), f.clip[1].min(inst.clip[1]), f.clip[2].max(inst.clip[2]), f.clip[3].max(inst.clip[3])]; }
+                    // Its clip goes from the old one to the new: what was inside both is inside all the way.
+                    if p < 1.0 && !still { for k in 0..4 { inst.clip[k] = f.clip[k] + (inst.clip[k] - f.clip[k]) * e; } }
                     inst.extra[2] = inst.extra[2].max(f.loose * (std::f32::consts::PI * e).sin());
                     if p < 1.0 && self.scene.layer.is_none() { lifted.push((i, inst)); inst.rect = [0.0; 4]; }
                 }
@@ -4598,12 +4645,20 @@ impl<S, M: Clone> Ui<S, M> {
         if let Some((i, _, _)) = self.caret && i < self.page_len { self.scene.instances[i].paint[2] = if self.caret_on { self.base[i].paint[2] } else { 0.0 }; }
         self.ghosts.retain(|g| now < g.start + g.dur - 1e-4);
         // An old page's 3D elements are not kept: their meshes went with that page's scene.
+        let mut riding = vec![];
         for g in self.ghosts.iter().filter(|g| g.inst.paint[3] != MESH) {
             let p = ((now - g.start) / g.dur.max(1e-4)).clamp(0.0, 1.0);
             let mut inst = g.inst;
             // Less motion: it only fades.
             if g.loosen && !self.fmap.reduced { inst.extra[2] = inst.extra[2].max(p); }
             inst.paint[2] *= 1.0 - p;
+            // Riding with a growing picture, over it, inside the part of it that shows.
+            if let Some(gr) = g.ride.and_then(|r| self.grows.get(r)) {
+                let e = gr.ease(now);
+                inst.rect = gr.ride(inst.rect, e);
+                inst.clip = gr.shows(e);
+                if self.scene.layer.is_none() { riding.push(inst); continue; }
+            }
             self.scene.push(inst);
         }
         for r in self.recomps.values() {
@@ -4615,8 +4670,9 @@ impl<S, M: Clone> Ui<S, M> {
         lifted.sort_by_key(|(_, inst)| std::cmp::Reverse(inst.paint[3] as u32));
         // In a layer of their own (only when there is no modal layer): where they have ink they replace
         // what is beneath in the near image, so a title flying over a picture is drawn as text.
-        if !lifted.is_empty() { self.scene.begin_layer(); }
+        if !lifted.is_empty() || !riding.is_empty() { self.scene.begin_layer(); }
         for (i, inst) in lifted { self.lifted.insert(i, self.scene.instances.len()); self.scene.push(inst); }
+        for inst in riding { self.scene.push(inst); }
         self.body_len = self.scene.instances.len();
     }
 
@@ -4726,16 +4782,16 @@ impl<S, M: Clone> Ui<S, M> {
             let i = dg[k];
             let id = self.owners[i].1;
             let order = if front_first { n - 1 - k } else { k };
-            self.flows.insert(id, FlowRec { from: sg[k].rect, clip: sg[k].clip, start: now + per * order as f32, dur: travel, loose: 0.0, src: Some(sg[k]), fade_in: None });
+            self.flows.insert(id, FlowRec { from: sg[k].rect, clip: sg[k].clip, start: now + per * order as f32, dur: travel, loose: 0.0, src: Some(sg[k]), fade_in: None, grow: None });
             // It is the old glyph come over: born when that was.
             self.births.insert(id, sg[k].extra[3]);
             self.base[i].extra[3] = sg[k].extra[3];
         }
         let (out, inn) = if reduced { (dur, [now, now + dur]) } else { (0.3 * dur, [now + 0.7 * dur, now + dur]) };
-        for inst in sg[n..].iter().chain(&so) { self.ghosts.push(Ghost { inst: *inst, start: now, dur: out, loosen: false }); }
+        for inst in sg[n..].iter().chain(&so) { self.ghosts.push(Ghost { inst: *inst, start: now, dur: out, loosen: false, ride: None }); }
         for &i in dg[n..].iter().chain(&d_other) {
             let id = self.owners[i].1;
-            self.flows.insert(id, FlowRec { from: self.base[i].rect, clip: self.base[i].clip, start: now, dur, loose: 0.0, src: None, fade_in: Some(inn) });
+            self.flows.insert(id, FlowRec { from: self.base[i].rect, clip: self.base[i].clip, start: now, dur, loose: 0.0, src: None, fade_in: Some(inn), grow: None });
             // It fades in, and does not come in as a new element too.
             self.births.insert(id, -1e4);
             self.base[i].extra[3] = -1e4;
@@ -4856,36 +4912,71 @@ impl<S, M: Clone> Ui<S, M> {
     }
 
     /// After a relayout for a new page: instances of a flow subtree that left one place and appeared in
-    /// another fly between them and keep their birth time; what is gone dissolves.
+    /// another fly between them and keep their birth time; what is gone dissolves. A subtree with a
+    /// picture on both pages grows (`Grow`): its first picture goes from the old box to the new one, shown
+    /// only within the part that shows going from the old one's to the new one's; the rest of the old
+    /// subtree rides with it at its own size and fades, the rest of the new one and everything new
+    /// outside the flows comes in once it has landed, and the old page's ground stays around it.
     fn flow_from(&mut self, old: Vec<Old>, spec: FlowSpec) {
         let now = self.clock;
+        let flight = spec.flow_ms / 1000.0;
         let new_ids: HashSet<u64> = self.owners.iter().map(|o| o.1).collect();
         let old_ids: HashSet<u64> = old.iter().map(|o| o.id).collect();
-        // With no flight (`flow_ms` 0) nothing is shared: the old page fades out and the new in.
-        let by_tag: HashMap<&Tag, usize> = if spec.flow_ms <= 0.0 { HashMap::new() } else { old.iter().enumerate().filter(|(_, o)| !new_ids.contains(&o.id)).filter_map(|(k, o)| o.tag.as_ref().map(|t| (t, k))).collect() };
         let mut used = vec![false; old.len()];
+        let shows = |r: [f32; 4], c: [f32; 4]| [r[0].max(c[0]), r[1].max(c[1]), (r[0] + r[2]).min(c[2]), (r[1] + r[3]).min(c[3])];
+        // The growing subtrees: by flow, the first picture of each on the old page and on the new.
+        let mut grow_of: HashMap<Rc<str>, usize> = HashMap::new();
+        if flight > 0.0 {
+            let mut first_old: HashMap<Rc<str>, usize> = HashMap::new();
+            for (k, o) in old.iter().enumerate() {
+                if let Some(t) = &o.tag && o.inst.paint[3] == PICTURE && !new_ids.contains(&o.id) { first_old.entry(t.flow.clone()).or_insert(k); }
+            }
+            for i in 0..self.page_len {
+                let id = self.owners[i].1;
+                let Some(t) = self.tags[i].clone() else { continue };
+                if self.base[i].paint[3] != PICTURE || old_ids.contains(&id) || grow_of.contains_key(&t.flow) { continue; }
+                let Some(&k) = first_old.get(&t.flow) else { continue };
+                let (o, n) = (old[k].inst, self.base[i]);
+                let g = self.grows.len();
+                self.grows.push(Grow { p0: o.rect, p1: n.rect, r0: shows(o.rect, o.clip), r1: shows(n.rect, n.clip), start: now, dur: flight });
+                grow_of.insert(t.flow.clone(), g);
+                used[k] = true;
+                self.flows.insert(id, FlowRec { from: o.rect, clip: o.clip, start: now, dur: flight, loose: 0.0, src: None, fade_in: None, grow: Some(g) });
+                self.births.insert(id, o.extra[3]);
+                self.base[i].extra[3] = o.extra[3];
+            }
+        }
+        let grows = |t: &Option<Tag>| t.as_ref().is_some_and(|t| grow_of.contains_key(&t.flow));
+        // With no flight (`flow_ms` 0) nothing is shared: the old page fades out and the new in.
+        let by_tag: HashMap<&Tag, usize> = if flight <= 0.0 { HashMap::new() } else { old.iter().enumerate().filter(|(k, o)| !used[*k] && !new_ids.contains(&o.id) && !grows(&o.tag)).filter_map(|(k, o)| o.tag.as_ref().map(|t| (t, k))).collect() };
         for i in 0..self.page_len {
             let id = self.owners[i].1;
-            if old_ids.contains(&id) { continue; }
+            if old_ids.contains(&id) || self.flows.contains_key(&id) || grows(&self.tags[i]) { continue; }
             let Some(&k) = self.tags[i].as_ref().and_then(|t| by_tag.get(t)) else { continue };
             if used[k] { continue; }
             used[k] = true;
             let o = &old[k];
-            self.flows.insert(id, FlowRec { from: o.inst.rect, clip: o.inst.clip, start: now, dur: spec.flow_ms / 1000.0, loose: spec.flow_loose, src: None, fade_in: None });
+            self.flows.insert(id, FlowRec { from: o.inst.rect, clip: o.inst.clip, start: now, dur: flight, loose: spec.flow_loose, src: None, fade_in: None, grow: None });
             self.births.insert(id, o.inst.extra[3]);
             self.base[i].extra[3] = o.inst.extra[3];
         }
         // What is new on the page fades in over `fade_ms` as the old fades out, with or without less
-        // motion: it is never drawn whole over the old page from the first frame.
+        // motion: it is never drawn whole over the old page from the first frame. While a picture grows,
+        // it comes in once the picture has landed.
         let fade = (spec.fade_ms / 1000.0).max(1e-3);
+        let wait = if grow_of.is_empty() { 0.0 } else { flight };
         for i in 0..self.page_len {
             let id = self.owners[i].1;
             if old_ids.contains(&id) || self.flows.contains_key(&id) { continue; }
-            self.flows.insert(id, FlowRec { from: self.base[i].rect, clip: self.base[i].clip, start: now, dur: fade, loose: 0.0, src: None, fade_in: Some([now, now + fade]) });
+            self.flows.insert(id, FlowRec { from: self.base[i].rect, clip: self.base[i].clip, start: now, dur: wait + fade, loose: 0.0, src: None, fade_in: Some([now + wait, now + wait + fade]), grow: None });
         }
+        let out = if self.fmap.reduced { self.fade_s } else { spec.out_ms / 1000.0 };
         for (k, o) in old.iter().enumerate() {
-            if !used[k] && !new_ids.contains(&o.id) && spec.out_ms > 0.0 { self.ghosts.push(Ghost { inst: o.inst, start: now, dur: if self.fmap.reduced { self.fade_s } else { spec.out_ms / 1000.0 }, loosen: true }); }
+            if used[k] || new_ids.contains(&o.id) || spec.out_ms <= 0.0 { continue; }
+            let ride = o.tag.as_ref().and_then(|t| grow_of.get(&t.flow)).copied();
+            self.ghosts.push(Ghost { inst: o.inst, start: now, dur: out, loosen: ride.is_none(), ride });
         }
+        if !grow_of.is_empty() && let Some(g) = self.ground_seen { self.ground_hold = Some((g, now + flight)); }
         self.animating = true;
         self.finish();
     }

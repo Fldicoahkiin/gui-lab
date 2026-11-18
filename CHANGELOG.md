@@ -25,6 +25,11 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
   calls from `requestIdleCallback`): a page that draws nothing after its first frame is still warm soon, and its
   pieces no longer land in the frames of the next input. A warm-up step no longer asks for a frame of its own.
   A page shell of its own calls `warm_idle` the same way.
+- `Cmd::Flow` grows a subtree with a picture on both pages: the picture is one, in a box and a visible part
+  that go from the old to the new on whole pixels; the rest of the old subtree rides with it at its own size
+  and fades, the rest of the new one and what is new outside the flows comes in once it has landed, and the
+  old page's ground stays around it until then (DESIGN.md §1.10). A flier's clip goes from the old to the
+  new one instead of covering both.
 - `Ui::ambient_fps(n)`: frames for what moves by itself at most `n` a second; input and what it starts are not
   paced until a second after the last input.
 
