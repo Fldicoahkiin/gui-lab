@@ -219,6 +219,9 @@ pub struct Raster {
     pub descent: f32,
 }
 
+/// A ramp cut into cells (`Text::ramp`): face, characters, size (bits), cell width and height.
+type RampKey = (u8, String, u32, u32, u32);
+
 /// The text system: the registered faces, shaping and line breaking (parley), the layout cache, and
 /// the glyph atlas the renderer uploads.
 pub struct Text {
@@ -233,7 +236,7 @@ pub struct Text {
     scale: f32,
     slots: HashMap<(u64, u32, u32, u8), Option<Slot>>,
     /// Character ramps cut into cells (`ramp`): where each strip is in the atlas.
-    ramps: HashMap<(u8, String, u32, u32, u32), Option<(u32, u32)>>,
+    ramps: HashMap<RampKey, Option<(u32, u32)>>,
     /// A glyph did not fit: the atlas is full (`Text::refill`).
     full: bool,
     /// Layout asks for the same paragraph at the same width many times; keyed by text, face, size bits,
