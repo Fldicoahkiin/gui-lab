@@ -88,10 +88,26 @@ pub struct Scene {
     /// outline it holds the looseness beneath to the legibility cap, `r0` fully and fading out by `r1`
     /// (device px; DESIGN.md §1.15).
     pub holds: Vec<(u32, [f32; 2])>,
+    /// The plates drawn this frame (`El::plate`, DESIGN.md §1.31), in order, never overlapping.
+    pub plates: Vec<PlateSpan>,
+    /// Plate slots emptied before this frame is drawn (`Cmd::ClearPlate`, a plate gone, a new size).
+    pub plate_clear: Vec<u8>,
+    /// The serial of `plate_clear`: a renderer empties the slots once for each serial it sees.
+    pub plate_serial: u64,
+    /// The plate clock, s: it stops while a `Hold` lasts and never runs back.
+    pub plate_now: f32,
+    /// Some plate's ink is ageing (`Plate::fade_s`): every plate is drawn again whole.
+    pub plate_ageing: bool,
 }
 
+/// How many plates a window keeps at most.
+pub const PLATES: usize = 4;
+/// A plate's instances this frame (`start..end`), its slot, and how long its ink lasts (s; 0: for good).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlateSpan { pub slot: u8, pub start: u32, pub end: u32, pub fade_s: f32 }
+
 impl Scene {
-    pub fn clear(&mut self) { self.instances.clear(); self.batches.clear(); self.layer = None; self.annot.clear(); self.meshes.clear(); self.groups.clear(); self.holds.clear(); }
+    pub fn clear(&mut self) { self.instances.clear(); self.batches.clear(); self.layer = None; self.annot.clear(); self.meshes.clear(); self.groups.clear(); self.holds.clear(); self.plates.clear(); }
     /// Everything pushed from now on is in the modal layer.
     pub fn begin_layer(&mut self) { self.layer = Some(self.instances.len() as u32); }
     pub fn push(&mut self, i: Instance) {
@@ -113,6 +129,9 @@ impl Scene {
         if let Some(b) = self.batches.last_mut() { b.end = b.end.min(n as u32); }
         self.groups.retain(|g| (g.start as usize) < n);
         self.holds.retain(|h| (h.0 as usize) < n);
+        // An empty plate still lays on what it keeps.
+        self.plates.retain(|p| (p.start as usize) <= n);
+        for p in &mut self.plates { p.end = p.end.min(n as u32); }
         if let Some(g) = self.groups.last_mut() { g.end = g.end.min(n as u32); }
     }
 }

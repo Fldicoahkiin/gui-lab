@@ -215,6 +215,12 @@ pub enum ViewProblem {
         /// The container's key.
         container: String,
     },
+    #[error("`{key}` is a plate (`El::plate`) beyond the window's four, or beyond twice the window's area for all plates together: it is drawn as a plain element and keeps nothing. Use fewer or smaller plates.")]
+    /// A plate beyond what a window keeps.
+    PlateOver {
+        /// The element.
+        key: String,
+    },
     #[error("`{key}` fits its subtree into its box, but it would need a scale of {need:.2} and the least is {min:.2}: it is drawn at {min:.2} and clipped. Make the box larger, the subtree smaller, or `Fit::min` lower.")]
     /// A box marked `El::fit` cannot hold its subtree at the least scale.
     FitShort {

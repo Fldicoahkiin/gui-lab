@@ -48,6 +48,8 @@ struct U {
   pal: array<vec4f, 16>, // the palette, sRGB 0–1
   fmap: vec4f,     // the field map (DESIGN.md §1.29): cell (device px), drift (device px), nodes across, down (0: all zero, not read)
   sbox: vec4f,     // a commit's scope (El::commit_scope): x0, y0, x1, y1 device px; outside it the old frame stays (x1 <= x0: none)
+  plate: vec4f,    // x: the plate clock in ticks (render.rs PLATE_TICK)
+  plates: array<vec4f, 4>, // each plate slot: x its fade in ticks (0: kept for good)
 };
 @group(0) @binding(0) var<uniform> u: U;
 @group(0) @binding(1) var samp: sampler;
@@ -1214,6 +1216,35 @@ struct GOut { @builtin(position) pos: vec4f, @location(0) @interpolate(flat) op:
   return o;
 }
 @fragment fn fs_group(i: GOut) -> @location(0) vec4f { return textureLoad(tex0, vec2i(floor(i.pos.xy)), 0) * i.op; }
+
+// ── Plates (DESIGN.md §1.31): ink that stays. Each pixel keeps when it was last drawn, in ticks, as 24
+// bits in rgb (a: drawn at all); laid on, a pixel older than 0.8 of the plate's fade thins out (pixel by
+// pixel), and at the fade it is gone. The slot comes in the vertex numbers (3 × slot), as a group's opacity does.
+@fragment fn fs_plate_age(iv: VOut) -> @location(0) vec4f {
+  let c = ink_of(exact_i(iv), false);
+  if (c.a <= 0.0) { discard; }
+  let t = u.plate.x;
+  return vec4f(floor(t / 65536.0) / 255.0, (floor(t / 256.0) % 256.0) / 255.0, (t % 256.0) / 255.0, 1.0);
+}
+fn plate_keep(slot: u32, p: vec2i) -> f32 {
+  let fade = u.plates[slot].x;
+  if (fade <= 0.0) { return 1.0; }
+  let a = textureLoad(hold, p, 0);
+  let drawn = round(a.r * 255.0) * 65536.0 + round(a.g * 255.0) * 256.0 + round(a.b * 255.0);
+  let age = max(u.plate.x - drawn, 0.0) / fade;
+  // Thinning out pixel by pixel, each at its own fixed moment, so the ink only ever lessens and the
+  // near image keeps its codes (its nearness is a distance, which a fade would move).
+  let h = fract(52.9829189 * fract(dot(vec2f(p), vec2f(0.06711056, 0.00583715))));
+  return select(0.0, 1.0, 1.0 - smoothstep(0.8, 1.0, age) > h);
+}
+@fragment fn fs_plate_ink(i: GOut) -> @location(0) vec4f {
+  let p = vec2i(floor(i.pos.xy));
+  return textureLoad(tex0, p, 0) * plate_keep(u32(round(i.op * 1000.0)), p);
+}
+@fragment fn fs_plate_near(i: GOut) -> @location(0) vec4f {
+  let p = vec2i(floor(i.pos.xy));
+  return textureLoad(tex1, p, 0) * plate_keep(u32(round(i.op * 1000.0)), p);
+}
 
 // ── The finishing pass (DESIGN.md §1.21): the kept frame on its way to the screen. In this order:
 // bloom → chromatic offset → scanlines → grain → vignette → curvature, then dither and the palette,

@@ -172,6 +172,8 @@ pub struct Node<M> {
     pub clamp: u16,
     /// What a clamped text element shows when it is cut: its start and the ellipsis.
     pub shown: Option<String>,
+    /// What its subtree draws stays (`El::plate`).
+    pub plate: Option<crate::el::Plate>,
     /// The box layout gave it, relative to its parent (scrolling does not change it).
     local: taffy::Layout,
     tid: NodeId,
@@ -539,6 +541,14 @@ pub struct Ui<S, M> {
     sweeping: bool,
     /// Faces changed: the next layout measures every text again.
     remeasure: bool,
+    /// The plates (DESIGN.md §1.31): each slot's element, when its ink was last drawn and how long it
+    /// lasts (plate clock); slots to empty before the next frame; plates over the limit; the plate clock
+    /// (it stops while a `Hold` lasts) and when a frame was last drawn for aging.
+    plate_slots: [Option<(String, f32, f32)>; crate::scene::PLATES],
+    plate_clear: Vec<u8>,
+    plate_over: Vec<String>,
+    pclock: f32,
+    plate_frame: f32,
     /// Resources the host added (`add_asset`), and the names asked for that are not there.
     assets: HashMap<String, Vec<u8>>,
     assets_asked: std::cell::RefCell<std::collections::BTreeSet<String>>,
@@ -909,7 +919,7 @@ impl<S, M: Clone> Ui<S, M> {
             gaze_of: None, gaze_seen: HashMap::new(), annots: vec![], readout: gaze::Readout::default(), hovered: None, pointer_of: None, scripted: false, ticked: None, warm: None, warmed: None, owed: false, unused_key: None, shortcut: None, scrolled_of: None, released: None, input: None,
             dirty: true, look_of: None, locale_of: None, timing: Timing::default(), wake_of: None, latest_birth: f32::NEG_INFINITY, gaze_until: f32::NEG_INFINITY,
             marks_moving: false, caret: None, caret_on: true, static_loose: false, mclock: 0.0, moving: false, gclock: 0.0, ground_moving: false,
-            perf: crate::perf::Perf { quality: 1.0, ..Default::default() }, span: 0, painting: false, overlay: 0, overlay_at: 0.0, overlay_box: None, fade_s: REDUCED_FADE, came: vec![], arriving: HashMap::new(), sweeping: false, remeasure: false, assets: HashMap::new(), assets_asked: Default::default(), shape_seen: 0.0, hud_idle: false, rebuilt: 0,
+            perf: crate::perf::Perf { quality: 1.0, ..Default::default() }, span: 0, painting: false, overlay: 0, overlay_at: 0.0, overlay_box: None, fade_s: REDUCED_FADE, came: vec![], arriving: HashMap::new(), sweeping: false, remeasure: false, plate_slots: Default::default(), plate_clear: vec![], plate_over: vec![], pclock: 0.0, plate_frame: f32::NEG_INFINITY, assets: HashMap::new(), assets_asked: Default::default(), shape_seen: 0.0, hud_idle: false, rebuilt: 0,
             text_capture: None, sel: None, sel_drag: false, clicks: (f32::NEG_INFINITY, 0.0, 0.0, 0), a11y_sent: HashMap::new(), a11y_focus: None,
             tree: TaffyTree::new(), tids: HashMap::new(), mkeys: HashMap::new(), virt_views: HashMap::new(), virt_made: HashMap::new(),
             scrolling: Scrolling::default(), touch: None, touches: HashSet::new(), touching: false, fling: None, over: HashMap::new(), motion: HashMap::new(), scroll_paint: false, event_t: None, ev: 0.0,
@@ -1206,6 +1216,7 @@ impl<S, M: Clone> Ui<S, M> {
         }
         for n in self.nodes.iter().filter(|n| n.clamp > 0 && matches!(&n.content, Content::Text { around: Some(_), .. })) { out.push(P::ClampAround { key: n.key.clone() }); }
         for (key, need, min) in &self.fit_short { out.push(P::FitShort { key: key.clone(), need: *need, min: *min }); }
+        for key in &self.plate_over { out.push(P::PlateOver { key: key.clone() }); }
         out
     }
 
@@ -1224,6 +1235,7 @@ impl<S, M: Clone> Ui<S, M> {
     pub fn needs_frame(&self, now: f32) -> bool {
         let b = self.beat_of(now);
         self.dirty || self.stale_layout || self.stale_paint || self.owed || self.warm.is_some() || self.prep.pending() || self.held(now) || self.moving_at(b) || self.wake_at(b).is_some_and(|w| w <= b) || (self.sweeping && !self.arriving.is_empty())
+            || (self.plates_ageing() && self.clock - self.plate_frame >= PLATE_FRAME - 1e-4)
     }
     /// A `Cmd::Hold` is going on: frames go on (the same) until it ends.
     fn held(&self, now: f32) -> bool { self.timing.beat.on() && self.bclock.hold.is_some_and(|(_, until)| now < until) }
@@ -1232,6 +1244,7 @@ impl<S, M: Clone> Ui<S, M> {
     pub fn next_wake(&self, now: f32) -> Option<f32> {
         let b = self.beat_of(now);
         if self.dirty || self.owed || self.warm.is_some() || self.prep.pending() || self.held(now) || self.moving_at(b) || (self.sweeping && !self.arriving.is_empty()) { return Some(now); }
+        if self.plates_ageing() { return Some((self.plate_frame + PLATE_FRAME).max(now)); }
         // A wake on the beat clock is that much later on the runtime's.
         self.wake_at(b).map(|w| (w + now - b).max(now))
     }
@@ -1305,7 +1318,57 @@ impl<S, M: Clone> Ui<S, M> {
     /// Ask for a frame even though nothing changed (the host lost what it showed).
     pub fn invalidate(&mut self) { self.dirty = true; }
     /// The host drew a frame of the current scene.
-    pub fn frame_drawn(&mut self) { self.dirty = false; self.owed = self.moving_at(self.beat_of(self.clock)); }
+    pub fn frame_drawn(&mut self) {
+        self.dirty = false;
+        self.owed = self.moving_at(self.beat_of(self.clock));
+        self.plate_frame = self.clock;
+    }
+    /// Which node each plate this paint draws is in which slot: a plate keeps its slot while its element
+    /// is there; a slot whose element has gone is emptied; beyond four plates, or twice the window's
+    /// area, an element is drawn as a plain one (`Ui::problems`).
+    fn plate_plan(&mut self) -> HashMap<usize, u8> {
+        let mut out = HashMap::new();
+        self.plate_over.clear();
+        let window = Rect::new(0.0, 0.0, self.size.0, self.size.1);
+        let mut area = 0.0;
+        let wanted: Vec<(usize, String, f32)> = self.nodes.iter().enumerate().filter_map(|(i, n)| n.plate.map(|p| (i, n.key.clone(), p.fade_s))).collect();
+        // Slots whose element has gone are emptied (a page that went takes its plates with it).
+        for k in 0..crate::scene::PLATES {
+            if let Some((key, _, _)) = &self.plate_slots[k] && !wanted.iter().any(|w| &w.1 == key) { self.plate_slots[k] = None; self.plate_clear.push(k as u8); }
+        }
+        for (i, key, fade) in wanted {
+            let r = self.nodes[i].rect.intersect(&self.nodes[i].clip).intersect(&window);
+            let a = r.w.max(0.0) * r.h.max(0.0);
+            let slot = self.plate_slots.iter().position(|p| p.as_ref().is_some_and(|p| p.0 == key)).or_else(|| self.plate_slots.iter().position(Option::is_none));
+            match slot {
+                Some(k) if area + a <= 2.0 * window.w * window.h + 1e-3 => {
+                    area += a;
+                    // A slot newly taken starts empty, whatever was on it before.
+                    if self.plate_slots[k].is_none() { self.plate_clear.push(k as u8); }
+                    let last = self.plate_slots[k].as_ref().map_or(f32::NEG_INFINITY, |p| p.1);
+                    self.plate_slots[k] = Some((key, last, fade));
+                    out.insert(i, k as u8);
+                }
+                _ => self.plate_over.push(key),
+            }
+        }
+        out
+    }
+    /// Node `i` is on a plate: it or an element above it has `El::plate`.
+    fn on_plate(&self, i: usize) -> bool {
+        let mut at = Some(i);
+        while let Some(k) = at { if self.nodes[k].plate.is_some() { return true; } at = self.nodes[k].parent; }
+        false
+    }
+    /// The plate in `slot` drew the instances from `start` to now.
+    fn plate_span(&mut self, slot: u8, start: u32) {
+        let end = self.scene.instances.len() as u32;
+        let fade = self.plate_slots[slot as usize].as_ref().map_or(0.0, |p| p.2);
+        if end > start && let Some(p) = &mut self.plate_slots[slot as usize] { p.1 = self.pclock; }
+        self.scene.plates.push(crate::scene::PlateSpan { slot, start, end, fade_s: fade });
+    }
+    /// A plate's ink is ageing (`Plate::fade_s`): frames at 30 a second at most until the last has gone.
+    fn plates_ageing(&self) -> bool { self.plate_slots.iter().flatten().any(|(_, last, fade)| *fade > 0.0 && self.pclock < last + fade + PLATE_FRAME) }
     /// Frame times and work counters (the renderer closes each frame with `perf_mut().frame(..)`).
     pub fn perf(&self) -> &crate::perf::Perf { &self.perf }
     /// The performance counters, to change (a shell sets the backend and adapter names).
@@ -1465,7 +1528,11 @@ impl<S, M: Clone> Ui<S, M> {
         self.text.set_scale(scale);
         let size = (w.max(1) as f32 / scale, h.max(1) as f32 / scale);
         // A morph's tiles are in device px of the old size.
-        if size != self.size { self.run = None; }
+        if size != self.size {
+            self.run = None;
+            // A new window size empties every plate.
+            self.plate_clear.extend(self.plate_slots.iter().enumerate().filter(|(_, p)| p.is_some()).map(|(k, _)| k as u8));
+        }
         self.size = size;
         if let Some(f) = self.sized { f(&mut self.state, self.size.0, self.size.1); }
         self.relayout();
@@ -1480,8 +1547,13 @@ impl<S, M: Clone> Ui<S, M> {
         // A hold that has ended presents the page as the state has it now.
         if !self.held(t) { self.frozen = None; }
         // Everything that moves on its own runs on the beat clock (the runtime's own without a beat).
+        let held_now = self.held(t);
         let t = self.beat_of(t);
         let dt = (t - self.clock).clamp(0.0, 0.1);
+        // The plate clock stops while a hold lasts and never runs back (a rewind keeps the ink).
+        if !held_now { self.pclock += dt; }
+        self.scene.plate_now = self.pclock;
+        self.scene.plate_ageing = self.plates_ageing();
         // The material clock runs only while something was moving.
         if self.moving { self.mclock += dt; }
         if self.ground_moving { self.gclock += dt; }
@@ -1897,7 +1969,7 @@ impl<S, M: Clone> Ui<S, M> {
         let pressed = hit.and_then(|i| self.up(i, |n| n.on_press.is_some()));
         // Nothing to press here: selectable text starts a selection there; anywhere else ends one.
         if pressed.is_none() {
-            match hit.filter(|&i| self.nodes[i].selectable && self.nodes[i].text().is_some()) {
+            match hit.filter(|&i| self.nodes[i].selectable && self.nodes[i].text().is_some() && !self.on_plate(i)) {
                 Some(i) => {
                     let at = self.text_hit(i, x, y).unwrap_or(0);
                     let s = self.nodes[i].text().unwrap_or_default();
@@ -2038,7 +2110,8 @@ impl<S, M: Clone> Ui<S, M> {
             let n = &self.nodes[i];
             let (up, spoken) = match n.parent { Some(p) => (index[p].or(above[p].0), above[p].1 || index[p].is_some_and(|k| leafy(out[k].role))), None => (None, false) };
             above[i] = (up, spoken);
-            if n.hidden || i < lo && self.modal_at.is_some() { continue; }
+            // What is drawn on a plate (`El::plate`) is a picture, not content.
+            if n.hidden || i < lo && self.modal_at.is_some() || self.on_plate(i) { continue; }
             let a = n.access.clone().unwrap_or_default();
             let role = a.role.or_else(|| match &n.content {
                 Content::Text { .. } if !spoken => Some(Role::Text),
@@ -2566,6 +2639,7 @@ impl<S, M: Clone> Ui<S, M> {
                 Cmd::Pointer { x, y } => { let s = self.scale; self.field.pointer[0] = x * s; self.field.pointer[1] = y * s; self.dirty = true; }
                 Cmd::Focus { key } => self.focus_key(&key),
                 Cmd::ClearFocus => self.clear_focus(),
+                Cmd::ClearPlate { key } => if let Some(k) = self.plate_slots.iter().position(|p| p.as_ref().is_some_and(|p| p.0 == *key)) { self.plate_clear.push(k as u8); self.dirty = true; },
                 Cmd::ScrollTo { key } => self.scroll_to(&key),
                 Cmd::Scrub(at) => self.scrub(at),
                 Cmd::Hold(n) => {
@@ -3138,7 +3212,15 @@ impl<S, M: Clone> Ui<S, M> {
             0.85 * (o.abs() / max_over).min(1.0).sqrt() * (1.0 - dist.max(0.0) / PULL_REACH).max(0.0)
         });
         let mut group: Option<(usize, u32, f32)> = None;
+        let plates = self.plate_plan();
+        let mut plate: Option<(usize, u32, u8)> = None;
         for i in 0..self.nodes.len() {
+            // A plate's subtree (`El::plate`): its instances, kept by the renderer.
+            if let Some((root, start, slot)) = plate && !within(&self.nodes, i, root) {
+                self.plate_span(slot, start);
+                plate = None;
+            }
+            if plate.is_none() && let Some(&slot) = plates.get(&i) { plate = Some((i, self.scene.instances.len() as u32, slot)); }
             let n = &self.nodes[i];
             if Some(i) == self.modal_at { self.scene.begin_layer(); }
             // A filled element that leaves a trail (a floating window, a sheet's panel) is drawn over the
@@ -3438,6 +3520,15 @@ impl<S, M: Clone> Ui<S, M> {
             }
         }
         if let Some((_, start, op)) = group && (self.scene.instances.len() as u32) > start { self.scene.groups.push(crate::scene::Group { start, end: self.scene.instances.len() as u32, opacity: op }); }
+        if let Some((_, start, slot)) = plate { self.plate_span(slot, start); }
+        if !self.plate_clear.is_empty() {
+            // Serials are unique across every `Ui` so a renderer shared by two never skips one.
+            static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+            self.scene.plate_clear = std::mem::take(&mut self.plate_clear);
+            self.scene.plate_serial = SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.scene.plate_now = self.pclock;
+        self.scene.plate_ageing = self.plates_ageing();
         // Text whose string changed: the changed glyphs recompose, the others keep their birth and slide.
         if !jobs.is_empty() || !self.recs.is_empty() {
             self.recompose_jobs(jobs, &mut births);
@@ -5207,6 +5298,8 @@ pub const REDUCED_FADE: f32 = 0.15;
 pub const SWEEP: f32 = 0.24;
 /// How long before and after its change a glyph loosens and draws back in, s.
 pub const SWEEP_LOOSE: f32 = 0.06;
+/// The least time between two frames that only a plate's ageing asks for, s (30 a second).
+pub const PLATE_FRAME: f32 = 1.0 / 30.0;
 
 
 struct DecodeRun { start: f32, reverse: bool, spec: crate::decode::Decode, plan: Option<crate::decode::Plan>, ghost: Vec<Instance>, clip: Option<[f32; 4]>, drawn: Option<f32> }
@@ -5542,7 +5635,7 @@ fn measure_key(c: &Content) -> u64 {
 /// A virtual list's rows are built here, for what its viewport shows.
 #[allow(clippy::too_many_arguments)]
 fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], off: (bool, bool), flow: Option<(Rc<str>, usize)>, inh: Inherit, vx: &mut VirtCtx, built: &mut Built, nodes: &mut Vec<Node<M>>) -> usize {
-    let El { key, style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, mut on_text, multiline, selectable, cursor, virt, access, ripple, mut on_pick, mut on_wheel, mut on_move, guide, skeleton, rtl, on_visible, on_outline, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview: _, fit, clamp, mut children } = el;
+    let El { key, style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, mut on_text, multiline, selectable, cursor, virt, access, ripple, mut on_pick, mut on_wheel, mut on_move, guide, skeleton, rtl, on_visible, on_outline, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview: _, fit, clamp, plate, mut children } = el;
     let mut style = style;
     let mut inh = inh;
     if let Some(r) = rtl { inh.rtl = r; }
@@ -5607,7 +5700,7 @@ fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], of
         content, fill, border, radius, on_press, on_key, on_drag, on_blur, loose, wipe, bar, reveal, commit, modal, hidden, shift, shed, flow_field, stirr, trace, flow: flow.clone(),
         mat: inh.code(), loosen: inh.loosen, annotate, scope: gaze_scope, anchor, clips, calm, on_text, multiline, selectable: inh.select, cursor,
         virt: virt_info, access, respond, legible, ripple: inh.scope.clone(), ripple_scope: ripple.container || commit_scope, recompose, recompose_always: is_text && ripple.recompose == Some(true), unframed: ripple.unframed, keyed,
-        on_pick, on_wheel, on_move, guide, on_visible, on_outline, decode, skeleton: inh.skeleton, form, turn, xf: None, reveal_by, ongoing: ongoing || parent.is_some_and(|p| nodes[p].ongoing), pass, opacity, opacity_all: opacity * parent.map_or(1.0, |p| nodes[p].opacity_all), commit_scope, fit, clamp, shown: None, local: taffy::Layout::new(), tid: placeholder,
+        on_pick, on_wheel, on_move, guide, on_visible, on_outline, decode, skeleton: inh.skeleton, form, turn, xf: None, reveal_by, ongoing: ongoing || parent.is_some_and(|p| nodes[p].ongoing), pass, opacity, opacity_all: opacity * parent.map_or(1.0, |p| nodes[p].opacity_all), commit_scope, fit, clamp, shown: None, plate, local: taffy::Layout::new(), tid: placeholder,
     });
     let mut style = style;
     crate::el::snap_style(&mut style);

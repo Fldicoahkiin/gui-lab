@@ -58,11 +58,20 @@ struct Uniforms {
     fmap: [f32; 4],
     /// A commit's scope (`El::commit_scope`), device px x0, y0, x1, y1 (empty: the whole window).
     sbox: [f32; 4],
+    plate: [f32; 4],
+    plates: [[f32; 4]; 4],
 }
 
 const INK: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const NEAR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const HOLD: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
+/// When a plate's pixel was drawn last, in `PLATE_TICK`s of the plate clock, as 24 bits in RGB (A: drawn).
+const PLATE_AGE: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+/// The plate clock's step, s (24 bits of it last 38 hours).
+pub const PLATE_TICK: f32 = 1.0 / 120.0;
+
+/// One plate's kept images and the group that lays them on (binding 2: ink, 3: near, 10: age).
+struct PlateTex { ink: wgpu::TextureView, near: wgpu::TextureView, age: wgpu::TextureView, bind: wgpu::BindGroup }
 const ATLAS_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg8Unorm;
 
 const MARKS_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg8Unorm;
@@ -228,6 +237,18 @@ pub struct Renderer {
     blit: wgpu::RenderPipeline,
     /// A see-through group (`El::opacity`): its own ink image, and the pass that lays it on the ink.
     group: Option<(wgpu::TextureView, wgpu::BindGroup)>,
+    /// Each plate's kept images (`El::plate`, DESIGN.md §1.31): ink, near, and when each pixel was drawn
+    /// last; made when a slot is first used, emptied by `Cmd::ClearPlate` and a new window size.
+    plates: [Option<PlateTex>; crate::scene::PLATES],
+    /// Drawing into a plate, its age and laying it on the ink and the near image.
+    plate_pipes: [wgpu::RenderPipeline; 3],
+    /// The plate clock in `PLATE_TICK`s, and each slot's fade (`Plate::fade_s`, in ticks; 0: none).
+    plate_now: f32,
+    plate_fade: [[f32; 4]; 4],
+    /// How many plates the last frame had (a plate that comes or goes redraws everything).
+    had_plates: usize,
+    /// The last plate clearing applied (`Scene::plate_serial`).
+    plate_serial: u64,
     group_pipe: wgpu::RenderPipeline,
     /// The last frame had see-through groups (the next is drawn whole).
     had_groups: bool,
@@ -377,6 +398,11 @@ impl Renderer {
         let zero = [pipe("vs_full", "fs_zero", INK, None, false), pipe("vs_full", "fs_zero", out_format, None, false)];
         let blit = pipe("vs_full", "fs_blit", out_format, None, false);
         let group_pipe = pipe("vs_group", "fs_group", INK, Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING), false);
+        let plate_pipes = [
+            pipe("vs_inst", "fs_plate_age", PLATE_AGE, None, true),
+            pipe("vs_group", "fs_plate_ink", INK, Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING), false),
+            pipe("vs_group", "fs_plate_near", NEAR, Some(wgpu::BlendState { color: maxb, alpha: maxb }), false),
+        ];
         let ubuf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: std::mem::size_of::<Uniforms>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         // Only the mark atlas has mip levels; for every other texture the mipmap filter does nothing.
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor { mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, mipmap_filter: wgpu::MipmapFilterMode::Linear, ..Default::default() });
@@ -418,7 +444,7 @@ impl Renderer {
             pictures: HashMap::new(), picture_views: HashMap::new(), hold_group: None, instances, capacity, pipes, annots, annot_capacity: 256, up_pipe: None, shader, pl,
             ink: blank.clone(), lo: blank.clone(), lo_key: (0, 0, 0), material_up: material.clone(), auto: Default::default(), always_lo: false, no_map: false,
             near: blank, material_first: material.clone(), material, size: (0, 0), tiles, mesh, sim_rows: 0,
-            region: crate::dirty::Region::All, partial: true, frame_view: blank_view.clone(), prev: None, spare: (vec![], vec![]), zero, blit, group: None, group_pipe, had_groups: false, reduced: false, fade_s: 0.15, sbox: [0.0; 4], post: None, blit_group: blank_group, warm: None, condense: false, last_region: None, tr: [[0.0; 4]; 9], boxes: [[0.0; 4]; 16], tr_loose: 0.0, t_cont: 0.0,
+            region: crate::dirty::Region::All, partial: true, frame_view: blank_view.clone(), prev: None, spare: (vec![], vec![]), zero, blit, group: None, group_pipe, had_groups: false, plates: Default::default(), plate_pipes, plate_now: 0.0, plate_fade: [[0.0; 4]; 4], had_plates: 0, plate_serial: 0, reduced: false, fade_s: 0.15, sbox: [0.0; 4], post: None, blit_group: blank_group, warm: None, condense: false, last_region: None, tr: [[0.0; 4]; 9], boxes: [[0.0; 4]; 16], tr_loose: 0.0, t_cont: 0.0,
         };
         r.set_picture(u32::MAX, 1, 1, &[0, 0, 0, 255]);
         r.resize(w, h);
@@ -684,6 +710,8 @@ impl Renderer {
         self.size = (w, h);
         self.ink = Self::target(&self.device, w, h, INK);
         self.group = None;
+        // A new window size empties every plate.
+        self.plates = Default::default();
         self.near = Self::target_with(&self.device, w, h, NEAR, wgpu::TextureUsages::COPY_SRC);
         self.hold = Self::target(&self.device, w, h, HOLD);
         // Stage 1 reads the hold image (a shape scribblr fades keeps its fill where text holds it).
@@ -1106,9 +1134,10 @@ impl Renderer {
         let inputs = crate::dirty::Inputs {
             instances, annot, meshes: ui.scene().meshes.iter().map(|m| m.scene.fingerprint() ^ (m.rect[2].to_bits() as u64) << 32 ^ m.rect[3].to_bits() as u64).collect(),
             field: *ui.field(), look: *look, now, mclock: mt[0], gclock: mt[1], size: self.size, map: snap,
-            global: split[3] > 0.0 || tiles.is_some() || lo.is_some() || self.hide_glyphs || !ui.scene().groups.is_empty() || self.had_groups,
+            global: split[3] > 0.0 || tiles.is_some() || lo.is_some() || self.hide_glyphs || !ui.scene().groups.is_empty() || self.had_groups || ui.scene().plate_ageing || ui.scene().plate_serial != self.plate_serial || ui.scene().plates.len() != self.had_plates,
         };
         self.had_groups = !ui.scene().groups.is_empty();
+        self.had_plates = ui.scene().plates.len();
         let region = match (&self.prev, self.partial) { (Some(p), true) => crate::dirty::region(p, &inputs, scale), _ => crate::dirty::Region::All };
         if let Some(old) = self.prev.replace(inputs) { self.spare = (old.instances, old.annot); }
         self.region = region;
@@ -1192,6 +1221,24 @@ impl Renderer {
     }
     /// `scissor`: only this box (x, y, w, h device px) is drawn again; the rest of the images is kept.
     #[allow(clippy::too_many_arguments)]
+    /// Make the plates this frame uses (`El::plate`) and empty the ones cleared.
+    fn plates_ready(&mut self, enc: &mut wgpu::CommandEncoder, scene: &crate::scene::Scene) {
+        let (w, h) = self.size;
+        for p in &scene.plates {
+            let slot = p.slot as usize;
+            if self.plates[slot].is_none() {
+                let (ink, near, age) = (Self::target(&self.device, w, h, INK), Self::target(&self.device, w, h, NEAR), Self::target(&self.device, w, h, PLATE_AGE));
+                let bind = Self::bind(&self.device, &self.layout, &self.ubuf, &self.sampler, [&ink, &near, &self.marks_view, &self.palette_view, &self.chars_view, &self.blank, &self.blank, &self.fmap_view, &age]);
+                for v in [&ink, &near, &age] { let _ = clear(enc, v, wgpu::Color::TRANSPARENT); }
+                self.plates[slot] = Some(PlateTex { ink, near, age, bind });
+            }
+        }
+        if scene.plate_serial == self.plate_serial { return; }
+        self.plate_serial = scene.plate_serial;
+        for &slot in &scene.plate_clear {
+            if let Some(pt) = &self.plates[slot as usize] { for v in [&pt.ink, &pt.near, &pt.age] { let _ = clear(enc, v, wgpu::Color::TRANSPARENT); } }
+        }
+    }
     fn stage1(&self, enc: &mut wgpu::CommandEncoder, scene: &Scene, ink: &wgpu::TextureView, near: &wgpu::TextureView, tiles: u32, scissor: Option<[u32; 4]>) {
         let layer = scene.layer.unwrap_or(u32::MAX);
         for (k, (view, pipe, top)) in [(ink, &self.pipes[0], &self.pipes[5]), (near, &self.pipes[1], &self.pipes[2])].into_iter().enumerate() {
@@ -1228,12 +1275,52 @@ impl Renderer {
             let end = scene.instances.len() as u32;
             // The tiles of a morph go in where the layer starts.
             let mut at = 0u32;
-            let mut stops: Vec<u32> = groups.iter().flat_map(|g| [g.start, g.end]).collect();
+            let mut stops: Vec<u32> = groups.iter().flat_map(|g| [g.start, g.end]).chain(scene.plates.iter().filter(|p| self.plates[p.slot as usize].is_some()).flat_map(|p| [p.start, p.end])).collect();
             if pending && layer < end { stops.push(layer); }
-            stops.push(end);
+            // One past the end: a plate starting at the end (empty) is still laid on.
+            stops.push(end + 1);
             stops.sort_unstable();
+            let mut kept = scene.plates.iter().filter(|p| self.plates[p.slot as usize].is_some()).peekable();
             for stop in stops {
                 if stop <= at { if pending && stop == layer && at == layer { draw_tiles(&mut pass); pending = false; } continue; }
+                // Plates in order; several may start at once (empty ones among them).
+                while let Some(p) = kept.next_if(|p| p.start == at) {
+                    // A plate (DESIGN.md §1.31): this frame's ink goes into its kept images (and when it
+                    // was drawn, into its age), then what they hold is laid on, aged, in its place.
+                    let pt = self.plates[p.slot as usize].as_ref().expect("checked");
+                    drop(pass);
+                    {
+                        let mut pp = load(enc, if k == 0 { &pt.ink } else { &pt.near });
+                        if let Some([x, y, w, h]) = scissor { pp.set_scissor_rect(x, y, w, h); }
+                        pp.set_vertex_buffer(0, self.instances.slice(..));
+                        draw(&mut pp, p.start, p.end);
+                    }
+                    if k == 0 {
+                        let mut ap = load(enc, &pt.age);
+                        if let Some([x, y, w, h]) = scissor { ap.set_scissor_rect(x, y, w, h); }
+                        ap.set_vertex_buffer(0, self.instances.slice(..));
+                        for b in &scene.batches {
+                            let (s0, s1) = (b.start.max(p.start), b.end.min(p.end));
+                            if s0 >= s1 { continue; }
+                            let Some(group) = self.batch_group(b.picture) else { continue };
+                            ap.set_pipeline(&self.plate_pipes[0]);
+                            ap.set_bind_group(0, group, &[]);
+                            ap.draw(0..4, s0..s1);
+                        }
+                    }
+                    pass = load(enc, view);
+                    if let Some([x, y, w, h]) = scissor { pass.set_scissor_rect(x, y, w, h); }
+                    pass.set_pipeline(&self.plate_pipes[1 + k]);
+                    pass.set_bind_group(0, &pt.bind, &[]);
+                    let v = p.slot as u32 * 3;
+                    pass.draw(v..v + 3, 0..1);
+                    pass.set_vertex_buffer(0, self.instances.slice(..));
+                    // The whole plate is drawn at once (a group in it goes in plainly); what follows it
+                    // up to this stop is drawn below.
+                    at = p.end;
+                    if pending && at == layer { draw_tiles(&mut pass); pending = false; }
+                }
+                if stop <= at { continue; }
                 match groups.iter().find(|g| g.start == at) {
                     Some(g) => {
                         let (gview, gbind) = self.group.as_ref().expect("made before the frame");
@@ -1269,6 +1356,9 @@ impl Renderer {
     /// `lo`: draw the material at reduced resolution first (`qual` for the uniforms), then upsample.
     fn frame_q(&mut self, target: &wgpu::TextureView, f: Frame<'_>, with_before: bool, lo: Option<[f32; 4]>) {
         let scene = f.scene;
+        self.plate_now = (scene.plate_now / PLATE_TICK).round();
+        self.plate_fade = [[0.0; 4]; 4];
+        for p in &scene.plates { self.plate_fade[p.slot as usize] = [(p.fade_s / PLATE_TICK).round(), 1.0, 0.0, 0.0]; }
         self.uniforms(f.field, f.look, f.scale, f.t, f.mt, f.split, lo.unwrap_or([1.0, 1.0, self.size.0 as f32, self.size.1 as f32]));
         self.upload(scene);
         self.tiles.grid_now = None;
@@ -1313,6 +1403,7 @@ impl Renderer {
         self.last_region = boxes.map(|(a, b)| (a.unwrap_or([0; 4]), b.unwrap_or([0; 4])));
         let frame_view = self.frame_view.clone();
         let out = if with_before { &frame_view } else { target };
+        self.plates_ready(&mut enc, scene);
         self.hold_pass(&mut enc);
         match boxes {
             None => self.stage1(&mut enc, scene, &ink, &near, tiles, None),
@@ -1385,6 +1476,7 @@ impl Renderer {
             scrp: [look.scroll.trail * scale, look.scroll.misreg * scale, look.scroll.slip * scale, look.scroll.band.max(4.0) * scale],
             scrq: [look.scroll.slip_ms.max(16.0) / 1000.0, if look.beat.on() { self.t_cont } else { t }, th.press_keep(look.legible_cap), if self.reduced { self.fade_s } else { 0.0 }],
             post: post.0, pal: post.1, fmap: self.fmap_u, sbox: if split[3] > 0.0 { self.sbox } else { [0.0; 4] },
+            plate: [self.plate_now, 0.0, 0.0, 0.0], plates: self.plate_fade,
         };
         self.queue.write_buffer(&self.ubuf, 0, bytemuck::bytes_of(&u));
     }

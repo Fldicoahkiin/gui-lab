@@ -70,6 +70,8 @@ pub enum CmdSpec {
     Set { name: String, value: f32 },
     /// `Cmd::ClearFocus`: nothing has the focus.
     ClearFocus,
+    /// `Cmd::ClearPlate`: empty the plate `key`.
+    ClearPlate { key: String },
 }
 fn one() -> f32 { 1.0 }
 fn radius() -> f32 { 120.0 }
@@ -95,6 +97,7 @@ impl CmdSpec {
             CmdSpec::Retrigger => Cmd::Retrigger,
             CmdSpec::Rewind(b) => Cmd::Rewind(b),
             CmdSpec::ClearFocus => Cmd::ClearFocus,
+            CmdSpec::ClearPlate { key } => Cmd::ClearPlate { key },
             CmdSpec::Set { name, value } => {
                 Look::default().set(&name, value).map_err(|e| DriveError::BadCommand(e.to_string()))?;
                 Cmd::Set { name, value }

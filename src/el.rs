@@ -142,6 +142,14 @@ pub struct Fit {
     /// Where it goes in the box, across and down (0..1).
     pub align: (f32, f32),
 }
+/// A plate (`El::plate`, DESIGN.md §1.31): how long its ink lasts, s (0–60 in steps of 0.5; 0: for
+/// good): a pixel is as drawn until four fifths of it have passed, then thins out, and is gone at the
+/// end of it.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub struct Plate {
+    /// How long a stroke lasts after it was last drawn, s (0: it stays until `Cmd::ClearPlate`).
+    pub fade_s: f32,
+}
 impl Default for Fit { fn default() -> Self { Self { mode: FitMode::Contain, min: 0.25, max: 1.0, align: (0.5, 0.5) } } }
 
 /// What an element shows.
@@ -644,6 +652,8 @@ pub struct El<M> {
     pub fit: Option<Fit>,
     /// A text element shows at most this many lines, ending in an ellipsis (`El::clamp`; 0: all).
     pub clamp: u16,
+    /// What its subtree draws stays (`El::plate`).
+    pub plate: Option<Plate>,
     /// What it holds, in order.
     pub children: Vec<El<M>>,
 }
@@ -757,7 +767,7 @@ impl<M> El<M> {
     fn new(style: Style, content: Content) -> Self {
         // Nothing shrinks unless asked: fixed sizes stay fixed inside columns and scroll areas.
         let style = Style { flex_shrink: 0.0, ..style };
-        Self { key: String::new(), style, content, fill: None, border: None, radius: 0.0, on_press: None, on_key: None, on_drag: None, on_blur: None, focusable: false, tab_order: 0, skip_to: None, focus_shown: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, modal: None, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, shift: (0.0, 0.0), shed: None, flow_field: None, stirr: None, trace: None, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, clips: false, calm: false, on_text: None, multiline: false, selectable: false, cursor: None, virt: None, access: None, ripple: Ripple::default(), on_pick: None, on_wheel: None, on_move: None, guide: None, skeleton: false, rtl: None, on_visible: None, on_outline: None, decode: None, form: None, turn: 0.0, reveal_by: Reveal::Glyph, ongoing: false, pass: false, opacity: 1.0, commit_scope: false, preview: false, fit: None, clamp: 0, children: vec![] }
+        Self { key: String::new(), style, content, fill: None, border: None, radius: 0.0, on_press: None, on_key: None, on_drag: None, on_blur: None, focusable: false, tab_order: 0, skip_to: None, focus_shown: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, modal: None, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, shift: (0.0, 0.0), shed: None, flow_field: None, stirr: None, trace: None, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, clips: false, calm: false, on_text: None, multiline: false, selectable: false, cursor: None, virt: None, access: None, ripple: Ripple::default(), on_pick: None, on_wheel: None, on_move: None, guide: None, skeleton: false, rtl: None, on_visible: None, on_outline: None, decode: None, form: None, turn: 0.0, reveal_by: Reveal::Glyph, ongoing: false, pass: false, opacity: 1.0, commit_scope: false, preview: false, fit: None, clamp: 0, plate: None, children: vec![] }
     }
     /// Its key: unique on the page, stable across views (focus, scroll, births and recomposition follow it).
     pub fn key(mut self, k: impl Into<String>) -> Self { self.key = k.into(); self }
@@ -1040,6 +1050,15 @@ impl<M> El<M> {
     /// and still too large, it is drawn at `min` and clipped, and `Ui::problems` says so. There is no
     /// hook after layout: `Ui::rect` reads where things went.
     pub fn fit(mut self, f: Fit) -> Self { self.fit = Some(f); self.clip() }
+    /// Keep what this subtree draws (DESIGN.md §1.31): the next frame does not wipe it, new ink goes
+    /// over the old, and a pixel drawn again is new again. It is a picture, not content: not read by
+    /// assistive technology, not selectable, emptied when the window changes size and by
+    /// `Cmd::ClearPlate`. The plate draws nothing of its own (no edge, no ground) and reaches as far as
+    /// its clip box (it clips its children). With `fade_s` above 0 a pixel thins out over the last
+    /// fifth of `fade_s` after it was drawn and is then gone. At most 4 plates in a window, together at
+    /// most twice its area; more are drawn as plain elements and `Ui::problems` says so. For music
+    /// videos, the lab and pages that say they are a drawing board; not for ordinary pages.
+    pub fn plate(mut self, p: Plate) -> Self { self.plate = Some(Plate { fade_s: (p.fade_s.clamp(0.0, 60.0) * 2.0).round() / 2.0 }); self.clip() }
     /// A preview of components (a gallery's or a document's specimen), for the whole subtree: a modal
     /// element in it (a sheet, a context menu, a dialog) is drawn where it is written, laid out and
     /// clipped by this container, without a layer: nothing beneath it is held loose, focus is not kept
@@ -1085,7 +1104,7 @@ impl<M> El<M> {
 
     /// The same tree sending other messages: lets one application embed another's view.
     pub fn map<N: 'static>(self, f: Rc<dyn Fn(M) -> N>) -> El<N> where M: 'static {
-        let El { key, style, content, fill, border, radius, on_press, on_key, on_drag, on_blur, focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, commit, modal, fonts, loose, wipe, flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, on_text, multiline, selectable, cursor, virt, access, ripple, on_pick, on_wheel, on_move, guide, skeleton, rtl, on_visible, on_outline, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview, fit, clamp, children } = self;
+        let El { key, style, content, fill, border, radius, on_press, on_key, on_drag, on_blur, focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, commit, modal, fonts, loose, wipe, flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, on_text, multiline, selectable, cursor, virt, access, ripple, on_pick, on_wheel, on_move, guide, skeleton, rtl, on_visible, on_outline, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview, fit, clamp, plate, children } = self;
         let virt = virt.map(|v| { let f = f.clone(); let b = v.build; Virtual { count: v.count, row_h: v.row_h, overscan: v.overscan, selected: v.selected, build: Rc::new(move |i: usize| b(i).map(f.clone())) as Rc<dyn Fn(usize) -> El<N>> } });
         let on_key = on_key.map(|k| { let f = f.clone(); Rc::new(move |key: Key, shift: bool| k(key, shift).map(|m| f(m))) as OnKey<N> });
         let on_text = on_text.map(|t| { let f = f.clone(); Rc::new(move |i: TextInput| t(i).map(|m| f(m))) as OnText<N> });
@@ -1098,7 +1117,7 @@ impl<M> El<M> {
         El {
             key, style, content, fill, border, radius, on_press: on_press.map(|m| f(m)), on_key, on_drag, on_blur: on_blur.map(|m| f(m)),
             focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, commit, modal: modal.map(|m| Modal { dismiss: f(m.dismiss), beneath: m.beneath }),
-            fonts, loose, wipe, flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, on_text, multiline, selectable, cursor, virt, access, ripple, on_pick, on_wheel, on_move, guide, skeleton, rtl, on_visible, on_outline, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview, fit, clamp, children: children.into_iter().map(|c| c.map(f.clone())).collect(),
+            fonts, loose, wipe, flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, on_text, multiline, selectable, cursor, virt, access, ripple, on_pick, on_wheel, on_move, guide, skeleton, rtl, on_visible, on_outline, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview, fit, clamp, plate, children: children.into_iter().map(|c| c.map(f.clone())).collect(),
         }
     }
 }

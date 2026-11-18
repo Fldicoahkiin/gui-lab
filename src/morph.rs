@@ -212,6 +212,9 @@ pub enum Cmd {
     /// Take the focus away: nothing has it, its corners leave as they do when it moves on, and the next
     /// Tab goes on from the element that had it (`Ui::clear_focus`).
     ClearFocus,
+    /// Empty the plate `key` (`El::plate`) in this frame, at once: a cut for a beat. For a soft end
+    /// use `Plate::fade_s`.
+    ClearPlate { key: String },
     /// Scroll so the element `key` is at the top of its scroller (an outline's link), after this layout.
     ScrollTo { key: String },
     /// Hold the morph in progress at this point of its flight (0 = the source's tiles, 1 = the target's),
