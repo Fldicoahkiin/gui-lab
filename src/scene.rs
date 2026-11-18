@@ -88,7 +88,7 @@ pub struct Scene {
     /// outline it holds the looseness beneath to the legibility cap, `r0` fully and fading out by `r1`
     /// (device px; DESIGN.md §1.15).
     pub holds: Vec<(u32, [f32; 2])>,
-    /// The plates drawn this frame (`El::plate`, DESIGN.md §1.31), in order, never overlapping.
+    /// The plates drawn this frame (`El::plate`, DESIGN.md §1.33), in order, never overlapping.
     pub plates: Vec<PlateSpan>,
     /// Plate slots emptied before this frame is drawn (`Cmd::ClearPlate`, a plate gone, a new size).
     pub plate_clear: Vec<u8>,

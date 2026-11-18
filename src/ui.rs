@@ -541,7 +541,7 @@ pub struct Ui<S, M> {
     sweeping: bool,
     /// Faces changed: the next layout measures every text again.
     remeasure: bool,
-    /// The plates (DESIGN.md §1.31): each slot's element, when its ink was last drawn and how long it
+    /// The plates (DESIGN.md §1.33): each slot's element, when its ink was last drawn and how long it
     /// lasts (plate clock); slots to empty before the next frame; plates over the limit; the plate clock
     /// (it stops while a `Hold` lasts) and when a frame was last drawn for aging.
     plate_slots: [Option<(String, f32, f32)>; crate::scene::PLATES],

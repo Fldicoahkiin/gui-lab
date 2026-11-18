@@ -8,6 +8,30 @@ crate and the `amenui` npm package (`web/`) always carry the same version, becau
 match the module that `web_app!` generates. The minimum Rust is the one CI builds with (`rust-version`
 in Cargo.toml); raising it is a breaking change before 1.0 only in the second number.
 
+## Fitting, clamping, faces that come later and plates
+
+- Breaking: `FlowSpec` has `fade_ms` and `Look` has `overlay_keep`, so struct literals of them need the new field or
+  `..Default::default()`; `Cmd` has `ClearFocus` and `ClearPlate`, `ViewProblem` has `FitShort`, `ClampAround` and
+  `PlateOver`, and `FontError` has `Bad`, so exhaustive matches need the new arms. Every element is now the box its
+  absolutely placed children are pinned in (its padding box), not the window: a page that placed an `absolute` child
+  against the window from inside a padded parent moves it.
+- Lengths are laid out on a 1/64 px step, so a wrapping row in a box as wide as its content stays on one line.
+- Text to read and controls hold the looseness under and around them to the legibility cap (DESIGN.md §1.15): a label
+  on a loose shape reads as at rest. Sites no longer need a ground-coloured patch or band under labels.
+- `El::fit(Fit)` zooms a subtree to fit its box in the same layout; `El::clamp(lines)` ends text in the face's own
+  ellipsis, with `Ui::clamped`; `El::preview(true)` draws sheets, menus and dialogs where they are written, without a
+  layer; `Ui::line_inks` reads each line's box and ink; `Ui::clear_focus` and `Cmd::ClearFocus` take the focus off.
+- Faces that come later (§1.6.5): `Ui::declare_face`, `text::with_declared`, `Ui::add_face`, `Ui::faces_wanted`;
+  resources by name with `Ui::add_asset`, `Ui::asset`, `Ui::assets_wanted`. Text stands in until the face comes, then
+  each line sweeps over in 240 ms. The web module carries only the three main faces; `web/amenui.js` takes
+  `opts.faces`, `opts.assets` and `opts.preload` and fetches what is wanted.
+- Plates (§1.33): `El::plate(Plate { fade_s })` keeps the ink a subtree draws, ageing it out over `fade_s`;
+  `Cmd::ClearPlate { key }` empties it.
+- A decode held at a step draws once and then the page rests (it asked for frames for good before).
+- `Look::overlay_keep` keeps the readout in its corner; the readout wraps to fit a window 390 px wide.
+- With less motion a flow fades in place over `FlowSpec::fade_ms` (150 ms by default).
+- A box whose last child was absolute no longer keeps the child's layout after it goes (it could panic in taffy).
+
 ## Coalesced input, cached word pieces, and a web page that survives a panic
 
 - Breaking: `el::Point` and `el::Drag` have `t`, when the event happened on the runtime's clock, so struct

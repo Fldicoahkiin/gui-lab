@@ -1,4 +1,4 @@
-//! Plates (DESIGN.md §1.31): what a plate's subtree draws stays from frame to frame, ages out over
+//! Plates (DESIGN.md §1.33): what a plate's subtree draws stays from frame to frame, ages out over
 //! `fade_s`, and is emptied at once by `Cmd::ClearPlate`.
 use amenui::el::{El, Paint, Plate, col, space, text};
 use amenui::morph::Cmd;

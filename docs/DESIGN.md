@@ -136,6 +136,37 @@ Layers: a `modal` element, wherever it is written in the view, is lifted out by 
 root's last child, filling the window, so it is drawn on top. A face missing a glyph falls back to the
 first registered face (Noto Sans SC), so even the monospace face can show Chinese.
 
+**Lengths on a grid.** Every length the layout produces is on a 1/64 px step (the parley and taffy sizes are
+rounded to it before they are compared), so a wrapping row in a box exactly as wide as its content stays on one
+line: of 3000 random rows of text and shapes measured and then set in a box of the measured width, 597 wrapped
+before, none after (`tests/render.rs`).
+
+**Pinned children.** `El::absolute(left, top, right, bottom)` places an element against its parent's padding box,
+not the window: every element is a positioned box, as `position: relative` is in CSS. Any of the four insets work,
+two opposite ones stretch it, and it follows its parent at any depth, in a scroll and under zoom
+(`tests/render.rs`, 6 pairs × 3 depths × scroll × 3 zooms). A box whose children were all absolute and have gone
+lays out as an empty box (taffy kept such a box's list of absolute children when it became a leaf; the runtime now
+gives every leaf a positioning area so the list is emptied).
+
+**Fitting a subtree** (`El::fit(Fit { mode, min, max, align })`): the container's one child is laid out at 1 to find its
+natural size, then zoomed (`El::zoom`) by the scale that fits the container's content box (`mode`, `FitMode`; by default it only shrinks, to `min` 0.25 at least), placed at `align` (fractions; 0.5, 0.5 centres it), in the
+same layout: two taffy passes, no hook after layout. The scale depends only on the box and the natural size, so a
+larger box never gets a smaller scale; with pixel type it goes down to a whole multiple of the face's size. At `min`
+and still too large it is drawn at `min`, clipped, and `Ui::problems` reports `FitShort`. A content-sized child is
+measured in a holder 10⁵ px wide, so it is measured at its own width, not the container's.
+
+**Clamping text** (`El::clamp(lines)`): a text element shows at most `lines` lines; text that does not fit ends in
+the face's own ellipsis on the last line, in the text's colour and size, on the baseline, drawn by the material as
+the rest of the line is (no fade, no mask). It breaks after a word, or between characters when that would leave more
+than a quarter of the last line empty, and leaves no space or punctuation before the ellipsis. `Ui::clamped(key)`
+says whether it was cut; the accessibility mirror reads the whole text. Taking the clamp away brings the rest in as
+changed text does (§1.16). With `around` it does not clamp yet (`ClampAround` in `Ui::problems`).
+
+**Previews** (`El::preview(true)`): a modal element inside (a sheet, a context menu, a dialog) is drawn where it is
+written, laid out and clipped by the preview, without a layer: nothing beneath it is held loose, focus is not kept
+inside, a press outside or Esc sends no dismiss, input elsewhere is not blocked and the mirror does not call it
+modal. What is drawn only with focus (`focus_shown`, a skip link) is always drawn. For galleries and documents.
+
 ### 1.3 The scene (`scene.rs`)
 
 Three kinds of instance share one record (112 bytes): `rect`, `uv`, `paint` (tone, accent, opacity,
@@ -530,6 +561,37 @@ split out; `tests/add.rs` copies `smudgr` out with `amenui add material`, adds i
 draws the same frame as the built-in one, byte for byte; `tests/registry.rs` reads every material back by its name,
 refuses each old name with the new one in the error, and refuses a `look:v1:` recipe with `v3` in the error.
 
+### 1.6.5 Faces that come later
+
+A page need not wait for its faces. `Ui::declare_face(name, FaceDecl { stand_in, scale })` (or
+`text::with_declared(faces)`, which declares the five Geist Pixel faces with the pixel face as stand-in and the
+serif with the sans) gives a face its number at once, for themes and `El::fonts`; until its bytes come, text in it is
+set, read and laid out in the stand-in at `scale` times its size, at rest, in its final colour, size and line height.
+Nothing is a skeleton, a blank or a wait.
+
+`Ui::faces_wanted()` lists the declared faces that have not come and that the page laid out last uses, by name; the
+host reads it after each frame or page change and fetches them (the framework fetches nothing). `Ui::add_face(name,
+bytes)` adds one: everything that came in one frame changes at the next tick together, in one layout. Each line then
+sweeps over from its start to its end in 240 ms (`ui::SWEEP`): a glyph changes when the sweep passes it, from the
+stand-in's glyph for the same character, moved to where the new one stands, to the new face's; within 60 ms of its
+change (`SWEEP_LOOSE`) it is loosened on a sine up to the legibility cap, so at every moment the title has one set of
+glyphs, changed ones left of unchanged ones, and its ink never under 80 % of the lesser face's. 300 ms after the bytes
+came the page is byte for byte the page that had the face from the start, and it rests. With less motion both glyphs
+are drawn where the new one is, the new fading in over 150 ms. A face added before the first frame is never seen
+standing in. Bytes that are not a font are refused (`FontError::Bad`): the face keeps its stand-in for good, is no
+longer wanted, and nothing on screen changes.
+
+Resources work the same way: `Ui::asset(name)` returns what has come, and asking for what has not puts it in
+`Ui::assets_wanted()`; `Ui::add_asset(name, bytes)` adds it. On the web, the module carries only the three main faces
+(sans, pixel, mono); `web/amenui.js` takes `opts.faces` and `opts.assets` (a map of name → URL, or a function), fetches
+what is wanted after each frame, and `opts.preload` names faces to fetch with the module, added before the first
+frame. The host exports are `faces_wanted`, `add_face`, `assets_wanted` and `add_asset`.
+
+Acceptance: `tests/faces.rs` (declared faces drawn as their stand-ins, byte for byte, and wanted only when used; a face
+added before the first frame never seen standing in; an arrival in one layout, the page after it as built in, and no
+frames 2 s later; two faces in one frame in one layout; bytes that are not a font changing nothing and not asked for
+again; the same arrival three times the same frames; resources kept by name and asked for until they come).
+
 ### 1.7 The annotation layer
 
 A third pass, drawn after the material, pixel exact, never loosened, in integer multiples of Departure
@@ -623,6 +685,10 @@ finds the nearest scrolling ancestor.
 - The view can know the window's logical size (`Ui::on_resize`) and use another layout when narrow.
 - Elements do not shrink by default (`flex-shrink: 0`); use `grow` or `shrink` to let them. The root's
   size is the window.
+
+**Clearing the focus.** `Ui::clear_focus()` and `Cmd::ClearFocus` take the focus off whatever has it, with the
+focus marks fading as when it moves on; nothing is focused again until the keyboard or a press says so. A host calls it
+after a route change that should not leave the old page's control focused (`tests/focus.rs`).
 
 ### 1.8.1 Text input
 
@@ -1120,6 +1186,9 @@ pair × every material × seven moments, and the page change there and back at f
 version under WebGL2 captures three mid-flight frames on a virtual clock, all different, with no console
 errors.
 
+With less motion a flow is a fade in place over `FlowSpec::fade_ms` (150 ms by default; the website uses 120 for
+its route fade), and what comes and goes fades over the same time (`tests/transform.rs`).
+
 ### 1.11 Drawing only when something changed
 
 Drawing a frame is not something done on every display refresh. The runtime answers "should a frame be
@@ -1255,6 +1324,11 @@ while open); `check` item 12: under every material at rest, `q = 0.5` (with `lo`
 identical pixel for pixel and body text equals `plain` (with item 5's tolerance), with a control: once
 loosened, the two resolutions can be told apart. Frame times on llvmpipe (relative comparison only) are in
 §9.
+
+`Look::overlay_keep` keeps the readout in `overlay_at`'s corner even where it covers text to read (for a page whose
+own text fills every corner); by default it moves on clockwise to the next clear corner. In a narrow window the
+readout wraps at its two-space field breaks to fit inside `overlay_inset`, so at 390 px wide every number stays in the
+window (`tests/render.rs`).
 
 ### 1.13 Incremental updates and long lists
 
@@ -1451,6 +1525,17 @@ another (`Field::front_in`). Each pixel's looseness, after all sources are added
 looseness plus the fronts that reach it, up to its cap, clamped to `loose_max`, without the style's looseness
 scale) to give how loose the loosest instance in a subtree is; tests and the tree export use it.
 `Field::wave_at` is the CPU version of the shader's `wave_in`.
+
+**Holding what is under text** (the renderer's hold image): text to read and controls
+also hold the looseness of what is drawn under and around them. Each of their instances that has ink of something not
+legible drawn before it within `r1` holds the looseness there to the legibility cap: fully within `r0`, fading out by
+`r1`, with `r0 = max(3, size / 4)` and `r1 = r0 + max(6, size / 2)` logical px by the type size (of the label, for a
+control; a glyph's `r1` is at most the 12 px the near image's nearness reaches). A heading is a title and holds
+nothing. The renderer draws the holds into a one-channel image before the G-buffer stage, and every source of
+looseness (a shape's own, fronts, the field map) is capped by it, so a label on a loose shape reads as at rest while
+the shape around it loosens. Measured on dottr at looseness 1: the label's own ink 1.000 of its ink at rest, within
+`r0` 0.993, beyond `r1` 0.988 of the shape's loose ink unchanged; it costs about 7 ms a frame on lavapipe for the 528
+holds of a full gallery page (60.9 → 68.8 ms, 64.6 → 71.7 ms). `tests/legible.rs`.
 
 **Acceptance**: `tests/ripple.rs`: default responses and legibility (the count button's text is `Nudge` and
 legible; decorative shapes `Loosen`; an `Ignore` neighbour; keyed text recomposes); with "own", the front's box
@@ -2114,6 +2199,9 @@ content appears, every finest cell is covered; mean cell size shrinks; determini
 opening shows only blocks first, the content appears after `C`, and there are no blocks at the end; closing plays
 backwards and leaves nothing at the end).
 
+A decode held at a step (`DecodeSpec::hold`) draws that step once and then the page rests: it asks for no more
+frames until something changes (`tests/frames.rs`).
+
 ### 1.29 The field map and trails
 
 Where something has moved, a short trail follows it: dragging, throwing and settling the floating box, the bottom
@@ -2426,6 +2514,9 @@ rest `Eroded` P1; a calm page has no findings;
 the seventeen recipes in every material, dark and light, have no P0 or P1); `render --page recipe-form --audit
 --strict` exits 0.
 
+`Ui::line_inks(key)` reads each line of a text element as drawn: its text range, line box and ink box
+(`LineInk`), for tests and for an application that places things by the text's real ink.
+
 ### 1.32 The beat
 
 `Look::beat: beat::Beat { bpm, steps, swing }` (a preset's `interaction.beat`): `bpm` 40–300, 0 is off (the
@@ -2457,6 +2548,44 @@ front's radius moves a whole step or not at all between frames; frames during `H
 after `Rewind(1)` is the frame drawn a beat before; `Set` of `post.invert` once turns every pixel over (within
 1/255), twice gives the frame back; an event at `"3.2.1"` and one at 4500 ms give the same frame; `bpm` 0 with any
 steps and swing, and the beat's commands, change nothing.
+
+### 1.33 Plates
+
+A plate keeps the ink drawn on it. `El::plate(Plate { fade_s })` on an element: what its subtree draws is not wiped
+the next frame; new ink goes over the old, and a pixel drawn again is new again. It is a picture, not content: it is
+not in the accessibility mirror, its text cannot be selected, and a new window size empties it. `Cmd::ClearPlate {
+key }` empties it in one frame, hard (a cut for the beat); `fade_s` (0–60 s in steps of 0.5; 0 keeps the ink for
+good) is the soft way.
+
+- The plate draws nothing of its own: no edge, no ground, no dimming. An empty plate is byte for byte the page without
+  it. It reaches as far as its clip box and ink is cut at the box's edge, with no fade there (that would draw the box).
+- The ink on a plate is ink: the near image is max-blended, so strokes laid one over another keep a true outline, and
+  every material draws it as usual. There is no material code for plates.
+- At most 4 plates in a window, their images together at most twice the window's area; more are drawn as ordinary
+  elements (keeping nothing) and `Ui::problems` reports `PlateOver`. A slot newly taken starts empty.
+
+The renderer keeps three images for each plate (ink, near, and when each pixel was drawn, in 1/120 s ticks as 24 bits);
+in the G-buffer stage the plate's instances of this frame are drawn into its ink and near images and its age, and the
+kept images are laid on in their place (premultiplied over the ink, max over the near image). The plate clock stops
+while a `Hold` lasts and never runs back: `Rewind` does not take ink back. A transition's mask acts on the plate's ink
+as on anything else, and the plate of a page that went is emptied when the page goes.
+
+**Ageing** (`fade_s` above 0): a pixel is as drawn until four fifths of `fade_s` have passed since it was last drawn,
+then thins out pixel by pixel (each at its own fixed moment, so the ink only lessens), and is gone at `fade_s`. While
+only ageing moves, the runtime asks for at most 30 frames a second; when the last stroke has gone the page is the
+clean page and asks for none. With less motion it is the same. A plate with `fade_s` 0 keeps its ink without asking
+for frames; it belongs in music videos, the lab and pages that say they are a drawing board, not on ordinary pages.
+
+Frames with plates redraw only what changed, as any page does (§1.19); a frame in which ink is ageing redraws every
+plate whole. Text to read on a plate's ink holds what is under it by §1.15's rule, as on any other ink.
+
+Acceptance: `tests/plate.rs` (a stroke stays when the view no longer has it; the cleared frame is as never drawn; an
+empty plate is as no plate in nine materials and both themes; with `fade_s` 4, `a` = 0.25 as just drawn, the ink
+unchanged before 0.5, never growing, empty at 1, at most 30 frames a second and none after; `fade_s` 2 empty 2 s after
+the last stroke with no frames after; ink on a plate loosening in dottr; clearing and inverting in one frame under 5 %
+of pixels changing; a `Hold(2)` byte for byte; five plates keeping four; a new window size emptying them; the same
+timeline three times the same 300 frames; halfway through a crack the ink only in the pieces not yet turned and gone
+at the end; nothing on a plate in the accessibility mirror).
 
 ## 2. Parameters must be exact
 
@@ -2932,6 +3061,7 @@ language marking names the current language); `labsheet <dir> body` gives `body.
 | The field map and trails (§1.29), the `scribblr` thread material and long paths (§1.30), small type and edge notes, field map readouts, Loose Thread, black and white only and invert (§4.2–§4.4, §1.21) | Field map and trails: unit tests in `fieldmap.rs`, `tests/fieldmap.rs`, the drag in `tests/render.rs`, `check` item 19, `bench … map`, `craft <dir> stirr`. Thread: unit tests in `strand.rs`, `tests/strand.rs`, `check` item 20 (1–5), `bench … strand`, `craft <dir> scribblr`. Small type, readouts, black and white only and invert (§4.2–§4.4, `binary` and `invert` in §1.21): the edge note and readout tests in `tests/gaze.rs`, `check` items 7.2, 7.3, 20.6 and 20.7, `craft <dir> loose-thread`. `cargo test`, no `clippy` warnings, all of `check` |
 | Text on a form with depth and facing, hits where things are drawn, words shown whole, the warm-up and the application's own preparation, the audit and the measured ink box (§1.23, §1.26, §1.31) | Done: `cargo test` (with `tests/form.rs`, `tests/pointer.rs`, `tests/warmup.rs`, `tests/audit.rs` and the unit tests of `form.rs`, `hit.rs`, `mesh.rs`), no `clippy` warnings (native and web), rustdoc without warnings; `render --page recipe-form --audit --strict` exits 0, and the audit of every recipe in every material, dark and light, has no P0 or P1 |
 | The legible text under effects, tails with a clear way out, runs of frames at a fixed rate, the materials past half loose, the Crack transition and the beat (§1.6.2, §1.17, §1.30, §1.32, §4.1) | Done: `cargo test` (with `tests/wrap.rs`, `tests/strand.rs`, `tests/frames.rs`, `tests/sample.rs`, `tests/transition.rs`, `tests/beat.rs` and the unit tests of `beat.rs`), no `clippy` warnings (native and web), rustdoc without warnings. Not done: plates, gaze echoes and dashed `INK` leaders |
+| Layout on a 1/64 px grid, pinned absolute children, fitting a subtree, clamping text, previews, clearing the focus, line inks, text that holds what is under it, faces that come later, plates (§1.2, §1.6.5, §1.8, §1.15, §1.31, §1.33) | Done: `cargo test` (with `tests/render.rs`, `tests/text.rs`, `tests/menu.rs`, `tests/access.rs`, `tests/focus.rs`, `tests/legible.rs`, `tests/frames.rs`, `tests/transform.rs`, `tests/faces.rs`, `tests/plate.rs`), no `clippy` warnings natively and for `wasm32` |
 
 Since the split into two repositories, the tools `check`, `pages`, `scenes`, `film`, `samples`, `craft`, `bench`, `shot`,
 `labsheet`, `scroll` and `window`, and the tests that drive gallery pages, are in the website repository.
@@ -3522,3 +3652,27 @@ and echoes (§1.1, §1.6, §1.7, §1.9, §1.10, §1.12, §1.23, §1.28, §1.29):
   rather than 0.6, the same moment after the pieces start.
 - In the press-flash check, a switch's P1 "eroded" finding in dark `dottr` at release is not counted: it is the
   material's own look at rest on the thumb, not the flash; only P1 contrast findings are.
+
+Layout, faces and plates (the fifth set of framework needs):
+
+- `El::fit` with pixel type rounds the scale down to a whole multiple of the face's size, and that floor can take it
+  under `Fit::min` (0.188 for the smallest box in `fit-box.png`, min 0.25); `FitShort` is reported then too. The
+  containment check of `tests/render.rs` is skipped at or under `min`, where clipping is the specified behaviour.
+- `El::clamp`: selecting and copying a clamped text gives the text as shown, not the whole text; the fallback of three
+  periods (a face without `…`) is set at the face's own spacing, not tightened by 0.05 em; taking the clamp away brings
+  the rest in by recomposition (§1.16), not condensing from the ellipsis.
+- Clearing the focus: `tests/focus.rs` checks that the method and the command leave the same way and that the page
+  is then as never focused; it does not compare each leaving frame with the focus moving to another element.
+- `El::fit` and the readout's wrapping are measured; the 1 % comparison with the website's `fit_stage` is the
+  website's to run once it uses `El::fit`.
+- Faces that come later: the warm-up's budget with faces arriving and material shaders fetched as assets are not
+  done; the module still carries the material shaders.
+- Plates: ageing by material (the table of how each material lets a stroke go) and the field acting on a plate's
+  ink per pixel are not done; every material uses plain's thinning out over the last fifth, and the pointer and
+  fronts act on plate ink only as on any decoration drawn this frame (not on kept pixels). So the check that an
+  older stroke differs by more than 25 % at `a` 0.75 in dottr, charr and scribblr does not hold yet. A full-window
+  plate at 1440 × 900 costs on lavapipe (a CPU rasteriser) 2.7 ms a frame with ink kept (12.3 → 15.0 ms) and
+  8.5 ms over a full redraw in a frame where ink ages (49.0 → 57.5 ms); the 0.6 ms budget is for a GPU and has not
+  been measured on one. A see-through group (`El::opacity`) that contains a plate is drawn as if it ended where
+  the plate starts.
+

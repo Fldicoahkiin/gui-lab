@@ -237,7 +237,7 @@ pub struct Renderer {
     blit: wgpu::RenderPipeline,
     /// A see-through group (`El::opacity`): its own ink image, and the pass that lays it on the ink.
     group: Option<(wgpu::TextureView, wgpu::BindGroup)>,
-    /// Each plate's kept images (`El::plate`, DESIGN.md §1.31): ink, near, and when each pixel was drawn
+    /// Each plate's kept images (`El::plate`, DESIGN.md §1.33): ink, near, and when each pixel was drawn
     /// last; made when a slot is first used, emptied by `Cmd::ClearPlate` and a new window size.
     plates: [Option<PlateTex>; crate::scene::PLATES],
     /// Drawing into a plate, its age and laying it on the ink and the near image.
@@ -1285,7 +1285,7 @@ impl Renderer {
                 if stop <= at { if pending && stop == layer && at == layer { draw_tiles(&mut pass); pending = false; } continue; }
                 // Plates in order; several may start at once (empty ones among them).
                 while let Some(p) = kept.next_if(|p| p.start == at) {
-                    // A plate (DESIGN.md §1.31): this frame's ink goes into its kept images (and when it
+                    // A plate (DESIGN.md §1.33): this frame's ink goes into its kept images (and when it
                     // was drawn, into its age), then what they hold is laid on, aged, in its place.
                     let pt = self.plates[p.slot as usize].as_ref().expect("checked");
                     drop(pass);

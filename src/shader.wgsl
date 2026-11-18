@@ -1217,7 +1217,7 @@ struct GOut { @builtin(position) pos: vec4f, @location(0) @interpolate(flat) op:
 }
 @fragment fn fs_group(i: GOut) -> @location(0) vec4f { return textureLoad(tex0, vec2i(floor(i.pos.xy)), 0) * i.op; }
 
-// ── Plates (DESIGN.md §1.31): ink that stays. Each pixel keeps when it was last drawn, in ticks, as 24
+// ── Plates (DESIGN.md §1.33): ink that stays. Each pixel keeps when it was last drawn, in ticks, as 24
 // bits in rgb (a: drawn at all); laid on, a pixel older than 0.8 of the plate's fade thins out (pixel by
 // pixel), and at the fade it is gone. The slot comes in the vertex numbers (3 × slot), as a group's opacity does.
 @fragment fn fs_plate_age(iv: VOut) -> @location(0) vec4f {

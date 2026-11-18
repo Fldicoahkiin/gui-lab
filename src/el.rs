@@ -142,7 +142,7 @@ pub struct Fit {
     /// Where it goes in the box, across and down (0..1).
     pub align: (f32, f32),
 }
-/// A plate (`El::plate`, DESIGN.md §1.31): how long its ink lasts, s (0–60 in steps of 0.5; 0: for
+/// A plate (`El::plate`, DESIGN.md §1.33): how long its ink lasts, s (0–60 in steps of 0.5; 0: for
 /// good): a pixel is as drawn until four fifths of it have passed, then thins out, and is gone at the
 /// end of it.
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -1050,7 +1050,7 @@ impl<M> El<M> {
     /// and still too large, it is drawn at `min` and clipped, and `Ui::problems` says so. There is no
     /// hook after layout: `Ui::rect` reads where things went.
     pub fn fit(mut self, f: Fit) -> Self { self.fit = Some(f); self.clip() }
-    /// Keep what this subtree draws (DESIGN.md §1.31): the next frame does not wipe it, new ink goes
+    /// Keep what this subtree draws (DESIGN.md §1.33): the next frame does not wipe it, new ink goes
     /// over the old, and a pixel drawn again is new again. It is a picture, not content: not read by
     /// assistive technology, not selectable, emptied when the window changes size and by
     /// `Cmd::ClearPlate`. The plate draws nothing of its own (no edge, no ground) and reaches as far as

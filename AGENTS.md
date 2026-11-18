@@ -128,6 +128,26 @@ let clock: El<()> = text("09:41", 14.0, Paint::DIM).key("clock").recompose(false
 let _ = (count, clock);
 ```
 
+## Fitting, clamping, faces and plates
+
+```rust
+use amenui::el::{El, Fit, Paint, Plate, col, text};
+// A stage drawn at its own size and zoomed to fit the window (only shrinks, to a quarter at least).
+let stage: El<()> = col().key("frame").fill_width().fill_height().fit(Fit::default())
+    .child(col().key("stage").width(1440.0).height(900.0));
+// At most three lines, ending in the face's own ellipsis; `Ui::clamped("blurb")` says whether it was cut.
+let blurb: El<()> = text("A long paragraph to read.", 14.0, Paint::TEXT).key("blurb").clamp(3);
+// Ink that stays: what the board's subtree draws is kept, each pixel gone 4 s after it was last drawn.
+let board: El<()> = col().key("board").fill_width().fill_height().plate(Plate { fade_s: 4.0 });
+let _ = (stage, blurb, board);
+```
+
+- `absolute(left, top, right, bottom)` pins against the parent's padding box, never the window.
+- A face that comes later: declare it (`text::with_declared`, `Ui::declare_face`), set text in it as usual, and add
+  its bytes when they come (`Ui::add_face`); fetch what `Ui::faces_wanted()` lists. Text stands in meanwhile.
+- `Ui::clear_focus()` / `Cmd::ClearFocus` after a route change; `El::preview(true)` to show a sheet or menu in place.
+- Plates are for music videos, the lab and drawing boards, not ordinary pages; `Cmd::ClearPlate { key }` empties one.
+
 ## Meshes, particles, presets
 
 A 3D object is one more element: `el::mesh(MeshId::TORUS)` or `el::scene3d(Scene3d { items, camera, light, spec, picture })`,
