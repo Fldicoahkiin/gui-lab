@@ -201,7 +201,7 @@ fn a_scoped_commit_plays_inside_its_box_and_nothing_outside_it_changes() {
 mod scoped_crack {
     use amenui::el::{El, Paint, col, row, text};
     use amenui::style::{Look, Material};
-    use amenui::widgets::button;
+    use amenui::widgets::{Variant, button, button_as};
     pub struct S { pub alt: bool }
     pub fn view(s: &S) -> El<bool> {
         // The same elements before and after (nothing is born): only the panel's ground changes.
@@ -209,6 +209,17 @@ mod scoped_crack {
             .fill(Paint::tone(if s.alt { 0.3 } else { 0.08 }))
             .child(text("A panel", 22.0, Paint::INK).key("panel/title"))
             .child(button("swap", "Swap", !s.alt).commit())
+            .commit_scope();
+        row().key("page").pad(24.0, 24.0).gap(40.0)
+            .child(col().key("left").width(160.0).child(text("Outside the panel. Nothing here changes.", 15.0, Paint::TEXT).key("note")))
+            .child(panel)
+    }
+    /// The button itself changes too: the page's ground with a line round it, then the accent.
+    pub fn view_button(s: &S) -> El<bool> {
+        let panel = col().key("panel").width(220.0).height(220.0).pad(16.0, 16.0).gap(12.0)
+            .fill(Paint::tone(if s.alt { 0.3 } else { 0.08 }))
+            .child(text("A panel", 22.0, Paint::INK).key("panel/title"))
+            .child(button_as("swap", "Swap", if s.alt { Variant::Accent } else { Variant::Default }, !s.alt).commit())
             .commit_scope();
         row().key("page").pad(24.0, 24.0).gap(40.0)
             .child(col().key("left").width(160.0).child(text("Outside the panel. Nothing here changes.", 15.0, Paint::TEXT).key("note")))
@@ -284,4 +295,56 @@ fn a_scoped_crack_breaks_the_scope_into_pieces_of_its_own_size() {
     eprintln!("{} pieces, {between} on their way at 0.6; shown {:?}", pieces.len(), shares.iter().map(|s| (s * 100.0).round() / 100.0).collect::<Vec<_>>());
     assert!(pieces.len() >= 8, "only {} pieces in the panel", pieces.len());
     assert!(between * 4 <= pieces.len(), "{between} of {} pieces are partly gone at 0.6", pieces.len());
+}
+
+#[test]
+fn in_a_scoped_crack_the_pressed_button_goes_over_with_the_pieces_it_is_in() {
+    let Ok(mut o) = Offscreen::try_new(W, H) else { eprintln!("no GPU adapter here: skipped"); return };
+    let mut ui = amenui::ui::Ui::new(scoped_crack::S { alt: false }, scoped_crack::view_button, scoped_crack::update, fonts(), W, H, 1.0).on_look(scoped_crack::look);
+    let mut t = 0.0;
+    while t < 1.0 { t += 1.0 / 60.0; ui.tick(t); let look = ui.look(); let _ = o.render(&mut ui, &look); }
+    let look = ui.look();
+    let before = o.render(&mut ui, &look);
+    let p = ui.node("panel").expect("panel").rect;
+    let bb = ui.node("swap").expect("swap").rect;
+    let (x, y) = bb.center();
+    ui.press(x, y);
+    ui.release(x, y);
+    ui.pointer_leave();
+    let mut frames = vec![];
+    for _ in 0..60 { t += 1.0 / 60.0; ui.tick(t); let look = ui.look(); frames.push(o.render(&mut ui, &look)); }
+    let last = frames.last().expect("frames").clone();
+    let dur = 0.8 * (p.w.hypot(p.h) / (W as f32).hypot(H as f32)).clamp(0.5, 1.0);
+    let at = |x: f32| ((x * dur * 60.0).round() as usize).clamp(1, frames.len()) - 1;
+    let ix = |x: f32, y: f32| (y as u32 * W + x as u32) as usize;
+    let changes = |i: usize| gap_of(px(&before, i), px(&last, i)) >= 24;
+    let new = |f: &[u8], i: usize| gap_of(px(f, i), px(&last, i)) < gap_of(px(f, i), px(&before, i));
+    // The button's own pixels that differ between the pages (its ground, line and label).
+    let button: Vec<usize> = (bb.y as u32 + 1..bb.bottom() as u32 - 1).flat_map(|y| (bb.x as u32 + 1..bb.right() as u32 - 1).map(move |x| ix(x as f32 + 0.5, y as f32 + 0.5))).filter(|&i| changes(i)).collect();
+    assert!(button.len() as f32 > 0.6 * bb.w * bb.h, "the button changes: {} px", button.len());
+    let share = |f: &[u8], set: &[usize]| set.iter().filter(|&&i| new(f, i)).count() as f32 / set.len().max(1) as f32;
+    // Until the pieces start to go the button is the old page's, as the panel round it is.
+    for (f, frame) in frames.iter().enumerate().take(at(0.25)) {
+        let s = share(frame, &button);
+        assert!(s < 0.12, "frame {f}: {:.0} % of the button is the new one already", s * 100.0);
+    }
+    // A piece goes over whole, the button's part of it with the ground round it: just above and below
+    // the button (4 px out and in), the two sides of its edge show the same page but where a crack runs.
+    let (mut pairs, mut apart) = (0usize, 0usize);
+    let mut parted = false;
+    for f in &frames[..at(1.0)] {
+        let s = share(f, &button);
+        parted |= s > 0.15 && s < 0.85;
+        for xx in (bb.x as u32 + 8..bb.right() as u32 - 8).step_by(2) {
+            for (yi, yo) in [(bb.y + 4.0, bb.y - 4.0), (bb.bottom() - 5.0, bb.bottom() + 4.0)] {
+                let (a, b) = (ix(xx as f32 + 0.5, yi), ix(xx as f32 + 0.5, yo));
+                if !changes(a) || !changes(b) { continue; }
+                pairs += 1;
+                if new(f, a) != new(f, b) { apart += 1; }
+            }
+        }
+    }
+    eprintln!("button shown {:?}; {apart} of {pairs} edge pairs apart", frames[..at(1.0)].iter().map(|f| (share(f, &button) * 100.0).round()).collect::<Vec<_>>());
+    assert!(parted, "the button is never part old and part new: it does not go with the pieces");
+    assert!(pairs > 200 && (apart as f32) < 0.12 * pairs as f32, "{apart} of {pairs} pairs across the button's edge show different pages");
 }
