@@ -1673,7 +1673,8 @@ by `r1`: measured 0.24–0.35). Measured on dottr at looseness 1: the label's ow
 `r0` 0.993, beyond `r1` 0.988 of the shape's loose ink unchanged; it costs about 7 ms a frame on lavapipe for the 528
 holds of a full gallery page (60.9 → 68.8 ms, 64.6 → 71.7 ms). `tests/legible.rs`. A control's island: for all nine materials at looseness 0.3, 0.6 and 1, both themes and labels of 11, 14 and 20
 px, every pixel of the island a pixel in from its edge (but the label's ink) is the material's frame at rest to
-1/255, and beyond 12 px of it the control is as it is without its label (glitchr's rows aside); text on others' ink:
+1/255, beyond 12 px of it the control is as it is without its label (glitchr's rows aside), and every material but
+plain loosens at least 50 px of the control away from the island (scribblr into its thread); text on others' ink:
 within `r0` the frame at rest to 1/255, and every glyph of a word in one island
 (`a_control_whose_own_fill_loosens_keeps_one_box_round_its_content_at_rest`,
 `text_on_others_ink_keeps_an_island_at_rest_and_one_a_word`).
@@ -2512,7 +2513,8 @@ one to three places with the most energy knot into tangles of the same thin line
 times, and two long tails, one coming in from
 the scope's edge to the line's start and one going out from its end to another edge. Coming back runs in reverse:
 knots and tails shorten, vertices return in the opposite order, the line settles back onto the outline and the
-glyphs fill in. Text to read and controls never become thread and always stay as they are.
+glyphs fill in. Text to read and controls never become thread and always stay as they are, except a control's
+own fill held loose (below).
 
 - **Two parts.** The shading stage's `m_scribblr` is just `exact` (a flat ground, equal to `plain` at `k = 0`). The
   thread is geometry: in `finish`, after decode (`Ui::paint_strands`), the runtime computes the thread for each
@@ -2588,7 +2590,11 @@ glyphs fill in. Text to read and controls never become thread and always stay as
 - **Text to read and controls** (`legible`) don't become thread, their fill doesn't fade, and the map's flow
   doesn't push them (under `scribblr` their instances loosen in place in the G-buffer stage, `look.w` = 1). Rule 3 in
   its own words: the pointer passing over text leaves the text alone. Thread is only for headings
-  (`legible(false)`), shapes and decoration.
+  (`legible(false)`), shapes and decoration, and for a control's own fill that the page holds loose
+  (`El::loose` above 0 on a control whose own instances are all shapes): as in every material (§1.15) the fill
+  comes apart, here into a thread round its outline that keeps out of its label's box, while within the island
+  round the label it stays whole (the faded fill is restored there, `core_at`); fronts passing a control still
+  leave it alone.
 - **The thread starts from the outline as drawn**: the G-buffer stage pushes instances that aren't for reading
   along the map's flow by `flow × drift` (§1.29), and the thread's rest path adds the same offset, so as the fill
   fades the line lies exactly on it, not as an offset shadow beside it. The thread's bars don't read the map

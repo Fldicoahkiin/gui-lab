@@ -4265,7 +4265,8 @@ impl<S, M: Clone> Ui<S, M> {
         for (ni, idx) in own.iter().enumerate() {
             let n = &self.nodes[ni];
             // A line whose face is changing comes apart itself as the sweep passes: nothing keeps out of it.
-            if idx.is_empty() || !n.legible || n.hidden || self.swept_nodes.contains(&ni) { continue; }
+            // Nor does a control's own fill held loose (it threads; its label keeps its box).
+            if idx.is_empty() || !n.legible || n.hidden || self.swept_nodes.contains(&ni) || self.fill_threads(ni, idx) { continue; }
             let b = idx.iter().map(|&i| { let r = self.scene.instances[i].rect; let p = if self.scene.instances[i].paint[3] == GLYPH { spread } else { 0.0 }; [r[0] + p, r[1] + p, r[0] + r[2] - p, r[1] + r[3] - p] })
                 .fold([f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY], |a, r| [a[0].min(r[0]), a[1].min(r[1]), a[2].max(r[2]), a[3].max(r[3])]);
             let c = [n.clip.x * s, n.clip.y * s, n.clip.right() * s, n.clip.bottom() * s];
@@ -4340,7 +4341,7 @@ impl<S, M: Clone> Ui<S, M> {
             let n = &self.nodes[ni];
             // Text to read and controls hold: no thread, no fade, not carried by the map (DESIGN.md §1.30),
             // except as their face changes (DESIGN.md §1.6.5).
-            if (n.legible && !self.swept_nodes.contains(&ni)) || n.hidden || modal.is_some_and(|l| idx[0] < l) || matches!(n.content, Content::Canvas(_)) || self.recomps.contains_key(&n.key) || self.decodes.contains_key(&n.key) || (running && self.roles[ni] != 0) || idx.iter().any(|&i| self.flows.contains_key(&self.owners[i].1)) { continue; }
+            if (n.legible && !self.swept_nodes.contains(&ni) && !self.fill_threads(ni, idx)) || n.hidden || modal.is_some_and(|l| idx[0] < l) || matches!(n.content, Content::Canvas(_)) || self.recomps.contains_key(&n.key) || self.decodes.contains_key(&n.key) || (running && self.roles[ni] != 0) || idx.iter().any(|&i| self.flows.contains_key(&self.owners[i].1)) { continue; }
             // As the thread shows it: through 0.15–0.4 quickly (`strand::shown`).
             // A line whose face is changing is one thread: as loose as its glyphs are on average, so it
             // comes apart a little as the sweep passes and is whole again after it.
@@ -4426,6 +4427,12 @@ impl<S, M: Clone> Ui<S, M> {
         }
         self.scene.instances.reserve(out.len());
         for i in out { self.scene.push(i); }
+    }
+    /// Whether scribblr threads a control's own fill (DESIGN.md §1.30): one held loose (`El::loose`) whose
+    /// own instances are all shapes. Its label is text to read and holds; the fill comes apart round it, and
+    /// within `r0` of the label it is whole (its island, as in every material).
+    fn fill_threads(&self, ni: usize, idx: &[usize]) -> bool {
+        self.nodes[ni].loose > 0.0 && idx.iter().all(|&i| self.scene.instances[i].paint[3] == SHAPE)
     }
     /// The threads scribblr drew in the last frame: each element's key, its looseness and its pieces
     /// (device px; DESIGN.md §1.30).

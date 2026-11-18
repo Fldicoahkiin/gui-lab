@@ -14,7 +14,8 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
   rest (DESIGN.md §1.15).
 - A filled control whose own fill is loosened keeps one island: its content's ink box grown by `max(5, 0.36 × size)`,
   rounded, within its outline at rest, with a hard edge. Text on others' ink keeps its glyph island, with the gaps
-  inside a word held too. `Scene` has `islands`.
+  inside a word held too. `Scene` has `islands`. Under scribblr such a control's fill becomes a thread round its
+  outline, with the island whole at rest fill.
 
 ## Blades, gusts and pacing
 

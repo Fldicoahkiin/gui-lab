@@ -380,6 +380,9 @@ fn a_control_whose_own_fill_loosens_keeps_one_box_round_its_content_at_rest() {
             // Away from it the control is the material at its own looseness: no band round the island.
             // (glitchr's bands take whole rows, so a row through the island keeps it where it is.)
             if m == Material::Glitchr { continue; }
+            // The control does loosen there: away from the island it is not its own rest.
+            let moved = (0..n).filter(|&i| { let (x, y) = ((i as u32 % W) as f32 + 0.5, (i as u32 / W) as f32 + 0.5); in_box(x, y, outline, 2.0) && !in_box(x, y, island, -12.0) && diff(&f, &rest, i) > 4 }).count();
+            if m != Material::Plain && moved < 50 { bad.push(format!("{tag}: only {moved} px of the control away from the island loosened")); }
             let band = (0..n).filter(|&i| { let (x, y) = ((i as u32 % W) as f32 + 0.5, (i as u32 / W) as f32 + 0.5); !in_box(x, y, [island[0] - 12.0, island[1] - 12.0, island[2] + 12.0, island[3] + 12.0, g + 12.0], 0.0) && diff(&f, &bare, i) > 2 }).count();
             if band > 0 { bad.push(format!("{tag}: {band} px beyond 12 px of the island differ from the control without its label")); }
         } }
