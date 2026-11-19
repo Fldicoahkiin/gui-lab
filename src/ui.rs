@@ -739,6 +739,9 @@ pub struct Ui<S, M> {
     tree: TaffyTree<usize>,
     tids: HashMap<String, NodeId>,
     mkeys: HashMap<NodeId, u64>,
+    /// Elements a restage moved by their offsets since the tree was last laid out (`Ui::swap_stage`): where
+    /// they are (unrounded, in their parents), which the tree's own layout does not know.
+    moved: HashMap<NodeId, (f32, f32)>,
     /// Virtual lists: each one's viewport height as last placed, and the rows it has built.
     virt_views: HashMap<String, f32>,
     virt_made: HashMap<String, (usize, usize)>,
@@ -1130,7 +1133,7 @@ impl<S, M: Clone> Ui<S, M> {
             marks_moving: false, caret: None, caret_on: true, static_loose: false, mclock: 0.0, moving: false, gclock: 0.0, ground_moving: false,
             perf: crate::perf::Perf { quality: 1.0, ..Default::default() }, span: 0, painting: false, overlay: 0, overlay_at: 0.0, overlay_box: None, overlay_w: (0, (0.0, 0.0), 0.0), fade_s: REDUCED_FADE, came: vec![], arriving: HashMap::new(), sweeping: false, swept_nodes: vec![], remeasure: false, plate_slots: Default::default(), plate_sig: Default::default(), plate_clear: vec![], plate_over: vec![], pclock: 0.0, plate_frame: f32::NEG_INFINITY, assets: HashMap::new(), assets_asked: Default::default(), shape_seen: 0.0, hud_idle: false, rebuilt: 0,
             text_capture: None, sel: None, sel_drag: false, clicks: (f32::NEG_INFINITY, 0.0, 0.0, 0), a11y_sent: HashMap::new(), a11y_focus: None,
-            tree: TaffyTree::new(), tids: HashMap::new(), mkeys: HashMap::new(), virt_views: HashMap::new(), virt_made: HashMap::new(), stack_w: HashMap::new(),
+            tree: TaffyTree::new(), tids: HashMap::new(), mkeys: HashMap::new(), moved: HashMap::new(), virt_views: HashMap::new(), virt_made: HashMap::new(), stack_w: HashMap::new(),
             scrolling: Scrolling::default(), touch: None, touches: HashSet::new(), touching: false, fling: None, over: HashMap::new(), motion: HashMap::new(), scroll_paint: false, event_t: None, ev: 0.0,
             recs: HashMap::new(), recomps: HashMap::new(), slides: HashMap::new(), no_recompose: false,
             meshes: crate::mesh::Library::default(), mesh_hover: None, glyphs: Default::default(), prep: Default::default(), move_over: None, particle_gpu: false, motes: vec![], shed_at: HashMap::new(), shed_owed: HashMap::new(), field_marks: HashMap::new(), seen: HashMap::new(), outlines: HashMap::new(), decodes: HashMap::new(), decode_last: HashMap::new(), last_morph: None, left: Default::default(), queued: vec![], flushing: false, coalesce: false, defer: 0, stale_layout: false, stale_paint: false, motes_made: 0,
@@ -3248,7 +3251,7 @@ impl<S, M: Clone> Ui<S, M> {
                 let _ = self.tree.set_children(t, &keep);
             }
         }
-        for t in gone { let _ = self.tree.remove(t); self.mkeys.remove(&t); changed = true; }
+        for t in gone { let _ = self.tree.remove(t); self.mkeys.remove(&t); self.moved.remove(&t); changed = true; }
         if !moved.is_empty() {
             for i in 0..nodes.len() {
                 let kids: Vec<NodeId> = built.kids[i].iter().map(|&c| nodes[c].tid).collect();
@@ -3263,6 +3266,7 @@ impl<S, M: Clone> Ui<S, M> {
         if changed {
             let space = Size { width: AvailableSpace::Definite(self.size.0), height: AvailableSpace::Definite(self.size.1) };
             self.perf.counters.layouts += 1;
+            self.moved.clear();
             // Laid out by a function of the leaves alone, so taffy is built once and not for each `Ui` type.
             let leaves: Vec<(&Content, u16)> = nodes.iter().map(|n| (&n.content, n.clamp)).collect();
             if compute_layout(&mut self.tree, root, space, &mut self.text, &leaves).is_err() { return Some(nodes); }
@@ -3281,7 +3285,11 @@ impl<S, M: Clone> Ui<S, M> {
             self.perf.counters.layouts_skipped += 1;
         }
         self.rebuilt = touched;
-        for n in nodes.iter_mut() { if let Ok(l) = self.tree.layout(n.tid) { n.local = *l; let u = self.tree.unrounded_layout(n.tid); n.exact = (u.location.x, u.location.y); } }
+        for n in nodes.iter_mut() {
+            if let Ok(l) = self.tree.layout(n.tid) { n.local = *l; let u = self.tree.unrounded_layout(n.tid); n.exact = (u.location.x, u.location.y); }
+            // Not laid out since a restage moved it: where the restage put it.
+            if let Some(&e) = self.moved.get(&n.tid) { n.exact = e; n.local.location = taffy::Point { x: e.0.round(), y: e.1.round() }; }
+        }
         Some(nodes)
     }
     /// How much each box marked `El::fit` zooms its subtree, in the order they come in the view, from
@@ -4414,6 +4422,7 @@ impl<S, M: Clone> Ui<S, M> {
                 // Where the layout would put it, on whole px; the tree has its new offsets for the next one.
                 n.exact = (n.exact.0 + dx, n.exact.1 + dy);
                 n.local.location = taffy::Point { x: n.exact.0.round(), y: n.exact.1.round() };
+                self.moved.insert(n.tid, n.exact);
                 let _ = self.tree.set_style(n.tid, built.styles[j].clone());
             }
         }

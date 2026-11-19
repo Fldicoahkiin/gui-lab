@@ -217,3 +217,33 @@ fn a_stage_whose_messages_are_its_own_is_restaged_as_the_hand_drags_it() {
     let b1 = b.perf().counters;
     assert!(b1.layouts - b0.layouts >= 29, "without it each drag frame lays the page out: {}", b1.layouts - b0.layouts);
 }
+
+/// Restages one after another, with views of the page between that lay nothing out (the styles are
+/// those the restages gave the tree): each moved element is where a whole layout puts it, every frame.
+#[test]
+fn an_element_moved_by_many_restages_is_where_a_layout_puts_it() {
+    use amenui::ui::PointerKind;
+    let mk = |local: bool| {
+        let view: fn(&dragged::D) -> El<(f32, f32)> = if local { |d| dragged::view(d, true) } else { |d| dragged::view(d, false) };
+        let mut u = Ui::new(dragged::D { x: 60.0, y: 60.0, n: 0 }, view, |d, (x, y)| { (d.x, d.y) = (x, y); d.n += 1; }, fonts(), 400, 300, 1.0)
+            .on_look(|_| Look { material: Material::Plain, ..Look::default() })
+            .stage_view(|d, k| match k { "weld" => Some(dragged::stage(d, true)), "count" => Some(dragged::count(d)), _ => None });
+        u.tick(1.0);
+        u.settle();
+        u
+    };
+    let (mut a, mut b) = (mk(true), mk(false));
+    let r = a.node("weld").expect("stage").rect;
+    let (ox, oy) = (r.x, r.y);
+    for u in [&mut a, &mut b] { u.pointer_down(1, PointerKind::Mouse, ox + 60.0, oy + 60.0, false); u.settle(); }
+    let mut t = 1.0;
+    for f in 0..24 {
+        t += 1.0 / 60.0;
+        let (x, y) = (ox + 60.0 + f as f32 * 3.5, oy + 60.0 + f as f32 * 3.15);
+        for u in [&mut a, &mut b] { u.pointer_moved(1, PointerKind::Mouse, x, y); u.tick(t); u.settle(); }
+        // Every third frame the page is viewed again with nothing to lay out.
+        if f % 3 == 2 { a.relayout(); }
+        let (ra, rb) = (a.node("chip").unwrap().rect, b.node("chip").unwrap().rect);
+        assert!((ra.x - rb.x).abs() < 0.51 && (ra.y - rb.y).abs() < 0.51, "the chip at frame {f}: {ra:?}, a layout puts it at {rb:?}");
+    }
+}

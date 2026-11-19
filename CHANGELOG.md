@@ -28,6 +28,8 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
 - A renderer made after the page was painted (`Offscreen::new` in a render tool) draws it: it sends the whole glyph
   atlas on its first frame, and a cached subtree its plates do not hold is drawn again (`Ui::plates_lost`). A
   scene drawn twice with no paint between inks its plates once (`Scene::paint`).
+- An element moved by its offsets in a restage stays where it was moved through a view of the page that lays
+  nothing out; it had gone back to where the last layout put it.
 
 ## For Kern
 
