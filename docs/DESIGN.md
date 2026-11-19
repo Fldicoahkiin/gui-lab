@@ -1339,7 +1339,10 @@ the part that shows, without loosening, whole until the picture lands; what of i
 of the part that showed (its centre within 3 px of it: a frame round the window) is the window's, and fades
 over `out_ms` where it was, under the picture. The rest of the new subtree is there at once when the picture
 lands, as the old goes, so each note over the picture is drawn once every frame and never missing; everything
-new outside the flows comes in over `fade_ms` once the picture has landed. A picture that grows keeps the look's ground the old
+new outside the flows comes in over `fade_ms` once the picture has landed. What the new page lays out only
+after the flow began (a view while it is on its way: a note shown once what it follows is in view, a
+drawing's new marks) comes in as what was new when it began does, from the same start (`Ui::flow_late`):
+never drawn at once where it is, outside the part of the picture that shows. A picture that grows keeps the look's ground the old
 page's until then (`Ui::look`), so around it is the page it came from, and the new page's ground comes in
 under a picture that covers it. A picture that shrinks takes its page with it: the look's ground is the new
 page's at once, what else of the old page lies in the part that showed rides with the picture too, and what

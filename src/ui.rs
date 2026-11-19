@@ -325,6 +325,11 @@ struct FlowRec {
     /// An instance with the same key on both pages, carried by a growing picture (`Keyed`).
     keyed: Option<Keyed>,
 }
+/// A flow on its way, for what the new page draws only after it began (a note shown once what it
+/// follows is in view, a drawing's new marks): it comes in as what was new when the flow began does,
+/// from the same start. `grows`: the flows of the subtrees that grow; `seen`: the identities the page
+/// has had since it began; `end`: when what comes in has come in.
+struct FlowJoin { start: f32, wait: f32, fade: f32, grows: HashSet<Rc<str>>, seen: HashSet<u64>, end: f32 }
 /// An instance of an element keyed the same on both pages of a flow that grows (`Cmd::Flow`): it goes
 /// from where it was to where it is with the picture's transform, its point `pin` (its centre, or an
 /// own-size label's anchor) carried by the picture and brought onto its new place on the same cubic;
@@ -541,6 +546,9 @@ pub struct Ui<S, M> {
     clearing: bool,
     /// Own-size type keyed the same on both pages of a growing flow at another size (`ViewProblem::FlowOwnSize`).
     flow_own: Vec<String>,
+    /// A flow on its way (`Cmd::Flow`): what the new page drew when it began, and how what comes on the
+    /// page after it began comes in (`flow_late`).
+    flow_join: Option<FlowJoin>,
     /// Views with more labels shown while clear than are checked (`ViewProblem::ShowClearMany`).
     clear_many: Vec<(String, usize)>,
     /// The scale each box marked `El::fit` gave its subtree in the last layout.
@@ -1125,7 +1133,7 @@ impl<S, M: Clone> Ui<S, M> {
         let mut ui = Self {
             state, view, update, text: Text::new(faces), size: (0.0, 0.0), scale, clock: 0.0, wall: 0.0, bclock: crate::beat::Clock::default(), sent: vec![], sets: vec![], nodes: vec![], scene: Scene::default(),
             owners: vec![], page_len: 0, field: Field::default(), scroll: HashMap::new(), births: HashMap::new(), ramp: None, text_births: HashMap::new(),
-            hover: None, focus: None, after_focus: None, fit_short: vec![], grain_at: None, clears: HashMap::new(), clearing: false, clear_many: vec![], flow_own: vec![], fit_k: HashMap::new(), fit_last: None, pressed: None, capture: None, modal_at: None, modal_key: None, return_focus: None, split: None, splits: 0,
+            hover: None, focus: None, after_focus: None, fit_short: vec![], grain_at: None, clears: HashMap::new(), clearing: false, clear_many: vec![], flow_own: vec![], flow_join: None, fit_k: HashMap::new(), fit_last: None, pressed: None, capture: None, modal_at: None, modal_key: None, return_focus: None, split: None, splits: 0,
             keyboard: false, marks: Marks::default(), sized: None, commands: None, unseen: vec![], stages: vec![], stage_input: (false, false), stage_add_ms: 0.0, faces_to: None, root_roles: Default::default(), scaler: Default::default(), stage_pin: None, scaler_fed: f64::NEG_INFINITY, governed: false, stepped: None, stage_of: None, stale_stages: vec![], restaging: None, base: vec![], tags: vec![], roles: vec![],
             run: None, painted_phase: 0, flows: HashMap::new(), ghosts: vec![], grows: vec![], ground_seen: None, ground_hold: None, body_len: 0, animating: false, lifted: HashMap::new(),
             gaze_of: None, gaze_seen: HashMap::new(), annots: vec![], focused: None, focus_moved: false, readout: gaze::Readout::default(), hovered: None, pointer_of: None, scripted: false, ticked: None, warm: None, warmed: None, owed: false, soft_shown: false, ambient: 60.0, input_t: -1e9, frame_t: -1e9, tick_gap: 1.0 / 60.0, unused_key: None, shortcut: None, scrolled_of: None, released: None, input: None,
@@ -1651,7 +1659,7 @@ impl<S, M: Clone> Ui<S, M> {
         let off = self.timing.off;
         let mut cut = false;
         if off.morphs && self.run.is_some() { self.run = None; cut = true; }
-        if off.flows && !self.flows.is_empty() { self.flows.clear(); cut = true; }
+        if off.flows && !self.flows.is_empty() { self.flows.clear(); self.flow_join = None; cut = true; }
         if off.recompose && !self.recomps.is_empty() { self.recomps.clear(); cut = true; }
         if off.decode && !self.decodes.is_empty() { cut = true; }
         if off.fronts && self.field.fronts.iter().any(|f| f[3] > 0.0) { for f in &mut self.field.fronts { f[3] = 0.0; } cut = true; }
@@ -3033,7 +3041,7 @@ impl<S, M: Clone> Ui<S, M> {
         if std::mem::take(&mut self.focus_moved) && let Some(f) = self.focused && f(&mut self.state, self.focus.as_deref()) { self.layout(); }
         self.morph_last();
         self.no_recompose = false;
-        if let (Some(f), Some(old)) = (flow, old) { self.flow_from(old, f); }
+        if let (Some(f), Some(old)) = (flow, old) { self.flow_from(old, f); } else { self.flow_late(); }
         for c in cmds {
             match c {
                 Cmd::Morph { from, to, spec } => { let d = drawn.next().unwrap_or_default(); self.morph_drawn(&from, &to, spec, d) }
@@ -6098,8 +6106,27 @@ impl<S, M: Clone> Ui<S, M> {
             self.ghosts.push(g);
         }
         if grows_out && let Some(g) = self.ground_seen { self.ground_hold = Some((g, now + flight)); }
+        self.flow_join = Some(FlowJoin { start: now, wait, fade, grows: grow_of.keys().cloned().collect(), seen: new_ids, end: now + wait + fade });
         self.animating = true;
         self.finish();
+    }
+    /// A view laid out while a flow is on its way: what it draws that the page had not drawn since the
+    /// flow began comes in as what was new then does (`flow_from`): over a picture that grows, once it
+    /// has landed; elsewhere fading in after it. Not drawn at once where it is, outside the part of
+    /// the picture that shows.
+    fn flow_late(&mut self) {
+        let Some(j) = &mut self.flow_join else { return };
+        if self.clock >= j.end { self.flow_join = None; return; }
+        let mut any = false;
+        for i in 0..self.page_len {
+            let id = self.owners[i].1;
+            if !j.seen.insert(id) || self.flows.contains_key(&id) { continue; }
+            let fade = if self.tags[i].as_ref().is_some_and(|t| j.grows.contains(&t.flow)) { 0.0 } else { j.fade };
+            let (a, b) = (j.start + j.wait, j.start + j.wait + fade);
+            self.flows.insert(id, FlowRec { from: self.base[i].rect, clip: self.base[i].clip, start: j.start, dur: j.wait + fade.max(1e-3), loose: 0.0, src: None, fade_in: Some([a, b]), grow: None, keyed: None });
+            any = true;
+        }
+        if any { self.animating = true; self.finish(); }
     }
 
     /// Work out what changed in each recomposing text since it was last painted (DESIGN.md §1.16). The

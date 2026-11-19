@@ -316,3 +316,33 @@ fn coming_back_the_other_window_waits_and_keeps_its_own_colour() {
 
 #[test]
 fn and_back_the_piece_shrinks_into_its_window_over_the_index_ground() { flight(true); }
+
+/// A note the new page lays out only after the flow began (the site's labels shown once what they
+/// follow is in view, a drawing's new marks), outside the part of the picture that shows: it is not
+/// drawn until the picture has landed, as what was new on the page when the flow began, and then it is.
+#[test]
+fn a_note_laid_out_mid_flight_outside_the_growing_picture_waits_for_it_to_land() {
+    let mut u = open();
+    let t0 = u.now();
+    go(&mut u, true);
+    u.tick(t0 + 0.055);
+    u.state.birds = 1;
+    u.relayout();
+    let mut seen = 0;
+    for ms in [60.0f32, 100.0, 140.0, 200.0, 300.0, 400.0] {
+        u.tick(t0 + ms / 1000.0);
+        let r = shows(&pictures(&u, PIC_A)[0]);
+        let bird = u.instances_of("page/layer/bird0");
+        assert!(!bird.is_empty(), "{ms} ms: the late note is laid out");
+        for i in bird.iter().filter(|i| visible(i)) {
+            let s = shows(i);
+            assert!(s[0] >= r[0] && s[1] >= r[1] && s[2] <= r[2] && s[3] <= r[3], "{ms} ms: the late note is drawn outside the growing picture: {s:?} in {r:?}");
+            seen += 1;
+        }
+        if ms < SPEC.flow_ms { assert!(bird.iter().all(|i| i.paint[2] <= 0.002), "{ms} ms: the late note is drawn before the picture landed"); }
+    }
+    assert_eq!(seen, 0, "the note lies outside the picture until it lands");
+    u.tick(t0 + 1.0);
+    u.settle();
+    assert!(u.instances_of("page/layer/bird0").iter().all(|i| i.paint[2] > 0.99), "landed, the late note is there");
+}
