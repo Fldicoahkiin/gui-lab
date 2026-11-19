@@ -205,12 +205,22 @@ const PAUSE_MS: f64 = 250.0;
 const LEAST_FRAME_MS: f32 = 4.0;
 /// The interval a piece must not run under for long while a lower scale is available (50 fps), ms.
 const SLOWEST_MS: f32 = 20.0;
+/// The steps up a stage's scale takes at most until `StageScale::reset` (a route's visit), all levels
+/// together.
+pub const STAGE_UPS: u8 = 2;
+/// The wait for a step up with no missed frame, and the time after one within which a step down holds
+/// the lower level, ms.
+const UP_WAIT_MS: f64 = 5000.0;
+/// A step up is taken when the frames' cost there, by the new scale's pixels, would be under this share
+/// of the display frame.
+const UP_FIT: f32 = 0.85;
 
 /// The stage's device scale (DESIGN.md §1.35): one step down when the 95th percentile frame interval
-/// over 3 s is above 1.5 display frames (or 50 fps); one step up after a wait with no missed frame and
-/// the frames' cost under 60 % of the display frame, never while a pointer is down. The wait is 5 s,
-/// doubling each time the stage comes back to a level it left; after the third return it stays below
-/// until `reset` (a new route, a new window size). Every step is a cut.
+/// over 3 s is above 1.5 display frames (or 50 fps); one step up after 5 s with no missed frame and the
+/// frames' cost under 60 % of the display frame, when the 95th percentile cost there times the pixels'
+/// ratio (the new scale over the old, squared) is under 85 % of it, never while a pointer is down. At
+/// most `STAGE_UPS` steps up until `reset` (a new route, a new window size); a step down within 5 s of a
+/// step up holds the lower level until then too. Every step is a cut.
 #[derive(Clone, Debug, Default)]
 pub struct StageScale {
     /// The device's scale and the scales for it: its own, then each of `STAGE_SCALES` below it.
@@ -218,8 +228,12 @@ pub struct StageScale {
     levels: Vec<f32>,
     /// The index into `levels`.
     pub level: usize,
-    /// How many times the stage came back up to each level.
-    returns: Vec<u8>,
+    /// How many times it stepped up, and when it last did (ms).
+    ups: u8,
+    up_at: Option<f64>,
+    /// It steps up no more until `reset`: a step down came within `UP_WAIT_MS` of a step up, or it has
+    /// taken `STAGE_UPS`.
+    pub held: bool,
     /// The last frame (ms), and the frames since the last step: when, the interval before it, its cost.
     last: Option<f64>,
     frames: VecDeque<(f64, f32, f32)>,
@@ -236,8 +250,8 @@ pub struct StageScale {
 impl StageScale {
     /// The scales for a device of scale `device`.
     pub fn levels(device: f32) -> Vec<f32> { std::iter::once(device).chain(STAGE_SCALES.iter().copied().filter(|&s| s < device - 0.01)).collect() }
-    /// From the device's own scale again, forgetting the returns.
-    pub fn reset(&mut self) { let d = self.device; *self = Self::default(); self.device = d; self.levels = Self::levels(d); self.returns = vec![0; self.levels.len()]; }
+    /// From the device's own scale again, forgetting the steps up.
+    pub fn reset(&mut self) { let d = self.device; *self = Self::default(); self.device = d; self.levels = Self::levels(d); }
     /// The stage's scale now, device px a logical px.
     pub fn scale(&self) -> f32 { self.levels.get(self.level).copied().unwrap_or(self.device.max(1.0)) }
     /// Whether it is as low as it goes.
@@ -260,13 +274,20 @@ impl StageScale {
         if d as f32 > miss || cost > self.frame_ms * 0.6 { self.over = t; }
         if t - self.stepped >= 3000.0 && !self.lowest() {
             let three: Vec<f32> = self.frames.iter().filter(|f| t - f.0 <= 3000.0).map(|f| f.1).collect();
-            if pct(three, 0.95) > miss { return self.step(t, self.level + 1); }
+            if pct(three, 0.95) > miss {
+                // Down again soon after going up: the level up does not fit, and is not tried again.
+                if self.up_at.is_some_and(|u| t - u < UP_WAIT_MS) { self.held = true; }
+                return self.step(t, self.level + 1);
+            }
         }
-        if self.level > 0 && !pointer_down {
-            let back = self.returns[self.level - 1];
-            let wait = 5000.0 * f64::from(1u32 << back);
-            if back < 3 && t - self.stepped.max(self.over) >= wait {
-                self.returns[self.level - 1] += 1;
+        if self.level > 0 && !pointer_down && !self.held && t - self.stepped.max(self.over) >= UP_WAIT_MS {
+            // What the frames would cost at the scale up, by its pixels.
+            let r = self.levels[self.level - 1] / self.levels[self.level];
+            let costs: Vec<f32> = self.frames.iter().filter(|f| t - f.0 <= UP_WAIT_MS).map(|f| f.2).collect();
+            if pct(costs, 0.95) * r * r < UP_FIT * self.frame_ms {
+                self.ups += 1;
+                self.up_at = Some(t);
+                self.held = self.ups >= STAGE_UPS;
                 return self.step(t, self.level - 1);
             }
         }

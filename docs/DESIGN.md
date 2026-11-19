@@ -3165,9 +3165,11 @@ no step, never under 4 ms. It steps down when the 95th percentile interval over 
 frames or 20 ms (50 fps), whichever is less (intervals come in whole frames, so 1.5 is the first value that
 means frames were missed; the 20 ms catches a piece that misses from its first frame, which would otherwise
 measure a display frame of two). It steps up after 5 s with no missed frame and every frame's cost under
-60 % of the display frame, never while a pointer is down; the wait doubles each time the stage comes back to
-a level it left (5, 10, 20 s), and after the third return it stays below until `Ui::reset_stage_scale` (a
-new route) or a new window size. Every step is a cut. The look's quality below 1 pins the scale at that
+60 % of the display frame, and only when the 95th percentile cost over those 5 s, times the pixels the level
+up has more (the new scale over the old, squared: × 1.78 from 1.5 to 2 or from 0.75 to 1, × 2.25 from 1 to
+1.5), is under 85 % of the display frame; never while a pointer is down. A step down within 5 s of a step up
+holds the lower level, and so does a second step up (`perf::STAGE_UPS`, all levels together), until
+`Ui::reset_stage_scale` (a new route) or a new window size: a route's visit has at most two steps up. Every step is a cut. The look's quality below 1 pins the scale at that
 share of the device's (the nearest step), and the governor rests. `perf().stage_scale` and
 `Perf::stage_label` (`stage 1.5x`, shown dim by a status line; nothing at the device's scale) say where it
 is; the readout's look line shows it too.
@@ -3195,8 +3197,9 @@ laid out and painted whole, with a count beside the stage marked `El::steps` vie
 the stage taller lays the page out; a stage whose messages are its own, dragged for 30 frames, is restaged in
 each with at most one view and one layout in all, its chip where a whole layout puts it). `tests/stage_scale.rs` (a stage
 costing 24 ms at 2 and by its pixels below, on a 60 Hz display, settles at 1.5 within 4 s and changes at most
-3 more times in 60 s; one that fits at 1.5 under 60 % of the frame comes back after 5, 10 and 20 s and then
-stays at 1.5; no step up while a pointer is down; at 1.5 on a 2× device, every pixel outside the stage and
+3 more times in 60 s; one whose level up would fit by its pixels but misses there comes down within 5 s and
+holds at 1.5; one at 59 % of the frame at 1 never steps up; one heavy for 5 s of every 20 steps up twice in
+120 s and then stays down; no step up while a pointer is down; at 1.5 on a 2× device, every pixel outside the stage and
 under a tip drawn over it is the one at the device's scale, and the stage's are not; the governor stepping down
 twice and back up shades only the stages again, each frame the frame drawn whole at that scale, and the frame
 after shades nothing). A step of the stages' scale is not a whole frame: the stages are shaded again where they

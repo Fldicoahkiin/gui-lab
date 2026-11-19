@@ -1,6 +1,7 @@
 //! A stage's own device scale (DESIGN.md §1.35, the design's Y.5 row 12): the governor steps it down
-//! when frames are missed and up after a wait that doubles at each return, and the renderer shades only
-//! the stage at that scale; text, the panel and what is drawn over the stage stay at the device's.
+//! when frames are missed and up after 5 s when the level up would fit, twice at most, and the renderer
+//! shades only the stage at that scale; text, the panel and what is drawn over the stage stay at the
+//! device's.
 use amenui::el::{El, Paint, canvas, col, row, text};
 use amenui::offscreen::Offscreen;
 use amenui::perf::StageScale;
@@ -13,10 +14,13 @@ const VSYNC: f64 = 1000.0 / 60.0;
 /// Frames on a 60 Hz display for `secs` s on a 2× device, a stage costing `at2` ms at scale 2 and by its
 /// pixels below; `down` says when a pointer is down. The scale after each frame, with its time.
 fn run(g: &mut StageScale, at2: f32, secs: f64, down: impl Fn(f64) -> bool) -> Vec<(f64, f32)> {
+    run_by(g, |s, _| { let k = s / 2.0; at2 * k * k }, secs, down)
+}
+/// The same, a stage costing `cost(scale, t)` ms.
+fn run_by(g: &mut StageScale, cost: impl Fn(f32, f64) -> f32, secs: f64, down: impl Fn(f64) -> bool) -> Vec<(f64, f32)> {
     let (mut t, mut out) = (0.0, vec![]);
     while t < secs * 1000.0 {
-        let k = g.scale() / 2.0;
-        let cost = at2 * k * k;
+        let cost = cost(g.scale(), t);
         g.feed(t, cost, 2.0, down(t));
         out.push((t, g.scale()));
         t += (f64::from(cost) / VSYNC).ceil().max(1.0) * VSYNC;
@@ -38,21 +42,42 @@ fn a_stage_that_misses_at_2_and_fits_at_1_5_settles_at_1_5() {
     assert!((g.frame_ms - VSYNC as f32).abs() < 0.5, "the display frame is measured: {}", g.frame_ms);
 }
 
+fn ups(c: &[(f64, f32)]) -> Vec<f64> { c.windows(2).filter(|w| w[1].1 > w[0].1).map(|w| w[1].0).collect() }
+
 #[test]
-fn coming_back_waits_5_10_20_s_and_then_stays_below() {
-    // 17.5 ms at 2 misses; 9.8 ms at 1.5 is under 60 % of the frame, so it tries 2 again.
+fn a_level_up_that_misses_at_once_is_not_tried_again() {
+    // 20 ms at 2 misses; at 1.5 7 ms, which by the pixels would fit at 2 (12.4 ms, under 85 % of the
+    // frame), so it goes up after 5 s, misses, comes down within 5 s, and stays at 1.5.
     let mut g = StageScale::default();
-    let c = changes(&run(&mut g, 17.5, 120.0, |_| false));
-    let ups: Vec<f64> = c.windows(2).filter(|w| w[1].1 > w[0].1).map(|w| w[1].0 - w[0].0).collect();
-    assert_eq!(ups.len(), 3, "three returns, then it stays at 1.5: {c:?}");
-    for (k, w) in ups.iter().enumerate() {
-        let want = 5000.0 * f64::from(1u32 << k);
-        assert!((w - want).abs() < 100.0, "return {k} after {w} ms, not {want}: {c:?}");
-    }
-    assert_eq!(c.last().map(|x| x.1), Some(1.5));
-    // A new route or window size starts from the device's scale again.
+    let c = changes(&run_by(&mut g, |s, _| if s > 1.9 { 20.0 } else { 7.0 }, 120.0, |_| false));
+    assert_eq!(ups(&c).len(), 1, "one step up, then it holds: {c:?}");
+    let up = ups(&c)[0];
+    let down = c.iter().find(|x| x.0 > up).expect("down again");
+    assert!(down.0 - up < 5000.0 && down.1 == 1.5, "down within 5 s of going up: {c:?}");
+    assert!(g.held && c.last().map(|x| x.1) == Some(1.5));
+    // A new route or window size starts from the device's scale again, and may step up again.
     g.reset();
-    assert_eq!(g.scale(), 2.0);
+    assert!(g.scale() == 2.0 && !g.held);
+}
+
+#[test]
+fn a_stage_at_60_percent_at_half_scale_never_steps_up() {
+    // Misses at 2 and at 1.5; at 1 (half the device's scale) 59 % of the frame, which at 1.5 would be
+    // 2.25 times that.
+    let mut g = StageScale::default();
+    let c = changes(&run_by(&mut g, |s, _| if s > 1.9 { 30.0 } else if s > 1.4 { 20.0 } else { 0.59 * VSYNC as f32 }, 120.0, |_| false));
+    assert_eq!(c.iter().map(|x| x.1).collect::<Vec<_>>(), vec![1.5, 1.0], "down twice, never up: {c:?}");
+}
+
+#[test]
+fn a_stage_steps_up_twice_at_most_on_a_visit() {
+    // Heavy for the first 5 s of every 20 (missing at 2), light the rest: each heavy spell takes it
+    // down, long after it last went up, and each light one up again, until the second step up; the next
+    // heavy spell takes it down for good.
+    let mut g = StageScale::default();
+    let c = changes(&run_by(&mut g, |s, t| if t % 20_000.0 < 5000.0 && s > 1.9 { 24.0 } else { 4.0 }, 120.0, |_| false));
+    assert_eq!(ups(&c).len(), 2, "two steps up in 120 s: {c:?}");
+    assert!(c.len() >= 3 && c.last().map(|x| x.1) == Some(1.5), "down for good after the second: {c:?}");
 }
 
 #[test]

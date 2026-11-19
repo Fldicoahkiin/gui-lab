@@ -8,6 +8,13 @@ crate and the `amenui` npm package (`web/`) always carry the same version, becau
 match the module that `web_app!` generates. The minimum Rust is the one CI builds with (`rust-version`
 in Cargo.toml); raising it is a breaking change before 1.0 only in the second number.
 
+## Stage scale
+
+- The stages' scale steps up only when the frames' cost there, by the level up's pixels, would be under 85 % of the
+  display frame; a step down within 5 s of a step up holds the lower level, and a route's visit has at most two
+  steps up (`perf::STAGE_UPS`, `StageScale::held`), in place of the waits of 5, 10 and 20 s and three returns a
+  level.
+
 ## Morphs from a stage
 
 - A morph from what a stage draws (`El::stage`; posed glyphs stepped every frame) starts its tiles where the frame
