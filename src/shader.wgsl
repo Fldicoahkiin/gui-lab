@@ -54,6 +54,7 @@ struct U {
   stages: array<vec4f, 16>, // the stages shaded at their own scale in the reduced pass (x0, y0, x1, y1 device px)
   sharp: array<vec4f, 16>,  // what is drawn over them, kept at the device's scale (the same)
   stagen: vec4f,   // how many stages, how many boxes over them; z 1: the reduced pass is for the stages alone
+  mv: vec4f,       // a scroll move with its trace showing: the stronger trace of the two frames, the way it points (render.rs)
 };
 @group(0) @binding(0) var<uniform> u: U;
 @group(0) @binding(1) var samp: sampler;
@@ -1693,6 +1694,55 @@ fn dither_t(kind: f32, p: vec2f) -> f32 {
     return vec4f(shade(p), 0.0);
   }
   return vec4f(shade(p), 1.0);
+}
+
+/// Whether the scroll trace can show at `pf` in this frame or the last (DESIGN.md §1.19): a scroll move
+/// with its trace showing, `u.mv.x` the stronger of the two and `u.mv.yz` the way it points. As
+/// `scroll_trace` reads, from where the material reads: any ink, by the nearness (it reaches SPREAD px),
+/// within as far round the trace's samples as they spread across, along its longest reach.
+fn trace_may(pf: vec2f) -> bool {
+  let s = u.res.z;
+  let sc = scroll_here(pf);
+  anc = sc.o;
+  var p = pf;
+  let m0 = eff_mat(near_t(pf).a * 255.0);
+  if (sc.k > 0.0) {
+    if (m0 == DOTTR) { p = latch(pf, sc, max(1.5, u.fa.x * s)); }
+    else if (m0 == CHARR) { p = latch(pf, sc, clamp(round(mp(CHARR, 0).x * s), CHAR_MIN, CHAR_MAX)); }
+  }
+  let here = near_t(p);
+  let m = eff_mat(here.a * 255.0);
+  if (here.g > 0.05 || m == GLITCHR || m == NEAR || dec(p).a > 0.5) { return false; }
+  let k = u.mv.x; let d = u.mv.yz;
+  var o = p; var len = 0.0; var side = 0.0;
+  if (m == DOTTR) {
+    let pitch = max(1.5, u.fa.x * s);
+    o = (floor(lat(p) / pitch) + 0.5) * pitch - anc;
+    len = max(1.0, round(u.scrp.x * k / pitch)) * pitch; side = pitch * 0.36;
+  } else if (m == CHARR) {
+    let P = clamp(round(mp(CHARR, 0).x * s), CHAR_MIN, CHAR_MAX);
+    o = (floor(lat(p) / P) + 0.5) * P - anc;
+    len = max(1.0, round(u.scrp.x * k / P)) * P; side = P * 0.71;
+  } else if (m == HALFTONR) {
+    len = u.scrp.y * k; side = max(2.0, mp(HALFTONR, 0).x * s * 0.5) * 1.14;
+  } else if (m == SMUDGR) { len = u.scrp.y * k; }
+  else if (m == CARVR) { len = u.scrp.x * k; }
+  else { len = u.scrp.x * k * 0.45; }
+  // Probes every `h` px: ink within `r` of one is where the nearness is above −r.
+  let h = 4.0;
+  let r = side + h * 0.5 + 1.5;
+  let n = i32(ceil(len / h));
+  if (r >= u.fd.z || n > 64) { return true; }
+  for (var j = 0; j <= 64; j++) {
+    if (j > n) { break; }
+    if (sdist(o + d * min(f32(j) * h, len)) >= -r) { return true; }
+  }
+  return false;
+}
+/// A scroll move with its trace showing: the pixels the trace can reach are shaded, the rest kept.
+@fragment fn fs_trace(@builtin(position) frag: vec4f) -> @location(0) vec4f {
+  if (!trace_may(frag.xy)) { discard; }
+  return vec4f(shade(frag.xy), 1.0);
 }
 
 /// Whether `p` is in a stage shaded at its own scale (DESIGN.md §1.35) and not under what is drawn over it.

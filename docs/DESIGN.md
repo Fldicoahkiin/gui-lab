@@ -2075,18 +2075,32 @@ copied whole to the target each frame (the web swap chain gives a new image ever
   boxes under a quarter of the window, seven frames of cells changing under three materials, drawn in their
   boxes, are byte for byte the frames drawn whole, and 16 motes drifting over a window-wide drawing are
   shaded under 30 % of the window in plain, byte for byte as drawn whole).
-- **Scrolling moves the last frame**: when one scroll container's offset moves by whole device pixels, with no
-  trace showing in this frame or the last and the ground not in transition, the renderer copies the G-buffer and
+- **Scrolling moves the last frame**: when one scroll container's offset moves by whole device pixels (or, with
+  its trace showing, stays) and the ground is not in transition, the renderer copies the G-buffer and
   the kept frame inside the viewport by the offset (`dirty::Move`, `Renderer::carry`: copies into a second set of
   images, then the views swap) and the boxes are taken against the last frame moved: the band scrolled into
   view, the strips along the viewport's edges that the material reads across (its reach, beyond the band), the
   scroll bar and what changed. Instances carried with the content are compared at their moved place; what was
   clipped at the viewport's edge keeps that edge. The field map is stirred by an element's motion within the
   content it scrolls with, so scrolling past it is not a change. `Renderer::cost` counts what a frame shades
-  (material and G-buffer pixels), the pixels moved and the bytes uploaded. Acceptance: `tests/scroll_move.rs`
-  (a slow scroll down and back up under four materials at two scales is byte for byte the frame drawn whole at
-  every step, with the material shading under half of a small window; a fast scroll with its trace is not
-  moved).
+  (material and G-buffer pixels), the pixels moved and the bytes uploaded.
+- **With the trace showing** (§1.8.3, past `Scroll::calm_speed`) the frame is moved too, when the trace points
+  the same way in both frames and no material in use is glitchr (its rows slip on their own clock) or one from
+  source. The trace changes from frame to frame only near the ink it trails: after the move, a pass over the
+  viewport (`fs_trace`, `Cost::trace`) shades again every pixel the trace can reach in this frame or the last
+  (`Move::trace`, the stronger of the two: from where the material reads, any ink within as far round the
+  trace's samples as they spread, along its longest reach, found by the nearness every 4 px) and keeps the moved
+  pixel elsewhere; the boxes are drawn after it, and the marks over the viewport with them. The strips along the
+  viewport's edges grow by the trace's length (what it read there has moved out of sight, or in). Dottr and charr
+  hold the rows to their lattice while the trace shows (`latch`): the frame shows the content at its offset
+  rounded to the pitch, so it moves by how far that rounding stepped (`Move::frame`, maybe 0) while the
+  G-buffer moves with the content; this needs the rows held in both frames, the scroll area alone in its
+  viewport, a step of whole device px and neither offset half way between two rows, and the boxes grow by the
+  pitch. With a reduced pass the frame is drawn whole. Acceptance: `tests/scroll_move.rs` (a slow scroll down
+  and back up under four materials at two scales is byte for byte the frame drawn whole at every step, with the
+  material shading under half of a small window; a fast scroll down, up and settling under six materials at two
+  scales is byte for byte the frame drawn whole, moved with its trace in at least 12 of 40 frames; under
+  glitchr it is drawn whole).
 - The whole screen: the look changed (theme, material, parameters…), the window changed, a commit is showing,
   particles are flying, the low-resolution pass is being drawn, or a material that reads the material clock
   (`dottr`, `glitchr`) is in use and the clock moved.

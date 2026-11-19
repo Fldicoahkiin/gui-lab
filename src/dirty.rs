@@ -13,10 +13,14 @@
 //! Whatever acts on every pixel (a new look, a commit's front, flying tiles, the reduced material pass,
 //! the material clock under a material that reads it) redraws everything.
 //!
-//! A scroll node whose content moved by whole device px with no trace showing is a `Move`: the renderer
-//! moves the last frame's images inside its viewport and draws only the band scrolled into view, a margin
-//! along the viewport's edges as wide as the material reads, and what changed besides. Instances are
-//! matched against the last frame's as the move carried them.
+//! A scroll node whose content moved by whole device px is a `Move`: the renderer moves the last frame's
+//! images inside its viewport and draws only the band scrolled into view, a margin along the viewport's
+//! edges as wide as the material reads, and what changed besides. Instances are matched against the last
+//! frame's as the move carried them. With its trace showing (DESIGN.md §1.8.3), the trace changes from
+//! frame to frame near the ink it trails: the renderer also shades again, within the viewport, every
+//! pixel the trace can reach in either frame, and keeps the moved one elsewhere. Dottr and charr hold
+//! the content's rows to their lattice while the trace shows: their frame moves by the lattice's steps,
+//! not the content's.
 use crate::scene::{Field, Instance, MESH, PICTURE};
 use crate::style::{Look, Material};
 use crate::text::SPREAD;
@@ -77,17 +81,34 @@ pub const MAX_SHADE_BOXES: usize = 32;
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Parts { pub stage1: Vec<Bx>, pub stage2: Vec<Bx>, pub moved: Option<Move> }
 
-/// A scroll node's viewport (x0, y0, x1, y1, whole device px) whose content moved by `d` device px with
-/// no trace showing: inside it, this frame's images are the last frame's moved by `d`, but for the band
-/// scrolled into view and the boxes of what changed.
+/// A scroll node's viewport (x0, y0, x1, y1, whole device px) whose content moved by `d` device px:
+/// inside it, this frame's images (ink, near) are the last frame's moved by `d`, and the final frame the
+/// last one moved by `frame`, but for the band scrolled into view and the boxes of what changed.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Move { pub rect: [u32; 4], pub d: [i32; 2] }
+pub struct Move {
+    pub rect: [u32; 4],
+    pub d: [i32; 2],
+    /// How far the final frame moves: `d`, or under a lattice that holds the rows while the trace shows,
+    /// how far the lattice stepped (it may be 0).
+    pub frame: [i32; 2],
+    /// The stronger trace of the two frames (0: none); the renderer shades the pixels it can reach.
+    pub trace: f32,
+    /// The way the trace points (the shader's `Sc::d`, a unit vector).
+    pub way: [f32; 2],
+    /// The lattice's pitch that holds the rows (device px; 0: none): how far a pixel reads off its place.
+    pub latch: f32,
+}
+/// The trace strength from which dottr and charr hold the rows to their lattice (the shader's `latch`).
+const LATCH: f32 = 0.02;
 impl Move {
     fn bx(&self) -> Bx { self.rect.map(|v| v as f32) }
     /// `b` moved with the content, where it stays inside the viewport.
-    pub fn carry(&self, b: Bx) -> Bx {
+    pub fn carry(&self, b: Bx) -> Bx { self.carry_by(b, self.d) }
+    /// `b` of the last final frame, where the move took it.
+    pub fn carry_frame(&self, b: Bx) -> Bx { self.carry_by(b, self.frame) }
+    fn carry_by(&self, b: Bx, d: [i32; 2]) -> Bx {
         let v = self.bx();
-        meet([b[0] + self.d[0] as f32, b[1] + self.d[1] as f32, b[2] + self.d[0] as f32, b[3] + self.d[1] as f32], v)
+        meet([b[0] + d[0] as f32, b[1] + d[1] as f32, b[2] + d[0] as f32, b[3] + d[1] as f32], v)
     }
     /// Whether `i` is the content's: clipped by the viewport.
     fn holds(&self, i: &Instance) -> bool {
@@ -122,9 +143,12 @@ impl Move {
     }
 }
 
-/// The first scroll node whose content moved by whole device px with no trace showing in either frame,
-/// and less than its viewport, under a ground that is the same at every height.
-fn scroll_move(prev: &Inputs, cur: &Inputs) -> Option<(usize, Move)> {
+/// The first scroll node whose content moved by whole device px (or, with its trace showing, stayed),
+/// and less than its viewport, under a ground that is the same at every height. With the trace showing:
+/// the same way in both frames, not under glitchr (its rows slip on their own clock) or an added
+/// material, and under dottr or charr holding the rows the same way in both frames, alone in its
+/// viewport, with the lattice stepping by whole device px.
+fn scroll_move(prev: &Inputs, cur: &Inputs, mats: &[Material], s: f32) -> Option<(usize, Move)> {
     if cur.look.theme.ground2 != cur.look.theme.ground { return None; }
     let (w, h) = (cur.size.0 as f32, cur.size.1 as f32);
     (0..8).find_map(|j| {
@@ -132,9 +156,39 @@ fn scroll_move(prev: &Inputs, cur: &Inputs) -> Option<(usize, Move)> {
         // The content moves against the offset.
         let (dx, dy) = (a[0] - b[0], a[1] - b[1]);
         let v = [r[0].max(0.0).ceil(), r[1].max(0.0).ceil(), r[2].min(w).floor(), r[3].min(h).floor()];
-        let ok = prev.field.scrolls[j] == r && a[2] <= 0.0 && b[2] <= 0.0 && (dx, dy) != (0.0, 0.0) && dx.abs() < v[2] - v[0] && dy.abs() < v[3] - v[1];
-        ok.then(|| (j, Move { rect: v.map(|x| x as u32), d: [dx as i32, dy as i32] }))
+        let trace = a[2].max(b[2]);
+        let ok = prev.field.scrolls[j] == r && ((dx, dy) != (0.0, 0.0) || trace > 0.0) && dx.abs() < v[2] - v[0] && dy.abs() < v[3] - v[1];
+        if !ok { return None; }
+        let (rect, d) = (v.map(|x| x as u32), [dx as i32, dy as i32]);
+        if trace <= 0.0 { return Some((j, Move { rect, d, frame: d, trace: 0.0, way: [0.0, 1.0], latch: 0.0 })); }
+        if (a[2] > 0.0 && b[2] > 0.0 && a[3] != b[3]) || mats.iter().any(|m| matches!(m, Material::Glitchr | Material::Custom(_))) { return None; }
+        let w3 = if b[2] > 0.0 { b[3] } else { a[3] };
+        let across = w3.abs() > 1.5;
+        let way = if across { [w3.signum(), 0.0] } else { [0.0, w3.signum()] };
+        if (a[2] > LATCH) != (b[2] > LATCH) { return None; }
+        let pitches: Vec<f32> = mats.iter().filter_map(|m| latch_pitch(*m, &cur.look, s)).collect();
+        if b[2] <= LATCH || pitches.is_empty() { return Some((j, Move { rect, d, frame: d, trace, way, latch: 0.0 })); }
+        // The rows held to the lattice: the frame shows the content at its offset rounded to the pitch.
+        let p = pitches[0];
+        let alone = (0..8).all(|i| i == j || is_empty(meet(cur.field.scrolls[i], r)));
+        if pitches.len() != mats.len() || pitches.iter().any(|q| *q != p) || !alone { return None; }
+        let (oa, ob) = if across { (a[0], b[0]) } else { (a[1], b[1]) };
+        // An offset half way between two rows is rounded by the GPU's own division: not relied on.
+        let held = |o: f32| { let x = o / p; ((x.fract().abs() - 0.5).abs() > 1e-3).then(|| x.round_ties_even() * p) };
+        let step = held(oa)? - held(ob)?;
+        if (step - step.round()).abs() > 1e-3 || step.abs() >= if across { v[2] - v[0] } else { v[3] - v[1] } { return None; }
+        let step = step.round() as i32;
+        let frame = if across { [step, 0] } else { [0, step] };
+        Some((j, Move { rect, d, frame, trace, way, latch: p }))
     })
+}
+/// The lattice pitch a material holds the rows to while the trace shows (device px), if it does.
+fn latch_pitch(m: Material, look: &Look, s: f32) -> Option<f32> {
+    match m {
+        Material::Dottr => Some((look.fx.pitch * s).max(1.5)),
+        Material::Charr => Some((look.numbers(Material::Charr).0[0] * s).round().clamp(4.0, 40.0)),
+        _ => None,
+    }
 }
 impl Parts {
     /// Both lists as one box each.
@@ -278,9 +332,9 @@ pub fn parts(prev: &Inputs, cur: &Inputs, scale: f32) -> Option<Parts> {
     let pad = SPREAD as f32 + look.fx.push * s * 1.5 + 2.0;
     let mut st1: Vec<Bx> = vec![];
     let mut st2: Vec<Bx> = vec![];
-    let mv = scroll_move(prev, cur);
-    // A box of the last frame, and where the move took what was in it.
-    let old = |b: Bx| [b, mv.map_or(EMPTY, |(_, m)| m.carry(b))];
+    let mv = scroll_move(prev, cur, &mats, s);
+    // A box of the last final frame, and where the move took what was in it.
+    let old = |b: Bx| [b, mv.map_or(EMPTY, |(_, m)| m.carry_frame(b))];
     // Instances whose records differ, matched in order within each part of the list (between the cuts
     // where passes begin); with the cuts in another order, in place.
     // The last frame's instances as the move carried them: what is matched there the move draws.
@@ -369,8 +423,10 @@ pub fn parts(prev: &Inputs, cur: &Inputs, scale: f32) -> Option<Parts> {
     let changed1: Vec<Bx> = merge(st1.into_iter().map(|x| meet(x, screen)).collect(), MAX_SHADE_BOXES);
     let st1: Vec<Bx> = merge(changed1.clone(), MAX_BOXES);
     let pic_changed = b.iter().chain(a.iter()).any(|i| i.paint[3] == PICTURE && changed1.iter().any(|x| !is_empty(meet(i.bounds(pad), *x))));
+    // Rows held to a lattice read up to half its pitch off their place.
     let rch = mats.iter().map(|m| reach(*m, look, s)).fold(0.0, f32::max)
-        + if pic_changed { look.pics.iter().map(|p| 2.0 * p.pitch * s + p.depth * s).fold(0.0, f32::max) } else { 0.0 };
+        + if pic_changed { look.pics.iter().map(|p| 2.0 * p.pitch * s + p.depth * s).fold(0.0, f32::max) } else { 0.0 }
+        + mv.map_or(0.0, |(_, m)| m.latch);
     st2.extend(changed1.iter().map(|x| grow(*x, rch)));
     for f in &acting { st2.push(grow(*f, rch)); }
     // The lens acts on the pictures and 3D elements that let it (above) and on the dot ground.
@@ -389,7 +445,13 @@ pub fn parts(prev: &Inputs, cur: &Inputs, scale: f32) -> Option<Parts> {
             }
         }
     }
-    if let Some((_, m)) = mv { st2.extend(m.edges(rch, cur.size)); }
+    if let Some((_, m)) = mv {
+        // The trace reads its ink up to its length off, across the viewport's edges too: there what it
+        // read has moved out of sight, or in.
+        let r = if m.trace > 0.0 { 2.0 * rch + look.scroll.trail.max(look.scroll.misreg) * s * m.trace } else { rch };
+        st2.extend(m.edges(r, cur.size));
+        if m.frame != m.d { st2.extend(Move { d: m.frame, ..m }.edges(r, cur.size)); }
+    }
     if prev.field.wipe != cur.field.wipe || prev.field.wipe_rect != cur.field.wipe_rect || (mv.is_some() && cur.field.wipe[1] > 0.0) {
         if prev.field.wipe[1] > 0.0 { st2.extend(old(grow(prev.field.wipe_rect, rch))); }
         if cur.field.wipe[1] > 0.0 { st2.push(grow(cur.field.wipe_rect, rch)); }
@@ -399,7 +461,13 @@ pub fn parts(prev: &Inputs, cur: &Inputs, scale: f32) -> Option<Parts> {
     // With a move, the last frame's marks as it carried them; those it moved that are not the content's
     // are drawn again where they were and where they went.
     let pa: Vec<Instance> = match mv { Some((_, m)) => prev.annot.iter().map(|i| m.moved(i)).collect(), None => prev.annot.clone() };
-    if let Some((_, m)) = mv { for i in prev.annot.iter().filter(|i| !m.holds(i)) { let r = meet(grow(rect(i.rect), 2.0), m.bx()); if !is_empty(r) { st2.extend([r, m.carry(r)]); } } }
+    if let Some((_, m)) = mv { for i in prev.annot.iter().filter(|i| !m.holds(i)) { let r = meet(grow(rect(i.rect), 2.0), m.bx()); if !is_empty(r) { st2.extend([r, m.carry_frame(r)]); } } }
+    // With the trace showing, the renderer shades again where it can reach, marks or not: the marks over
+    // the viewport are drawn again (where the frame took the last ones, and where they are).
+    if let Some((_, m)) = mv.filter(|(_, m)| m.trace > 0.0 || m.frame != m.d) {
+        for i in &prev.annot { let r = meet(grow(rect(i.rect), 2.0), m.bx()); if !is_empty(r) { st2.push(m.carry_frame(r)); } }
+        for i in &cur.annot { let r = meet(grow(rect(i.rect), 2.0), m.bx()); if !is_empty(r) { st2.push(r); } }
+    }
     if pa != cur.annot {
         let key = |i: &Instance| -> Vec<u32> { i.rect.iter().chain(&i.uv).chain(&i.paint).chain(&i.clip).chain(&i.extra).chain(&i.look).map(|v| v.to_bits()).collect() };
         let had: std::collections::HashSet<Vec<u32>> = pa.iter().map(key).collect();
