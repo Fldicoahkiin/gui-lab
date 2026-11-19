@@ -2724,7 +2724,10 @@ impl<S, M: Clone> Ui<S, M> {
         self.splits = next_run();
         let s = self.scale;
         let look = self.look();
-        let scope = scope.map(|i| { let r = self.nodes[i].rect.intersect(&self.nodes[i].clip); [(r.x * s).floor(), (r.y * s).floor(), (r.right() * s).ceil(), (r.bottom() * s).ceil()] });
+        // The scope's box grown by what a material draws round an element (its nearness reach and a
+        // front's push), so the new material's marks just outside the box arrive with the box.
+        let grow = crate::text::SPREAD as f32 + look.fx.push * s;
+        let scope = scope.map(|i| { let r = self.nodes[i].rect.intersect(&self.nodes[i].clip); [(r.x * s).floor() - grow, (r.y * s).floor() - grow, (r.right() * s).ceil() + grow, (r.bottom() * s).ceil() + grow] });
         self.split = Some(Split { id: self.splits, scene: self.scene.clone(), field: self.field, at: [x * s, y * s], t: self.beat_grid(), look, scope });
     }
 
@@ -2875,8 +2878,11 @@ impl<S, M: Clone> Ui<S, M> {
         let Some(scope) = scope else { return };
         let window = Rect::new(0.0, 0.0, self.size.0, self.size.1);
         let seen = |n: &Node<M>| n.rect.intersect(&n.clip);
+        // A commit within a commit's scope (`El::commit_scope`) plays inside it: its front too.
+        let within_commit = if commit { self.up(i, |n| n.commit_scope) } else { None };
         let r = match &scope {
             Scope::Off => return,
+            Scope::Global if within_commit.is_some() => within_commit.map(|c| seen(&self.nodes[c])),
             Scope::Global => None,
             Scope::Own => Some(seen(&self.nodes[i])),
             Scope::Container(None) => Some(self.up(i, |n| n.ripple_scope).map_or(window, |c| seen(&self.nodes[c]))),

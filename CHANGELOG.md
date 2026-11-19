@@ -14,6 +14,10 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
   them is not that control: an element that follows the pointer (`on_point`, `on_move`) or one larger than a quarter
   of the window. A full-window stage with `on_point` or `on_key` made its whole page one piece, so every commit's
   front shoved everything on it sideways at once, when the front crossed the window's centre.
+- A commit inside `El::commit_scope` is over once its front has reached the scope's farthest corner, not the window's,
+  and its scope takes in what the material draws round the box (the nearness spread and a front's push). A card that
+  switched to `near` kept the old outline round it for two seconds and then swapped it in one frame, and every frame
+  until then was drawn whole. The commit's own front stays in the scope too, as the fronts of other presses there did.
 
 ## A stage at its own scale
 

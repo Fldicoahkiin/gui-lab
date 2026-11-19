@@ -1112,12 +1112,17 @@ impl Renderer {
                 self.split = [sp.at[0], sp.at[1], sp.t, 1.0];
             }
         }
-        // The front has left the screen: the old frame is not needed any more.
+        // The front has left the screen (or the commit's scope): the old frame is not needed any more.
         let (w, h) = (self.size.0 as f32, self.size.1 as f32);
         // Within a scope the transition takes the scope's share of the time (`Split::span`).
         let span = if self.sbox[2] > self.sbox[0] { ((self.sbox[2] - self.sbox[0]).hypot(self.sbox[3] - self.sbox[1]) / w.hypot(h).max(1.0)).clamp(0.5, 1.0) } else { 1.0 };
         let dur = look.transition.duration_ms / 1000.0 * span;
-        let over = if dur > 0.0 { now - self.split[2] >= dur } else { (now - self.split[2]) * look.fx.wave_speed * scale > (w * w + h * h).sqrt() };
+        // A radial front is done with a scope once it has reached the scope's farthest corner.
+        let reach = if self.sbox[2] > self.sbox[0] {
+            let b = self.sbox;
+            [[b[0], b[1]], [b[2], b[1]], [b[0], b[3]], [b[2], b[3]]].iter().map(|c| (c[0] - self.split[0]).hypot(c[1] - self.split[1])).fold(0.0, f32::max)
+        } else { w.hypot(h) };
+        let over = if dur > 0.0 { now - self.split[2] >= dur } else { (now - self.split[2]) * look.fx.wave_speed * scale > reach };
         if self.split[3] > 0.0 && over { self.split = [0.0; 4]; }
         // The transition's program and, for its boxes, the largest elements on the page (device px).
         (self.tr, self.tr_loose) = if self.split[3] > 0.0 && dur > 0.0 {

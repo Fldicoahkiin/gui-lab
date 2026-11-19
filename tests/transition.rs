@@ -163,7 +163,10 @@ fn a_scoped_commit_plays_inside_its_box_and_nothing_outside_it_changes() {
     let look = ui.look();
     let before = o.render(&mut ui, &look);
     let b = ui.node("panel").expect("panel").rect;
-    let inside = |i: usize| { let (x, y) = ((i as u32 % W) as f32 + 0.5, (i as u32 / W) as f32 + 0.5); x >= b.x.floor() && y >= b.y.floor() && x < b.right().ceil() && y < b.bottom().ceil() };
+    let within = |i: usize, g: f32| { let (x, y) = ((i as u32 % W) as f32 + 0.5, (i as u32 / W) as f32 + 0.5); x >= b.x.floor() - g && y >= b.y.floor() - g && x < b.right().ceil() + g && y < b.bottom().ceil() + g };
+    let inside = |i: usize| within(i, 0.0);
+    // What the material draws round the box (its nearness reach and a front's push) belongs to it.
+    let reach = amenui::text::SPREAD as f32 + ui.look().fx.push;
     let (x, y) = ui.node("swap").expect("swap").rect.center();
     ui.press(x, y);
     ui.release(x, y);
@@ -176,7 +179,7 @@ fn a_scoped_commit_plays_inside_its_box_and_nothing_outside_it_changes() {
         ui.tick(t);
         let look = ui.look();
         let px = o.render(&mut ui, &look);
-        let outside = px.chunks_exact(4).zip(before.chunks_exact(4)).enumerate().filter(|(i, (a, b))| !inside(*i) && a != b).count();
+        let outside = px.chunks_exact(4).zip(before.chunks_exact(4)).enumerate().filter(|(i, (a, b))| !within(*i, reach) && a != b).count();
         assert_eq!(outside, 0, "frame {k}: {outside} px outside the panel changed");
         if px != last { moved += 1; }
         last = px;
@@ -347,4 +350,65 @@ fn in_a_scoped_crack_the_pressed_button_goes_over_with_the_pieces_it_is_in() {
     eprintln!("button shown {:?}; {apart} of {pairs} edge pairs apart", frames[..at(1.0)].iter().map(|f| (share(f, &button) * 100.0).round()).collect::<Vec<_>>());
     assert!(parted, "the button is never part old and part new: it does not go with the pieces");
     assert!(pairs > 200 && (apart as f32) < 0.12 * pairs as f32, "{apart} of {pairs} pairs across the button's edge show different pages");
+}
+
+/// A panel marked `commit_scope` whose button commits `near` for the panel alone: near draws bands round
+/// the panel's border, outside its box.
+mod scoped_near {
+    use amenui::el::{El, Paint, col, row, text};
+    use amenui::style::{Look, Material};
+    use amenui::widgets::button;
+    pub struct S { pub alt: bool }
+    pub fn view(s: &S) -> El<bool> {
+        let panel = col().key("panel").width(200.0).pad(16.0, 16.0).gap(12.0).border(1.0, Paint::FAINT)
+            .material(if s.alt { Material::Near } else { Material::Plain }.id())
+            .child(text("A panel", 18.0, Paint::INK).key("panel/title"))
+            .child(button("swap", "Swap", true).commit())
+            .commit_scope();
+        row().key("page").pad(24.0, 24.0).child(panel)
+    }
+    pub fn update(s: &mut S, m: bool) { s.alt = m; }
+    pub fn look(_: &S) -> Look { Look { material: Material::Plain, ..Look::default() } }
+}
+
+#[test]
+fn a_scoped_commit_is_over_when_its_front_has_crossed_the_box_and_the_marks_round_it_come_with_it() {
+    let Ok(mut o) = Offscreen::try_new(W, H) else { eprintln!("no GPU adapter here: skipped"); return };
+    let mut ui = amenui::ui::Ui::new(scoped_near::S { alt: false }, scoped_near::view, scoped_near::update, fonts(), W, H, 1.0).on_look(scoped_near::look);
+    let mut t = 0.0;
+    while t < 1.0 { t += 1.0 / 60.0; ui.tick(t); let look = ui.look(); let _ = o.render(&mut ui, &look); }
+    let look = ui.look();
+    let before = o.render(&mut ui, &look);
+    let b = ui.node("panel").expect("panel").rect;
+    let reach = amenui::text::SPREAD as f32 + look.fx.push;
+    // The ring the material draws round the box: outside it, within its reach.
+    let ring = |i: usize| {
+        let (x, y) = ((i as u32 % W) as f32 + 0.5, (i as u32 / W) as f32 + 0.5);
+        let inside = |g: f32| x >= b.x.floor() - g && y >= b.y.floor() - g && x < b.right().ceil() + g && y < b.bottom().ceil() + g;
+        inside(reach) && !inside(0.0)
+    };
+    let (x, y) = ui.node("swap").expect("swap").rect.center();
+    let far = [(b.x, b.y), (b.right(), b.y), (b.x, b.bottom()), (b.right(), b.bottom())].iter().map(|c| (c.0 - reach - x).abs().hypot((c.1 - reach - y).abs()).max((c.0 + reach - x).abs().hypot((c.1 + reach - y).abs()))).fold(0.0, f32::max);
+    let crossed = far / look.fx.wave_speed;
+    let window = (W as f32).hypot(H as f32) / look.fx.wave_speed;
+    assert!(crossed + 0.1 < window, "the test needs the box well inside the window ({crossed} s against {window} s)");
+    ui.press(x, y);
+    ui.release(x, y);
+    ui.pointer_leave();
+    let t0 = t;
+    let (mut arrived, mut whole_after) = (None, None);
+    // Frames draw only what changed again: a commit draws them whole until it is over.
+    o.r.partial = true;
+    while t < t0 + window - 0.05 {
+        t += 1.0 / 60.0;
+        ui.tick(t);
+        let look = ui.look();
+        let px = o.render(&mut ui, &look);
+        let changed = px.chunks_exact(4).zip(before.chunks_exact(4)).enumerate().filter(|(i, (a, b))| ring(*i) && a != b).count();
+        if changed > 0 && arrived.is_none() { arrived = Some(t - t0); }
+        if t - t0 > crossed + 0.1 && o.r.last_region.is_none() && whole_after.is_none() { whole_after = Some(t - t0); }
+    }
+    let arrived = arrived.expect("near's marks round the panel never arrived");
+    assert!(arrived <= crossed + 3.0 / 60.0, "near's marks round the panel arrived {arrived:.3} s after the press; the front crossed the box at {crossed:.3} s");
+    assert!(whole_after.is_none(), "{:.3} s after the press the commit still draws whole frames; its front crossed the box at {crossed:.3} s", whole_after.unwrap_or(0.0));
 }

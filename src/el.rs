@@ -1130,9 +1130,11 @@ impl<M> El<M> {
     /// takes no pointer; a screen reader still finds it.
     pub fn opacity(mut self, k: f32) -> Self { self.opacity = k.clamp(0.0, 1.0); self }
     /// A commit (`El::commit`) pressed within this element, or a `Cmd::Commit` naming it, plays only
-    /// within its box: the front travels inside its clip and every pixel outside stays as it was, that
-    /// frame and after. The fronts of presses within it stay inside it too (it is their container). The
-    /// look's own wave speed and steps are used.
+    /// within its box: the front travels inside its clip and every pixel outside the box grown by the
+    /// material's reach (`text::SPREAD` device px and the front's push) stays as it was, that frame and
+    /// after; the commit is over once the front has reached the box's farthest corner. The fronts of
+    /// presses within it stay inside it too (it is their container). The look's own wave speed and
+    /// steps are used.
     pub fn commit_scope(mut self) -> Self { self.commit_scope = true; self }
     /// Zoom this container's one child to fit its content box (`Fit`): the child is laid out at 1 to
     /// find its natural size, then zoomed (`El::zoom`) by the scale that fits, both in the same layout.

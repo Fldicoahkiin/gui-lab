@@ -71,8 +71,10 @@ children overlap only the top one shows: the renderer draws the group's instance
 first time a group is drawn) and lays it over the ink at `k`; a group inside a group fades its instances by its own
 `k` instead. At 0 the subtree is not drawn and takes no pointer; the accessibility mirror still has it. A frame with
 a group is drawn whole (§1.19). `El::commit_scope()` keeps a commit inside the element's box: the commit's front
-(§1.5) travels inside its clip, every pixel outside the box stays as it was, and the fronts of presses within it stay
-inside it too (it is their container). `Cmd::Commit { x, y, scope }` names such an element by key.
+(§1.5) travels inside its clip, every pixel outside the box grown by the material's reach (the nearness spread and a
+front's push, what a material draws round an element) stays as it was, and the fronts of presses within it stay
+inside it too (it is their container). The commit is over once its front has reached the box's farthest corner, not
+the window's: the marks round the box arrive with it rather than a second later. `Cmd::Commit { x, y, scope }` names such an element by key.
 
 ### 1.2 Layout
 
