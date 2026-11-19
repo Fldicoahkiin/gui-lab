@@ -23,6 +23,8 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
   `trace`, `way`, `latch`). Not under glitchr or a material from source.
 - `El::local_messages`: the messages a subtree's handlers send change only it and the `El::steps` elements, so it
   is restaged after them (`Ui::stage_view`) instead of viewing and laying out the page; for a stage dragged by hand.
+- Inside `El::cached`, a pixel face asked for under its native size is set and drawn at the size asked, by its
+  outline's coverage (`text::FINE`, `Text::fine`).
 
 ## For Kern
 

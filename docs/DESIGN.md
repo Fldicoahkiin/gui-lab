@@ -3184,6 +3184,10 @@ instances every frame it is drawn. `El::cached()` draws such a subtree once and 
 - So it is drawn again whenever what it draws changes: it scrolls or moves, it loosens (a front passing, its
   birth), its words change, the window changes size (which empties every plate). A stage, a 3D view or a
   see-through group inside it is drawn with the rest, each time the rest is.
+- Text in a pixel face asked for under its native size inside a cached element (Departure Mono at 2.75 px) is
+  set and drawn at the size asked, as its outline's coverage at that size (a box filter of the native raster),
+  not at its native size as anywhere else (§1.6), so the small page is laid out as asked and does not overlap
+  itself: its faces carry `text::FINE`. At its native size and above it is a pixel face as anywhere.
 - `el::cached_view(over, from, ink)` shows the part `from` (logical px on the page: x, y, w, h) of what the
   cached element `over` drew, scaled to its own box. Each pixel of the plate's ink is read as its coverage
   (alpha), nearest, and drawn as a glyph's coverage in `ink`: at a whole zoom each source pixel is a square of

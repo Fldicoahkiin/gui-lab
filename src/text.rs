@@ -54,6 +54,11 @@ pub const GEIST_FILES: [&str; 5] = ["GeistPixel-Square.otf", "GeistPixel-Grid.ot
 /// Source Serif 4 at its 8 pt optical size and weight 400, Latin only (OFL; `assets/licenses/source-serif`),
 /// after Geist Pixel: `Font::Whisper`, tracked small lowercase type and edge notes (DESIGN.md §4.2).
 pub const SERIF: u8 = 8;
+/// A face number with this bit set (`face | FINE`): text drawn into a cached subtree (`El::cached`, a
+/// page shown small and read through a loupe). A pixel face asked for there under its native size is
+/// drawn at the size asked, its outline's coverage (a box filter of its native raster), not at the
+/// native size; at its native size and above it is a pixel face as anywhere.
+pub const FINE: u8 = 0x80;
 /// `SERIF`'s file in `assets/`.
 pub const SERIF_FILE: &str = "SourceSerif4-8pt-subset.ttf";
 
@@ -313,18 +318,21 @@ impl Text {
     pub fn atlas_use(&self) -> f32 { ((self.pen.1 + self.pen.2) as f32 / ATLAS as f32).min(1.0) }
     /// Whether `face` is a pixel face.
     pub fn is_pixel(&self, face: u8) -> bool { self.family(face).pixel.is_some() }
+    /// Whether text in `face` at `size` px is a pixel face drawn at the size asked, under its native size
+    /// (`FINE`).
+    pub fn fine(&self, face: u8, size: f32) -> bool { face & FINE != 0 && self.family(face).pixel.is_some_and(|n| size * self.real(face).1 < n - 1e-4) }
     /// Native size of a pixel face, px.
     pub fn native(&self, face: u8) -> Option<f32> { self.family(face).pixel }
     fn family(&self, face: u8) -> &Family { &self.families[self.real(face).0] }
     /// The family text in `face` is really set in, and the size factor: a declared face that has not
     /// come is set in its stand-in.
     fn real(&self, face: u8) -> (usize, f32) {
-        let fi = (face as usize).min(self.families.len() - 1);
+        let fi = ((face & !FINE) as usize).min(self.families.len() - 1);
         match self.families[fi].pending { Some(d) => ((d.stand_in as usize).min(self.families.len() - 1), d.scale), None => (fi, 1.0) }
     }
     /// Note that text in `face` was asked for (`wanted`).
     fn note(&mut self, face: u8) {
-        let fi = (face as usize).min(self.families.len() - 1);
+        let fi = ((face & !FINE) as usize).min(self.families.len() - 1);
         if self.families[fi].pending.is_some() && !self.families[fi].broken { self.asked.insert(fi as u8); }
     }
     /// Declare a face whose bytes come later (`Ui::declare_face`): its number now, text in it set in the
@@ -339,9 +347,9 @@ impl Text {
     /// name).
     pub fn face_named(&self, name: &str) -> Option<u8> { self.families.iter().position(|f| f.called == name).map(|i| i as u8) }
     /// Whether `face` was declared and has not come (it is drawn in its stand-in).
-    pub fn is_pending(&self, face: u8) -> bool { self.families.get(face as usize).is_some_and(|f| f.pending.is_some()) }
+    pub fn is_pending(&self, face: u8) -> bool { self.families.get((face & !FINE) as usize).is_some_and(|f| f.pending.is_some()) }
     /// What stands in for `face` while it has not come.
-    pub fn stand_in(&self, face: u8) -> Option<FaceDecl> { self.families.get(face as usize).and_then(|f| f.pending) }
+    pub fn stand_in(&self, face: u8) -> Option<FaceDecl> { self.families.get((face & !FINE) as usize).and_then(|f| f.pending) }
     /// The bytes of the face `name` came (`Ui::add_face`): a declared face is set in itself from now on,
     /// a new name is registered. Bytes that are not a font are refused: the face keeps its stand-in and
     /// is not asked for again. Every layout is made again.
@@ -380,6 +388,7 @@ impl Text {
     /// a screen of one device px per logical px draws (its nearest multiple, at least one, times the
     /// device pixel ratio, rounded down): 7 px of an 11 px face is 11 device px at 1 and 22 at 2.
     pub fn size_for(&self, face: u8, size: f32) -> f32 {
+        if self.fine(face, size) { return size * self.real(face).1; }
         let size = size * self.real(face).1;
         match self.family(face).pixel {
             Some(native) => {
@@ -394,6 +403,7 @@ impl Text {
     /// The size to set a face at so that it is drawn no larger than `size` would be: for a pixel face, the
     /// largest whole multiple (at least one) of its native size at or under `size`, in device px.
     pub fn size_down(&self, face: u8, size: f32) -> f32 {
+        if self.fine(face, size) { return size; }
         let r = self.real(face).1;
         match self.family(face).pixel {
             Some(native) => ((size * r * self.scale / native + 1e-4).floor().max(1.0) * native) / (self.scale * r),
@@ -548,7 +558,7 @@ impl Text {
     /// visible character (trailing spaces hang and are left out), over the line's full height.
     pub fn line_boxes(&mut self, p: Para<'_>, origin: (f32, f32)) -> Vec<crate::ui::Rect> {
         let l = self.layout(p.s, p.face, p.size, p.line, Some(p.width), p.setting());
-        let hy = self.hyphen_advance(p.face as usize, self.size_for(p.face, p.size));
+        let hy = self.hyphen_advance(self.real(p.face).0, self.size_for(p.face, p.size));
         l.lines().map(|ln| {
             let m = ln.metrics();
             // A hyphenated line ends with its hyphen.
@@ -664,7 +674,8 @@ impl Text {
     pub fn line_inks(&mut self, p: Para<'_>, origin: (f32, f32), scale: f32) -> Vec<[f32; 11]> {
         let boxes = self.line_boxes(p, origin);
         let l = self.layout(p.s, p.face, p.size, p.line, Some(p.width), p.setting());
-        let para_pixel = self.is_pixel(p.face);
+        let fine = self.fine(p.face, p.size);
+        let para_pixel = self.is_pixel(p.face) && !fine;
         let (ox, oy) = if para_pixel { ((origin.0 * scale).round(), (origin.1 * scale).round()) } else { (origin.0 * scale, origin.1 * scale) };
         let mut out = vec![];
         for (li, ln) in l.lines().enumerate() {
@@ -681,7 +692,7 @@ impl Text {
                 let run = gr.run();
                 let font = run.font();
                 let Some(fref) = swash::FontRef::from_index(font.data.as_ref(), font.index as usize) else { continue };
-                let pixel = self.families.iter().any(|f| f.pixel.is_some() && f.blob == font.data.id());
+                let pixel = !fine && self.families.iter().any(|f| f.pixel.is_some() && f.blob == font.data.id());
                 let fsize = run.font_size() * scale;
                 let coords: Vec<i16> = run.normalized_coords().iter().map(|c| c.to_bits()).collect();
                 if first {
@@ -811,7 +822,8 @@ impl Text {
     /// The pen's x is as laid out, before the glyph's image is put on a quarter pixel.
     pub fn emit_pens(&mut self, p: Para<'_>, origin: (f32, f32), proto: Instance, scale: f32, rows: Option<(f32, f32)>, mut out: impl FnMut(Instance, u32, [f32; 5])) {
         let l = self.layout(p.s, p.face, p.size, p.line, Some(p.width), p.setting());
-        let para_pixel = self.is_pixel(p.face);
+        let fine = self.fine(p.face, p.size);
+        let para_pixel = self.is_pixel(p.face) && !fine;
         // A pixel face starts on a whole device pixel so its pixels land on the screen's.
         let (ox, oy) = if para_pixel { ((origin.0 * scale).round(), (origin.1 * scale).round()) } else { (origin.0 * scale, origin.1 * scale) };
         for ln in l.lines() {
@@ -834,7 +846,7 @@ impl Text {
                 let Some(fref) = swash::FontRef::from_index(font.data.as_ref(), font.index as usize) else { continue };
                 // Pixel treatment follows the face a run is really set in: a fallback outline face inside
                 // pixel text is drawn as an outline.
-                let pixel = self.families.iter().any(|f| f.pixel.is_some() && f.blob == font.data.id());
+                let pixel = !fine && self.families.iter().any(|f| f.pixel.is_some() && f.blob == font.data.id());
                 let fsize = run.font_size() * scale;
                 let coords: Vec<i16> = run.normalized_coords().iter().map(|c| c.to_bits()).collect();
                 let mut scaler = self.scaler.builder(fref).size(fsize).hint(false).normalized_coords(coords.iter().copied()).build();

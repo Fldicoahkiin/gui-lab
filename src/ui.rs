@@ -3379,7 +3379,7 @@ impl<S, M: Clone> Ui<S, M> {
             let kz = if lin.is_some() { kp } else { 1.0 };
             for (j, m) in probe.iter().enumerate().skip(c).take_while(|(j, _)| within(probe, *j, c)) {
                 let Some(p) = m.para() else { continue };
-                if self.text.native(p.face).is_none() || k >= 1.0 - 1e-4 { continue };
+                if self.text.native(p.face).is_none() || p.face & crate::text::FINE != 0 || k >= 1.0 - 1e-4 { continue };
                 if own && probe.iter().enumerate().skip(c).take(j + 1 - c).any(|(q, o)| o.own_size.is_some() && within(probe, j, q)) { continue; }
                 let at1 = p.size / kz;
                 pixel.push((p.s.to_owned(), at1, self.text.size_down(p.face, k * at1)));
@@ -6723,10 +6723,12 @@ struct Inherit {
     skeleton: bool,
     /// Inside a preview (`El::preview`).
     preview: bool,
+    /// Inside a cached subtree (`El::cached`): its text's faces carry `text::FINE`.
+    fine: bool,
 }
 impl Default for Inherit {
     fn default() -> Self {
-        Self { level: 0, mat: None, loosen: 0.0, select: false, respond: None, legible: None, scope: None, recompose: None, control: false, field: false, roles: [Response::Nudge, Response::Loosen], rtl: false, skeleton: false, preview: false }
+        Self { level: 0, mat: None, loosen: 0.0, select: false, respond: None, legible: None, scope: None, recompose: None, control: false, field: false, roles: [Response::Nudge, Response::Loosen], rtl: false, skeleton: false, preview: false, fine: false }
     }
 }
 impl Inherit {
@@ -7297,8 +7299,9 @@ fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], of
     let in_pv = inh.preview;
     let focus_shown = focus_shown && !in_pv && !preview;
     inh.preview |= preview;
+    inh.fine |= cached;
     if inh.skeleton { on_press = None; on_key = None; on_drag = None; on_blur = None; on_text = None; on_pick = None; on_wheel = None; on_move = None; focusable = false; commit = false; }
-    if let Content::Text { font, .. } = &mut content { *font = Font::Face(font.resolve(roles)); }
+    if let Content::Text { font, .. } = &mut content { *font = Font::Face(font.resolve(roles) | if inh.fine { crate::text::FINE } else { 0 }); }
     // A drawing's blade heads in a face by role take this subtree's faces (the drawing is copied only then).
     if let Content::Canvas(d) = &mut content && d.marks.iter().any(|m| matches!(m, crate::draw::Mark::Blade(b) if b.head.is_some_and(|h| !matches!(h.font, Font::Face(_))))) {
         for m in &mut Rc::make_mut(d).marks { if let crate::draw::Mark::Blade(b) = m && let Some(h) = &mut b.head { h.font = Font::Face(h.font.resolve(roles)); } }

@@ -96,3 +96,33 @@ fn a_cached_view_reads_coverage_nearest_inside_a_round_clip() {
     // Outside the circle, in the box's corners, the page shows as without the glass.
     for (x, y) in [(gx + 2, gy + 2), (gx + 77, gy + 2), (gx + 2, gy + 77), (gx + 77, gy + 77)] { assert_eq!(at(&px, x, y), at(&ground, x, y), "corner ({x}, {y})"); }
 }
+
+/// A page set in a pixel face under its native size (Departure Mono, 11 px, at 2.75): outside a cached
+/// subtree it is drawn at its native size, inside one at the size asked, by its outline's coverage.
+fn tiny(cached: &bool) -> El<()> {
+    let mut page = col().key("tiny").gap(0.0).pad(4.0, 4.0);
+    for k in 0..12 { page = page.child(text(format!("{k:02} fn main() {{ let x = {k}; }}"), 2.75, Paint::TEXT).font(amenui::el::Font::Face(amenui::text::MONO)).key(format!("tiny/{k}")).nowrap()); }
+    let page = if *cached { page.cached() } else { page };
+    col().key("page").fill_width().fill_height().child(page)
+}
+
+#[test]
+fn a_pixel_face_under_its_native_size_is_drawn_at_the_size_asked_in_a_cached_page() {
+    let mk = |cached: bool| { let mut ui = Ui::new(cached, tiny, |_, _| {}, fonts(), W, H, 1.0).on_look(|_| Look { material: Material::Plain, ..Look::default() }); ui.tick(2.0); ui };
+    let (mut c, mut n) = (mk(true), mk(false));
+    let (hc, hn) = (c.node("tiny").expect("cached page").rect.h, n.node("tiny").expect("page").rect.h);
+    // 12 lines: at 2.75 px about 40 px with the padding; at 11 px four times that.
+    assert!(hc < 0.4 * hn, "the cached page's lines are set at 2.75 px: {hc} px tall, {hn} px at the native size");
+    let line = c.node("tiny/0").expect("a line").rect;
+    assert!(line.h < 5.0, "a line at 2.75 px: {line:?}");
+    let Ok(mut o) = Offscreen::try_new(W, H) else { eprintln!("no GPU adapter here: skipped"); return };
+    let l = c.look();
+    let px = o.render(&mut c, &l);
+    let _ = o.render(&mut n, &l);
+    // It is drawn: within its lines there is ink, in more than two tones (coverage, not the native
+    // raster's on or off).
+    let r = c.node("tiny").expect("page").rect;
+    let mut tones = std::collections::BTreeSet::new();
+    for y in r.y as u32..(r.y + hc) as u32 { for x in r.x as u32..(r.x + r.w).min(W as f32) as u32 { tones.insert(px[((y * W + x) * 4) as usize]); } }
+    assert!(tones.len() > 4, "the small page is drawn by coverage: {} tones", tones.len());
+}
