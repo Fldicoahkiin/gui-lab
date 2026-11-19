@@ -74,9 +74,9 @@ impl Parts {
 pub fn merge(mut v: Vec<Bx>, max: usize) -> Vec<Bx> {
     v.retain(|b| !is_empty(*b));
     let area = |b: Bx| (b[2] - b[0]).max(0.0) * (b[3] - b[1]).max(0.0);
-    // Many small boxes (a run of changed marks each its own): in reading order, neighbours together.
+    // Many small boxes (a run of changed marks each its own): neighbours in the list, which are mostly
+    // neighbours on the screen, together.
     if v.len() > 64 {
-        v.sort_by(|a, b| (a[1], a[0]).partial_cmp(&(b[1], b[0])).unwrap_or(std::cmp::Ordering::Equal));
         let per = v.len().div_ceil(64);
         v = v.chunks(per).map(|c| c.iter().fold(EMPTY, |a, b| union(a, *b))).collect();
     }
@@ -116,17 +116,20 @@ fn changed(a: &[Instance], b: &[Instance], pad: f32, out: &mut Vec<Bx>) {
     let (a, b) = (&a[lo..a.len() - hi], &b[lo..b.len() - hi]);
     if a.is_empty() || b.is_empty() { if !a.is_empty() || !b.is_empty() { out.push(run(a, b)); } return; }
     let key = |w: &[Instance]| { use std::hash::{Hash, Hasher}; let mut h = std::collections::hash_map::DefaultHasher::new(); bytemuck::cast_slice::<Instance, u8>(w).hash(&mut h); h.finish() };
-    let mut at: std::collections::HashMap<u64, Vec<usize>> = std::collections::HashMap::new();
-    for j in 0..b.len().saturating_sub(K - 1) { at.entry(key(&b[j..j + K])).or_default().push(j); }
+    // Where each run of `K` starts in `b`, by its hash: the first place, then each next one (`more`), in order.
+    let n = b.len().saturating_sub(K - 1);
+    let (mut at, mut more): (std::collections::HashMap<u64, usize>, Vec<usize>) = (std::collections::HashMap::new(), vec![usize::MAX; n]);
+    for j in (0..n).rev() { if let Some(p) = at.insert(key(&b[j..j + K]), j) { more[j] = p; } }
     let (mut i, mut j) = (0, 0);
     while i < a.len() && j < b.len() {
         if a[i] == b[j] { i += 1; j += 1; continue; }
         // Where the two lists meet again: the first run of `K` in `a` from here that `b` has at or after `j`.
         let mut next = None;
         for i2 in i..a.len().saturating_sub(K - 1) {
-            let Some(ps) = at.get(&key(&a[i2..i2 + K])) else { continue };
-            let from = ps.partition_point(|&p| p < j);
-            if let Some(&p) = ps[from..].iter().find(|&&p| a[i2..i2 + K] == b[p..p + K]) { next = Some((i2, p)); break; }
+            let Some(&first) = at.get(&key(&a[i2..i2 + K])) else { continue };
+            let mut p = first;
+            while p != usize::MAX && (p < j || a[i2..i2 + K] != b[p..p + K]) { p = more[p]; }
+            if p != usize::MAX { next = Some((i2, p)); break; }
         }
         let Some((i2, j2)) = next else { break };
         out.push(run(&a[i..i2], &b[j..j2]));

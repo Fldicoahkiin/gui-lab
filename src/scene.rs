@@ -133,7 +133,8 @@ impl Scene {
     pub fn cuts(&self) -> Vec<(u32, u32)> {
         let mut v: Vec<(u32, u32)> = self.layer.map(|l| (l, 0)).into_iter().collect();
         for p in &self.plates { v.push((p.start, 1 + 2 * p.slot as u32)); v.push((p.end, 2 + 2 * p.slot as u32)); }
-        v.sort();
+        // A handful at most: put in order by hand (a sort here costs the web module more than it saves).
+        for k in 1..v.len() { let mut j = k; while j > 0 && v[j - 1] > v[j] { v.swap(j - 1, j); j -= 1; } }
         v
     }
     pub fn clear(&mut self) { self.instances.clear(); self.batches.clear(); self.layer = None; self.annot.clear(); self.meshes.clear(); self.groups.clear(); self.holds.clear(); self.islands.clear(); self.plates.clear(); self.own.clear(); }
