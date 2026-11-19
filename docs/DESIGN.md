@@ -1536,7 +1536,8 @@ frame is the frame of the pass for any, byte for byte (`tests/specialise.rs`: at
 fast). The readout says `spec each dottr+plain+charr`. For measuring what the pass for any
 material costs against one material's (an A/B on one page, on the device), `Renderer::spec_force`:
 `Some(true)` makes the global material's pass from the next frame and uses it even over overrides (their
-pixels are then drawn in the global material), `Some(false)` never makes it; the readout says which
+pixels are then drawn in the global material), `Some(false)` never makes it nor uses one already made, nor
+the passes for each material; the readout says which
 (`spec yes …`, `spec no (forced off)`).
 
 `lo` is drawn only when the loose area is large enough: `Ui::loose_estimate(now, lens_radius)` estimates the

@@ -254,7 +254,7 @@ pub struct Renderer {
     /// For measuring which material pass costs what (an A/B on one page): `Some(true)` makes the pass for
     /// the global material alone from the next frame and uses it even where elements have materials of
     /// their own (they are then drawn in the global one: for measuring only); `Some(false)` never makes
-    /// it; `None` (the default) goes by `specialise`.
+    /// it nor uses one already made (nor the passes for each material); `None` (the default) goes by `specialise`.
     pub spec_force: Option<bool>,
     /// The material pass made for one material (its id), its upsample once a reduced pass needs it, and
     /// the trace pass once a scroll's trace needs it.
@@ -1728,7 +1728,7 @@ impl Renderer {
         let mask = scene.instances.iter().filter(|i| overrides(i)).fold(if (mat as usize) < 16 { 1u16 << mat } else { 0 }, |m, i| m | override_bit(i))
             | scene.plates.iter().filter(|p| self.plate_inked[p.slot as usize]).fold(0, |m, p| m | self.plate_mats[p.slot as usize]);
         let over = mask != 1u16.checked_shl(mat as u32).unwrap_or(0);
-        let spec = self.spec.as_ref().filter(|s| (!over || self.spec_force == Some(true)) && s.0 == mat);
+        let spec = self.spec.as_ref().filter(|s| self.spec_force != Some(false) && (!over || self.spec_force == Some(true)) && s.0 == mat);
         let traced_may = self.parts.as_ref().and_then(|p| p.moved).is_some_and(|m| m.trace > 0.0);
         let gated: Option<Vec<&Gated>> = (spec.is_none() && over && self.spec_force.is_none() && mask.count_ones() <= GATED_MAX && mask >> crate::style::MATERIAL_COUNT == 0)
             .then(|| (0..crate::style::MATERIAL_COUNT).filter(|m| mask & (1 << m) != 0).map(|m| self.gated[m].as_ref()).collect::<Option<Vec<_>>>()).flatten()

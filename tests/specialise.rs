@@ -50,7 +50,7 @@ fn a_material_pass_made_for_the_material_draws_what_the_pass_for_any_draws() {
 }
 
 /// The A/B switch for measuring (`Renderer::spec_force`): on, the pass for the global material is used
-/// from the second frame even over an override (and even where `specialise` is off); off, never.
+/// from the second frame even over an override (and even where `specialise` is off); off, never, even once it is made.
 #[test]
 fn the_specialised_pass_can_be_forced_on_and_off_for_measuring() {
     let Ok(mut o) = Offscreen::try_new(320, 200) else { eprintln!("no GPU adapter here: skipped"); return };
@@ -62,12 +62,22 @@ fn the_specialised_pass_can_be_forced_on_and_off_for_measuring() {
     let _ = o.render(&mut u, &look);
     assert_eq!(o.r.specialised(), Some(Material::Dottr.id()), "forced on: the global material's own pass, over an override");
     assert!(u.perf().path.line().contains("spec yes dottr"), "{}", u.perf().path.line());
+    // Off once the pass is made: the pass for any, from the next frame.
     o.r.spec_force = Some(false);
+    let _ = o.render(&mut u, &look);
+    assert_eq!(o.r.specialised(), None, "forced off after the pass was made");
+    assert!(u.perf().path.line().contains("spec no (forced off)"), "{}", u.perf().path.line());
+    // And on a page with no override, where it would be made by itself.
     let mut v = open(Material::Plain, false);
     let look = v.look();
+    o.r.specialise = Some(1);
     for _ in 0..3 { let _ = o.render(&mut v, &look); }
     assert_eq!(o.r.specialised(), None, "forced off");
     assert!(v.perf().path.line().contains("spec no (forced off)"), "{}", v.perf().path.line());
+    // Back to the renderer: the pass for the global material.
+    o.r.spec_force = None;
+    for _ in 0..3 { let _ = o.render(&mut v, &look); }
+    assert_eq!(o.r.specialised(), Some(Material::Plain.id()), "left to the renderer");
 }
 
 /// A page of several materials (the gallery's plain chrome round a cell in its own): a pass for each,
