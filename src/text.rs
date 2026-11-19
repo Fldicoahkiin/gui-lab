@@ -25,6 +25,8 @@ use swash::zeno::{Format, Vector};
 pub const SPREAD: i32 = 12;
 /// The glyph atlas's side, px.
 pub const ATLAS: u32 = 2048;
+/// The whole atlas, as `Text::dirty` marks it.
+pub const WHOLE: [u32; 4] = [0, 0, ATLAS, ATLAS];
 /// Paragraph layouts kept per generation of the layout cache (DESIGN.md §1.13). A page's source listing is
 /// a paragraph per line, so this is well above the longest page.
 pub const LAYOUT_CACHE: usize = 8192;
@@ -252,8 +254,9 @@ pub struct Text {
     reveals: u64,
     /// RG8: coverage, nearness-to-ink.
     pub pixels: Vec<u8>,
-    /// The atlas changed since the renderer last uploaded it.
-    pub dirty: bool,
+    /// Where the atlas changed since the renderer last uploaded it (x0, y0, x1, y1 texels; empty when
+    /// x1 <= x0): only that box goes up.
+    pub dirty: [u32; 4],
     pen: (u32, u32, u32),
     /// Paragraphs shaped and broken by parley so far (cache misses), for the work counters; with
     /// `log_shapes`, which texts they were (for tests).
@@ -283,7 +286,7 @@ impl Text {
         Self {
             fonts: FontContext { collection, source_cache: Default::default() },
             layouts: LayoutContext::new(), scaler: ScaleContext::new(), dots: HashMap::new(), families, scale: 1.0,
-            slots: HashMap::new(), ramps: HashMap::new(), full: false, measured: HashMap::new(), cache: [HashMap::new(), HashMap::new()], pieces: [HashMap::new(), HashMap::new()], reveals: 0, pixels: vec![0; (ATLAS * ATLAS * 2) as usize], dirty: true, pen: (1, 1, 0), shaped: 0, shape_ms: 0.0, log_shapes: false, shape_log: vec![], asked: Default::default(),
+            slots: HashMap::new(), ramps: HashMap::new(), full: false, measured: HashMap::new(), cache: [HashMap::new(), HashMap::new()], pieces: [HashMap::new(), HashMap::new()], reveals: 0, pixels: vec![0; (ATLAS * ATLAS * 2) as usize], dirty: WHOLE, pen: (1, 1, 0), shaped: 0, shape_ms: 0.0, log_shapes: false, shape_log: vec![], asked: Default::default(),
         }
     }
 
@@ -300,7 +303,7 @@ impl Text {
         self.pixels.iter_mut().for_each(|p| *p = 0);
         self.pen = (1, 1, 0);
         self.full = false;
-        self.dirty = true;
+        self.dirty = WHOLE;
     }
     /// How many paragraphs have been shaped (parley layouts built) so far.
     pub fn shaped(&self) -> u64 { self.shaped }
@@ -787,8 +790,8 @@ impl Text {
                 strip[(ty as u32 * n * w + k as u32 * w + tx as u32) as usize] = g.data[(y as u32 * g.w + x as u32) as usize];
             } }
         }
-        let made = if n == 0 { None } else { store(&mut self.pixels, &mut self.pen, &strip, n * w, h, 0, 0).map(|sl| (sl.x + SPREAD as u32, sl.y + SPREAD as u32)) };
-        if made.is_none() && n > 0 { self.full = true; } else { self.dirty = true; }
+        let made = if n == 0 { None } else { store(&mut self.pixels, &mut self.pen, &mut self.dirty, &strip, n * w, h, 0, 0).map(|sl| (sl.x + SPREAD as u32, sl.y + SPREAD as u32)) };
+        if made.is_none() && n > 0 { self.full = true; }
         self.ramps.insert(key, made);
         made
     }
@@ -849,8 +852,7 @@ impl Text {
                         None => {
                             let mut img = Render::new(&[Source::Outline]).format(Format::Alpha).offset(Vector::new(sub as f32 / 4.0, 0.0)).render(&mut scaler, g.id as _);
                             if pixel && let Some(i) = img.as_mut() { for c in &mut i.data { *c = if *c >= 128 { 255 } else { 0 }; } }
-                            let made = img.and_then(|i| { let m = store(&mut self.pixels, &mut self.pen, &i.data, i.placement.width, i.placement.height, i.placement.left, i.placement.top); if m.is_none() && i.placement.width > 0 && i.placement.height > 0 { self.full = true; } m });
-                            self.dirty |= made.is_some();
+                            let made = img.and_then(|i| { let m = store(&mut self.pixels, &mut self.pen, &mut self.dirty, &i.data, i.placement.width, i.placement.height, i.placement.left, i.placement.top); if m.is_none() && i.placement.width > 0 && i.placement.height > 0 { self.full = true; } m });
                             self.slots.insert(key, made);
                             made
                         }
@@ -1102,8 +1104,9 @@ fn set_planned(l: &mut Layout<()>, s: &str, plan: &[Planned], width: f32) {
 }
 
 /// Put one glyph image, padded by the spread, into the atlas. `None` when it is empty or the atlas is
-/// full (the glyph is then left out rather than drawn wrong).
-fn store(pixels: &mut [u8], pen: &mut (u32, u32, u32), data: &[u8], gw: u32, gh: u32, left: i32, top: i32) -> Option<Slot> {
+/// full (the glyph is then left out rather than drawn wrong). `dirty` grows by the box written.
+#[allow(clippy::too_many_arguments)]
+fn store(pixels: &mut [u8], pen: &mut (u32, u32, u32), dirty: &mut [u32; 4], data: &[u8], gw: u32, gh: u32, left: i32, top: i32) -> Option<Slot> {
     if gw == 0 || gh == 0 { return None; }
     let sp = SPREAD as u32;
     let (w, h) = (gw + sp * 2, gh + sp * 2);
@@ -1118,6 +1121,7 @@ fn store(pixels: &mut [u8], pen: &mut (u32, u32, u32), data: &[u8], gw: u32, gh:
         let i = (y * w + x) as usize; let o = (((ay + y) * ATLAS + ax + x) * 2) as usize;
         pixels[o] = cov[i]; pixels[o + 1] = near[i];
     } }
+    *dirty = if dirty[2] <= dirty[0] { [ax, ay, ax + w, ay + h] } else { [dirty[0].min(ax), dirty[1].min(ay), dirty[2].max(ax + w), dirty[3].max(ay + h)] };
     Some(Slot { x: ax, y: ay, w, h, left, top })
 }
 

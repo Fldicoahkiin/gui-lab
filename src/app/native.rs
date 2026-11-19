@@ -129,7 +129,7 @@ impl<S: App, M: Clone> Shell<S, M> {
         s.lost = lost;
         s.ui.perf_mut().backend = format!("{:?}", info.backend);
         s.ui.perf_mut().adapter = info.name;
-        s.ui.text_mut().dirty = true;
+        s.ui.text_mut().dirty = crate::text::WHOLE;
         s.ui.resize(s.config.width, s.config.height, s.window.scale_factor() as f32);
         s.ui.invalidate();
         s.window.request_redraw();
