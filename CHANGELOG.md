@@ -24,6 +24,10 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
 - The hover and focus marks are drawn over the material, exact, in the accent, and on a segment or a tab they stay
   inside the control's border. Drawn by the material, `near` outlined each bar twice, and on a segment the bars sat
   on the control's own border, which looked broken.
+- The performance readout keeps its width: every field keeps its width whatever its number (`idle` is as wide as the
+  rates), and its plate does not narrow while it stays open in a window of the same size. Its corner's inset no longer
+  counts on both sides, so a wide inset (a stage's edge) leaves it the room beside it. Its edge used to jump about
+  70 px each time the page went idle and woke.
 
 ## A stage at its own scale
 

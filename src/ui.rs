@@ -679,6 +679,9 @@ pub struct Ui<S, M> {
     overlay_at: f32,
     /// Where the readout's box was drawn last (logical px).
     overlay_box: Option<Rect>,
+    /// The readout's widest line so far (logical px) for its mode and the window's size: the plate never
+    /// narrows while the numbers change.
+    overlay_w: (u8, (f32, f32), f32),
     /// The fade with less motion, seconds (`Ui::reduced_fade`).
     fade_s: f32,
     /// Faces whose bytes came since the last tick (`add_face`), with what stood in for them: they
@@ -1115,7 +1118,7 @@ impl<S, M: Clone> Ui<S, M> {
             gaze_of: None, gaze_seen: HashMap::new(), annots: vec![], focused: None, focus_moved: false, readout: gaze::Readout::default(), hovered: None, pointer_of: None, scripted: false, ticked: None, warm: None, warmed: None, owed: false, soft_shown: false, ambient: 60.0, input_t: -1e9, frame_t: -1e9, tick_gap: 1.0 / 60.0, unused_key: None, shortcut: None, scrolled_of: None, released: None, input: None,
             dirty: true, look_of: None, locale_of: None, timing: Timing::default(), wake_of: None, latest_birth: f32::NEG_INFINITY, gaze_until: f32::NEG_INFINITY,
             marks_moving: false, caret: None, caret_on: true, static_loose: false, mclock: 0.0, moving: false, gclock: 0.0, ground_moving: false,
-            perf: crate::perf::Perf { quality: 1.0, ..Default::default() }, span: 0, painting: false, overlay: 0, overlay_at: 0.0, overlay_box: None, fade_s: REDUCED_FADE, came: vec![], arriving: HashMap::new(), sweeping: false, swept_nodes: vec![], remeasure: false, plate_slots: Default::default(), plate_clear: vec![], plate_over: vec![], pclock: 0.0, plate_frame: f32::NEG_INFINITY, assets: HashMap::new(), assets_asked: Default::default(), shape_seen: 0.0, hud_idle: false, rebuilt: 0,
+            perf: crate::perf::Perf { quality: 1.0, ..Default::default() }, span: 0, painting: false, overlay: 0, overlay_at: 0.0, overlay_box: None, overlay_w: (0, (0.0, 0.0), 0.0), fade_s: REDUCED_FADE, came: vec![], arriving: HashMap::new(), sweeping: false, swept_nodes: vec![], remeasure: false, plate_slots: Default::default(), plate_clear: vec![], plate_over: vec![], pclock: 0.0, plate_frame: f32::NEG_INFINITY, assets: HashMap::new(), assets_asked: Default::default(), shape_seen: 0.0, hud_idle: false, rebuilt: 0,
             text_capture: None, sel: None, sel_drag: false, clicks: (f32::NEG_INFINITY, 0.0, 0.0, 0), a11y_sent: HashMap::new(), a11y_focus: None,
             tree: TaffyTree::new(), tids: HashMap::new(), mkeys: HashMap::new(), virt_views: HashMap::new(), virt_made: HashMap::new(), stack_w: HashMap::new(),
             scrolling: Scrolling::default(), touch: None, touches: HashSet::new(), touching: false, fling: None, over: HashMap::new(), motion: HashMap::new(), scroll_paint: false, event_t: None, ev: 0.0,
@@ -5213,7 +5216,9 @@ impl<S, M: Clone> Ui<S, M> {
         let idle = p.frames.back().is_none_or(|(t, _)| now_ms - t > 1000.0);
         self.hud_idle = idle;
         let inst_fps = p.interval().map_or(0.0, |d| 1000.0 / d.max(0.1));
-        let fps = if idle { "idle".to_owned() } else { format!("{:>3.0} fps  {:>3}/s", inst_fps.min(999.0), sm.fps) };
+        // Every field keeps its width whatever its number (idle is as wide as the rates), so the plate,
+        // anchored at its corner, does not move as the page goes idle and wakes.
+        let fps = if idle { format!("{:<14}", "idle") } else { format!("{:>3.0} fps  {:>3}/s", inst_fps.min(999.0), sm.fps.min(999)) };
         let parts = self.run.as_ref().map_or(0, |r| r.grid.map_or(r.particles.len() as u32, |g| g.count()));
         let path = if parts == 0 { "-" } else if p.particle_path.is_empty() { "cpu" } else { p.particle_path };
         // Instances by kind.
@@ -5224,7 +5229,7 @@ impl<S, M: Clone> Ui<S, M> {
         let backend = if p.backend.is_empty() { "?" } else { &p.backend };
         let last = p.frames.back().map(|f| f.1).unwrap_or_default();
         let lines: Vec<String> = if self.overlay == 1 {
-            vec![format!("{fps}  {:>5.1} ms  dirty {:>3.0}%  {} inst  budget {:.0}%  {mat}  {backend}", sm.total[0], p.dirty * 100.0, self.scene.instances.len(), crate::budget::usage().scale * 100.0)]
+            vec![format!("{fps}  {:>5.1} ms  dirty {:>3.0}%  {:>5} inst  budget {:>3.0}%  {mat:<8}  {backend}", sm.total[0], p.dirty * 100.0, self.scene.instances.len(), crate::budget::usage().scale * 100.0)]
         } else {
             let row = |name: &str, v: [f32; 3]| format!("{name:<13}{:>7.2}{:>7.2}{:>7.2}", v[0], v[1], v[2]);
             vec![
@@ -5257,7 +5262,8 @@ impl<S, M: Clone> Ui<S, M> {
         let [ix, iy] = look.overlay_inset;
         // In a narrow window the lines wrap where their fields part (two spaces), the rest indented,
         // and a field wider than the window still breaks between characters: the box never overflows.
-        let room = (self.size.0 - 2.0 * ix - 16.0).max(40.0);
+        // Its room is from the inset to 12 px from the window's other side (the inset is one side's).
+        let room = (self.size.0 - ix - 12.0 - 16.0).max(40.0);
         let lines = {
             let text = &mut self.text;
             let mut fit = |l: &str| text.measure(l, MONO, SIZE, LINE, None).0 <= room;
@@ -5285,6 +5291,9 @@ impl<S, M: Clone> Ui<S, M> {
         };
         let spark_h = if self.overlay == 2 { 34.0 } else { 0.0 };
         let width = lines.iter().map(|l| self.text.measure(l, MONO, SIZE, LINE, None).0).fold(0.0, f32::max).max(if self.overlay == 2 { 240.0f32.min(room) } else { 0.0 });
+        let kept = self.overlay_w;
+        let width = if kept.0 == self.overlay && kept.1 == self.size { width.max(kept.2).min(room) } else { width };
+        self.overlay_w = (self.overlay, self.size, width);
         let h = LINE * lines.len() as f32 + spark_h + if spark_h > 0.0 { 8.0 } else { 0.0 };
         // The box in the look's corner, `overlay_inset` from the edges; where it would cover text to read
         // it moves on clockwise to the next corner that is clear (the asked one when none is, or when

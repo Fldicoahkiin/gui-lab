@@ -619,7 +619,8 @@ pub struct Look {
     /// The corner of the window the readout sits in (bottom right by default). It never covers text to
     /// read: where it would, it moves on clockwise to the next corner that is clear.
     pub overlay_at: Corner,
-    /// How far the readout's box keeps from the window's edges, logical px (`[x, y]`, default 12 each).
+    /// How far the readout's box keeps from the edges of its corner, logical px (`[x, y]`, default 12
+    /// each); from the window's other sides it keeps 12 px, so a wide inset leaves it the room beside it.
     pub overlay_inset: [f32; 2],
     /// Keep the readout in `overlay_at` even where it covers text to read (default false: it moves on
     /// to the next clear corner). For a page whose own text fills every corner.

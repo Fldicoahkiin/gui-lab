@@ -177,6 +177,25 @@ fn the_readout_can_keep_its_corner_and_fits_a_narrow_window() {
     }
 }
 
+#[test]
+fn the_readout_keeps_its_width_from_active_to_idle_and_takes_the_room_beside_a_wide_inset() {
+    use amenui::style::Corner;
+    let (w, h) = (900u32, 400u32);
+    let Ok(mut o) = Offscreen::try_new(w, h) else { eprintln!("no GPU adapter here: skipped"); return };
+    // The inset on the right is the host's (a stage's edge); the readout may use the room to its left.
+    let mut ui = amenui::ui::Ui::new(readout::S { at: Corner::BottomRight, inset: [240.0, 12.0], block: false, keep: true, mode: 1 }, readout::view, |_, _| {}, fonts(), w, h, 1.0).on_look(readout::look);
+    let mut t = 1.0;
+    let frame = |ui: &mut amenui::ui::Ui<readout::S, ()>, o: &mut Offscreen, t: f32| { ui.tick(t); let look = ui.look(); let _ = o.render(ui, &look); ui.frame_drawn(); ui.overlay_box().expect("drawn") };
+    let mut active = frame(&mut ui, &mut o, t);
+    for _ in 0..5 { t += 1.0 / 60.0; active = frame(&mut ui, &mut o, t); }
+    assert!((w as f32 - active.right() - 240.0).abs() <= 1.0 && active.h <= 30.0, "one line, its right edge at the inset: {active:?}");
+    // A second without frames: the readout says idle, in the same box.
+    std::thread::sleep(std::time::Duration::from_millis(1150));
+    t += 1.2;
+    let idle = frame(&mut ui, &mut o, t);
+    assert_eq!((idle.x, idle.w), (active.x, active.w), "active {active:?}, idle {idle:?}");
+}
+
 /// Two overlapping squares (ink below, accent on top) in a box set see-through as one, and a text
 /// beside them; `op` None writes no opacity at all, `gone` leaves the box out.
 mod seethrough {

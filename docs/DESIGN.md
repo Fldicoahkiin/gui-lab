@@ -1554,7 +1554,7 @@ loosened, the two resolutions can be told apart. Frame times on llvmpipe (relati
 
 `Look::overlay_keep` keeps the readout in `overlay_at`'s corner even where it covers text to read (for a page whose
 own text fills every corner); by default it moves on clockwise to the next clear corner. In a narrow window the
-readout wraps at its two-space field breaks to fit inside `overlay_inset`, so at 390 px wide every number stays in the
+readout wraps at its two-space field breaks to fit between `overlay_inset` and 12 px from the window's other side, so at 390 px wide every number stays in the
 window (`tests/render.rs`).
 
 ### 1.13 Incremental updates and long lists
