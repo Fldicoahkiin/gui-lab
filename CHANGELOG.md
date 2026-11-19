@@ -25,6 +25,9 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
 
 ## Paint that does not grow with the square of the page
 
+- Drawing only what changed matches instances in order rather than by place, so a drawing whose strokes change in
+  number redraws its own box and not everything after it, and redraws up to 8 boxes a stage instead of their
+  union (`dirty::parts`, `dirty::MAX_BOXES`, `Scene::cuts`; `dirty::Inputs` has a new public field, `cuts`).
 - A fitted box (`El::fit`) whose subtree changes only what it draws is one view and no layout a frame (it was three
   views and two layouts): the scales found last time stand until something layout reads changes.
 - What text to read holds (`holds`) finds the ink drawn before it through a 64 px grid instead of testing every

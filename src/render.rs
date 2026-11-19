@@ -233,6 +233,8 @@ pub struct Renderer {
     sim_rows: u32,
     /// The boxes the frame being drawn is limited to.
     region: crate::dirty::Region,
+    /// The same as boxes (at most `dirty::MAX_BOXES` a stage), when not everything is drawn.
+    parts: Option<crate::dirty::Parts>,
     /// Draw only what changed (DESIGN.md §1.19): the frame is kept here between draws and copied to the
     /// target; what the last frame was drawn from; zeroing a box of an image; the copy.
     pub partial: bool,
@@ -458,7 +460,7 @@ impl Renderer {
             pictures: HashMap::new(), picture_views: HashMap::new(), hold_group: None, instances, capacity, pipes, annots, annot_capacity: 256, up_pipe: None, shader, pl,
             ink: blank.clone(), lo: blank.clone(), lo_key: (0, 0, 0), material_up: material.clone(), auto: Default::default(), always_lo: false, no_map: false,
             near: blank, material_first: material.clone(), material, size: (0, 0), tiles, mesh, sim_rows: 0,
-            region: crate::dirty::Region::All, partial: true, frame_view: blank_view.clone(), prev: None, spare: (vec![], vec![]), zero, blit, group: None, group_pipe, had_groups: false, plates: Default::default(), plate_pipes, plate_now: 0.0, plate_fade: [[0.0; 4]; 4], had_plates: 0, plate_inked: [false; 4], was_ageing: false, plate_serial: 0, reduced: false, fade_s: 0.15, sbox: [0.0; 4], own: [[0.0; 4]; crate::draw::OWN_COLOURS], post: None, blit_group: blank_group, warm: None, condense: false, last_region: None, tr: [[0.0; 4]; 9], boxes: [[0.0; 4]; 16], tr_loose: 0.0, t_cont: 0.0,
+            region: crate::dirty::Region::All, parts: None, partial: true, frame_view: blank_view.clone(), prev: None, spare: (vec![], vec![]), zero, blit, group: None, group_pipe, had_groups: false, plates: Default::default(), plate_pipes, plate_now: 0.0, plate_fade: [[0.0; 4]; 4], had_plates: 0, plate_inked: [false; 4], was_ageing: false, plate_serial: 0, reduced: false, fade_s: 0.15, sbox: [0.0; 4], own: [[0.0; 4]; crate::draw::OWN_COLOURS], post: None, blit_group: blank_group, warm: None, condense: false, last_region: None, tr: [[0.0; 4]; 9], boxes: [[0.0; 4]; 16], tr_loose: 0.0, t_cont: 0.0,
         };
         r.set_picture(u32::MAX, 1, 1, &[0, 0, 0, 255]);
         r.resize(w, h);
@@ -1047,6 +1049,7 @@ impl Renderer {
                 // This draws the old scene into the shared images: the next frame is drawn whole.
                 self.prev = None;
                 self.region = crate::dirty::Region::All;
+                self.parts = None;
                 self.frame(&before, Frame { scene: &sp.scene, field: &sp.field, look: &old, lib: ui.meshes(), scale, t: sp.t, mt, split: [0.0; 4], tiles: None, grid: None }, false);
                 self.split = [sp.at[0], sp.at[1], sp.t, 1.0];
             }
@@ -1151,15 +1154,16 @@ impl Renderer {
         annot.extend_from_slice(&ui.scene().annot);
         let inputs = crate::dirty::Inputs {
             instances, annot, meshes: ui.scene().meshes.iter().map(|m| m.scene.fingerprint() ^ (m.rect[2].to_bits() as u64) << 32 ^ m.rect[3].to_bits() as u64).collect(),
-            field: *ui.field(), look: *look, now, mclock: mt[0], gclock: mt[1], size: self.size, map: snap,
+            field: *ui.field(), look: *look, now, mclock: mt[0], gclock: mt[1], size: self.size, map: snap, cuts: ui.scene().cuts(),
             global: split[3] > 0.0 || tiles.is_some() || lo.is_some() || self.hide_glyphs || !ui.scene().groups.is_empty() || self.had_groups || ui.scene().plate_ageing || self.was_ageing || ui.scene().plate_serial != self.plate_serial || ui.scene().plates.len() != self.had_plates || own_changed,
         };
         self.had_groups = !ui.scene().groups.is_empty();
         self.had_plates = ui.scene().plates.len();
         self.was_ageing = ui.scene().plate_ageing;
-        let region = match (&self.prev, self.partial) { (Some(p), true) => crate::dirty::region(p, &inputs, scale), _ => crate::dirty::Region::All };
+        let parts = match (&self.prev, self.partial) { (Some(p), true) => crate::dirty::parts(p, &inputs, scale), _ => None };
         if let Some(old) = self.prev.replace(inputs) { self.spare = (old.instances, old.annot); }
-        self.region = region;
+        self.region = parts.as_ref().map_or(crate::dirty::Region::All, |p| p.region());
+        self.parts = parts;
         self.frame_q(target, Frame { scene: ui.scene(), field: ui.field(), look, lib: ui.meshes(), scale, t: now, mt, split, tiles, grid }, true, lo);
         let submit = (crate::perf::now_ms() - started) as f32;
         let parts = ui.morph_run().map_or(0, |r| if r.clock(now).is_some() { r.grid.map_or(r.particles.len() as u32, |g| g.count()) } else { 0 });
@@ -1440,20 +1444,25 @@ impl Renderer {
         let (ink, near) = (self.ink.clone(), self.near.clone());
         // The main frame is drawn into the kept frame, only within what changed, then copied out.
         let (w, h) = self.size;
-        let boxes = match (with_before, self.region) {
-            (true, crate::dirty::Region::Boxes { stage1, stage2 }) => Some((crate::dirty::scissor(stage1, w, h), crate::dirty::scissor(stage2, w, h))),
+        // Each stage within the boxes that changed (several, which may overlap: drawing a pixel twice draws
+        // it the same).
+        let cut = |v: &[crate::dirty::Bx]| -> Vec<[u32; 4]> { v.iter().filter_map(|b| crate::dirty::scissor(*b, w, h)).collect() };
+        let boxes = match (with_before, &self.parts) {
+            (true, Some(p)) => Some((cut(&p.stage1), cut(&p.stage2))),
             _ => None,
         };
-        self.last_region = boxes.map(|(a, b)| (a.unwrap_or([0; 4]), b.unwrap_or([0; 4])));
+        self.last_region = match (with_before, self.region) {
+            (true, crate::dirty::Region::Boxes { stage1, stage2 }) => Some((crate::dirty::scissor(stage1, w, h).unwrap_or([0; 4]), crate::dirty::scissor(stage2, w, h).unwrap_or([0; 4]))),
+            _ => None,
+        };
         let frame_view = self.frame_view.clone();
         let out = if with_before { &frame_view } else { target };
         self.plates_ready(&mut enc, scene);
         self.plates_laid.set(0);
         self.hold_pass(&mut enc);
-        match boxes {
+        match &boxes {
             None => self.stage1(&mut enc, scene, &ink, &near, tiles, None),
-            Some((Some(b), _)) => self.stage1(&mut enc, scene, &ink, &near, tiles, Some(b)),
-            Some((None, _)) => {}
+            Some((s1, _)) => for b in s1 { self.stage1(&mut enc, scene, &ink, &near, tiles, Some(*b)); },
         }
         if lo.is_some() {
             let lo_view = self.lo.clone();
@@ -1462,24 +1471,26 @@ impl Renderer {
             pass.set_bind_group(0, if with_before { &self.material } else { &self.material_first }, &[]);
             pass.draw(0..3, 0..1);
         }
-        let stage2 = match boxes { None => Some(None), Some((_, Some(b))) => Some(Some(b)), Some((_, None)) => None };
-        if let Some(sc) = stage2 {
-            let mut pass = match sc { None => clear(&mut enc, out, wgpu::Color::BLACK), Some(_) => load(&mut enc, out) };
-            if let Some([x, y, sw, sh]) = sc { pass.set_scissor_rect(x, y, sw, sh); }
-            if lo.is_some() {
-                pass.set_pipeline(self.up_pipe.as_ref().expect("made with the reduced target"));
-                pass.set_bind_group(0, &self.material_up, &[]);
-            } else {
-                pass.set_pipeline(&self.pipes[3]);
-                pass.set_bind_group(0, if with_before { &self.material } else { &self.material_first }, &[]);
-            }
-            pass.draw(0..3, 0..1);
-            // Stage 3: the annotations, exact, over the material.
-            if annots > 0 {
-                pass.set_pipeline(&self.pipes[4]);
-                pass.set_bind_group(0, self.pictures.get(&u32::MAX).expect("blank picture"), &[]);
-                pass.set_vertex_buffer(0, self.annots.slice(..));
-                pass.draw(0..4, 0..annots);
+        let stage2: Option<Vec<Option<[u32; 4]>>> = match boxes { None => Some(vec![None]), Some((_, s2)) if s2.is_empty() => None, Some((_, s2)) => Some(s2.into_iter().map(Some).collect()) };
+        if let Some(scs) = stage2 {
+            let mut pass = if scs[0].is_none() { clear(&mut enc, out, wgpu::Color::BLACK) } else { load(&mut enc, out) };
+            for sc in scs {
+                if let Some([x, y, sw, sh]) = sc { pass.set_scissor_rect(x, y, sw, sh); }
+                if lo.is_some() {
+                    pass.set_pipeline(self.up_pipe.as_ref().expect("made with the reduced target"));
+                    pass.set_bind_group(0, &self.material_up, &[]);
+                } else {
+                    pass.set_pipeline(&self.pipes[3]);
+                    pass.set_bind_group(0, if with_before { &self.material } else { &self.material_first }, &[]);
+                }
+                pass.draw(0..3, 0..1);
+                // Stage 3: the annotations, exact, over the material.
+                if annots > 0 {
+                    pass.set_pipeline(&self.pipes[4]);
+                    pass.set_bind_group(0, self.pictures.get(&u32::MAX).expect("blank picture"), &[]);
+                    pass.set_vertex_buffer(0, self.annots.slice(..));
+                    pass.draw(0..4, 0..annots);
+                }
             }
         }
         if with_before {

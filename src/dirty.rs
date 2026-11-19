@@ -1,6 +1,6 @@
 //! Draw only what changed (DESIGN.md §1.19). Before a frame the renderer compares what it is about to
-//! draw with what it drew last time, and finds two boxes (device px): where stage 1's images (ink, near,
-//! ) can differ, and where the final frame can differ. Everything outside them is the
+//! draw with what it drew last time, and finds boxes (device px, at most `MAX_BOXES` a stage): where
+//! stage 1's images (ink, near) can differ, and where the final frame can differ. Everything outside them is the
 //! previous frame's, kept in place. Pure CPU; the renderer scissors its passes to the boxes.
 //!
 //! Stage 1 changes only where an instance changed (its record, or what it shows because time passes: it
@@ -50,11 +50,90 @@ pub struct Inputs {
     pub global: bool,
     /// The field map's bytes (DESIGN.md §1.29).
     pub map: crate::fieldmap::Snapshot,
+    /// Where the instance list is cut into passes (`Scene::cuts`): instances are matched only within the
+    /// same part.
+    pub cuts: Vec<(u32, u32)>,
 }
 
 /// The two boxes, or everything.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Region { All, Boxes { stage1: Bx, stage2: Bx } }
+
+/// The most boxes a frame redraws in each stage: what changed in more places is merged into this many.
+pub const MAX_BOXES: usize = 8;
+/// What a frame redraws, as several boxes: where stage 1's images can differ, and where the final frame
+/// can; each list is at most `MAX_BOXES`, and may overlap.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Parts { pub stage1: Vec<Bx>, pub stage2: Vec<Bx> }
+impl Parts {
+    /// Both lists as one box each.
+    pub fn region(&self) -> Region { Region::Boxes { stage1: self.stage1.iter().fold(EMPTY, |a, b| union(a, *b)), stage2: self.stage2.iter().fold(EMPTY, |a, b| union(a, *b)) } }
+}
+
+/// The boxes merged into at most `max`: those that overlap first, then the two whose union adds least.
+pub fn merge(mut v: Vec<Bx>, max: usize) -> Vec<Bx> {
+    v.retain(|b| !is_empty(*b));
+    let area = |b: Bx| (b[2] - b[0]).max(0.0) * (b[3] - b[1]).max(0.0);
+    // Many small boxes (a run of changed marks each its own): in reading order, neighbours together.
+    if v.len() > 64 {
+        v.sort_by(|a, b| (a[1], a[0]).partial_cmp(&(b[1], b[0])).unwrap_or(std::cmp::Ordering::Equal));
+        let per = v.len().div_ceil(64);
+        v = v.chunks(per).map(|c| c.iter().fold(EMPTY, |a, b| union(a, *b))).collect();
+    }
+    loop {
+        let mut merged = false;
+        let mut k = 0;
+        while k < v.len() {
+            let mut j = k + 1;
+            while j < v.len() {
+                if !is_empty(meet(v[k], v[j])) { let b = v.swap_remove(j); v[k] = union(v[k], b); merged = true; } else { j += 1; }
+            }
+            k += 1;
+        }
+        if !merged { break; }
+    }
+    while v.len() > max {
+        let (mut best, mut at) = (f32::INFINITY, (0, 1));
+        for a in 0..v.len() { for b in a + 1..v.len() {
+            let add = area(union(v[a], v[b])) - area(v[a]) - area(v[b]);
+            if add < best { best = add; at = (a, b); }
+        } }
+        let b = v.swap_remove(at.1);
+        v[at.0] = union(v[at.0], b);
+    }
+    v
+}
+
+/// The instances that changed between `a` and `b`, as runs: those of one list matched in order to equal
+/// ones of the other are the same, so a run of changed marks (a drawing whose strokes changed in number)
+/// leaves what comes after it matched. Each unmatched run, in either list, is one box.
+fn changed(a: &[Instance], b: &[Instance], pad: f32, out: &mut Vec<Bx>) {
+    const K: usize = 4;
+    let run = |x: &[Instance], y: &[Instance]| x.iter().chain(y).fold(EMPTY, |r, i| union(r, i.bounds(pad)));
+    let (mut lo, mut hi) = (0, 0);
+    while lo < a.len() && lo < b.len() && a[lo] == b[lo] { lo += 1; }
+    while hi < a.len() - lo && hi < b.len() - lo && a[a.len() - 1 - hi] == b[b.len() - 1 - hi] { hi += 1; }
+    let (a, b) = (&a[lo..a.len() - hi], &b[lo..b.len() - hi]);
+    if a.is_empty() || b.is_empty() { if !a.is_empty() || !b.is_empty() { out.push(run(a, b)); } return; }
+    let key = |w: &[Instance]| { use std::hash::{Hash, Hasher}; let mut h = std::collections::hash_map::DefaultHasher::new(); bytemuck::cast_slice::<Instance, u8>(w).hash(&mut h); h.finish() };
+    let mut at: std::collections::HashMap<u64, Vec<usize>> = std::collections::HashMap::new();
+    for j in 0..b.len().saturating_sub(K - 1) { at.entry(key(&b[j..j + K])).or_default().push(j); }
+    let (mut i, mut j) = (0, 0);
+    while i < a.len() && j < b.len() {
+        if a[i] == b[j] { i += 1; j += 1; continue; }
+        // Where the two lists meet again: the first run of `K` in `a` from here that `b` has at or after `j`.
+        let mut next = None;
+        for i2 in i..a.len().saturating_sub(K - 1) {
+            let Some(ps) = at.get(&key(&a[i2..i2 + K])) else { continue };
+            let from = ps.partition_point(|&p| p < j);
+            if let Some(&p) = ps[from..].iter().find(|&&p| a[i2..i2 + K] == b[p..p + K]) { next = Some((i2, p)); break; }
+        }
+        let Some((i2, j2)) = next else { break };
+        out.push(run(&a[i..i2], &b[j..j2]));
+        (i, j) = (i2, j2);
+    }
+    if i < a.len() || j < b.len() { out.push(run(&a[i..], &b[j..])); }
+}
 
 /// How far stage 2 reads around a pixel under material `m` (device px).
 pub fn reach(m: Material, look: &Look, s: f32) -> f32 {
@@ -93,29 +172,42 @@ fn fronts(f: &Field, look: &Look, now: f32, s: f32) -> Vec<Bx> {
     }).collect()
 }
 
-pub fn region(prev: &Inputs, cur: &Inputs, scale: f32) -> Region {
-    if prev.global || cur.global || prev.size != cur.size || prev.look != cur.look || prev.field.calm != cur.field.calm || prev.meshes.len() != cur.meshes.len() { return Region::All; }
+/// What a frame redraws (one box per stage, the union of `parts`).
+pub fn region(prev: &Inputs, cur: &Inputs, scale: f32) -> Region { parts(prev, cur, scale).map_or(Region::All, |p| p.region()) }
+
+/// What a frame redraws, as boxes, or `None` for everything.
+pub fn parts(prev: &Inputs, cur: &Inputs, scale: f32) -> Option<Parts> {
+    let all = None;
+    if prev.global || cur.global || prev.size != cur.size || prev.look != cur.look || prev.field.calm != cur.field.calm || prev.meshes.len() != cur.meshes.len() { return all; }
     let mats = materials(cur);
     // The dot ground drifts everywhere on the ground clock.
-    if prev.gclock != cur.gclock && mats.contains(&Material::Dottr) { return Region::All; }
-    if mats != materials(prev) { return Region::All; }
+    if prev.gclock != cur.gclock && mats.contains(&Material::Dottr) { return all; }
+    if mats != materials(prev) { return all; }
     let clock_moved = prev.mclock != cur.mclock && mats.iter().any(|m| clocked(*m));
     let s = scale;
     let look = &cur.look;
     let pad = SPREAD as f32 + look.fx.push * s * 1.5 + 2.0;
-    let mut st1 = EMPTY;
-    let mut st2 = EMPTY;
-    // Instances whose records differ (in place; a longer or shorter list from where they part).
+    let mut st1: Vec<Bx> = vec![];
+    let mut st2: Vec<Bx> = vec![];
+    // Instances whose records differ, matched in order within each part of the list (between the cuts
+    // where passes begin); with the cuts in another order, in place.
     let (a, b) = (&prev.instances, &cur.instances);
-    for k in 0..a.len().max(b.len()) {
-        match (a.get(k), b.get(k)) {
-            (Some(x), Some(y)) if x == y => {}
-            (x, y) => { for i in [x, y].into_iter().flatten() { st1 = union(st1, i.bounds(pad)); } }
+    let what = |c: &[(u32, u32)]| c.iter().map(|x| x.1).collect::<Vec<_>>();
+    if what(&prev.cuts) == what(&cur.cuts) {
+        let bounds = |c: &[(u32, u32)], n: usize| { let mut v = vec![0]; v.extend(c.iter().map(|x| (x.0 as usize).min(n))); v.push(n); v };
+        let (pa, pb) = (bounds(&prev.cuts, a.len()), bounds(&cur.cuts, b.len()));
+        for k in 0..pa.len() - 1 { changed(&a[pa[k]..pa[k + 1].max(pa[k])], &b[pb[k]..pb[k + 1].max(pb[k])], pad, &mut st1); }
+    } else {
+        for k in 0..a.len().max(b.len()) {
+            match (a.get(k), b.get(k)) {
+                (Some(x), Some(y)) if x == y => {}
+                (x, y) => { for i in [x, y].into_iter().flatten() { st1.push(i.bounds(pad)); } }
+            }
         }
     }
     // 3D elements whose meshes changed (the instance is the same box).
     for (k, (pa, pb)) in prev.meshes.iter().zip(&cur.meshes).enumerate() {
-        if pa != pb { for i in b.iter().filter(|i| i.paint[3] == MESH && i.extra[1] as usize == k) { st1 = union(st1, i.bounds(pad)); } }
+        if pa != pb { for i in b.iter().filter(|i| i.paint[3] == MESH && i.extra[1] as usize == k) { st1.push(i.bounds(pad)); } }
     }
     // What changes because time passes: condensing, the fronts, the lens and the burst on 3D elements.
     let enter = look.fx.enter.max(1e-3);
@@ -130,6 +222,8 @@ pub fn region(prev: &Inputs, cur: &Inputs, scale: f32) -> Region {
     let bursts = if prev.field.burst != cur.field.burst || prev.field.burst_t != cur.field.burst_t || burst(&cur.field, cur.now) != EMPTY || burst(&prev.field, prev.now) != EMPTY {
         union(burst(&prev.field, prev.now), burst(&cur.field, cur.now))
     } else { EMPTY };
+    // Consecutive instances that change are one box.
+    let mut acc = EMPTY;
     for i in b {
         let r = i.bounds(pad);
         let born = i.extra[3];
@@ -141,8 +235,9 @@ pub fn region(prev: &Inputs, cur: &Inputs, scale: f32) -> Region {
         // Under a material whose loose parts read the material clock, what is held loose changes when
         // it moves (only there: the rest of the window reads no clock).
         let held = clock_moved && i.extra[2] > 0.0;
-        if condensing || fronted || meshy || held { st1 = union(st1, if lensed { meet(lenses, r) } else { r }); }
+        if condensing || fronted || meshy || held { acc = union(acc, if lensed { meet(lenses, r) } else { r }); } else if !is_empty(acc) { st1.push(std::mem::replace(&mut acc, EMPTY)); }
     }
+    st1.push(acc);
     // The field map: where its bytes changed, every instance that reads it there (its looseness, and the
     // whole of it where its flow carries it), and the ground the materials draw from it.
     let map_box = cur.map.changed(&prev.map).map(|b| meet([b[0] * s, b[1] * s, b[2] * s, b[3] * s], [0.0, 0.0, cur.size.0 as f32, cur.size.1 as f32]));
@@ -151,32 +246,34 @@ pub fn region(prev: &Inputs, cur: &Inputs, scale: f32) -> Region {
         for i in a.iter().chain(b) {
             // A blade bends wherever the map changed under its reach.
             let reads = i.blade() || (i.look[2] > 0.5 && i.resp[0] + i.resp[1] > 0.0);
-            if reads && !is_empty(meet(mb, i.bounds(pad + drift))) { st1 = union(st1, i.bounds(pad + drift)); }
+            if reads && !is_empty(meet(mb, i.bounds(pad + drift))) { st1.push(i.bounds(pad + drift)); }
         }
     }
     // Stage 2: what stage 1 changed, as far as the materials read around it, and the field on the ground.
     // Pictures' marks read their own cells (and the parallax its depth): only where a picture changed.
-    let pic_changed = b.iter().chain(a.iter()).any(|i| i.paint[3] == PICTURE && !is_empty(meet(i.bounds(pad), st1)));
+    let screen = [0.0, 0.0, cur.size.0 as f32, cur.size.1 as f32];
+    let st1: Vec<Bx> = merge(st1.into_iter().map(|x| meet(x, screen)).collect(), MAX_BOXES);
+    let pic_changed = b.iter().chain(a.iter()).any(|i| i.paint[3] == PICTURE && st1.iter().any(|x| !is_empty(meet(i.bounds(pad), *x))));
     let rch = mats.iter().map(|m| reach(*m, look, s)).fold(0.0, f32::max)
         + if pic_changed { look.pics.iter().map(|p| 2.0 * p.pitch * s + p.depth * s).fold(0.0, f32::max) } else { 0.0 };
-    st2 = union(st2, grow(st1, rch));
-    for f in &acting { st2 = union(st2, grow(*f, rch)); }
+    st2.extend(st1.iter().map(|x| grow(*x, rch)));
+    for f in &acting { st2.push(grow(*f, rch)); }
     // The lens acts on the pictures and 3D elements that let it (above) and on the dot ground.
-    if mats.contains(&Material::Dottr) { st2 = union(st2, grow(lenses, rch)); }
-    st2 = union(st2, grow(bursts, rch));
+    if mats.contains(&Material::Dottr) { st2.push(grow(lenses, rch)); }
+    st2.push(grow(bursts, rch));
     // The ground under the field map (dot's units lean up to half their pitch, glitch's rows slip).
-    if let Some(mb) = map_box { st2 = union(st2, grow(mb, rch + 9.0 * s)); }
+    if let Some(mb) = map_box { st2.push(grow(mb, rch + 9.0 * s)); }
     // Scroll nodes whose content moved (the lattices follow it) or whose trace shows (DESIGN.md §1.8.3).
     for j in 0..8 {
         for f in [&prev.field, &cur.field] {
             if prev.field.scrolls[j] != cur.field.scrolls[j] || prev.field.scrollo[j] != cur.field.scrollo[j] || f.scrollo[j][2] > 0.0 {
                 let r = f.scrolls[j];
-                if r[2] > r[0] { st2 = union(st2, grow(r, rch + look.scroll.trail * s + look.scroll.slip * s)); }
+                if r[2] > r[0] { st2.push(grow(r, rch + look.scroll.trail * s + look.scroll.slip * s)); }
             }
         }
     }
     if prev.field.wipe != cur.field.wipe || prev.field.wipe_rect != cur.field.wipe_rect {
-        for f in [&prev.field, &cur.field] { if f.wipe[1] > 0.0 { st2 = union(st2, grow(f.wipe_rect, rch)); } }
+        for f in [&prev.field, &cur.field] { if f.wipe[1] > 0.0 { st2.push(grow(f.wipe_rect, rch)); } }
     }
     // The annotation layer is drawn over the material in the same pass: the marks that are new or gone
     // (as a set, so a label that grows by a glyph does not move every mark after it in the list).
@@ -184,10 +281,9 @@ pub fn region(prev: &Inputs, cur: &Inputs, scale: f32) -> Region {
         let key = |i: &Instance| -> Vec<u32> { i.rect.iter().chain(&i.uv).chain(&i.paint).chain(&i.clip).chain(&i.extra).chain(&i.look).map(|v| v.to_bits()).collect() };
         let had: std::collections::HashSet<Vec<u32>> = prev.annot.iter().map(key).collect();
         let has: std::collections::HashSet<Vec<u32>> = cur.annot.iter().map(key).collect();
-        for i in prev.annot.iter().filter(|i| !has.contains(&key(i))).chain(cur.annot.iter().filter(|i| !had.contains(&key(i)))) { st2 = union(st2, grow(rect(i.rect), 2.0)); }
+        for i in prev.annot.iter().filter(|i| !has.contains(&key(i))).chain(cur.annot.iter().filter(|i| !had.contains(&key(i)))) { st2.push(grow(rect(i.rect), 2.0)); }
     }
-    let screen = [0.0, 0.0, cur.size.0 as f32, cur.size.1 as f32];
-    Region::Boxes { stage1: meet(st1, screen), stage2: meet(st2, screen) }
+    Some(Parts { stage1: st1, stage2: merge(st2.into_iter().map(|x| meet(x, screen)).collect(), MAX_BOXES) })
 }
 
 /// A box as whole device pixels inside the frame (for a scissor), or `None` when it is empty.
@@ -201,7 +297,7 @@ pub fn scissor(b: Bx, w: u32, h: u32) -> Option<[u32; 4]> {
 mod tests {
     use super::*;
     fn inputs(insts: Vec<Instance>) -> Inputs {
-        Inputs { instances: insts, annot: vec![], meshes: vec![], field: Field::default(), look: Look { material: Material::Plain, ..Look::default() }, now: 10.0, mclock: 0.0, gclock: 0.0, size: (800, 600), global: false, map: Default::default() }
+        Inputs { instances: insts, annot: vec![], meshes: vec![], field: Field::default(), look: Look { material: Material::Plain, ..Look::default() }, now: 10.0, mclock: 0.0, gclock: 0.0, size: (800, 600), global: false, map: Default::default(), cuts: vec![] }
     }
     fn inst(x: f32) -> Instance { Instance { rect: [x, 100.0, 40.0, 20.0], paint: [1.0, 0.0, 1.0, 1.0], extra: [0.0, 0.0, 0.0, -100.0], ..Default::default() } }
 

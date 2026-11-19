@@ -127,6 +127,15 @@ pub const PLATES: usize = 4;
 pub struct PlateSpan { pub slot: u8, pub start: u32, pub end: u32, pub fade_s: f32 }
 
 impl Scene {
+    /// Where the instance list is cut into passes, in order: the modal layer's start (`(at, 0)`) and each
+    /// plate's start and end (`(at, 1 + 2 slot)`, `(at, 2 + 2 slot)`). What is drawn differs where an
+    /// instance crosses one, so the dirty region matches instances only between the same cuts.
+    pub fn cuts(&self) -> Vec<(u32, u32)> {
+        let mut v: Vec<(u32, u32)> = self.layer.map(|l| (l, 0)).into_iter().collect();
+        for p in &self.plates { v.push((p.start, 1 + 2 * p.slot as u32)); v.push((p.end, 2 + 2 * p.slot as u32)); }
+        v.sort();
+        v
+    }
     pub fn clear(&mut self) { self.instances.clear(); self.batches.clear(); self.layer = None; self.annot.clear(); self.meshes.clear(); self.groups.clear(); self.holds.clear(); self.islands.clear(); self.plates.clear(); self.own.clear(); }
     /// Everything pushed from now on is in the modal layer.
     pub fn begin_layer(&mut self) { self.layer = Some(self.instances.len() as u32); }

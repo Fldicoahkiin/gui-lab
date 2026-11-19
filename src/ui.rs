@@ -1195,7 +1195,7 @@ impl<S, M: Clone> Ui<S, M> {
         crate::dirty::Inputs {
             instances: sc.instances.clone(), annot: sc.annot.clone(),
             meshes: sc.meshes.iter().map(|m| m.scene.fingerprint() ^ (m.rect[2].to_bits() as u64) << 32 ^ m.rect[3].to_bits() as u64).collect(),
-            field: *self.field(), look: *look, now: self.beat_grid(), mclock: self.mclock, gclock: self.gclock, size: self.device_size(), map: self.fmap.snapshot().clone(),
+            field: *self.field(), look: *look, now: self.beat_grid(), mclock: self.mclock, gclock: self.gclock, size: self.device_size(), map: self.fmap.snapshot().clone(), cuts: sc.cuts(),
             global: self.split.as_ref().is_some_and(|sp| self.split_alive(sp, self.clock)) || self.run.as_ref().is_some_and(|r| r.clock(self.clock).is_some()),
         }
     }

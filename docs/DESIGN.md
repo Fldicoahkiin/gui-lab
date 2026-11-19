@@ -1969,14 +1969,24 @@ scissored to their boxes (the G-buffer stage clears inside its box first, with `
 full-screen triangle), and outside is the last frame. The frame is kept in an image of the renderer's own and
 copied whole to the target each frame (the web swap chain gives a new image every frame).
 
-- The G-buffer box: instances whose records differ (compared one by one, everything from the point of
-  divergence when the lengths differ), those condensing, those touched by a live front (the circle the front
+- The G-buffer boxes: instances whose records differ, those condensing, those touched by a live front (the circle the front
   swept, plus its width and push, intersected with its scope box), pictures and 3D elements the lens may touch
   (only their intersection with the lens's reach), 3D elements under a burst and 3D elements whose mesh
   fingerprint changed; each instance's rect grown by the SDF range and the push.
 - The final box: the G-buffer box grown by the material's read range (`dirty::reach`: each material by its own
   parameters, plus picture mark cells), plus the areas fronts act on, the lens (3.5 radii around both old and
   new pointer), bursts, the wipe line's rect and changed instances of the annotation layer.
+- Instances are matched in order, not by place: the common start and end of the two lists, and between them
+  runs of 4 equal instances found again further on, so a drawing whose strokes change in number leaves what
+  is drawn after it matched; each run that did not match, in either list, is one box. They are matched only
+  between the same cuts of the list (the modal layer, each plate), and when the cuts differ, in place. A
+  pixel outside every box is covered by the same instances in the same order, so it is the same.
+- **Several boxes**: each stage's boxes are merged where they overlap, then two at a time (the pair whose
+  union adds least) down to `dirty::MAX_BOXES` (8), and each stage is drawn once per box (boxes may overlap:
+  a pixel drawn twice is drawn the same). `dirty::parts` gives them; `dirty::region` and the readout their
+  union. Acceptance: `tests/dirty_parts.rs` (a drawing that gains strokes redraws only its own cell, two
+  cells far apart are two boxes under a quarter of the window, and seven frames of cells changing under three
+  materials, drawn in their boxes, are byte for byte the frames drawn whole).
 - The whole screen: the look changed (theme, material, parameters…), the window changed, a commit is showing,
   particles are flying, the low-resolution pass is being drawn, or a material that reads the material clock
   (`dottr`, `glitchr`) is in use and the clock moved.
