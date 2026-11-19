@@ -2111,7 +2111,7 @@ annotations drawing in no longer advance it, since otherwise one hover would set
 whole window and force a full redraw.
 
 **Why a frame cost what it did**: the renderer leaves in `Perf::path` how the last frame was drawn
-(`perf::FramePath`), and the overlay shows it as one line (`FramePath::line`): `move yes`, or `move no` with the
+(`perf::FramePath`), and the full overlay shows it as one line (`FramePath::line`): `move yes`, or `move no` with the
 first reason the frame did not move the last one or was drawn whole (`global` broken down as commit, morph,
 loose under a reduced pass, a stage rescaled, an opacity group, plates ageing or emptied, own colours; the look,
 the size, the materials or the dottr ground clock changing; soft scrolling; the trace with a reduced pass; a

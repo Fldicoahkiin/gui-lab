@@ -5347,7 +5347,7 @@ impl<S, M: Clone> Ui<S, M> {
         let backend = if p.backend.is_empty() { "?" } else { &p.backend };
         let last = p.frames.back().map(|f| f.1).unwrap_or_default();
         let lines: Vec<String> = if self.overlay == 1 {
-            vec![format!("{fps}  {:>5.1} ms  dirty {:>3.0}%  {:>5} inst  budget {:>3.0}%  {mat:<8}  {backend}", sm.total[0], p.dirty * 100.0, self.scene.instances.len(), crate::budget::usage().scale * 100.0), p.path.line()]
+            vec![format!("{fps}  {:>5.1} ms  dirty {:>3.0}%  {:>5} inst  budget {:>3.0}%  {mat:<8}  {backend}", sm.total[0], p.dirty * 100.0, self.scene.instances.len(), crate::budget::usage().scale * 100.0)]
         } else {
             let row = |name: &str, v: [f32; 3]| format!("{name:<13}{:>7.2}{:>7.2}{:>7.2}", v[0], v[1], v[2]);
             vec![

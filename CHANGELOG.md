@@ -32,7 +32,7 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
   nothing out; it had gone back to where the last layout put it.
 - `Perf::path` (`perf::FramePath`): how the last frame was drawn, for a readout: whether it moved the last frame and
   the first reason it did not or was drawn whole, whether the material pass was specialised and why not, the share
-  shaded at full resolution, and the soft, stage and reduced scales; `FramePath::line`, shown by the overlay.
+  shaded at full resolution, and the soft, stage and reduced scales; `FramePath::line`, shown by the full overlay.
   `dirty::parts_why`, `Parts::refused`.
 
 ## For Kern
