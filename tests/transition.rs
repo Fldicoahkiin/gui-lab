@@ -270,8 +270,10 @@ fn a_scoped_crack_breaks_the_scope_into_pieces_of_its_own_size() {
     let n = (W * H) as usize;
     let mut id = vec![usize::MAX; n];
     let mut sizes = vec![];
-    // A crack is anything that has moved off the old page (a thin one is drawn blended).
-    let live = |i: usize| inside(i) && gap_of(px(f35, i), px(&before, i)) <= 6 && gap_of(px(&before, i), px(&last, i)) >= 12;
+    // A crack is anything that has moved off the old page, however little: a thin one is drawn blended,
+    // its faintest pixels a few levels off the old page (and how few depends on the rasteriser), and a
+    // piece is what is still exactly the old page round it.
+    let live = |i: usize| inside(i) && gap_of(px(f35, i), px(&before, i)) <= 2 && gap_of(px(&before, i), px(&last, i)) >= 12;
     for s0 in 0..n {
         if id[s0] != usize::MAX || !live(s0) { continue; }
         let k = sizes.len();
