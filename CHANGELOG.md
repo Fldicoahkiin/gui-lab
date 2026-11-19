@@ -8,6 +8,11 @@ crate and the `amenui` npm package (`web/`) always carry the same version, becau
 match the module that `web_app!` generates. The minimum Rust is the one CI builds with (`rust-version`
 in Cargo.toml); raising it is a breaking change before 1.0 only in the second number.
 
+## Marks in the ink
+
+- `Fx::marks_accent` (1 by default, the accent as before): how much of the accent the hover and focus marks are
+  drawn in; 0 draws them in the ink.
+
 ## Frame rate
 
 - Scrolling under the automatic level is not softened on a frame that can move the last one (`dirty::Move`):

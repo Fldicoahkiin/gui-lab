@@ -6273,9 +6273,12 @@ impl<S, M: Clone> Ui<S, M> {
         let (len, th) = (8.0f32.min(r.w * 0.4).min(r.h * 0.4), 1.5);
         let c = self.marks.clip.inset(-6.0, -6.0, -6.0, -6.0);
         let clip = [c.x * s, c.y * s, c.right() * s, c.bottom() * s];
-        // Over the material, exact, in the accent (the annotation layer): a material would draw the bars
-        // as its own shapes (near's bands round each one, with the control's border running through).
-        let accent = self.look().theme.accent;
+        // Over the material, exact, in the accent (the annotation layer), or toward the ink by
+        // `Fx::marks_accent`: a material would draw the bars as its own shapes (near's bands round each
+        // one, with the control's border running through).
+        let look = self.look();
+        let k = look.fx.marks_accent.clamp(0.0, 1.0);
+        let accent: [f32; 3] = std::array::from_fn(|i| look.theme.ink[i] + (look.theme.accent[i] - look.theme.ink[i]) * k);
         let bar = |x: f32, y: f32, w: f32, h: f32| Instance {
             rect: [(x * s).round(), (y * s).round(), (w * s).round().max(1.0), (h * s).round().max(1.0)],
             paint: [0.0, 0.0, self.marks.alpha, SHAPE], clip, look: [accent[0], accent[1], accent[2], 0.0], extra: [0.0, 0.0, 0.0, -1e4], resp, ..Default::default()
