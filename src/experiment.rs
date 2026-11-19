@@ -41,7 +41,7 @@ pub fn frame<M: Clone + 'static>(key: &str, name: &str, hint: &str, piece: El<M>
 /// The cell without its piece (the stage, second, is empty), sending `(i, edit)`.
 fn cell(key: &str, name: &str, hint: &str, formula: String, params: &Params, label: &str) -> El<(usize, Edit)> {
     let msg = |i: usize, e: Edit| (i, e);
-    let mut stage = col().key(format!("{key}/stage")).fill_width().min_width(0.0).clip();
+    let mut stage = col().key(format!("{key}/stage")).stage().fill_width().min_width(0.0).clip();
     stage.style.aspect_ratio = Some(1.0 / STAGE);
     let toggle = { let m = msg; text(if params.open { "[ − params ]" } else { "[ params ]" }, 11.0, if params.open { Paint::TEXT } else { Paint::DIM }).font(Font::Mono)
         .key(format!("{key}/params")).focusable(true).role(crate::el::Role::Button).label("params").cursor(crate::el::Cursor::Pointer).on_press(m(TOGGLE, Edit::Cancel)) };

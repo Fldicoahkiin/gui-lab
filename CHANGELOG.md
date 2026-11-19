@@ -8,6 +8,16 @@ crate and the `amenui` npm package (`web/`) always carry the same version, becau
 match the module that `web_app!` generates. The minimum Rust is the one CI builds with (`rust-version`
 in Cargo.toml); raising it is a breaking change before 1.0 only in the second number.
 
+## A stage that steps alone is drawn alone
+
+- `Ui::on_step(f)` and `Ui::stage_view(f)`: a stage (`El::stage`) whose piece changes by itself is viewed and drawn
+  again alone, in the boxes the last layout gave it, while the rest of the page keeps its last frame; the frame is
+  the one a whole view of the page gives. A step that lays the stage out otherwise views the whole page
+  (DESIGN.md §1.35). The website's Lab index with one cell running takes 2.9 ms a frame on the CPU, from 6.9 ms.
+- `perf().counters.restages` counts those frames.
+- The experiment cell's stage (`experiment::frame`) is an `El::stage`.
+- Text to read over other ink finds that ink by a grid over the window, faster.
+
 ## The state hears where the focus is
 
 - `Ui::on_focus(f)`: the state is told which element has the keyboard focus whenever it moves (Tab, a press,

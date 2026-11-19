@@ -556,6 +556,15 @@ pub struct Ui<S, M> {
     stage_input: (bool, bool),
     /// Added to every stage's draw, ms (`Ui::slow_stage`).
     stage_add_ms: f32,
+    /// What the stages' pieces do by themselves (`Ui::on_step`), and each stage's subtree by its key
+    /// (`Ui::stage_view`).
+    stepped: Option<fn(&mut S, f32) -> Vec<String>>,
+    stage_of: Option<StageView<S, M>>,
+    /// How each stage's root was flattened, by key, and the stages stepped while layout waits for the frame.
+    stage_ctx: HashMap<String, StageCtx>,
+    stale_stages: Vec<String>,
+    /// While a paint draws only some stages again: their roots (the rest is the last paint's).
+    restaging: Option<Vec<usize>>,
     /// The page instances as painted, before morph ramps and flows are applied; and their flow tags.
     base: Vec<Instance>,
     tags: Vec<Option<Tag>>,
@@ -996,6 +1005,15 @@ impl<S, M: Clone> Ui<S, M> {
     /// Let the state know the time on every tick (for things that change by themselves, like a clock);
     /// `f` returns whether the view changed.
     pub fn on_tick(mut self, f: fn(&mut S, f32) -> bool) -> Self { self.ticked = Some(f); self }
+    /// What the stages' pieces (`El::stage`) do by themselves on every tick, after `on_tick`: `f` steps
+    /// them and returns the keys of the stages whose pieces changed. When nothing else changed the view,
+    /// only those stages are viewed again (`Ui::stage_view`), in the boxes the last layout gave them, and
+    /// drawn again; the rest of the page is the last frame's (DESIGN.md §1.35).
+    pub fn on_step(mut self, f: fn(&mut S, f32) -> Vec<String>) -> Self { self.stepped = Some(f); self }
+    /// A stage's subtree alone (`El::stage`, by its key), as the page's view would make it: what a stage
+    /// that stepped (`Ui::on_step`) is viewed by. `None`, or a subtree laid out otherwise (other elements,
+    /// other styles, other sizes of text), and the whole page is viewed and laid out again.
+    pub fn stage_view(mut self, f: fn(&S, &str) -> Option<El<M>>) -> Self { self.stage_of = Some(f); self }
     /// Let the state know how far the renderer's warm-up is, each time it moves on and once more with
     /// `None` when it is done (DESIGN.md §1.9), so the view can show it (a loading line, a mark that
     /// fills); `f` returns whether the view changed.
@@ -1067,7 +1085,7 @@ impl<S, M: Clone> Ui<S, M> {
             state, view, update, text: Text::new(faces), size: (0.0, 0.0), scale, clock: 0.0, wall: 0.0, bclock: crate::beat::Clock::default(), sent: vec![], sets: vec![], nodes: vec![], scene: Scene::default(),
             owners: vec![], page_len: 0, field: Field::default(), scroll: HashMap::new(), births: HashMap::new(), ramp: None, text_births: HashMap::new(),
             hover: None, focus: None, after_focus: None, fit_short: vec![], grain_at: None, clears: HashMap::new(), clearing: false, clear_many: vec![], flow_own: vec![], fit_k: HashMap::new(), fit_last: None, pressed: None, capture: None, modal_at: None, modal_key: None, return_focus: None, split: None, splits: 0,
-            keyboard: false, marks: Marks::default(), sized: None, commands: None, unseen: vec![], stages: HashMap::new(), stage_input: (false, false), stage_add_ms: 0.0, base: vec![], tags: vec![], roles: vec![],
+            keyboard: false, marks: Marks::default(), sized: None, commands: None, unseen: vec![], stages: HashMap::new(), stage_input: (false, false), stage_add_ms: 0.0, stepped: None, stage_of: None, stage_ctx: HashMap::new(), stale_stages: vec![], restaging: None, base: vec![], tags: vec![], roles: vec![],
             run: None, painted_phase: 0, flows: HashMap::new(), ghosts: vec![], grows: vec![], ground_seen: None, ground_hold: None, body_len: 0, animating: false, lifted: HashMap::new(),
             gaze_of: None, gaze_seen: HashMap::new(), annots: vec![], focused: None, focus_moved: false, readout: gaze::Readout::default(), hovered: None, pointer_of: None, scripted: false, ticked: None, warm: None, warmed: None, owed: false, ambient: 60.0, input_t: -1e9, frame_t: -1e9, tick_gap: 1.0 / 60.0, unused_key: None, shortcut: None, scrolled_of: None, released: None, input: None,
             dirty: true, look_of: None, locale_of: None, timing: Timing::default(), wake_of: None, latest_birth: f32::NEG_INFINITY, gaze_until: f32::NEG_INFINITY,
@@ -1781,7 +1799,9 @@ impl<S, M: Clone> Ui<S, M> {
         // What the state's tick changed is laid out: once, before the frame is drawn, when input is
         // coalesced (a host that ticks before each event does not lay out for each).
         self.deferred(|ui| {
-            if let Some(f) = ui.ticked && f(&mut ui.state, wall) { ui.relayout(); }
+            let page = ui.ticked.is_some_and(|f| f(&mut ui.state, wall));
+            let stepped = ui.stepped.map(|f| f(&mut ui.state, wall)).unwrap_or_default();
+            if page { ui.relayout(); } else if !stepped.is_empty() { ui.restage(stepped); }
             // Preparation in the spare time (`Ui::prepare`): what it changed is shown.
             if ui.prep.run(&mut ui.state) { ui.relayout(); }
         });
@@ -2820,7 +2840,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// Lay out and paint what pointer moves, wheels and ticks left waiting: the renderer does it before
     /// it draws, and every other input before it looks at the page.
     pub fn settle(&mut self) {
-        if self.stale_layout { self.relayout(); } else if self.stale_paint { self.paint(); }
+        if self.stale_layout { self.relayout(); } else if !self.stale_stages.is_empty() { let k = std::mem::take(&mut self.stale_stages); self.restage(k); } else if self.stale_paint { self.paint(); }
     }
     /// Lay out once per frame what pointer moves, wheels and ticks change, before the frame is drawn
     /// (`Ui::settle`), instead of at each: for a host that hands over several events a frame and ticks
@@ -2839,6 +2859,7 @@ impl<S, M: Clone> Ui<S, M> {
     pub fn relayout(&mut self) {
         if self.defer > 0 { self.stale_layout = true; self.dirty = true; return; }
         self.stale_layout = false;
+        self.stale_stages.clear();
         let sp = self.span_begin();
         self.relayout_inner();
         self.span_end(sp);
@@ -3039,6 +3060,7 @@ impl<S, M: Clone> Ui<S, M> {
         let mut built = Built::default();
         flatten(el, None, "root".into(), [0; 3], (false, false), None, Inherit { roles: self.timing.roles, ..Inherit::default() }, &mut vx, &mut built, &mut nodes);
         self.virt_made = vx.made;
+        self.stage_ctx = std::mem::take(&mut built.stages).into_iter().collect();
 
         // The taffy tree: a node whose key was there last time keeps its taffy node; its style, children
         // and measured content are compared and only what differs is set (which marks it and its
@@ -3503,7 +3525,10 @@ impl<S, M: Clone> Ui<S, M> {
     }
     fn paint_inner(&mut self) {
         let sel = self.look().select;
+        // Only some stages drawn again (`Ui::restage`): what the rest of the page drew last time.
+        let mut kept = self.restaging.take().and_then(|roots| self.kept(roots));
         self.scene.clear();
+        if let Some(k) = &mut kept { self.scene.meshes = std::mem::take(&mut k.meshes); }
         self.glyphs.clear();
         self.owners.clear();
         self.tags.clear();
@@ -3513,14 +3538,21 @@ impl<S, M: Clone> Ui<S, M> {
             let (x0, y0, x1, y1) = ((r.x * s).round(), (r.y * s).round(), (r.right() * s).round(), (r.bottom() * s).round());
             [x0, y0, x1 - x0, y1 - y0]
         };
-        let mut births = HashMap::with_capacity(self.births.len());
-        let mut text_births: HashMap<u64, f32> = HashMap::with_capacity(self.text_births.len());
-        self.field.wipe = [0.0; 4];
+        let (mut births, mut text_births): (HashMap<u64, f32>, HashMap<u64, f32>) = if kept.is_some() { (self.births.clone(), self.text_births.clone()) }
+            else { (HashMap::with_capacity(self.births.len()), HashMap::with_capacity(self.text_births.len())) };
+        if kept.is_none() { self.field.wipe = [0.0; 4]; }
+        // What the stages drawn again had is found again as a whole paint finds it (from the last frame).
+        if let Some(k) = &kept {
+            for (j, id) in &k.owners { if k.has(&self.nodes, *j) { births.remove(id); } }
+            for (j, n) in self.nodes.iter().enumerate() {
+                if k.has(&self.nodes, j) { use std::hash::{Hash, Hasher}; let mut h = std::hash::DefaultHasher::new(); n.key.hash(&mut h); text_births.remove(&h.finish()); }
+            }
+        }
         self.field.calm = [[0.0; 4]; 4];
         let mut calms = 0;
         let mut held = vec![false; self.nodes.len()];
         // The drawings' own colours (`Drawing::palette`), in the order first drawn.
-        let mut own_cols: Vec<[f32; 3]> = vec![];
+        let mut own_cols: Vec<[f32; 3]> = kept.as_ref().map_or(vec![], |k| k.own.clone());
         // `El::focus_shown` subtrees without focus inside are not drawn.
         let focus_at = self.focus.as_deref().and_then(|f| self.nodes.iter().position(|n| n.key == f));
         let mut veiled = vec![false; self.nodes.len()];
@@ -3543,9 +3575,9 @@ impl<S, M: Clone> Ui<S, M> {
         let mut counters: HashMap<usize, [u32; 2]> = HashMap::new();
         let (mut latest, mut any_loose) = (f32::NEG_INFINITY, false);
         let global = self.timing.material;
-        let mut caret_found: Option<(usize, [f32; 4])> = None;
+        let mut caret_found: Option<(usize, [f32; 4])> = kept.as_ref().and(self.caret).filter(|c| kept.as_ref().is_some_and(|k| !k.has(&self.nodes, c.0))).map(|(i, _, r)| (i, r));
         let mut jobs: Vec<RecJob> = vec![];
-        let mut seen_recs: HashSet<String> = HashSet::new();
+        let mut seen_recs: HashSet<String> = if kept.is_some() { self.recs.keys().cloned().collect() } else { HashSet::new() };
         let ro = self.sel_ranges();
         // A scroll node pulled past its end: what is near that edge loosens, the more the further it is
         // pulled (no box moves past the end).
@@ -3579,7 +3611,10 @@ impl<S, M: Clone> Ui<S, M> {
                 self.stage_close(root, start, t0, &text_births, &seen_recs);
                 stage_open = None;
             }
-            if stage_open.is_none() && self.nodes[i].stage {
+            // Restaging: a stage that did not step is the last paint's, as the rest of the page is.
+            let copied = kept.as_ref().is_some_and(|k| !k.has(&self.nodes, i));
+            if copied && self.nodes[i].stage { stage_seen.push(self.nodes[i].key.clone()); }
+            if stage_open.is_none() && self.nodes[i].stage && !copied {
                 let key = self.nodes[i].key.clone();
                 let size = (i + 1..self.nodes.len()).take_while(|&j| within(&self.nodes, j, i)).count() + 1;
                 let (rect, clip) = (self.nodes[i].rect, self.nodes[i].clip);
@@ -3652,6 +3687,26 @@ impl<S, M: Clone> Ui<S, M> {
                 let r = seen;
                 self.field.calm[calms] = [(r.x - 4.0) * s, (r.y - 4.0) * s, (r.right() + 4.0) * s, (r.bottom() + 4.0) * s];
                 calms += 1;
+            }
+            if copied && let Some(k) = &kept {
+                let (a, b) = k.runs[i];
+                let base = self.scene.instances.len();
+                for idx in a..b {
+                    let inst = k.insts[idx];
+                    self.scene.push(inst);
+                    self.owners.push(k.owners[idx]);
+                    latest = latest.max(inst.extra[3]);
+                    let m = if inst.look[0] >= 127.5 { (inst.look[0].round() as u32 % 16) as u8 } else { global };
+                    any_loose |= inst.extra[2] > 0.0 && crate::style::Material::from_id(m).time_varying();
+                    // The flows' counters go on from what it drew.
+                    if let Some(t) = &k.tags[idx] && let Some((_, root)) = &n.flow { let c = &mut counters.entry(*root).or_default()[t.glyph as usize]; *c = (*c).max(t.n + 1); }
+                    self.tags.push(k.tags[idx].clone());
+                }
+                let (ga, gb) = k.log_runs[i];
+                for g in &k.log[ga..gb] { self.glyphs.log.push(crate::hit::DrawnGlyph { inst: g.inst - a + base, ..*g }); }
+                if let Some(l) = k.laid.iter().find(|l| l.0 == i) { self.glyphs.laid.push(l.clone()); }
+                for u in k.unseen.iter().filter(|u| u.0 == i) { self.unseen.push(*u); }
+                continue;
             }
             let under = self.modal_at.is_some_and(|m| i < m);
             // What the field may do to it (DESIGN.md §1.15): fronts add at most `front_cap`; a press held
@@ -4088,6 +4143,91 @@ impl<S, M: Clone> Ui<S, M> {
         (st.rect, st.clip, st.nodes, st.span) = (rect, clip, size, (start, end));
         st.drew(ms, now, frame_ms);
     }
+    /// The stages `keys` stepped (`Ui::on_step`) and nothing else changed: each is viewed alone
+    /// (`Ui::stage_view`) and, when it lays out as before, put in place of its subtree, keeping the
+    /// boxes, and only the stages are painted again. Anything else (a stage that lays out otherwise, one
+    /// not on the page, a morph or a flow under way) views and lays out the whole page.
+    fn restage(&mut self, keys: Vec<String>) {
+        if self.defer > 0 {
+            for k in keys { if !self.stale_stages.contains(&k) { self.stale_stages.push(k); } }
+            self.dirty = true;
+            return;
+        }
+        if self.stale_layout { self.relayout(); return; }
+        let Some(view) = self.stage_of else { self.relayout(); return };
+        let sp = self.span_begin();
+        let mut roots = vec![];
+        let mut ok = self.run.is_none() && self.flows.is_empty() && self.ghosts.is_empty() && self.sent.is_empty();
+        for k in &keys {
+            if !ok { break; }
+            let Some(i) = self.nodes.iter().position(|n| n.stage && n.key == *k) else { ok = false; break };
+            if roots.contains(&i) { continue; }
+            ok = view(&self.state, k).is_some_and(|el| self.swap_stage(i, el));
+            roots.push(i);
+        }
+        if !ok { self.span_end(sp); self.relayout(); return; }
+        self.perf.counters.restages += 1;
+        self.place();
+        // A paint already owed draws the whole page; otherwise only the stages.
+        if !self.stale_paint { self.restaging = Some(roots); }
+        self.paint();
+        self.restaging = None;
+        self.span_end(sp);
+        self.flush();
+    }
+    /// What the last paint drew, per node, for a paint that draws only the stages at `roots` again
+    /// (`Ui::restage`); `None` when it cannot be kept (each node's instances not one run, text
+    /// recomposing, 3D elements, faces arriving).
+    fn kept(&mut self, roots: Vec<usize>) -> Option<Kept> {
+        let n = self.page_len;
+        if self.owners.len() != n || self.tags.len() != n || self.scene.instances.len() < n || !self.recomps.is_empty() || !self.arriving.is_empty() { return None; }
+        // 3D elements outside the stages keep their meshes (and their places in the list); one in a stage
+        // drawn again would add its own.
+        let mesh = |j: usize| matches!(self.nodes[j].content, Content::Scene3d(_));
+        if roots.iter().any(|&r| (r..self.nodes.len()).take_while(|&j| within(&self.nodes, j, r)).any(mesh)) { return None; }
+        let runs = runs_of(self.owners.iter().map(|o| o.0), self.nodes.len())?;
+        let log_runs = runs_of(self.glyphs.log.iter().map(|g| g.node), self.nodes.len())?;
+        let mut insts = std::mem::take(&mut self.scene.instances);
+        insts.truncate(n);
+        Some(Kept { roots, insts, owners: std::mem::take(&mut self.owners), tags: std::mem::take(&mut self.tags), runs, log: std::mem::take(&mut self.glyphs.log), log_runs,
+            laid: std::mem::take(&mut self.glyphs.laid), unseen: std::mem::take(&mut self.unseen), own: self.scene.own.clone(), meshes: std::mem::take(&mut self.scene.meshes) })
+    }
+    /// Put the subtree `el` (a stage viewed alone) in place of the stage at `i`, when it is laid out as
+    /// the old one was: the same elements in the same places, with the same styles and the same measured
+    /// content. Their boxes are kept; whether it was put.
+    fn swap_stage(&mut self, i: usize, el: El<M>) -> bool {
+        let key = self.nodes[i].key.clone();
+        if !el.props.stage || (!el.props.key.is_empty() && el.props.key != key) { return false; }
+        let Some(ctx) = self.stage_ctx.get(&key).cloned() else { return false };
+        let len = (i + 1..self.nodes.len()).take_while(|&j| within(&self.nodes, j, i)).count() + 1;
+        let mut nodes = std::mem::take(&mut self.nodes);
+        let mut tail = nodes.split_off(i);
+        let mut built = Built { styles: vec![Style::default(); i], kids: vec![vec![]; i], stages: vec![] };
+        let mut vx = VirtCtx { scroll: &self.scroll, views: &self.virt_views, window: self.size.1, made: HashMap::new() };
+        flatten(el, ctx.parent, ctx.path, ctx.roles, ctx.off, ctx.flow, ctx.inh, &mut vx, &mut built, &mut nodes);
+        let virt = !vx.made.is_empty();
+        let same = !virt && nodes.len() - i == len && (0..len).all(|j| {
+            let (new, old) = (&nodes[i + j], &tail[j]);
+            new.key == old.key && new.parent == old.parent && new.modal.is_none() && new.fit.is_none()
+                && matches!(new.content, Content::None) == matches!(old.content, Content::None)
+                && self.tree.style(old.tid).is_ok_and(|st| *st == built.styles[i + j])
+                && self.mkeys.get(&old.tid) == Some(&measure_key(&new.content))
+        });
+        if !same {
+            nodes.truncate(i);
+            nodes.append(&mut tail);
+            self.nodes = nodes;
+            return false;
+        }
+        for (j, old) in tail.drain(..len).enumerate() {
+            let n = &mut nodes[i + j];
+            (n.local, n.exact, n.tid, n.rect, n.clip, n.inner, n.extent, n.shown, n.xf, n.written) = (old.local, old.exact, old.tid, old.rect, old.clip, old.inner, old.extent, old.shown, old.xf, old.written);
+        }
+        nodes.append(&mut tail);
+        for (k, c) in built.stages { self.stage_ctx.insert(k, c); }
+        self.nodes = nodes;
+        true
+    }
     /// For checks: every stage's draw takes `ms` longer (`El::stage`; Y.5's slow piece).
     pub fn slow_stage(&mut self, ms: f32) { self.stage_add_ms = ms.max(0.0); }
     /// Whether the stage under `key` is slow, and how many times it has drawn (`El::stage`).
@@ -4107,17 +4247,19 @@ impl<S, M: Clone> Ui<S, M> {
         let mut under: Vec<(usize, [f32; 4])> = vec![];
         let mut out = vec![];
         let mut size_of: HashMap<usize, f32> = HashMap::new();
-        // The ink drawn before, by cell of a coarse grid (each box in every cell it touches), so a legible
-        // instance tests only what is near it. A box over more than `WIDE` cells (or not finite) is in a
+        // The ink drawn before, by cell of a coarse grid over the window (each box in every cell it
+        // touches, a cell index held to the grid's edge, which keeps two boxes that overlap in a cell they
+        // share), so a legible instance tests only what is near it. A box that is not finite is in a
         // short list that is always tested.
         const CELL: f32 = 64.0;
-        const WIDE: i64 = 4096;
+        let (gw, gh) = (((self.size.0 * s / CELL).ceil() as i32).clamp(1, 1024), ((self.size.1 * s / CELL).ceil() as i32).clamp(1, 1024));
         let cells = |b: &[f32; 4]| -> Option<(i32, i32, i32, i32)> {
             if !b.iter().all(|v| v.is_finite() && v.abs() < 1e9) { return None; }
-            let (x0, y0, x1, y1) = ((b[0] / CELL).floor() as i32, (b[1] / CELL).floor() as i32, (b[2] / CELL).floor() as i32, (b[3] / CELL).floor() as i32);
-            ((x1 as i64 - x0 as i64 + 1) * (y1 as i64 - y0 as i64 + 1) <= WIDE).then_some((x0, y0, x1, y1))
+            let c = |v: f32, n: i32| ((v / CELL).floor() as i32).clamp(0, n - 1);
+            Some((c(b[0], gw), c(b[1], gh), c(b[2], gw), c(b[3], gh)))
         };
-        let mut grid: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
+        let mut grid: Vec<Vec<usize>> = vec![vec![]; (gw * gh) as usize];
+        let at = |cx: i32, cy: i32| (cy * gw + cx) as usize;
         let mut wide: Vec<usize> = vec![];
         let mut bucketed = 0usize;
         for (k, inst) in insts.iter().enumerate() {
@@ -4143,15 +4285,15 @@ impl<S, M: Clone> Ui<S, M> {
             let g = [b[0] - r1, b[1] - r1, b[2] + r1, b[3] + r1];
             while bucketed < under.len() {
                 match cells(&under[bucketed].1) {
-                    Some((x0, y0, x1, y1)) => for cy in y0..=y1 { for cx in x0..=x1 { grid.entry((cx, cy)).or_default().push(bucketed); } },
+                    Some((x0, y0, x1, y1)) => for cy in y0..=y1 { for cx in x0..=x1 { grid[at(cx, cy)].push(bucketed); } },
                     None => wide.push(bucketed),
                 }
                 bucketed += 1;
             }
             let hit = |u: &[f32; 4]| u[0] < g[2] && u[2] > g[0] && u[1] < g[3] && u[3] > g[1];
-            // Two boxes that overlap share a cell; a grown box over too many cells tests everything.
+            // Two boxes that overlap share a cell.
             let found = match cells(&g).filter(|_| near) {
-                Some((x0, y0, x1, y1)) => wide.iter().any(|&q| hit(&under[q].1)) || (y0..=y1).any(|cy| (x0..=x1).any(|cx| grid.get(&(cx, cy)).is_some_and(|v| v.iter().any(|&q| hit(&under[q].1))))),
+                Some((x0, y0, x1, y1)) => wide.iter().any(|&q| hit(&under[q].1)) || (y0..=y1).any(|cy| (x0..=x1).any(|cx| grid[at(cx, cy)].iter().any(|&q| hit(&under[q].1)))),
                 None => under.iter().any(|(_, u)| hit(u)),
             };
             if found { out.push((k as u32, [r0, r1])); }
@@ -6733,7 +6875,33 @@ fn ramp_pack(p: Paint) -> f32 {
 struct VirtCtx<'a> { scroll: &'a HashMap<String, f32>, views: &'a HashMap<String, f32>, window: f32, made: HashMap<String, (usize, usize)> }
 /// Per node, what goes to the taffy tree: its style and its children.
 #[derive(Default)]
-struct Built { styles: Vec<Style>, kids: Vec<Vec<usize>> }
+struct Built { styles: Vec<Style>, kids: Vec<Vec<usize>>, stages: Vec<(String, StageCtx)> }
+/// A stage's subtree viewed alone, by its key (`Ui::stage_view`).
+type StageView<S, M> = fn(&S, &str) -> Option<El<M>>;
+/// What the last paint drew, kept for a paint that draws only some stages again (`Ui::kept`).
+struct Kept {
+    roots: Vec<usize>, insts: Vec<Instance>, owners: Vec<(usize, u64)>, tags: Vec<Option<Tag>>, runs: Vec<(usize, usize)>,
+    log: Vec<crate::hit::DrawnGlyph>, log_runs: Vec<(usize, usize)>, laid: Vec<crate::hit::Laid>, unseen: Vec<(usize, Instance)>, own: Vec<[f32; 3]>,
+    meshes: Vec<crate::scene::MeshDraw>,
+}
+impl Kept {
+    /// Whether node `i` is in a stage drawn again.
+    fn has<M>(&self, nodes: &[Node<M>], i: usize) -> bool { self.roots.iter().any(|&r| within(nodes, i, r)) }
+}
+/// Where each of `count` nodes' entries are in a list made node by node (`(0, 0)`: none); `None` when
+/// a node's entries are not one run.
+fn runs_of(nodes: impl Iterator<Item = usize>, count: usize) -> Option<Vec<(usize, usize)>> {
+    let mut runs = vec![(0usize, 0usize); count];
+    for (k, j) in nodes.enumerate() {
+        let r = runs.get_mut(j)?;
+        if r.1 == r.0 { *r = (k, k + 1); } else if r.1 == k { r.1 = k + 1; } else { return None; }
+    }
+    Some(runs)
+}
+/// What a stage's root was flattened with (`El::stage`, `Ui::stage_view`): so its subtree alone can be
+/// flattened again in place.
+#[derive(Clone)]
+struct StageCtx { parent: Option<usize>, path: String, roles: [u8; 3], off: (bool, bool), flow: Option<(Rc<str>, usize)>, inh: Inherit }
 
 /// The rows `first..last` a viewport `h` tall at offset `off` shows.
 fn visible_rows(off: f32, h: f32, count: usize, row_h: f32) -> (usize, usize) {
@@ -6766,6 +6934,10 @@ fn measure_key(c: &Content) -> u64 {
 /// A virtual list's rows are built here, for what its viewport shows.
 #[allow(clippy::too_many_arguments)]
 fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], off: (bool, bool), flow: Option<(Rc<str>, usize)>, inh: Inherit, vx: &mut VirtCtx, built: &mut Built, nodes: &mut Vec<Node<M>>) -> usize {
+    if el.props.stage {
+        let key = if el.props.key.is_empty() { path.clone() } else { el.props.key.clone() };
+        built.stages.push((key, StageCtx { parent, path: path.clone(), roles, off, flow: flow.clone(), inh: inh.clone() }));
+    }
     let El { props: crate::el::Props { key, mut style, mut content, fill, border, radius, mut focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, mut commit, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, map_life, multiline, selectable, cursor, ripple, guide, skeleton, rtl, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview, fit, clamp, plate, own_size, grain, show_clear, pen, view_scale, stage }, mut on_press, mut on_key, mut on_drag, mut on_blur, modal, mut on_text, virt, access, mut on_pick, mut on_wheel, mut on_move, on_visible, on_outline, mut children } = el;
     // A view scale scales what it holds, not its pen (`El::view_scale`).
     if let Some(s) = view_scale { children = children.into_iter().map(|c| c.zoom_by(s, true)).collect(); }

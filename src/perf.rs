@@ -29,6 +29,8 @@ pub struct Counters {
     pub shaped: u64,
     /// Views built (the application's `view` called).
     pub views: u64,
+    /// Frames that viewed and drew only stages that stepped (`Ui::on_step`), the rest of the page kept.
+    pub restages: u64,
     /// Scenes built from the laid-out nodes.
     pub scenes: u64,
     /// Texts' words or lines found for `El::reveal_by` (a cache miss: once per text, width and face).

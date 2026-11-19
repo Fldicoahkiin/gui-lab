@@ -2979,6 +2979,18 @@ number of elements changed draws whatever the input. When a stage's own device s
 lowest scale is still slow. Not for controls: what is inside a stage that holds does not change while it
 holds.
 
+A stage that changes by itself (a Lab cell that runs, a demo that moves) need not rebuild the page it is on.
+`Ui::on_step(f)` steps the stages' pieces on every tick, after `on_tick`, and returns the keys of the stages that
+changed; `Ui::stage_view(f)` gives one stage's subtree by its key, as the page's view would make it. When nothing
+else changed the view on that tick, only the stages that stepped are viewed again: each new subtree takes the
+place of the old one in the boxes the last layout gave it, if it is laid out the same (the same elements with the
+same keys, styles and text to measure); its places are worked out again (scroll, transforms, clips), and the paint
+draws only those subtrees, copying every other element's instances, glyphs and colours from the last paint. The
+frame is the one a whole view, layout and paint of the page would give, instance for instance. A step whose
+subtree is laid out otherwise (it grew, an element came or went, a text changed what is measured), a stage that
+holds a 3D scene, an animation or a transition in flight, or anything else that changed the view on that tick,
+and the whole page is viewed, laid out and painted again. `perf().counters.restages` counts the frames drawn so.
+
 `Ui::slow_stage(ms)` adds `ms` to every stage's draw, for checks; `Ui::stage_state(key)` says whether a stage is
 slow and how many times it has drawn.
 
@@ -2986,7 +2998,10 @@ Acceptance: `tests/stage.rs` (with 40 ms added to a stage's draw, a 2 s drag of 
 the knob and changes the value in every one of the 120 frames, every frame that does not draw the stage takes
 under 16.7 ms, the stage draws at most once per hold during the drag (the count is printed) and on the first
 frame after the release; a stage that draws in time draws every frame of a drag; a held stage asks for a frame and
-draws on the first frame without input).
+draws on the first frame without input); `tests/stage_step.rs` (a stage that steps alone for 150 frames is
+viewed alone with no layout, and every frame's instances, owners, held text and boxes are those of a page viewed,
+laid out and painted whole; a step that makes the stage taller lays the page out). On the website's Lab index at
+1440×900 2× with one cell running, a frame takes 2.9 ms median and 3.1 ms p95 on the CPU, from 6.9 ms.
 
 ## 2. Parameters must be exact
 
