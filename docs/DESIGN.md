@@ -1522,7 +1522,15 @@ WGSL override constant `MAT` set to that material, `fs_material_up` one too once
 with it, and `fs_trace` once a scroll's trace is shaded with it; `eff_mat` then returns `MAT`. They are made after the frame is sent, so that frame and any with an
 override, a material from source or a new global material draw with the pass for any material. The frames
 are the same pixel for pixel (`tests/specialise.rs`). Offscreen, on the CPU rasteriser, `specialise` is
-`None`: compiling another pass costs more there than it saves. For measuring what the pass for any
+`None`: compiling another pass costs more there than it saves. An override in the global material is not
+one. A page of several built-in materials (up to `render::GATED_MAX`, 4: the gallery's plain chrome round
+cells in their own) gets, after as many frames with the same ones, a pass for each, made one a frame (the
+material passes, then their upsamples, then their trace passes as those are used), with `MAT` set and the
+override constant `ONLY`: every pixel finds its material as the pass for any finds it (where a scroll holds
+the rows to a lattice, at the row it reads), and the pass for `MAT` draws only the pixels of `MAT`
+(`shade_new` discards the rest), so each box is drawn once per material and each pixel by one pass, and the
+frame is the frame of the pass for any, byte for byte (`tests/specialise.rs`: at rest, loose and scrolled
+fast). The readout says `spec each dottr+plain+charr`. For measuring what the pass for any
 material costs against one material's (an A/B on one page, on the device), `Renderer::spec_force`:
 `Some(true)` makes the global material's pass from the next frame and uses it even over overrides (their
 pixels are then drawn in the global material), `Some(false)` never makes it; the readout says which

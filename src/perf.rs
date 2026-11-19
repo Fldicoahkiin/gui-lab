@@ -85,18 +85,21 @@ pub struct FramePath {
     /// Why the frame did not move the last one or was drawn whole: empty when neither was asked.
     pub why: &'static str,
     pub specialised: Option<u8>,
+    /// The materials drawn by a pass each (a mask by id), when the page has several.
+    pub gated: u16,
     pub spec_why: &'static str,
     pub shade: f32,
     pub soft: f32,
     pub stage: f32,
     pub reduced: f32,
 }
-impl Default for FramePath { fn default() -> Self { Self { moved: false, why: "", specialised: None, spec_why: "", shade: 0.0, soft: 1.0, stage: 1.0, reduced: 1.0 } } }
+impl Default for FramePath { fn default() -> Self { Self { moved: false, why: "", specialised: None, gated: 0, spec_why: "", shade: 0.0, soft: 1.0, stage: 1.0, reduced: 1.0 } } }
 impl FramePath {
     /// One line: `move no (trace with a reduced pass)  spec no (override)  shade 34%  soft 1  stage 0.75  lo 0.75`.
     pub fn line(&self) -> String {
         let or = |w: &str| if w.is_empty() { String::new() } else { format!(" ({w})") };
-        let spec = match self.specialised { Some(m) => format!("yes {}", crate::style::Material::from_id(m).name()), None => format!("no{}", or(self.spec_why)) };
+        let names = |mask: u16| (0..16u8).filter(|m| mask & (1 << m) != 0).map(|m| crate::style::Material::from_id(m).name()).collect::<Vec<_>>().join("+");
+        let spec = match (self.specialised, self.gated) { (Some(m), _) => format!("yes {}", crate::style::Material::from_id(m).name()), (None, g) if g != 0 => format!("each {}", names(g)), _ => format!("no{}", or(self.spec_why)) };
         format!("move {}  spec {spec}  shade {:.0}%  soft {}  stage {}  lo {}", if self.moved { "yes".to_string() } else { format!("no{}", or(self.why)) }, self.shade * 100.0, self.soft, self.stage, self.reduced)
     }
 }

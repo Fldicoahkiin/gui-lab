@@ -43,6 +43,9 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
   every frame); the stages in the viewport are shaded again where they are, slow or fast. `dirty::meet`, `Move::bx`.
 - `Renderer::spec_force`: force the material pass made for the global material on (from the next frame, even over
   overrides, for measuring) or off. The trace pass is made for the material too (`fs_trace` with `MAT`).
+- A page of several built-in materials (up to `render::GATED_MAX`) is drawn by a material pass for each, each drawing
+  only its own pixels (the WGSL override `ONLY`), once the same materials have held for `specialise` frames; an
+  override in the global material no longer keeps the page from the pass made for it. `FramePath::gated`.
 
 ## For Kern
 

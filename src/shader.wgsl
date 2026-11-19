@@ -74,8 +74,12 @@ fn mp(m: i32, i: i32) -> vec4f { return u.mats[m * 2 + i]; }
 /// The material every pixel is drawn with, in a material pass made for one (`Renderer::specialise`: the
 /// global material, nothing overriding it); −1 in the pass for any.
 override MAT: i32 = -1;
+/// A material pass made for `MAT` on a page of several materials (`Renderer`'s passes per material): every
+/// pixel finds its material as the pass for any does, and the pass draws only those of `MAT` (`shade_new`);
+/// the others are drawn by the passes for theirs.
+override ONLY: bool = false;
 /// The material an instance (or a pixel) is drawn with: its override, or the global one.
-fn eff_mat(code: f32) -> i32 { if (MAT >= 0) { return MAT; } if (code >= 127.5) { return i32(round(code)) % 16; } return i32(u.fd.x); }
+fn eff_mat(code: f32) -> i32 { if (MAT >= 0 && !ONLY) { return MAT; } if (code >= 127.5) { return i32(round(code)) % 16; } return i32(u.fd.x); }
 /// A hue's colour: the theme's three accents, then the drawings' own colours (`Drawing::palette`).
 fn hue_col(h: f32) -> vec3f { if (h > 2.5) { return u.own[clamp(i32(round(h)) - 3, 0, 31)].rgb; } if (h > 1.5) { return u.third.rgb; } if (h > 0.5) { return u.second.rgb; } return u.accent.rgb; }
 /// A hue as the coverage buffer codes it, off a picture: one of the theme's three (a drawing's own colour
@@ -1219,7 +1223,10 @@ fn shade_new(pf: vec2f) -> vec3f {
   }
   let here = near_t(p);
   let is_pic = here.g > 0.05;
-  let m = eff_mat(here.a * 255.0);
+  let m_here = eff_mat(here.a * 255.0);
+  // In a pass for one material of several: another's pixel is that one's pass's to draw.
+  if (ONLY && m_here != MAT) { discard; }
+  let m = select(m_here, MAT, MAT >= 0);
   var col: vec3f;
   if (is_pic && m != GLITCHR) {
     // A picture is drawn from its own colours only (DESIGN.md §1.6.1), in every material.

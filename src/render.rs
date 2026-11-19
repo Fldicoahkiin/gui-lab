@@ -94,6 +94,12 @@ pub const PLATE_TICK: f32 = 1.0 / 120.0;
 pub const SPECIALISE_AFTER: u32 = 30;
 /// Whether an instance draws with a material override (`style::override_code`).
 fn overrides(i: &Instance) -> bool { i.look[0] >= 127.5 }
+/// One material's passes on a page of several (`ONLY`): the material pass, its upsample, its trace pass.
+type Gated = (wgpu::RenderPipeline, Option<wgpu::RenderPipeline>, Option<wgpu::RenderPipeline>);
+/// An overriding instance's material, as a bit by its id (`ONLY`'s masks).
+fn override_bit(i: &Instance) -> u16 { 1 << (i.look[0].round() as u32 % 16) }
+/// The most materials a page drawn with a pass for each may have (more go to the pass for any).
+pub const GATED_MAX: u32 = 4;
 
 struct PlateTex { ink: wgpu::TextureView, near: wgpu::TextureView, age: wgpu::TextureView, near_age: wgpu::TextureView, bind: wgpu::BindGroup, view: wgpu::BindGroup }
 const ATLAS_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg8Unorm;
@@ -327,7 +333,12 @@ pub struct Renderer {
     plate_inked: [bool; 4],
     /// Some ink with a material override has been drawn into each plate slot since it was made or
     /// cleared (its material pass then needs the pipeline for any material).
-    plate_over: [bool; 4],
+    plate_mats: [u16; 4],
+    /// The passes made for each material of a page with several (`ONLY`), by material: the material
+    /// pass, its upsample and its trace pass as they are needed.
+    gated: [Option<Gated>; crate::style::MATERIAL_COUNT],
+    /// The materials of the last frames (a mask by id) and how many frames in a row.
+    gate_run: (u16, u32),
     /// The paint (`Scene::paint`) whose ink was last drawn into each slot: that scene drawn again (no
     /// paint between, a frame drawn whole) lays the plate on and does not ink it twice.
     plate_drew: [u64; 4],
@@ -542,7 +553,7 @@ impl Renderer {
             pictures: HashMap::new(), picture_views: HashMap::new(), hold_group: None, instances, capacity, pipes, annots, annot_capacity: 256, up_pipe: None, trace_pipe: None, specialise: Some(SPECIALISE_AFTER), spec_force: None, spec: None, spec_run: (u8::MAX, 0), spec_used: None, shader, pl,
             ink: blank.clone(), lo: blank.clone(), lo_key: (0, 0, 0), material_up: material.clone(), auto: Default::default(), always_lo: false, stage_u: Box::new(([[0.0; 4]; STAGES], [[0.0; 4]; STAGES], [0.0; 4])), stage_q: 1.0, soft_q: 1.0, govern: true, no_map: false,
             near: blank, material_first: material.clone(), material, size: (0, 0), tiles, mesh, sim_rows: 0,
-            region: crate::dirty::Region::All, parts: None, partial: true, frame_view: blank_view.clone(), alt: [blank_view.clone(), blank_view.clone(), blank_view.clone()], cost: Cost::default(), prev: None, spare: (vec![], vec![]), zero, blit, group: None, group_pipe, had_groups: false, plates: Default::default(), plate_pipes, plate_now: 0.0, plate_fade: [[0.0; 4]; 4], had_plates: 0, plate_inked: [false; 4], plate_over: [false; 4], plate_drew: [0; 4], plate_fresh: [false; 4], was_ageing: false, plate_serial: 0, reduced: false, fade_s: 0.15, sbox: [0.0; 4], own: [[0.0; 4]; crate::draw::OWN_COLOURS], post: None, blit_group: blank_group, warm: None, condense: false, last_region: None, tr: [[0.0; 4]; 9], boxes: [[0.0; 4]; 16], tr_loose: 0.0, t_cont: 0.0,
+            region: crate::dirty::Region::All, parts: None, partial: true, frame_view: blank_view.clone(), alt: [blank_view.clone(), blank_view.clone(), blank_view.clone()], cost: Cost::default(), prev: None, spare: (vec![], vec![]), zero, blit, group: None, group_pipe, had_groups: false, plates: Default::default(), plate_pipes, plate_now: 0.0, plate_fade: [[0.0; 4]; 4], had_plates: 0, plate_inked: [false; 4], plate_mats: [0; 4], gated: Default::default(), gate_run: (0, 0), plate_drew: [0; 4], plate_fresh: [false; 4], was_ageing: false, plate_serial: 0, reduced: false, fade_s: 0.15, sbox: [0.0; 4], own: [[0.0; 4]; crate::draw::OWN_COLOURS], post: None, blit_group: blank_group, warm: None, condense: false, last_region: None, tr: [[0.0; 4]; 9], boxes: [[0.0; 4]; 16], tr_loose: 0.0, t_cont: 0.0,
         };
         r.set_picture(u32::MAX, 1, 1, &[0, 0, 0, 255]);
         r.resize(w, h);
@@ -1031,9 +1042,12 @@ impl Renderer {
         self.up_pipe = Some(self.material_pipe("fs_material_up", None));
     }
     /// A full-screen material pass, `fs_material` or `fs_material_up`, for any material or for `mat` alone.
-    fn material_pipe(&self, fs: &str, mat: Option<u8>) -> wgpu::RenderPipeline {
-        let constants = mat.map(|m| [("MAT", f64::from(m))]);
-        let fragment = wgpu::PipelineCompilationOptions { constants: constants.as_ref().map_or(&[], |c| &c[..]), ..Default::default() };
+    fn material_pipe(&self, fs: &str, mat: Option<u8>) -> wgpu::RenderPipeline { self.material_pipe_only(fs, mat, false) }
+    /// `material_pipe`, the pass drawing only `mat`'s pixels when `only` (`ONLY`).
+    fn material_pipe_only(&self, fs: &str, mat: Option<u8>, only: bool) -> wgpu::RenderPipeline {
+        let c = mat.map(|m| [("MAT", f64::from(m)), ("ONLY", if only { 1.0 } else { 0.0 })]);
+        let constants: &[(&str, f64)] = match &c { Some(c) => if only { &c[..] } else { &c[..1] }, None => &[] };
+        let fragment = wgpu::PipelineCompilationOptions { constants, ..Default::default() };
         self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some(fs), layout: Some(&self.pl),
             vertex: wgpu::VertexState { module: &self.shader, entry_point: Some("vs_full"), compilation_options: Default::default(), buffers: &[] },
@@ -1063,6 +1077,25 @@ impl Renderer {
         } else if traced && self.spec.as_ref().is_some_and(|s| s.3.is_none()) {
             let tr = self.material_pipe("fs_trace", Some(mat));
             if let Some(s) = self.spec.as_mut() { s.3 = Some(tr); }
+        }
+    }
+    /// After a frame of several built-in materials (`mask`): count the frames with the same ones, and once
+    /// there are `specialise` of them make the passes for each (one a frame: the material pass for each,
+    /// then their upsamples once a reduced pass is used, then their trace passes once a trace is shaded).
+    fn gate_after(&mut self, mask: u16, reduced: bool, traced: bool) {
+        let Some(after) = self.specialise.filter(|_| self.spec_force.is_none()) else { return };
+        if mask.count_ones() < 2 || mask.count_ones() > GATED_MAX || mask >> crate::style::MATERIAL_COUNT != 0 { self.gate_run = (0, 0); return; }
+        self.gate_run = if self.gate_run.0 == mask { (mask, self.gate_run.1.saturating_add(1)) } else { (mask, 1) };
+        if self.gate_run.1 < after { return; }
+        let mats: Vec<u8> = (0..crate::style::MATERIAL_COUNT as u8).filter(|m| mask & (1 << m) != 0).collect();
+        if let Some(&m) = mats.iter().find(|&&m| self.gated[m as usize].is_none()) {
+            self.gated[m as usize] = Some((self.material_pipe_only("fs_material", Some(m), true), None, None));
+        } else if let Some(&m) = mats.iter().find(|&&m| reduced && self.gated[m as usize].as_ref().is_some_and(|g| g.1.is_none())) {
+            let up = self.material_pipe_only("fs_material_up", Some(m), true);
+            if let Some(g) = self.gated[m as usize].as_mut() { g.1 = Some(up); }
+        } else if let Some(&m) = mats.iter().find(|&&m| traced && self.gated[m as usize].as_ref().is_some_and(|g| g.2.is_none())) {
+            let tr = self.material_pipe_only("fs_trace", Some(m), true);
+            if let Some(g) = self.gated[m as usize].as_mut() { g.2 = Some(tr); }
         }
     }
     /// The finishing pass.
@@ -1521,7 +1554,7 @@ impl Renderer {
                 for v in [&ink, &near, &age, &near_age] { let _ = clear(enc, v, wgpu::Color::TRANSPARENT); }
                 self.plates[slot] = Some(PlateTex { ink, near, age, near_age, bind, view });
                 self.plate_inked[slot] = false;
-                self.plate_over[slot] = false;
+                self.plate_mats[slot] = 0;
                 self.plate_drew[slot] = 0;
             }
         }
@@ -1530,7 +1563,7 @@ impl Renderer {
             for &slot in &scene.plate_clear {
                 if let Some(pt) = &self.plates[slot as usize] { for v in [&pt.ink, &pt.near, &pt.age, &pt.near_age] { let _ = clear(enc, v, wgpu::Color::TRANSPARENT); } }
                 self.plate_inked[slot as usize] = false;
-                self.plate_over[slot as usize] = false;
+                self.plate_mats[slot as usize] = 0;
             }
         }
         self.plate_fresh = [false; 4];
@@ -1540,7 +1573,7 @@ impl Renderer {
             self.plate_fresh[slot] = self.plate_drew[slot] != scene.paint;
             self.plate_drew[slot] = scene.paint;
             self.plate_inked[p.slot as usize] = true;
-            self.plate_over[p.slot as usize] |= scene.instances[p.start as usize..p.end as usize].iter().any(overrides);
+            self.plate_mats[p.slot as usize] |= scene.instances[p.start as usize..p.end as usize].iter().filter(|i| overrides(i)).fold(0, |m, i| m | override_bit(i));
         }
     }
     fn stage1(&self, enc: &mut wgpu::CommandEncoder, scene: &Scene, ink: &wgpu::TextureView, near: &wgpu::TextureView, tiles: u32, scissor: Option<[u32; 4]>) {
@@ -1688,16 +1721,31 @@ impl Renderer {
             }
             _ => 0,
         };
-        // The material pass made for this frame's material, when nothing overrides it (here or in a plate).
+        // The materials of this frame: the global one and every override (here or inked into a plate). One
+        // alone: the material pass made for it. A few built-in ones: a pass for each, each drawing its own
+        // pixels. Otherwise the pass for any.
         let mat = f.look.material.id();
-        let over = scene.instances.iter().any(overrides) || scene.plates.iter().any(|p| self.plate_over[p.slot as usize]);
+        let mask = scene.instances.iter().filter(|i| overrides(i)).fold(if (mat as usize) < 16 { 1u16 << mat } else { 0 }, |m, i| m | override_bit(i))
+            | scene.plates.iter().filter(|p| self.plate_inked[p.slot as usize]).fold(0, |m, p| m | self.plate_mats[p.slot as usize]);
+        let over = mask != 1u16.checked_shl(mat as u32).unwrap_or(0);
         let spec = self.spec.as_ref().filter(|s| (!over || self.spec_force == Some(true)) && s.0 == mat);
-        let (mat_pipe, up_pipe) = (spec.map_or(&self.pipes[3], |s| &s.1), spec.and_then(|s| s.2.as_ref()).or(self.up_pipe.as_ref()));
-        let trace_spec = spec.and_then(|s| s.3.clone());
-        let (mat_pipe, up_pipe, used) = (mat_pipe.clone(), up_pipe.cloned(), spec.map(|s| s.0));
+        let traced_may = self.parts.as_ref().and_then(|p| p.moved).is_some_and(|m| m.trace > 0.0);
+        let gated: Option<Vec<&Gated>> = (spec.is_none() && over && self.spec_force.is_none() && mask.count_ones() <= GATED_MAX && mask >> crate::style::MATERIAL_COUNT == 0)
+            .then(|| (0..crate::style::MATERIAL_COUNT).filter(|m| mask & (1 << m) != 0).map(|m| self.gated[m].as_ref()).collect::<Option<Vec<_>>>()).flatten()
+            .filter(|g| g.iter().all(|g| (lo.is_none() || g.1.is_some()) && (!traced_may || g.2.is_some())));
+        let (mat_pipes, up_pipes, trace_pipes): (Vec<wgpu::RenderPipeline>, Vec<wgpu::RenderPipeline>, Vec<wgpu::RenderPipeline>) = match &gated {
+            Some(g) => (g.iter().map(|g| g.0.clone()).collect(), g.iter().filter_map(|g| g.1.clone()).collect(), g.iter().filter_map(|g| g.2.clone()).collect()),
+            None => (
+                vec![spec.map_or(&self.pipes[3], |s| &s.1).clone()],
+                spec.and_then(|s| s.2.as_ref()).or(self.up_pipe.as_ref()).cloned().into_iter().collect(),
+                spec.and_then(|s| s.3.clone()).into_iter().collect(),
+            ),
+        };
+        let used = spec.map(|s| s.0);
         self.spec_used = used;
         self.path.specialised = used;
-        self.path.spec_why = if used.is_some() { "" } else if self.spec_force == Some(false) { "forced off" } else if self.specialise.is_none() && self.spec_force.is_none() { "off" } else if over { "override" } else if mat as usize >= crate::style::MATERIAL_COUNT { "custom material" } else { "warming" };
+        self.path.gated = if gated.is_some() { mask } else { 0 };
+        self.path.spec_why = if used.is_some() || gated.is_some() { "" } else if self.spec_force == Some(false) { "forced off" } else if self.specialise.is_none() && self.spec_force.is_none() { "off" } else if mat as usize >= crate::style::MATERIAL_COUNT || mask >> crate::style::MATERIAL_COUNT != 0 { "custom material" } else if over && mask.count_ones() > GATED_MAX { "too many materials" } else { "warming" };
         let annots = scene.annot.len() as u32;
         if annots > 0 {
             if scene.annot.len() > self.annot_capacity {
@@ -1758,9 +1806,12 @@ impl Renderer {
             self.cost.trace = ((x1 - x0) * (y1 - y0)) as u64;
             let mut pass = load(&mut enc, out);
             pass.set_scissor_rect(x0, y0, x1 - x0, y1 - y0);
-            pass.set_pipeline(trace_spec.as_ref().or(self.trace_pipe.as_ref()).expect("made above"));
             pass.set_bind_group(0, &self.material, &[]);
-            pass.draw(0..3, 0..1);
+            if trace_pipes.is_empty() {
+                pass.set_pipeline(self.trace_pipe.as_ref().expect("made above"));
+                pass.draw(0..3, 0..1);
+            }
+            for p in &trace_pipes { pass.set_pipeline(p); pass.draw(0..3, 0..1); }
         } else {
             self.cost.trace = 0;
         }
@@ -1777,11 +1828,10 @@ impl Renderer {
                 None => vec![None],
             };
             let mut pass = if boxes.is_some() { load(&mut enc, &lo_view) } else { clear(&mut enc, &lo_view, wgpu::Color::BLACK) };
-            pass.set_pipeline(&mat_pipe);
             pass.set_bind_group(0, if with_before { &self.material } else { &self.material_first }, &[]);
             for sc in scs {
                 if let Some([x, y, sw, sh]) = sc { pass.set_scissor_rect(x, y, sw, sh); }
-                pass.draw(0..3, 0..1);
+                for p in &mat_pipes { pass.set_pipeline(p); pass.draw(0..3, 0..1); }
             }
         }
         let stage2: Option<Vec<Option<[u32; 4]>>> = match boxes { None => Some(vec![None]), Some((_, s2)) if s2.is_empty() => None, Some((_, s2)) => Some(s2.into_iter().map(Some).collect()) };
@@ -1789,14 +1839,10 @@ impl Renderer {
             let mut pass = if scs[0].is_none() { clear(&mut enc, out, wgpu::Color::BLACK) } else { load(&mut enc, out) };
             for sc in scs {
                 if let Some([x, y, sw, sh]) = sc { pass.set_scissor_rect(x, y, sw, sh); }
-                if lo.is_some() {
-                    pass.set_pipeline(up_pipe.as_ref().expect("made with the reduced target"));
-                    pass.set_bind_group(0, &self.material_up, &[]);
-                } else {
-                    pass.set_pipeline(&mat_pipe);
-                    pass.set_bind_group(0, if with_before { &self.material } else { &self.material_first }, &[]);
-                }
-                pass.draw(0..3, 0..1);
+                let (pipes, group) = if lo.is_some() { (&up_pipes, &self.material_up) } else { (&mat_pipes, if with_before { &self.material } else { &self.material_first }) };
+                assert!(!pipes.is_empty(), "the upsample is made with the reduced target");
+                pass.set_bind_group(0, group, &[]);
+                for p in pipes { pass.set_pipeline(p); pass.draw(0..3, 0..1); }
                 // Stage 3: the annotations, exact, over the material.
                 if annots > 0 {
                     pass.set_pipeline(&self.pipes[4]);
@@ -1814,6 +1860,7 @@ impl Renderer {
         }
         self.queue.submit([enc.finish()]);
         self.specialise_after(mat, over, lo.is_some(), traced.is_some());
+        self.gate_after(mask, lo.is_some(), traced.is_some());
     }
 
     #[allow(clippy::too_many_arguments)]

@@ -69,3 +69,47 @@ fn the_specialised_pass_can_be_forced_on_and_off_for_measuring() {
     assert_eq!(o.r.specialised(), None, "forced off");
     assert!(v.perf().path.line().contains("spec no (forced off)"), "{}", v.perf().path.line());
 }
+
+/// A page of several materials (the gallery's plain chrome round a cell in its own): a pass for each,
+/// each drawing only its own pixels, draws what the pass for any draws, byte for byte, at rest, loose and
+/// scrolled fast past its trace with the rows held to the lattice.
+mod mixed {
+    use super::*;
+    pub fn view(_: &Material) -> El<()> {
+        let rows = (0..40).fold(col().key("rows").gap(6.0).pad(12.0, 12.0), |c, i| {
+            let t = text(format!("Row {i}: a line of text to read as it scrolls past"), 14.0, Paint::TEXT).key(format!("r{i}"));
+            c.child(match i % 5 { 1 => t.material(Material::Plain.id()), 3 => t.material(Material::Charr.id()).loose(0.6), _ => t })
+        });
+        col().key("page").fill_width().fill_height().child(text("Chrome in plain", 16.0, Paint::INK).key("bar").material(Material::Plain.id()))
+            .child(col().key("list").fill_width().grow(1.0).scroll().child(rows))
+    }
+}
+
+#[test]
+fn a_page_of_several_materials_is_drawn_by_a_pass_for_each_as_the_pass_for_any_draws_it() {
+    let (Ok(mut each), Ok(mut any)) = (Offscreen::try_new(480, 360), Offscreen::try_new(480, 360)) else { eprintln!("no GPU adapter here: skipped"); return };
+    each.r.specialise = Some(1);
+    any.r.partial = false;
+    for global in [Material::Dottr, Material::Halftonr] {
+        let mk = || { let mut u = Ui::new(global, mixed::view, |_, _| {}, fonts(), 480, 360, 1.0).on_look(|m| Look { material: *m, ..Look::default() }); u.pointer_leave(); u.tick(5.0); u };
+        let (mut u, mut v) = (mk(), mk());
+        let look = u.look();
+        let mut t = 5.0;
+        let mut gated = 0;
+        for f in 0..36 {
+            t += 1.0 / 60.0;
+            // Still while the passes are made, then fast down and up, then still again.
+            let dy = if (8..16).contains(&f) { 40.0 } else if (16..24).contains(&f) { -40.0 } else { 0.0 };
+            for ui in [&mut u, &mut v] { if dy != 0.0 { ui.wheel(240.0, 200.0, dy); } ui.tick(t); }
+            let a = each.render(&mut u, &look);
+            let b = any.render(&mut v, &look);
+            let diff = a.iter().zip(&b).filter(|(p, q)| p != q).count();
+            assert_eq!(diff, 0, "{global:?}, frame {f}: {diff} bytes differ ({})", u.perf().path.line());
+            if u.perf().path.gated != 0 { gated += 1; }
+        }
+        let want = (1u16 << global.id()) | (1 << Material::Plain.id()) | (1 << Material::Charr.id());
+        assert_eq!(u.perf().path.gated, want, "{global:?}: a pass for each of its materials ({})", u.perf().path.line());
+        assert!(gated >= 20, "{global:?}: only {gated} of 36 frames drawn by a pass for each");
+        assert!(u.perf().path.line().contains("spec each "), "{}", u.perf().path.line());
+    }
+}
