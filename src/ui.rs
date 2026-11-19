@@ -4302,6 +4302,7 @@ impl<S, M: Clone> Ui<S, M> {
         self.dirty = true;
         self.page_len = self.scene.instances.len();
         self.base = self.scene.instances.clone();
+        self.scene.mats = self.scene.instances.iter().chain(self.unseen.iter().map(|u| &u.1)).filter(|i| i.look[0] >= 127.5).fold(0, |m, i| m | 1u16 << (i.look[0].round() as u32 % 16));
         self.painted_phase = self.run.as_ref().map_or(0, |r| r.phase(now));
         // Ramps and flows apply from the first frame.
         self.animating = true;

@@ -1,6 +1,6 @@
-//! The material pass made for one material (`Renderer::specialise`): once the global material has held
-//! with nothing overriding it, the material pass is a pipeline of its own for it, and draws the frame the
-//! pass for any material draws, byte for byte; an override on the page goes back to the pass for any.
+//! The material passes made for the page's materials (`Renderer::specialise`): with nothing overriding
+//! the global material, the material pass is a pipeline of its own for it, and draws the frame the pass
+//! for any material draws, byte for byte; a page of several draws a pass for each.
 use amenui::el::{El, Paint, col, text};
 use amenui::offscreen::Offscreen;
 use amenui::style::{Look, Material};
@@ -122,4 +122,43 @@ fn a_page_of_several_materials_is_drawn_by_a_pass_for_each_as_the_pass_for_any_d
         assert!(gated >= 20, "{global:?}: only {gated} of 36 frames drawn by a pass for each");
         assert!(u.perf().path.line().contains("spec each "), "{}", u.perf().path.line());
     }
+}
+
+/// A word in a material of its own waits for a morph (`hidden_until_morphed`): its passes are made
+/// before the morph, one a frame, so the morph's frames are drawn by a pass for each material (the tiles
+/// show the word's) and not by the pass for any while they warm, and they draw what that pass draws.
+mod waiting {
+    use super::*;
+    pub fn view(_: &()) -> El<()> {
+        col().key("page").fill_width().fill_height().pad(16.0, 16.0).gap(8.0).fill(Paint::GROUND)
+            .child(text("A line that becomes a word", 18.0, Paint::TEXT).key("from"))
+            .child(text("Word", 40.0, Paint::INK).key("to").material(Material::Halftonr.id()).hidden_until_morphed(true))
+    }
+}
+
+#[test]
+fn the_passes_for_a_material_that_waits_for_a_morph_are_made_before_it() {
+    let (Ok(mut each), Ok(mut any)) = (Offscreen::try_new(320, 200), Offscreen::try_new(320, 200)) else { eprintln!("no GPU adapter here: skipped"); return };
+    each.r.specialise = Some(1);
+    any.r.partial = false;
+    let mk = || { let mut u = Ui::new((), waiting::view, |_, _| {}, fonts(), 320, 200, 1.0).on_look(|_| Look { material: Material::Dottr, ..Look::default() }); u.pointer_leave(); u.tick(5.0); u };
+    let (mut u, mut v) = (mk(), mk());
+    let look = u.look();
+    let mut t = 5.0;
+    let both = (1u16 << Material::Dottr.id()) | (1 << Material::Halftonr.id());
+    let mut flown = 0;
+    for f in 0..40 {
+        t += 1.0 / 60.0;
+        if f == 10 { for ui in [&mut u, &mut v] { ui.morph("from", "to", amenui::morph::MorphSpec::default()); } }
+        for ui in [&mut u, &mut v] { ui.tick(t); }
+        let a = each.render(&mut u, &look);
+        let b = any.render(&mut v, &look);
+        let diff = a.iter().zip(&b).filter(|(p, q)| p != q).count();
+        assert_eq!(diff, 0, "frame {f}: {diff} bytes differ ({})", u.perf().path.line());
+        let flying = u.morph_run().is_some_and(|r| r.clock(u.beat_grid()).is_some());
+        if (3..10).contains(&f) { assert_eq!(each.r.specialised(), Some(Material::Dottr.id()), "frame {f}: the global material's own pass ({})", u.perf().path.line()); }
+        flown += flying as u32;
+        if flying { assert_eq!(u.perf().path.gated, both, "frame {f}: the morph's frames by a pass for each material ({})", u.perf().path.line()); }
+    }
+    assert!(flown >= 5, "the tiles flew in {flown} frames");
 }

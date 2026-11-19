@@ -130,6 +130,10 @@ pub struct Scene {
     pub own: Vec<[f32; 3]>,
     /// The stages on the page (`El::stage`, DESIGN.md §1.35): their instances and where they show.
     pub stages: Vec<StageBox>,
+    /// The built-in materials the page's elements override the global one with, drawn or hidden (one
+    /// waiting for a morph included), a bit by id (`style::override_code`): the passes a renderer makes
+    /// ahead for them.
+    pub mats: u16,
 }
 /// A stage's instances this frame (`start..end`) and its box as shown (within its clip, device px).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]

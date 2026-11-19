@@ -89,9 +89,9 @@ pub const PLATE_TICK: f32 = 1.0 / 120.0;
 
 /// One plate's kept images and the group that lays them on (binding 2: ink, 3: near, 10: the ink's age,
 /// 9: the nearness's age).
-/// Frames in a row with one global material and no override before the material pass is made for it
-/// (`Renderer::specialise`).
-pub const SPECIALISE_AFTER: u32 = 30;
+/// The frames a renderer draws before it makes the material passes for the page's materials, one a
+/// frame (`Renderer::specialise`).
+pub const SPECIALISE_AFTER: u32 = 2;
 /// Whether an instance draws with a material override (`style::override_code`).
 fn overrides(i: &Instance) -> bool { i.look[0] >= 127.5 }
 /// One material's passes on a page of several (`ONLY`): the material pass, its upsample, its trace pass.
@@ -246,21 +246,26 @@ pub struct Renderer {
     up_pipe: Option<wgpu::RenderPipeline>,
     /// The pass over a scroll move with its trace showing (`fs_trace`): made when first needed.
     trace_pipe: Option<wgpu::RenderPipeline>,
-    /// After how many frames in a row with one built-in global material and no override the material
-    /// pass gets a pipeline of its own for that material (`None`: never; offscreen, on a CPU rasteriser,
-    /// where compiling it costs more than it saves). The shader then has one material's branch, not
-    /// all of them, which a GPU runs with more pixels at once.
+    /// After how many frames drawn the material passes for the page's materials are made, one a frame
+    /// after a frame is sent: for the global material alone, and for each material of a page of several
+    /// (`Scene::mats`, hidden elements included, so they are there before a morph shows them), each with
+    /// its upsample, and its trace pass once a scroll's trace needs it. Each is kept, by material.
+    /// `None`: never (offscreen, on a CPU rasteriser, where compiling them costs more than they save).
+    /// The shader then has one material's branch, not all of them, which a GPU runs with more pixels
+    /// at once.
     pub specialise: Option<u32>,
     /// For measuring which material pass costs what (an A/B on one page): `Some(true)` makes the pass for
     /// the global material alone from the next frame and uses it even where elements have materials of
     /// their own (they are then drawn in the global one: for measuring only); `Some(false)` never makes
     /// it nor uses one already made (nor the passes for each material); `None` (the default) goes by `specialise`.
     pub spec_force: Option<bool>,
-    /// The material pass made for one material (its id), its upsample once a reduced pass needs it, and
-    /// the trace pass once a scroll's trace needs it.
-    spec: Option<(u8, wgpu::RenderPipeline, Option<wgpu::RenderPipeline>, Option<wgpu::RenderPipeline>)>,
-    /// The global material of the last frames with no override, and how many in a row.
-    spec_run: (u8, u32),
+    /// The material pass made for each material alone, by id, with its upsample and its trace pass.
+    spec: [Option<Gated>; crate::style::MATERIAL_COUNT],
+    /// The frames drawn (to `specialise`).
+    drawn: u32,
+    /// The materials a morph's tiles show (from both of its ends), with the run they are for: the frame
+    /// draws them while the tiles fly.
+    run_mats: (u32, u16),
     /// The material the last frame's material pass was made for (`specialised`).
     spec_used: Option<u8>,
     shader: wgpu::ShaderModule,
@@ -337,8 +342,6 @@ pub struct Renderer {
     /// The passes made for each material of a page with several (`ONLY`), by material: the material
     /// pass, its upsample and its trace pass as they are needed.
     gated: [Option<Gated>; crate::style::MATERIAL_COUNT],
-    /// The materials of the last frames (a mask by id) and how many frames in a row.
-    gate_run: (u16, u32),
     /// The paint (`Scene::paint`) whose ink was last drawn into each slot: that scene drawn again (no
     /// paint between, a frame drawn whole) lays the plate on and does not ink it twice.
     plate_drew: [u64; 4],
@@ -550,10 +553,10 @@ impl Renderer {
         let mut r = Self {
             device, queue, out_format, layout, ubuf, sampler, atlas, atlas_view, marks, marks_view, palette_view, chars, chars_view,
             before: blank.clone(), blank: blank.clone(), hold: blank.clone(), hold_pipe, holds, hold_cap: 64, hold_n: 0, fmap, fmap_view: fmap_view.clone(), fmap_seen: None, fmap_u: [0.0; 4], split_seen: 0, split: [0.0; 4], last_look: None, marks_ready: false, hide_glyphs: false, atlas_new: true, path: Default::default(), plates_laid: std::cell::Cell::new(0),
-            pictures: HashMap::new(), picture_views: HashMap::new(), hold_group: None, instances, capacity, pipes, annots, annot_capacity: 256, up_pipe: None, trace_pipe: None, specialise: Some(SPECIALISE_AFTER), spec_force: None, spec: None, spec_run: (u8::MAX, 0), spec_used: None, shader, pl,
+            pictures: HashMap::new(), picture_views: HashMap::new(), hold_group: None, instances, capacity, pipes, annots, annot_capacity: 256, up_pipe: None, trace_pipe: None, specialise: Some(SPECIALISE_AFTER), spec_force: None, spec: Default::default(), drawn: 0, run_mats: (0, 0), spec_used: None, shader, pl,
             ink: blank.clone(), lo: blank.clone(), lo_key: (0, 0, 0), material_up: material.clone(), auto: Default::default(), always_lo: false, stage_u: Box::new(([[0.0; 4]; STAGES], [[0.0; 4]; STAGES], [0.0; 4])), stage_q: 1.0, soft_q: 1.0, govern: true, no_map: false,
             near: blank, material_first: material.clone(), material, size: (0, 0), tiles, mesh, sim_rows: 0,
-            region: crate::dirty::Region::All, parts: None, partial: true, frame_view: blank_view.clone(), alt: [blank_view.clone(), blank_view.clone(), blank_view.clone()], cost: Cost::default(), prev: None, spare: (vec![], vec![]), zero, blit, group: None, group_pipe, had_groups: false, plates: Default::default(), plate_pipes, plate_now: 0.0, plate_fade: [[0.0; 4]; 4], had_plates: 0, plate_inked: [false; 4], plate_mats: [0; 4], gated: Default::default(), gate_run: (0, 0), plate_drew: [0; 4], plate_fresh: [false; 4], was_ageing: false, plate_serial: 0, reduced: false, fade_s: 0.15, sbox: [0.0; 4], own: [[0.0; 4]; crate::draw::OWN_COLOURS], post: None, blit_group: blank_group, warm: None, condense: false, last_region: None, tr: [[0.0; 4]; 9], boxes: [[0.0; 4]; 16], tr_loose: 0.0, t_cont: 0.0,
+            region: crate::dirty::Region::All, parts: None, partial: true, frame_view: blank_view.clone(), alt: [blank_view.clone(), blank_view.clone(), blank_view.clone()], cost: Cost::default(), prev: None, spare: (vec![], vec![]), zero, blit, group: None, group_pipe, had_groups: false, plates: Default::default(), plate_pipes, plate_now: 0.0, plate_fade: [[0.0; 4]; 4], had_plates: 0, plate_inked: [false; 4], plate_mats: [0; 4], gated: Default::default(), plate_drew: [0; 4], plate_fresh: [false; 4], was_ageing: false, plate_serial: 0, reduced: false, fade_s: 0.15, sbox: [0.0; 4], own: [[0.0; 4]; crate::draw::OWN_COLOURS], post: None, blit_group: blank_group, warm: None, condense: false, last_region: None, tr: [[0.0; 4]; 9], boxes: [[0.0; 4]; 16], tr_loose: 0.0, t_cont: 0.0,
         };
         r.set_picture(u32::MAX, 1, 1, &[0, 0, 0, 255]);
         r.resize(w, h);
@@ -1059,43 +1062,40 @@ impl Renderer {
     }
     /// The material the last frame's material pass was made for alone (`specialise`), if it was.
     pub fn specialised(&self) -> Option<u8> { self.spec_used }
-    /// After a frame: count the frames with one built-in global material and no override, and once there
-    /// are `specialise` of them make the material pass for that material (and its upsample once a
-    /// reduced pass is used with it). Made after the frame is sent, so the frame it is made in is drawn
-    /// with the pass for any material.
-    fn specialise_after(&mut self, mat: u8, over: bool, reduced: bool, traced: bool) {
+    /// After a frame (`specialise`): make the next material pass the page may need, one a frame, after
+    /// the frame is sent (the frame it is made in is drawn without it). First what this frame drew with
+    /// the pass for any material, then what the page's other materials (`page`) would need: for the
+    /// global material alone (`mat`; with nothing overriding it, or forced), its pass and upsample; for
+    /// each of a page of several, its pass that draws only its own pixels and upsample; trace passes
+    /// once a trace has been shaded (`traced`).
+    fn prepare_after(&mut self, mat: u8, frame: u16, page: u16, traced: bool) {
+        self.drawn = self.drawn.saturating_add(1);
         let after = match (self.spec_force, self.specialise) { (Some(false), _) | (None, None) => return, (Some(true), _) => 0, (None, Some(a)) => a };
-        let over = over && self.spec_force != Some(true);
-        if over || mat as usize >= crate::style::MATERIAL_COUNT { self.spec_run = (u8::MAX, 0); return; }
-        self.spec_run = if self.spec_run.0 == mat { (mat, self.spec_run.1.saturating_add(1)) } else { (mat, 1) };
-        if self.spec_run.1 < after { return; }
-        if self.spec.as_ref().is_none_or(|s| s.0 != mat) {
-            self.spec = Some((mat, self.material_pipe("fs_material", Some(mat)), None, None));
-        } else if reduced && self.spec.as_ref().is_some_and(|s| s.2.is_none()) {
-            let up = self.material_pipe("fs_material_up", Some(mat));
-            if let Some(s) = self.spec.as_mut() { s.2 = Some(up); }
-        } else if traced && self.spec.as_ref().is_some_and(|s| s.3.is_none()) {
-            let tr = self.material_pipe("fs_trace", Some(mat));
-            if let Some(s) = self.spec.as_mut() { s.3 = Some(tr); }
+        if self.drawn < after || self.warming() { return; }
+        let n = crate::style::MATERIAL_COUNT;
+        let global = if (mat as usize) < n { 1u16 << mat } else { 0 };
+        let several = |m: u16| m.count_ones() >= 2 && m.count_ones() <= GATED_MAX && m >> n == 0;
+        // What to make, in order: (gated, material, which pass: 0 the pass, 1 its upsample, 2 its trace).
+        let mut want: Vec<(bool, u8, u8)> = vec![];
+        let kinds: &[u8] = if traced || self.trace_pipe.is_some() { &[0, 1, 2] } else { &[0, 1] };
+        let alone = |want: &mut Vec<(bool, u8, u8)>| if global != 0 { for &k in kinds { want.push((false, mat, k)); } };
+        let each = |want: &mut Vec<(bool, u8, u8)>, m: u16| if several(m) { for &k in kinds { for id in 0..n as u8 { if m & (1 << id) != 0 { want.push((true, id, k)); } } } };
+        if self.spec_force == Some(true) || frame == global { alone(&mut want); } else { each(&mut want, frame); }
+        if self.spec_force.is_none() {
+            alone(&mut want);
+            each(&mut want, page | global);
         }
-    }
-    /// After a frame of several built-in materials (`mask`): count the frames with the same ones, and once
-    /// there are `specialise` of them make the passes for each (one a frame: the material pass for each,
-    /// then their upsamples once a reduced pass is used, then their trace passes once a trace is shaded).
-    fn gate_after(&mut self, mask: u16, reduced: bool, traced: bool) {
-        let Some(after) = self.specialise.filter(|_| self.spec_force.is_none()) else { return };
-        if mask.count_ones() < 2 || mask.count_ones() > GATED_MAX || mask >> crate::style::MATERIAL_COUNT != 0 { self.gate_run = (0, 0); return; }
-        self.gate_run = if self.gate_run.0 == mask { (mask, self.gate_run.1.saturating_add(1)) } else { (mask, 1) };
-        if self.gate_run.1 < after { return; }
-        let mats: Vec<u8> = (0..crate::style::MATERIAL_COUNT as u8).filter(|m| mask & (1 << m) != 0).collect();
-        if let Some(&m) = mats.iter().find(|&&m| self.gated[m as usize].is_none()) {
-            self.gated[m as usize] = Some((self.material_pipe_only("fs_material", Some(m), true), None, None));
-        } else if let Some(&m) = mats.iter().find(|&&m| reduced && self.gated[m as usize].as_ref().is_some_and(|g| g.1.is_none())) {
-            let up = self.material_pipe_only("fs_material_up", Some(m), true);
-            if let Some(g) = self.gated[m as usize].as_mut() { g.1 = Some(up); }
-        } else if let Some(&m) = mats.iter().find(|&&m| traced && self.gated[m as usize].as_ref().is_some_and(|g| g.2.is_none())) {
-            let tr = self.material_pipe_only("fs_trace", Some(m), true);
-            if let Some(g) = self.gated[m as usize].as_mut() { g.2 = Some(tr); }
+        let Some(&(gated, m, k)) = want.iter().find(|&&(g, m, k)| {
+            let have = if g { &self.gated[m as usize] } else { &self.spec[m as usize] };
+            match have { None => true, Some(p) => (k == 1 && p.1.is_none()) || (k == 2 && p.2.is_none()) }
+        }) else { return };
+        let fs = ["fs_material", "fs_material_up", "fs_trace"][k as usize];
+        let p = self.material_pipe_only(fs, Some(m), gated);
+        let slot = if gated { &mut self.gated[m as usize] } else { &mut self.spec[m as usize] };
+        match (slot.as_mut(), k) {
+            (None, _) => *slot = Some((p, None, None)),
+            (Some(s), 1) => s.1 = Some(p),
+            (Some(s), _) => s.2 = Some(p),
         }
     }
     /// The finishing pass.
@@ -1271,6 +1271,7 @@ impl Renderer {
         let mut grid = None;
         ui.set_particle_gpu(self.tiles.tier != ParticleTier::Cpu);
         if let Some(run) = ui.morph_run() {
+            if run.id != self.run_mats.0 { self.run_mats = (run.id, run.src.iter().chain(&run.dst).filter(|i| overrides(i)).fold(0, |m, i| m | override_bit(i))); }
             if run.id != self.tiles.seen {
                 self.tiles.seen = run.id;
                 for (insts, ink, near) in [(&run.src, 0, 2), (&run.dst, 1, 3)] {
@@ -1725,10 +1726,12 @@ impl Renderer {
         // alone: the material pass made for it. A few built-in ones: a pass for each, each drawing its own
         // pixels. Otherwise the pass for any.
         let mat = f.look.material.id();
+        // A morph's tiles show its two ends' materials while they fly.
         let mask = scene.instances.iter().filter(|i| overrides(i)).fold(if (mat as usize) < 16 { 1u16 << mat } else { 0 }, |m, i| m | override_bit(i))
-            | scene.plates.iter().filter(|p| self.plate_inked[p.slot as usize]).fold(0, |m, p| m | self.plate_mats[p.slot as usize]);
+            | scene.plates.iter().filter(|p| self.plate_inked[p.slot as usize]).fold(0, |m, p| m | self.plate_mats[p.slot as usize])
+            | if tiles > 0 { self.run_mats.1 } else { 0 };
         let over = mask != 1u16.checked_shl(mat as u32).unwrap_or(0);
-        let spec = self.spec.as_ref().filter(|s| self.spec_force != Some(false) && (!over || self.spec_force == Some(true)) && s.0 == mat);
+        let spec = self.spec.get(mat as usize).and_then(Option::as_ref).filter(|_| self.spec_force != Some(false) && (!over || self.spec_force == Some(true)));
         let traced_may = self.parts.as_ref().and_then(|p| p.moved).is_some_and(|m| m.trace > 0.0);
         let gated: Option<Vec<&Gated>> = (spec.is_none() && over && self.spec_force.is_none() && mask.count_ones() <= GATED_MAX && mask >> crate::style::MATERIAL_COUNT == 0)
             .then(|| (0..crate::style::MATERIAL_COUNT).filter(|m| mask & (1 << m) != 0).map(|m| self.gated[m].as_ref()).collect::<Option<Vec<_>>>()).flatten()
@@ -1736,12 +1739,12 @@ impl Renderer {
         let (mat_pipes, up_pipes, trace_pipes): (Vec<wgpu::RenderPipeline>, Vec<wgpu::RenderPipeline>, Vec<wgpu::RenderPipeline>) = match &gated {
             Some(g) => (g.iter().map(|g| g.0.clone()).collect(), g.iter().filter_map(|g| g.1.clone()).collect(), g.iter().filter_map(|g| g.2.clone()).collect()),
             None => (
-                vec![spec.map_or(&self.pipes[3], |s| &s.1).clone()],
-                spec.and_then(|s| s.2.as_ref()).or(self.up_pipe.as_ref()).cloned().into_iter().collect(),
-                spec.and_then(|s| s.3.clone()).into_iter().collect(),
+                vec![spec.map_or(&self.pipes[3], |s| &s.0).clone()],
+                spec.and_then(|s| s.1.as_ref()).or(self.up_pipe.as_ref()).cloned().into_iter().collect(),
+                spec.and_then(|s| s.2.clone()).into_iter().collect(),
             ),
         };
-        let used = spec.map(|s| s.0);
+        let used = spec.map(|_| mat);
         self.spec_used = used;
         self.path.specialised = used;
         self.path.gated = if gated.is_some() { mask } else { 0 };
@@ -1859,8 +1862,7 @@ impl Renderer {
             pass.draw(0..3, 0..1);
         }
         self.queue.submit([enc.finish()]);
-        self.specialise_after(mat, over, lo.is_some(), traced.is_some());
-        self.gate_after(mask, lo.is_some(), traced.is_some());
+        self.prepare_after(mat, mask, scene.mats, traced.is_some());
     }
 
     #[allow(clippy::too_many_arguments)]

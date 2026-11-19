@@ -40,7 +40,9 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
 
 - Scrolling under the automatic level is not softened on a frame that can move the last one (`dirty::Move`):
   that frame shades only the strip scrolled in, sharp.
-- After 30 frames with one built-in global material and no override, the material pass (and its upsample) is a
+- From a renderer's second frame, one a frame, the material passes for the page's materials (hidden elements', one
+  waiting for a morph, included: `Scene::mats`) are made ahead and kept by material; a morph's frames count the
+  materials of its tiles. With one built-in global material and no override, the material pass (and its upsample) is a
   pipeline of its own for that material (the WGSL override constant `MAT`): `Renderer::specialise`,
   `Renderer::specialised`, `render::SPECIALISE_AFTER`.
 - Marks changed in place (drifting motes, a turning body's glyphs) are each their own box, not one box round them all;

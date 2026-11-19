@@ -1518,17 +1518,23 @@ sharp, and the rest test runs once over `q²` of the pixels.
 
 **A material pass for one material** (`Renderer::specialise`): `shade` dispatches on each pixel's material
 (an override's, else the global one), so its pipeline holds every material's branch, which a GPU runs with
-fewer pixels at once. After `render::SPECIALISE_AFTER` (30) frames in a row with one built-in global
-material and no instance overriding it (in the scene or drawn into a plate since it was cleared), the
-material pass (`fs_material`, both the full and the reduced one) gets a pipeline of its own made with the
-WGSL override constant `MAT` set to that material, `fs_material_up` one too once a reduced pass is used
-with it, and `fs_trace` once a scroll's trace is shaded with it; `eff_mat` then returns `MAT`. They are made after the frame is sent, so that frame and any with an
-override, a material from source or a new global material draw with the pass for any material. The frames
+fewer pixels at once. A frame with one built-in global material and no instance overriding it (in the
+scene or drawn into a plate since it was cleared) draws the material pass (`fs_material`, both the full and
+the reduced one) with a pipeline of its own made with the WGSL override constant `MAT` set to that
+material, and `fs_material_up` and `fs_trace` too; `eff_mat` then returns `MAT`. The passes are made ahead,
+from the renderer's `render::SPECIALISE_AFTER` (2nd) frame drawn, one a frame after the frame is sent (WebGPU's
+`createRenderPipelineAsync` is not reached through wgpu): the global material's pass and upsample, then the
+passes for each material of the page (below), the page's materials being every override its elements have,
+drawn or hidden (`Scene::mats`: a word waiting for a morph in a material of its own), then the trace passes
+once a scroll's trace has been shaded. Each is kept by material, so a page that changes its global material
+and back, or shows an override and hides it, makes nothing again. A frame whose pass is not made yet, and any
+with a material from source, draws with the pass for any material (the readout's `spec no (warming)`). While
+a morph's tiles fly, the frame's materials include both its ends' (the tiles show the word's material). The frames
 are the same pixel for pixel (`tests/specialise.rs`). Offscreen, on the CPU rasteriser, `specialise` is
 `None`: compiling another pass costs more there than it saves. An override in the global material is not
 one. A page of several built-in materials (up to `render::GATED_MAX`, 4: the gallery's plain chrome round
-cells in their own) gets, after as many frames with the same ones, a pass for each, made one a frame (the
-material passes, then their upsamples, then their trace passes as those are used), with `MAT` set and the
+cells in their own) gets a pass for each, made ahead as above (the material passes and their upsamples,
+then their trace passes), with `MAT` set and the
 override constant `ONLY`: every pixel finds its material as the pass for any finds it (where a scroll holds
 the rows to a lattice, at the row it reads), and the pass for `MAT` draws only the pixels of `MAT`
 (`shade_new` discards the rest), so each box is drawn once per material and each pixel by one pass, and the
