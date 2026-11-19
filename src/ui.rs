@@ -293,7 +293,7 @@ pub struct LineInk {
 /// frame the target changes (the pointer's frame); the only easing is `MARKS_SETTLE`, a cosmetic close
 /// of a few pixels and the fade in, never a glide behind the pointer.
 #[derive(Default)]
-struct Marks { at: Option<Rect>, clip: Rect, alpha: f32, since: f32, key: Option<String>, fade: f32 }
+struct Marks { at: Option<Rect>, clip: Rect, alpha: f32, since: f32, key: Option<String>, fade: f32, within: Option<Rect> }
 /// How long the marks take to close onto a new target (s): under 80 ms, so they never trail.
 pub const MARKS_SETTLE: f32 = 0.07;
 /// How far out (logical px) the marks start when they close onto a new target.
@@ -5106,8 +5106,9 @@ impl<S, M: Clone> Ui<S, M> {
         self.paint_motes();
         // The page as animated, with its motes: what the hover marks are drawn over.
         self.body_len = self.scene.instances.len();
-        self.paint_marks();
         self.paint_gaze();
+        // Over the annotation layer the gaze makes afresh (`paint_gaze` clears it).
+        self.paint_marks();
         self.paint_overlay();
         self.grain_at = self.grain_region();
         if !self.painting { self.perf.pending.scene += (crate::perf::now_ms() - t0) as f32; }
@@ -6091,14 +6092,15 @@ impl<S, M: Clone> Ui<S, M> {
     fn aim_marks(&mut self) {
         // While something is dragged the marks stand aside; on hover they skip what is `unframed`.
         let target = if self.capture.is_some() { None } else if self.keyboard { self.focus.clone() } else { self.hover.clone().or_else(|| self.focus.clone()) };
-        let target = target.and_then(|k| self.node(&k).filter(|n| self.keyboard || !n.unframed).map(|n| (k.clone(), n.rect, n.clip)));
+        let target = target.and_then(|k| self.node(&k).filter(|n| self.keyboard || !n.unframed).map(|n| (k.clone(), n.rect, n.clip, self.framing(n))));
         let now = self.clock;
         let m = &mut self.marks;
         match target {
-            Some((k, r, clip)) => {
+            Some((k, r, clip, within)) => {
                 if m.key.as_deref() != Some(k.as_str()) { m.key = Some(k); m.since = now; }
                 m.at = Some(r);
                 m.clip = clip;
+                m.within = within;
                 // Seen at once, full within the settle.
                 m.alpha = (0.5 + 0.5 * (now - m.since) / MARKS_SETTLE).clamp(0.5, 1.0);
             }
@@ -6108,6 +6110,17 @@ impl<S, M: Clone> Ui<S, M> {
                 if m.alpha < 0.02 { m.alpha = 0.0; }
             }
         }
+    }
+    /// Where the marks of a part of a compound control (a segment, a tab: a control inside another one
+    /// that draws a border round it) stay: inside that border, so they never sit on it.
+    fn framing(&self, n: &Node<M>) -> Option<Rect> {
+        let mut p = n.parent;
+        while let Some(i) = p {
+            let c = &self.nodes[i];
+            if c.active() && let Some((w, _)) = c.border { let k = w + 1.0; return Some(c.rect.inset(k, k, k, k)); }
+            p = c.parent;
+        }
+        None
     }
     /// What the hover / focus marks frame as drawn now (logical px, before their 4 px margin and the
     /// settle's opening) and how opaque they are; `None` when they are not drawn.
@@ -6127,19 +6140,23 @@ impl<S, M: Clone> Ui<S, M> {
         // its centre, so they stay on it.
         let (mx, my) = r.center();
         let resp = [0.0, 2.0, mx * s, my * s];
-        let r = r.inset(-open, -open, -open, -open);
+        let mut r = r.inset(-open, -open, -open, -open);
+        if let Some(b) = self.marks.within { r = r.intersect(&b); }
         let (len, th) = (8.0f32.min(r.w * 0.4).min(r.h * 0.4), 1.5);
         let c = self.marks.clip.inset(-6.0, -6.0, -6.0, -6.0);
         let clip = [c.x * s, c.y * s, c.right() * s, c.bottom() * s];
+        // Over the material, exact, in the accent (the annotation layer): a material would draw the bars
+        // as its own shapes (near's bands round each one, with the control's border running through).
+        let accent = self.look().theme.accent;
         let bar = |x: f32, y: f32, w: f32, h: f32| Instance {
             rect: [(x * s).round(), (y * s).round(), (w * s).round().max(1.0), (h * s).round().max(1.0)],
-            paint: [1.0, 1.0, self.marks.alpha, SHAPE], clip, extra: [0.0, 0.0, 0.0, -1e4], resp, ..Default::default()
+            paint: [0.0, 0.0, self.marks.alpha, SHAPE], clip, look: [accent[0], accent[1], accent[2], 0.0], extra: [0.0, 0.0, 0.0, -1e4], resp, ..Default::default()
         };
         for (cx, cy, sx, sy) in [(r.x, r.y, 1.0, 1.0), (r.right(), r.y, -1.0, 1.0), (r.x, r.bottom(), 1.0, -1.0), (r.right(), r.bottom(), -1.0, -1.0)] {
             let x0 = if sx > 0.0 { cx } else { cx - len };
             let y0 = if sy > 0.0 { cy } else { cy - len };
-            self.scene.push(bar(x0, if sy > 0.0 { cy } else { cy - th }, len, th));
-            self.scene.push(bar(if sx > 0.0 { cx } else { cx - th }, y0, th, len));
+            self.scene.annot.push(bar(x0, if sy > 0.0 { cy } else { cy - th }, len, th));
+            self.scene.annot.push(bar(if sx > 0.0 { cx } else { cx - th }, y0, th, len));
         }
     }
 

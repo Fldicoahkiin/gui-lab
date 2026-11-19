@@ -294,3 +294,30 @@ fn the_focus_corners_move_with_the_control_a_press_pushes() {
     }
     assert!(best.is_some(), "the press pushes the control in some frame");
 }
+
+/// A segmented control: the marks on a hovered segment stay inside the control's border (never on it),
+/// and they are drawn over the material, exact, in the accent (the annotation layer).
+fn choice(_: &()) -> El<u8> {
+    amenui::el::col().key("root").pad(40.0, 40.0).child(amenui::widgets::segmented("pick", &["one", "two", "three"], 1, 28.0, |i| i as u8))
+}
+
+#[test]
+fn the_marks_on_a_segment_stay_inside_its_controls_border() {
+    let mut ui = Ui::new((), choice, |_, _| {}, fonts(), 600, 200, 2.0);
+    ui.tick(1.0);
+    let c = ui.node("pick").unwrap().rect;
+    let seg = ui.node("pick:1").unwrap().rect;
+    ui.pointer_move(seg.center().0, seg.center().1);
+    let mut t = 1.0;
+    for _ in 0..12 { t += 1.0 / 60.0; ui.tick(t); ui.frame_drawn(); }
+    assert_eq!(ui.marks_frame().expect("marks on the segment").0, seg);
+    let accent = ui.look().theme.accent;
+    let bars: Vec<[f32; 4]> = ui.scene().annot.iter().filter(|i| i.resp[1] > 1.5 && i.look[..3] == accent[..]).map(|i| i.rect).collect();
+    assert_eq!(bars.len(), 8, "four corners of two bars each in the annotation layer");
+    assert!(ui.scene().instances.iter().all(|i| !(i.resp[1] > 1.5 && i.rect[2] <= 16.0 && i.rect[3] <= 16.0 && i.paint[1] >= 1.0)), "no marks among the page's own instances");
+    // Inside the control's 1 px border (device px).
+    let (x0, y0, x1, y1) = ((c.x + 1.0) * 2.0, (c.y + 1.0) * 2.0, (c.right() - 1.0) * 2.0, (c.bottom() - 1.0) * 2.0);
+    for b in &bars {
+        assert!(b[0] >= x0 - 0.5 && b[1] >= y0 - 0.5 && b[0] + b[2] <= x1 + 0.5 && b[1] + b[3] <= y1 + 0.5, "a bar {b:?} on or past the control's border [{x0}, {y0}, {x1}, {y1}]");
+    }
+}

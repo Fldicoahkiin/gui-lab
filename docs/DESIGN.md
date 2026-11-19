@@ -779,7 +779,10 @@ take focus, be pressed or be dragged). The marks land on a new target in the fra
 `ui::MARKS_SETTLE` (70 ms), closing in from 3 px outside and going from half to full opacity, fading out
 over the same time on leaving. A front (a press's) pushes them as it pushes the control they frame, as one piece
 about its centre, so a pressed button never slips out from between its corners
-(`the_focus_corners_move_with_the_control_a_press_pushes`). They used to chase the target each frame by `1 − e^(−16·dt)` and always
+(`the_focus_corners_move_with_the_control_a_press_pushes`). They are drawn over the material, exact, in the accent
+(the annotation layer): drawn by a material they were its shapes, with `near`'s bands round each bar. On a part of a
+compound control (a segment, a tab: a control inside another that draws a border round it) they stay inside that
+border instead of sitting on it (`the_marks_on_a_segment_stay_inside_its_controls_border`). They used to chase the target each frame by `1 − e^(−16·dt)` and always
 trailed the pointer. Acceptance: `hover_marks_land_in_the_pointers_frame` in `tests/pointer.rs`. The wheel
 finds the nearest scrolling ancestor.
 

@@ -280,6 +280,18 @@ fn blade_head(iv: VIn) -> VIn {
 }
 
 @vertex fn vs_inst(i: VIn) -> VOut { return vs_pad(i, u.fd.z); }
+/// How far the fronts passing `centre` push what is there (device px), outward from each.
+fn fronts_push(centre: vec2f) -> vec2f {
+  let w = u.fb.z * 1.3 * u.res.z;
+  var push = vec2f(0.0);
+  for (var k = 0; k < 8; k++) {
+    if (!in_scope(centre, k)) { continue; }
+    let f = front_at(centre, u.fronts[k]);
+    let dir = normalize(centre - u.fronts[k].xy + vec2f(1e-4));
+    push += dir * exp(-(f.y * f.y) / (w * w)) * f.x * u.fc.x * u.res.z;
+  }
+  return push;
+}
 fn vs_pad(iv: VIn, spad: f32) -> VOut {
   var i = iv;
   if (i.paint.w > 0.5 && i.paint.w < 1.5 && i.extra.y > 0.5) { i = blade_seg(iv); }
@@ -295,16 +307,8 @@ fn vs_pad(iv: VIn, spad: f32) -> VOut {
   // Each instance rides the wave: it is pushed outward a little as a front passes under it.
   // A legible piece is pushed as one: every instance of it measures the push at the piece's centre.
   let centre = select(i.rect.xy + i.rect.zw * 0.5, i.resp.zw, i.resp.y > 1.5);
-  let w = u.fb.z * 1.3 * u.res.z;
   let still = calm_at(centre) || i.resp.y < 0.5;
-  var push = vec2f(0.0);
-  for (var k = 0; k < 8; k++) {
-    if (still) { break; }
-    if (!in_scope(centre, k)) { continue; }
-    let f = front_at(centre, u.fronts[k]);
-    let dir = normalize(centre - u.fronts[k].xy + vec2f(1e-4));
-    push += dir * exp(-(f.y * f.y) / (w * w)) * f.x * u.fc.x * u.res.z;
-  }
+  var push = select(fronts_push(centre), vec2f(0.0), still);
   // The field map's flow carries what may be pushed and reads it (look.z), by its centre; not a picture
   // or a 3D view (look.w), which loosens in place.
   if (!still && i.look.z > 0.5 && i.look.w < 0.5) { push += fmap_flow(centre) * u.fmap.y; }
@@ -623,7 +627,9 @@ fn near_in(i: VOut, top: bool) -> vec4f {
   let c = vec2f(f32(i.vi & 1u), f32((i.vi >> 1u) & 1u));
   // Its own turn about its centre (`xf`, zero for none): edge notes are turned a quarter.
   let q = (c - 0.5) * i.rect.zw;
-  let p = i.rect.xy + c * i.rect.zw + vec2f(i.xf.x * q.x + i.xf.y * q.y, i.xf.z * q.x + i.xf.w * q.y);
+  var p = i.rect.xy + c * i.rect.zw + vec2f(i.xf.x * q.x + i.xf.y * q.y, i.xf.z * q.x + i.xf.w * q.y);
+  // The hover / focus marks ride the fronts with the control they frame, by whole device pixels.
+  if (i.resp.y > 1.5) { p += round(fronts_push(i.resp.zw)); }
   var o: VOut;
   o.pos = vec4f(p.x / u.res.x * 2.0 - 1.0, 1.0 - p.y / u.res.y * 2.0, 0.0, 1.0);
   o.local = c * i.rect.zw;
