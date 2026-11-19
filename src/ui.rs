@@ -108,8 +108,8 @@ pub struct Node<M> {
     show_clear: Option<(f32, u8)>,
     /// A view scale's container (`El::view_scale`).
     view_scale: Option<f32>,
-    /// A stage (`El::stage`).
-    stage: bool,
+    /// A stage (`El::stage`): where it was in the view, so it can be viewed again alone (`Ui::stage_view`).
+    stage: Option<Box<StageCtx>>,
     /// Its opacity and its whole opacity as the view gave them, before `El::show_clear`.
     op0: (f32, f32),
     /// At its own size and in its parent's flow (not placed absolutely), so it takes room there.
@@ -551,7 +551,7 @@ pub struct Ui<S, M> {
     /// Instances of hidden nodes (laid out, not drawn), for sampling a morph's target.
     unseen: Vec<(usize, Instance)>,
     /// The stages (`El::stage`) by key: their last images and how they draw.
-    stages: HashMap<String, crate::stage::Stage>,
+    stages: Vec<(String, crate::stage::Stage)>,
     /// Input came since the last frame (`tick`), and a press ended since then (for the stages).
     stage_input: (bool, bool),
     /// Added to every stage's draw, ms (`Ui::slow_stage`).
@@ -561,7 +561,6 @@ pub struct Ui<S, M> {
     stepped: Option<fn(&mut S, f32) -> Vec<String>>,
     stage_of: Option<StageView<S, M>>,
     /// How each stage's root was flattened, by key, and the stages stepped while layout waits for the frame.
-    stage_ctx: HashMap<String, StageCtx>,
     stale_stages: Vec<String>,
     /// While a paint draws only some stages again: their roots (the rest is the last paint's).
     restaging: Option<Vec<usize>>,
@@ -1085,7 +1084,7 @@ impl<S, M: Clone> Ui<S, M> {
             state, view, update, text: Text::new(faces), size: (0.0, 0.0), scale, clock: 0.0, wall: 0.0, bclock: crate::beat::Clock::default(), sent: vec![], sets: vec![], nodes: vec![], scene: Scene::default(),
             owners: vec![], page_len: 0, field: Field::default(), scroll: HashMap::new(), births: HashMap::new(), ramp: None, text_births: HashMap::new(),
             hover: None, focus: None, after_focus: None, fit_short: vec![], grain_at: None, clears: HashMap::new(), clearing: false, clear_many: vec![], flow_own: vec![], fit_k: HashMap::new(), fit_last: None, pressed: None, capture: None, modal_at: None, modal_key: None, return_focus: None, split: None, splits: 0,
-            keyboard: false, marks: Marks::default(), sized: None, commands: None, unseen: vec![], stages: HashMap::new(), stage_input: (false, false), stage_add_ms: 0.0, stepped: None, stage_of: None, stage_ctx: HashMap::new(), stale_stages: vec![], restaging: None, base: vec![], tags: vec![], roles: vec![],
+            keyboard: false, marks: Marks::default(), sized: None, commands: None, unseen: vec![], stages: vec![], stage_input: (false, false), stage_add_ms: 0.0, stepped: None, stage_of: None, stale_stages: vec![], restaging: None, base: vec![], tags: vec![], roles: vec![],
             run: None, painted_phase: 0, flows: HashMap::new(), ghosts: vec![], grows: vec![], ground_seen: None, ground_hold: None, body_len: 0, animating: false, lifted: HashMap::new(),
             gaze_of: None, gaze_seen: HashMap::new(), annots: vec![], focused: None, focus_moved: false, readout: gaze::Readout::default(), hovered: None, pointer_of: None, scripted: false, ticked: None, warm: None, warmed: None, owed: false, ambient: 60.0, input_t: -1e9, frame_t: -1e9, tick_gap: 1.0 / 60.0, unused_key: None, shortcut: None, scrolled_of: None, released: None, input: None,
             dirty: true, look_of: None, locale_of: None, timing: Timing::default(), wake_of: None, latest_birth: f32::NEG_INFINITY, gaze_until: f32::NEG_INFINITY,
@@ -3060,7 +3059,6 @@ impl<S, M: Clone> Ui<S, M> {
         let mut built = Built::default();
         flatten(el, None, "root".into(), [0; 3], (false, false), None, Inherit { roles: self.timing.roles, ..Inherit::default() }, &mut vx, &mut built, &mut nodes);
         self.virt_made = vx.made;
-        self.stage_ctx = std::mem::take(&mut built.stages).into_iter().collect();
 
         // The taffy tree: a node whose key was there last time keeps its taffy node; its style, children
         // and measured content are compared and only what differs is set (which marks it and its
@@ -3613,13 +3611,14 @@ impl<S, M: Clone> Ui<S, M> {
             }
             // Restaging: a stage that did not step is the last paint's, as the rest of the page is.
             let copied = kept.as_ref().is_some_and(|k| !k.has(&self.nodes, i));
-            if copied && self.nodes[i].stage { stage_seen.push(self.nodes[i].key.clone()); }
-            if stage_open.is_none() && self.nodes[i].stage && !copied {
+            if copied && self.nodes[i].stage.is_some() { stage_seen.push(self.nodes[i].key.clone()); }
+            if stage_open.is_none() && self.nodes[i].stage.is_some() && !copied {
                 let key = self.nodes[i].key.clone();
                 let size = (i + 1..self.nodes.len()).take_while(|&j| within(&self.nodes, j, i)).count() + 1;
                 let (rect, clip) = (self.nodes[i].rect, self.nodes[i].clip);
                 stage_seen.push(key.clone());
-                let st = self.stages.entry(key).or_default();
+                let at = self.stages.iter().position(|(k, _)| *k == key).unwrap_or_else(|| { self.stages.push((key, Default::default())); self.stages.len() - 1 });
+                let st = &mut self.stages[at].1;
                 if st.draws_now(rect, clip, size, now, input, released) {
                     let t0 = crate::perf::now_ms();
                     // For checks: a stage made slower than it is (`Ui::slow_stage`).
@@ -4072,13 +4071,13 @@ impl<S, M: Clone> Ui<S, M> {
         if let Some((_, start, slot)) = plate { self.plate_span(slot, start); }
         if let Some((root, start, t0)) = stage_open { self.stage_close(root, start, t0, &text_births, &seen_recs); }
         // A drawn stage keeps its see-through groups with its image; a stage no longer in the view is gone.
-        for st in self.stages.values_mut() {
+        for (_, st) in &mut self.stages {
             let (a, b) = st.span;
             if st.behind || b <= a { continue; }
             st.groups = self.scene.groups.iter().filter(|g| (g.start as usize) >= a && (g.end as usize) <= b).map(|g| crate::scene::Group { start: g.start - a as u32, end: g.end - a as u32, opacity: g.opacity }).collect();
             st.span = (0, 0);
         }
-        self.stages.retain(|k, _| stage_seen.contains(k));
+        self.stages.retain(|(k, _)| stage_seen.contains(k));
         if !self.plate_clear.is_empty() {
             // Serials are unique across every `Ui` so a renderer shared by two never skips one.
             static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -4134,7 +4133,7 @@ impl<S, M: Clone> Ui<S, M> {
         let now = self.clock;
         let n = &self.nodes[root];
         let (rect, clip) = (n.rect, n.clip);
-        let Some(st) = self.stages.get_mut(&n.key) else { return };
+        let Some((_, st)) = self.stages.iter_mut().find(|(k, _)| *k == n.key) else { return };
         st.snap = self.scene.instances[start..end].to_vec();
         st.owners = self.owners[start..end].iter().map(|&(j, id)| (j - root, id)).collect();
         st.tags = self.tags[start..end].to_vec();
@@ -4160,7 +4159,7 @@ impl<S, M: Clone> Ui<S, M> {
         let mut ok = self.run.is_none() && self.flows.is_empty() && self.ghosts.is_empty() && self.sent.is_empty();
         for k in &keys {
             if !ok { break; }
-            let Some(i) = self.nodes.iter().position(|n| n.stage && n.key == *k) else { ok = false; break };
+            let Some(i) = self.nodes.iter().position(|n| n.stage.is_some() && n.key == *k) else { ok = false; break };
             if roots.contains(&i) { continue; }
             ok = view(&self.state, k).is_some_and(|el| self.swap_stage(i, el));
             roots.push(i);
@@ -4198,11 +4197,11 @@ impl<S, M: Clone> Ui<S, M> {
     fn swap_stage(&mut self, i: usize, el: El<M>) -> bool {
         let key = self.nodes[i].key.clone();
         if !el.props.stage || (!el.props.key.is_empty() && el.props.key != key) { return false; }
-        let Some(ctx) = self.stage_ctx.get(&key).cloned() else { return false };
+        let Some(ctx) = self.nodes[i].stage.as_deref().cloned() else { return false };
         let len = (i + 1..self.nodes.len()).take_while(|&j| within(&self.nodes, j, i)).count() + 1;
         let mut nodes = std::mem::take(&mut self.nodes);
         let mut tail = nodes.split_off(i);
-        let mut built = Built { styles: vec![Style::default(); i], kids: vec![vec![]; i], stages: vec![] };
+        let mut built = Built { base: i, ..Built::default() };
         let mut vx = VirtCtx { scroll: &self.scroll, views: &self.virt_views, window: self.size.1, made: HashMap::new() };
         flatten(el, ctx.parent, ctx.path, ctx.roles, ctx.off, ctx.flow, ctx.inh, &mut vx, &mut built, &mut nodes);
         let virt = !vx.made.is_empty();
@@ -4210,7 +4209,7 @@ impl<S, M: Clone> Ui<S, M> {
             let (new, old) = (&nodes[i + j], &tail[j]);
             new.key == old.key && new.parent == old.parent && new.modal.is_none() && new.fit.is_none()
                 && matches!(new.content, Content::None) == matches!(old.content, Content::None)
-                && self.tree.style(old.tid).is_ok_and(|st| *st == built.styles[i + j])
+                && self.tree.style(old.tid).is_ok_and(|st| *st == built.styles[j])
                 && self.mkeys.get(&old.tid) == Some(&measure_key(&new.content))
         });
         if !same {
@@ -4224,16 +4223,15 @@ impl<S, M: Clone> Ui<S, M> {
             (n.local, n.exact, n.tid, n.rect, n.clip, n.inner, n.extent, n.shown, n.xf, n.written) = (old.local, old.exact, old.tid, old.rect, old.clip, old.inner, old.extent, old.shown, old.xf, old.written);
         }
         nodes.append(&mut tail);
-        for (k, c) in built.stages { self.stage_ctx.insert(k, c); }
         self.nodes = nodes;
         true
     }
     /// For checks: every stage's draw takes `ms` longer (`El::stage`; Y.5's slow piece).
     pub fn slow_stage(&mut self, ms: f32) { self.stage_add_ms = ms.max(0.0); }
     /// Whether the stage under `key` is slow, and how many times it has drawn (`El::stage`).
-    pub fn stage_state(&self, key: &str) -> Option<(bool, usize)> { self.stages.get(key).map(|s| (s.slow, s.count)) }
+    pub fn stage_state(&self, key: &str) -> Option<(bool, usize)> { self.stages.iter().find(|(k, _)| k == key).map(|(_, s)| (s.slow, s.count)) }
     /// A stage held through a paint: it draws again when it may.
-    fn stage_behind(&self) -> bool { self.stages.values().any(|s| s.behind) }
+    fn stage_behind(&self) -> bool { self.stages.iter().any(|(_, s)| s.behind) }
     /// What text to read and controls hold (DESIGN.md §1.15): each of their instances that has some ink
     /// of something else (not legible) drawn before it within `r1` of it holds the looseness there to the
     /// legibility cap. `r0 = max(3, size / 4)` and `r1 = r0 + max(6, size / 2)` logical px, by the type
@@ -6873,9 +6871,9 @@ fn ramp_pack(p: Paint) -> f32 {
 /// What `flatten` needs to build a virtual list's rows (scroll offsets, viewport heights from the last
 /// layout, the window's height) and the row ranges it built.
 struct VirtCtx<'a> { scroll: &'a HashMap<String, f32>, views: &'a HashMap<String, f32>, window: f32, made: HashMap<String, (usize, usize)> }
-/// Per node, what goes to the taffy tree: its style and its children.
+/// Per node from node `base` on, what goes to the taffy tree: its style and its children.
 #[derive(Default)]
-struct Built { styles: Vec<Style>, kids: Vec<Vec<usize>>, stages: Vec<(String, StageCtx)> }
+struct Built { styles: Vec<Style>, kids: Vec<Vec<usize>>, base: usize }
 /// A stage's subtree viewed alone, by its key (`Ui::stage_view`).
 type StageView<S, M> = fn(&S, &str) -> Option<El<M>>;
 /// What the last paint drew, kept for a paint that draws only some stages again (`Ui::kept`).
@@ -6934,11 +6932,8 @@ fn measure_key(c: &Content) -> u64 {
 /// A virtual list's rows are built here, for what its viewport shows.
 #[allow(clippy::too_many_arguments)]
 fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], off: (bool, bool), flow: Option<(Rc<str>, usize)>, inh: Inherit, vx: &mut VirtCtx, built: &mut Built, nodes: &mut Vec<Node<M>>) -> usize {
-    if el.props.stage {
-        let key = if el.props.key.is_empty() { path.clone() } else { el.props.key.clone() };
-        built.stages.push((key, StageCtx { parent, path: path.clone(), roles, off, flow: flow.clone(), inh: inh.clone() }));
-    }
-    let El { props: crate::el::Props { key, mut style, mut content, fill, border, radius, mut focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, mut commit, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, map_life, multiline, selectable, cursor, ripple, guide, skeleton, rtl, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview, fit, clamp, plate, own_size, grain, show_clear, pen, view_scale, stage }, mut on_press, mut on_key, mut on_drag, mut on_blur, modal, mut on_text, virt, access, mut on_pick, mut on_wheel, mut on_move, on_visible, on_outline, mut children } = el;
+    let stage_at = el.props.stage.then(|| Box::new(StageCtx { parent, path: path.clone(), roles, off, flow: flow.clone(), inh: inh.clone() }));
+    let El { props: crate::el::Props { key, mut style, mut content, fill, border, radius, mut focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, mut commit, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, map_life, multiline, selectable, cursor, ripple, guide, skeleton, rtl, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview, fit, clamp, plate, own_size, grain, show_clear, pen, view_scale, stage: _ }, mut on_press, mut on_key, mut on_drag, mut on_blur, modal, mut on_text, virt, access, mut on_pick, mut on_wheel, mut on_move, on_visible, on_outline, mut children } = el;
     // A view scale scales what it holds, not its pen (`El::view_scale`).
     if let Some(s) = view_scale { children = children.into_iter().map(|c| c.zoom_by(s, true)).collect(); }
     let mut inh = inh;
@@ -7013,7 +7008,7 @@ fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], of
         content, fill, border, radius, on_press, on_key, on_drag, on_blur, loose, wipe, bar, reveal, commit, modal, hidden, shift, shed, flow_field, stirr, trace, flow: flow.clone(),
         mat: inh.code(), loosen: inh.loosen, annotate, scope: gaze_scope, anchor, clips, calm, map_life, on_text, multiline, selectable: inh.select, cursor,
         virt: virt_info, access, respond, legible, ripple: inh.scope.clone(), ripple_scope: ripple.container || commit_scope, recompose, recompose_always: is_text && ripple.recompose == Some(true), unframed: ripple.unframed, keyed,
-        on_pick, on_wheel, on_move, guide, on_visible, on_outline, decode, skeleton: inh.skeleton, form, turn, xf: None, reveal_by, ongoing: ongoing || parent.is_some_and(|p| nodes[p].ongoing), pass, opacity, opacity_all: opacity * parent.map_or(1.0, |p| nodes[p].opacity_all), commit_scope, fit, clamp, shown: None, plate, own_size, grain, show_clear, view_scale, stage, op0: (0.0, 0.0), pen, own_in_flow: own_size.is_some() && style.position != taffy::Position::Absolute, local: taffy::Layout::new(), exact: (0.0, 0.0), tid: placeholder,
+        on_pick, on_wheel, on_move, guide, on_visible, on_outline, decode, skeleton: inh.skeleton, form, turn, xf: None, reveal_by, ongoing: ongoing || parent.is_some_and(|p| nodes[p].ongoing), pass, opacity, opacity_all: opacity * parent.map_or(1.0, |p| nodes[p].opacity_all), commit_scope, fit, clamp, shown: None, plate, own_size, grain, show_clear, view_scale, stage: stage_at, op0: (0.0, 0.0), pen, own_in_flow: own_size.is_some() && style.position != taffy::Position::Absolute, local: taffy::Layout::new(), exact: (0.0, 0.0), tid: placeholder,
     });
     { let n = nodes.last_mut().expect("pushed"); n.op0 = (n.opacity, n.opacity_all); }
     crate::el::snap_style(&mut style);
@@ -7031,7 +7026,7 @@ fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], of
         let p = format!("{}/{n}", nodes[i].key);
         let k = flatten(c, Some(i), p, roles, (off, hidden), flow.clone(), inh.clone(), vx, built, nodes);
         nodes[k].written = n;
-        built.kids[i].push(k);
+        built.kids[i - built.base].push(k);
     }
     i
 }
