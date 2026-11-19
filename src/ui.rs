@@ -102,6 +102,8 @@ pub struct Node<M> {
     own_size: Option<([f32; 2], f32)>,
     /// How much wider than its scale its drawing's strokes are drawn (`El::view_scale`; 1: as scaled).
     pen: f32,
+    /// The look's grain is drawn over it (`El::grain`).
+    grain: bool,
     /// At its own size and in its parent's flow (not placed absolutely), so it takes room there.
     own_in_flow: bool,
     shed: Option<crate::motes::Shed>,
@@ -480,6 +482,8 @@ pub struct Ui<S, M> {
     /// Boxes marked `El::fit` that could not hold their subtree at the least scale: key, the scale it
     /// would need, the least.
     fit_short: Vec<(String, f32, f32)>,
+    /// Where the look's grain is drawn this frame (device px, `El::grain`): `None` over the whole frame.
+    grain_at: Option<[f32; 4]>,
     /// The scale each box marked `El::fit` gave its subtree in the last layout.
     fit_k: HashMap<String, f32>,
     pressed: Option<String>,
@@ -1002,7 +1006,7 @@ impl<S, M: Clone> Ui<S, M> {
         let mut ui = Self {
             state, view, update, text: Text::new(faces), size: (0.0, 0.0), scale, clock: 0.0, wall: 0.0, bclock: crate::beat::Clock::default(), sent: vec![], sets: vec![], nodes: vec![], scene: Scene::default(),
             owners: vec![], page_len: 0, field: Field::default(), scroll: HashMap::new(), births: HashMap::new(), ramp: None, text_births: HashMap::new(),
-            hover: None, focus: None, after_focus: None, fit_short: vec![], fit_k: HashMap::new(), pressed: None, capture: None, modal_at: None, modal_key: None, return_focus: None, split: None, splits: 0,
+            hover: None, focus: None, after_focus: None, fit_short: vec![], grain_at: None, fit_k: HashMap::new(), pressed: None, capture: None, modal_at: None, modal_key: None, return_focus: None, split: None, splits: 0,
             keyboard: false, marks: Marks::default(), sized: None, commands: None, unseen: vec![], base: vec![], tags: vec![], roles: vec![],
             run: None, painted_phase: 0, flows: HashMap::new(), ghosts: vec![], grows: vec![], ground_seen: None, ground_hold: None, body_len: 0, animating: false, lifted: HashMap::new(),
             gaze_of: None, gaze_seen: HashMap::new(), annots: vec![], readout: gaze::Readout::default(), hovered: None, pointer_of: None, scripted: false, ticked: None, warm: None, warmed: None, owed: false, ambient: 60.0, input_t: -1e9, frame_t: -1e9, tick_gap: 1.0 / 60.0, unused_key: None, shortcut: None, scrolled_of: None, released: None, input: None,
@@ -1219,6 +1223,7 @@ impl<S, M: Clone> Ui<S, M> {
         for (n, v) in &self.sets { let _ = l.set(n, *v); }
         // What is turned off (DESIGN.md §1.34) is turned off in the look the renderer draws with.
         if l.off.bloom { l.post.bloom.strength = 0.0; }
+        l.post.region = self.grain_at;
         if l.off.material_still { l.beat.bpm = 0.0; }
         l
     }
@@ -4547,7 +4552,29 @@ impl<S, M: Clone> Ui<S, M> {
         self.paint_marks();
         self.paint_gaze();
         self.paint_overlay();
+        self.grain_at = self.grain_region();
         if !self.painting { self.perf.pending.scene += (crate::perf::now_ms() - t0) as f32; }
+    }
+
+    /// The box round what the elements marked `El::grain` draw now (device px, each instance within its
+    /// clip; a flowing picture where it is this frame), or `None` when none is marked.
+    fn grain_region(&self) -> Option<[f32; 4]> {
+        let marked: Vec<usize> = (0..self.nodes.len()).filter(|&i| self.nodes[i].grain && !self.nodes[i].hidden).collect();
+        if marked.is_empty() { return None; }
+        let mut b = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+        let mut add = |r: [f32; 4]| if r[2] > r[0] && r[3] > r[1] { b = [b[0].min(r[0]), b[1].min(r[1]), b[2].max(r[2]), b[3].max(r[3])]; };
+        let s = self.scale;
+        for &i in &marked {
+            let mut any = false;
+            for j in 0..self.page_len.min(self.scene.instances.len()) {
+                if !self.within(self.owners[j].0, i) { continue; }
+                let q = &self.scene.instances[j];
+                any = true;
+                add([q.rect[0].max(q.clip[0]), q.rect[1].max(q.clip[1]), (q.rect[0] + q.rect[2]).min(q.clip[2]), (q.rect[1] + q.rect[3]).min(q.clip[3])]);
+            }
+            if !any { let n = &self.nodes[i]; let r = n.rect.intersect(&n.clip); add([r.x * s, r.y * s, r.right() * s, r.bottom() * s]); }
+        }
+        Some(if b[2] > b[0] { b } else { [0.0; 4] })
     }
 
     /// The performance readout (DESIGN.md §1.12), drawn by the annotation layer in Departure Mono at the
@@ -6328,7 +6355,7 @@ fn measure_key(c: &Content) -> u64 {
 /// A virtual list's rows are built here, for what its viewport shows.
 #[allow(clippy::too_many_arguments)]
 fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], off: (bool, bool), flow: Option<(Rc<str>, usize)>, inh: Inherit, vx: &mut VirtCtx, built: &mut Built, nodes: &mut Vec<Node<M>>) -> usize {
-    let El { props: crate::el::Props { key, mut style, mut content, fill, border, radius, mut focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, mut commit, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, map_life, multiline, selectable, cursor, ripple, guide, skeleton, rtl, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview, fit, clamp, plate, own_size, pen, view_scale }, mut on_press, mut on_key, mut on_drag, mut on_blur, modal, mut on_text, virt, access, mut on_pick, mut on_wheel, mut on_move, on_visible, on_outline, mut children } = el;
+    let El { props: crate::el::Props { key, mut style, mut content, fill, border, radius, mut focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, mut commit, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, map_life, multiline, selectable, cursor, ripple, guide, skeleton, rtl, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview, fit, clamp, plate, own_size, grain, pen, view_scale }, mut on_press, mut on_key, mut on_drag, mut on_blur, modal, mut on_text, virt, access, mut on_pick, mut on_wheel, mut on_move, on_visible, on_outline, mut children } = el;
     // A view scale scales what it holds, not its pen (`El::view_scale`).
     if let Some(s) = view_scale { children = children.into_iter().map(|c| c.zoom_by(s, true)).collect(); }
     let mut inh = inh;
@@ -6403,7 +6430,7 @@ fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], of
         content, fill, border, radius, on_press, on_key, on_drag, on_blur, loose, wipe, bar, reveal, commit, modal, hidden, shift, shed, flow_field, stirr, trace, flow: flow.clone(),
         mat: inh.code(), loosen: inh.loosen, annotate, scope: gaze_scope, anchor, clips, calm, map_life, on_text, multiline, selectable: inh.select, cursor,
         virt: virt_info, access, respond, legible, ripple: inh.scope.clone(), ripple_scope: ripple.container || commit_scope, recompose, recompose_always: is_text && ripple.recompose == Some(true), unframed: ripple.unframed, keyed,
-        on_pick, on_wheel, on_move, guide, on_visible, on_outline, decode, skeleton: inh.skeleton, form, turn, xf: None, reveal_by, ongoing: ongoing || parent.is_some_and(|p| nodes[p].ongoing), pass, opacity, opacity_all: opacity * parent.map_or(1.0, |p| nodes[p].opacity_all), commit_scope, fit, clamp, shown: None, plate, own_size, pen, own_in_flow: own_size.is_some() && style.position != taffy::Position::Absolute, local: taffy::Layout::new(), exact: (0.0, 0.0), tid: placeholder,
+        on_pick, on_wheel, on_move, guide, on_visible, on_outline, decode, skeleton: inh.skeleton, form, turn, xf: None, reveal_by, ongoing: ongoing || parent.is_some_and(|p| nodes[p].ongoing), pass, opacity, opacity_all: opacity * parent.map_or(1.0, |p| nodes[p].opacity_all), commit_scope, fit, clamp, shown: None, plate, own_size, grain, pen, own_in_flow: own_size.is_some() && style.position != taffy::Position::Absolute, local: taffy::Layout::new(), exact: (0.0, 0.0), tid: placeholder,
     });
     crate::el::snap_style(&mut style);
     // Every element is the box its absolutely placed children are pinned in (all four insets against

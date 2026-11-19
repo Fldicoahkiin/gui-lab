@@ -8,6 +8,12 @@ crate and the `amenui` npm package (`web/`) always carry the same version, becau
 match the module that `web_app!` generates. The minimum Rust is the one CI builds with (`rust-version`
 in Cargo.toml); raising it is a breaking change before 1.0 only in the second number.
 
+## Grain in a region
+
+- `El::grain()`: once an element is marked, the look's grain is drawn only over what marked elements draw (their
+  box, following a flowing picture), the same grain as over the whole frame; with none marked it covers the frame as
+  before (DESIGN.md §1.21). `Post` has a new field, `region`, which the runtime sets.
+
 ## Smaller web module
 
 - `El`'s fields that do not depend on its message type are in `El::props` (`Props`), which an `El` reads and writes

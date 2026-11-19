@@ -2038,6 +2038,12 @@ dither and palette. Curvature is the last thing done to the image, so the shader
 every earlier step reads at the mapped position; dithering uses the screen's own pixels. Quantization happens in
 sRGB (with an sRGB swap chain the colour is converted there and back).
 
+**Grain in a region** (`El::grain()`): once any element on the page is marked, the grain is drawn only inside the
+box round everything marked elements draw this frame (each instance within its clip, in device px), so a picture that
+flows carries it where it is on each frame; the grain itself is the same (its hash, amount and cell), so a window
+shows the page's grain pixel for pixel. With nothing marked it covers the whole frame. The runtime sets the region in
+the look it draws with (`Post::region`). `tests/grain.rs`.
+
 **Dithering** (`DithrKind`): `bayer2`, `bayer4`, `bayer8` (recursive Bayer matrices); `blue_noise`: not a real
 blue-noise mask (that would need a texture or void-and-cluster at start-up) but the R2 low-discrepancy sequence
 `fract(0.7549 x + 0.5698 y)`, as even and textureless; `atkinson_like`: real error diffusion runs pixel after

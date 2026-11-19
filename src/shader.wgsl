@@ -1604,7 +1604,10 @@ fn dither_t(kind: f32, p: vec2f) -> f32 {
   let sl = u.post[2].y;
   if (sl > 0.0) { c *= 1.0 - sl * (0.5 + 0.5 * cos(6.2831853 * (floor(p.y) + 0.5) / u.post[2].z)); }
   let ga = u.post[2].w;
-  if (ga > 0.0) { c += (h1(floor(p / u.post[3].w) + 0.5) - 0.5) * ga; }
+  // Within the region the runtime set (`El::grain`), when it set one.
+  let gr = u.post[5];
+  let in_gr = u.post[4].z < 0.5 || (p.x >= gr.x && p.y >= gr.y && p.x < gr.z && p.y < gr.w);
+  if (ga > 0.0 && in_gr) { c += (h1(floor(p / u.post[3].w) + 0.5) - 0.5) * ga; }
   let vs = u.post[3].x;
   if (vs > 0.0) { c *= 1.0 - vs * smoothstep(u.post[3].y, 1.0, length(p - ctr) / half); }
   c = clamp(c, vec3f(0.0), vec3f(1.0));

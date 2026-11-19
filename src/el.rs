@@ -706,6 +706,8 @@ pub struct Props {
     /// It keeps its own size when zoomed (`El::own_size`): the point of its box (0–1 across, down) that
     /// stays where the zoomed box would put it, and the zoom it was given (1: none).
     pub own_size: Option<([f32; 2], f32)>,
+    /// The look's grain is drawn over it (`El::grain`).
+    pub grain: bool,
     /// How much a view scale above it (`El::view_scale`) scaled its geometry and not its pen: a drawing's
     /// strokes are drawn this much wider than its scale makes them (1: none).
     pub pen: f32,
@@ -714,7 +716,7 @@ pub struct Props {
 }
 impl Props {
     #[inline(never)]
-    fn new(style: Style, content: Content) -> Self { Props { key: String::new(), style, content, fill: None, border: None, radius: 0.0, focusable: false, tab_order: 0, skip_to: None, focus_shown: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, shift: (0.0, 0.0), shed: None, flow_field: None, stirr: None, trace: None, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, clips: false, calm: false, map_life: None, multiline: false, selectable: false, cursor: None, ripple: Ripple::default(), guide: None, skeleton: false, rtl: None, decode: None, form: None, turn: 0.0, reveal_by: Reveal::Glyph, ongoing: false, pass: false, opacity: 1.0, commit_scope: false, preview: false, fit: None, clamp: 0, plate: None, own_size: None, pen: 1.0, view_scale: None } }
+    fn new(style: Style, content: Content) -> Self { Props { key: String::new(), style, content, fill: None, border: None, radius: 0.0, focusable: false, tab_order: 0, skip_to: None, focus_shown: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, shift: (0.0, 0.0), shed: None, flow_field: None, stirr: None, trace: None, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, clips: false, calm: false, map_life: None, multiline: false, selectable: false, cursor: None, ripple: Ripple::default(), guide: None, skeleton: false, rtl: None, decode: None, form: None, turn: 0.0, reveal_by: Reveal::Glyph, ongoing: false, pass: false, opacity: 1.0, commit_scope: false, preview: false, fit: None, clamp: 0, plate: None, own_size: None, grain: false, pen: 1.0, view_scale: None } }
 }
 impl<M> std::ops::Deref for El<M> { type Target = Props; fn deref(&self) -> &Props { &self.props } }
 impl<M> std::ops::DerefMut for El<M> { fn deref_mut(&mut self) -> &mut Props { &mut self.props } }
@@ -984,6 +986,12 @@ impl<M> El<M> {
     pub fn hidden_until_morphed(mut self, h: bool) -> Self { self.hidden = h; self }
     /// Move this subtree by (dx, dy) logical px after layout (no layout when only this changes).
     pub fn shift(mut self, dx: f32, dy: f32) -> Self { self.shift = (dx, dy); self }
+    /// Where the look's grain (`PostSpec::grain`) is drawn: once any element on the page is marked, the
+    /// grain is drawn only inside the box round all that marked elements draw (each within its clip), the
+    /// same grain as over the whole frame (its hash, amount and cell in device px), so a window keeps the
+    /// page's grain and a picture that flows carries it where it is drawn each frame. With none marked it
+    /// covers the whole frame.
+    pub fn grain(mut self) -> Self { self.grain = true; self }
     /// Keep this element's own size when it is zoomed (`El::zoom`) or carried by a picture that grows
     /// (`Cmd::Flow`): a label on a scaled drawing, at its own size and sharp at any device pixel ratio.
     /// Its type, box, border and pose stay as they are; where it is (insets, margins, `shift`) scales,
