@@ -323,8 +323,8 @@ struct Keyed { grow: usize, old: Instance, pin: [f32; 2], keep_h: bool }
 /// (a word, one box of lines), so that part keeps its own shape.
 /// `pin`: the point of that box (0–1 across, down) the picture carries: its centre, or a label's own
 /// anchor (`El::own_size`).
-/// `scaled`: it was drawn under a view scale (`El::view_scale`) and not at its own size, so it is the
-/// layout's geometry and goes with the picture's transform, its pen kept, not at its own size.
+/// `scaled`: it is a drawing's mark, or was drawn under a view scale (`El::view_scale`) and not at its own
+/// size, so it is geometry and goes with the picture's transform, its pen kept, not at its own size.
 struct Ghost { inst: Instance, start: f32, dur: f32, loosen: bool, ride: Option<usize>, anchor: [f32; 4], pin: [f32; 2], scaled: bool }
 /// A look's ground and second ground.
 type Grounds = ([f32; 3], [f32; 3]);
@@ -370,7 +370,7 @@ impl Grow {
 /// A page instance as it was drawn, kept across a relayout for `Cmd::Flow`.
 /// `key`: its element's key when the element is keyed, `slot` which of that element's instances it is
 /// (glyph or not, the count, the glyph), `own` whether the element keeps its own size, `scaled` whether
-/// it is under a view scale (`El::view_scale`) at the layout's scale (not its own size).
+/// it is geometry: a drawing's mark, or under a view scale (`El::view_scale`) not at its own size.
 struct Old { id: u64, node: usize, pin: [f32; 2], tag: Option<Tag>, inst: Instance, key: Option<Rc<str>>, slot: (bool, u32, u32), own: bool, scaled: bool }
 
 /// A text's glyphs as last painted, kept to see what changed in the next view (DESIGN.md §1.16).
@@ -5257,7 +5257,8 @@ impl<S, M: Clone> Ui<S, M> {
         (0..self.page_len).map(|i| {
             let n = &self.nodes[self.owners[i].0];
             let own = n.own_size.is_some();
-            let scaled = !own && view(self.owners[i].0).is_some();
+            // A drawing's marks are its geometry wherever it is; under a view scale, everything is.
+            let scaled = !own && (matches!(n.content, Content::Canvas(_)) || view(self.owners[i].0).is_some());
             Old { id: self.owners[i].1, node: self.owners[i].0, pin: n.own_size.map_or([0.5, 0.5], |o| o.0), tag: self.tags[i].clone(), inst: self.scene.instances[i], key: n.keyed.then(|| Rc::from(n.key.as_str())), slot: slots[i], own, scaled }
         }).collect()
     }

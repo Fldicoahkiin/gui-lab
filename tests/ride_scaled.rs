@@ -1,6 +1,6 @@
-//! A drawing in a view-scaled subtree whose picture grows or shrinks (`Cmd::Flow`, `El::view_scale`,
-//! DESIGN.md §1.10): the view's geometry is the layout's, so what of it rides with the picture goes with
-//! the picture's transform, its pen kept, and is never drawn at its own place or size over the other page.
+//! A drawing in a flowed subtree whose picture grows or shrinks (`Cmd::Flow`, DESIGN.md §1.10), with no
+//! view scale or other setting: its marks are geometry, so they ride with the picture's transform, their
+//! pen kept, and are never drawn at their own place or size over the other page.
 use amenui::draw::Drawing;
 use amenui::el::{El, Paint, canvas, col, picture};
 use amenui::morph::{Cmd, FlowSpec};
@@ -24,10 +24,11 @@ const PEN: f32 = 1.5;
 #[derive(Default)]
 struct Site { piece: bool, cmds: Vec<Cmd> }
 fn at<M: 'static>(e: El<M>, x: f32, y: f32) -> El<M> { e.absolute(Some(x), Some(y), None, None) }
-/// The piece's one layout at `s`; the curtain only on its page (the index's window shows its picture).
+/// The piece at `s` of its size, laid out for it (no view scale); the curtain only on its page (the
+/// index's window shows its picture).
 fn layer(s: f32, curtain: bool) -> El<()> {
-    let mut l = col().key("layer").width(W as f32).height(H as f32).view_scale(s)
-        .child(at(picture(PIC, H as f32 / W as f32).key("pic").width(W as f32), 0.0, 0.0));
+    let mut l = col().key("layer").width(W as f32 * s).height(H as f32 * s)
+        .child(at(picture(PIC, H as f32 / W as f32).key("pic").width(W as f32 * s), 0.0, 0.0));
     if curtain {
         let mut d = Drawing::new(W as f32, H as f32);
         for x in RAYS { d.line((x, TOP), (x, TOP + LEN), PEN, Paint::ACCENT); }
