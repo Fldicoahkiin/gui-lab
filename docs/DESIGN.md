@@ -2060,15 +2060,21 @@ copied whole to the target each frame (the web swap chain gives a new image ever
   new pointer), bursts, the wipe line's rect and changed instances of the annotation layer.
 - Instances are matched in order, not by place: the common start and end of the two lists, and between them
   runs of 4 equal instances found again further on, so a drawing whose strokes change in number leaves what
-  is drawn after it matched; each run that did not match, in either list, is one box. They are matched only
+  is drawn after it matched; each run that did not match, in either list, is one box, and a run changed in
+  place (as many instances in both) a box for each instance, before and after, so marks that move all over
+  the window (drifting motes, a turning body's glyphs) are each where they are. They are matched only
   between the same cuts of the list (the modal layer, each plate), and when the cuts differ, in place. A
   pixel outside every box is covered by the same instances in the same order, so it is the same.
-- **Several boxes**: each stage's boxes are merged where they overlap, then two at a time (the pair whose
-  union adds least) down to `dirty::MAX_BOXES` (8), and each stage is drawn once per box (boxes may overlap:
-  a pixel drawn twice is drawn the same). `dirty::parts` gives them; `dirty::region` and the readout their
-  union. Acceptance: `tests/dirty_parts.rs` (a drawing that gains strokes redraws only its own cell, two
-  cells far apart are two boxes under a quarter of the window, and seven frames of cells changing under three
-  materials, drawn in their boxes, are byte for byte the frames drawn whole).
+- **Several boxes**: over 64, boxes are first gathered by where their centres fall on an 8 × 8 grid over them
+  all; then merged where they overlap, then two at a time (the pair whose union adds least) down to
+  `dirty::MAX_SHADE_BOXES` (32) for the final frame, grown from what changed as it is, and from those down to
+  `dirty::MAX_BOXES` (8) for the G-buffer, which draws every instance again in each box (the final boxes are
+  one scissored triangle each). Each stage is drawn once per box (boxes may overlap: a pixel drawn twice is
+  drawn the same). `dirty::parts` gives them; `dirty::region` and the readout their union. Acceptance:
+  `tests/dirty_parts.rs` (a drawing that gains strokes redraws only its own cell, two cells far apart are two
+  boxes under a quarter of the window, seven frames of cells changing under three materials, drawn in their
+  boxes, are byte for byte the frames drawn whole, and 16 motes drifting over a window-wide drawing are
+  shaded under 30 % of the window in plain, byte for byte as drawn whole).
 - **Scrolling moves the last frame**: when one scroll container's offset moves by whole device pixels, with no
   trace showing in this frame or the last and the ground not in transition, the renderer copies the G-buffer and
   the kept frame inside the viewport by the offset (`dirty::Move`, `Renderer::carry`: copies into a second set of

@@ -1,5 +1,6 @@
 //! Draw only what changed (DESIGN.md §1.19). Before a frame the renderer compares what it is about to
-//! draw with what it drew last time, and finds boxes (device px, at most `MAX_BOXES` a stage): where
+//! draw with what it drew last time, and finds boxes (device px, at most `MAX_BOXES` for stage 1 and
+//! `MAX_SHADE_BOXES` for stage 2): where
 //! stage 1's images (ink, near) can differ, and where the final frame can differ. Everything outside them is the
 //! previous frame's, kept in place. Pure CPU; the renderer scissors its passes to the boxes.
 //!
@@ -64,10 +65,15 @@ pub struct Inputs {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Region { All, Boxes { stage1: Bx, stage2: Bx } }
 
-/// The most boxes a frame redraws in each stage: what changed in more places is merged into this many.
+/// The most boxes stage 1 redraws: what changed in more places is merged into this many (each box draws
+/// every instance again, scissored, so they are few; ink drawn again where nothing changed is the same).
 pub const MAX_BOXES: usize = 8;
+/// The most boxes stage 2 shades: each is one full-window triangle, scissored, so there can be more,
+/// and changes scattered over the window (drifting motes, a turning body's glyphs) are shaded where
+/// they are, not in the few boxes that hold them all.
+pub const MAX_SHADE_BOXES: usize = 32;
 /// What a frame redraws, as several boxes: where stage 1's images can differ, and where the final frame
-/// can; each list is at most `MAX_BOXES`, and may overlap.
+/// can; at most `MAX_BOXES` and `MAX_SHADE_BOXES`, and they may overlap.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Parts { pub stage1: Vec<Bx>, pub stage2: Vec<Bx>, pub moved: Option<Move> }
 
@@ -141,11 +147,18 @@ impl Parts {
 pub fn merge(mut v: Vec<Bx>, max: usize) -> Vec<Bx> {
     v.retain(|b| !is_empty(*b));
     let area = |b: Bx| (b[2] - b[0]).max(0.0) * (b[3] - b[1]).max(0.0);
-    // Many small boxes (a run of changed marks each its own): neighbours in the list, which are mostly
-    // neighbours on the screen, together.
+    // Many small boxes (changed marks each its own): those whose centres fall in one cell of an 8 × 8 grid
+    // over them all, together.
     if v.len() > 64 {
-        let per = v.len().div_ceil(64);
-        v = v.chunks(per).map(|c| c.iter().fold(EMPTY, |a, b| union(a, *b))).collect();
+        let all = v.iter().fold(EMPTY, |a, b| union(a, *b));
+        let (cw, ch) = (((all[2] - all[0]) / 8.0).max(1.0), ((all[3] - all[1]) / 8.0).max(1.0));
+        let mut cells = [EMPTY; 64];
+        for b in &v {
+            let (cx, cy) = (((b[0] + b[2]) * 0.5 - all[0]) / cw, ((b[1] + b[3]) * 0.5 - all[1]) / ch);
+            let k = (cy.clamp(0.0, 7.0) as usize) * 8 + cx.clamp(0.0, 7.0) as usize;
+            cells[k] = union(cells[k], *b);
+        }
+        v = cells.into_iter().filter(|b| !is_empty(*b)).collect();
     }
     loop {
         let mut merged = false;
@@ -173,15 +186,20 @@ pub fn merge(mut v: Vec<Bx>, max: usize) -> Vec<Bx> {
 
 /// The instances that changed between `a` and `b`, as runs: those of one list matched in order to equal
 /// ones of the other are the same, so a run of changed marks (a drawing whose strokes changed in number)
-/// leaves what comes after it matched. Each unmatched run, in either list, is one box.
+/// leaves what comes after it matched. Each unmatched run, in either list, is one box; a run changed in
+/// place (as many in both) is a box for each of its instances, before and after, so marks that move all
+/// over the window (drifting motes) are each where they are.
 fn changed(a: &[Instance], b: &[Instance], pad: f32, out: &mut Vec<Bx>) {
     const K: usize = 4;
-    let run = |x: &[Instance], y: &[Instance]| x.iter().chain(y).fold(EMPTY, |r, i| union(r, i.bounds(pad)));
+    let run = |x: &[Instance], y: &[Instance], out: &mut Vec<Bx>| {
+        if x.len() == y.len() { out.extend(x.iter().zip(y).filter(|(p, q)| p != q).map(|(p, q)| union(p.bounds(pad), q.bounds(pad)))); }
+        else { out.push(x.iter().chain(y).fold(EMPTY, |r, i| union(r, i.bounds(pad)))); }
+    };
     let (mut lo, mut hi) = (0, 0);
     while lo < a.len() && lo < b.len() && a[lo] == b[lo] { lo += 1; }
     while hi < a.len() - lo && hi < b.len() - lo && a[a.len() - 1 - hi] == b[b.len() - 1 - hi] { hi += 1; }
     let (a, b) = (&a[lo..a.len() - hi], &b[lo..b.len() - hi]);
-    if a.is_empty() || b.is_empty() { if !a.is_empty() || !b.is_empty() { out.push(run(a, b)); } return; }
+    if a.is_empty() || b.is_empty() { if !a.is_empty() || !b.is_empty() { run(a, b, out); } return; }
     let key = |w: &[Instance]| { use std::hash::{Hash, Hasher}; let mut h = std::collections::hash_map::DefaultHasher::new(); bytemuck::cast_slice::<Instance, u8>(w).hash(&mut h); h.finish() };
     // Where each run of `K` starts in `b`, by its hash: the first place, then each next one (`more`), in order.
     let n = b.len().saturating_sub(K - 1);
@@ -199,10 +217,10 @@ fn changed(a: &[Instance], b: &[Instance], pad: f32, out: &mut Vec<Bx>) {
             if p != usize::MAX { next = Some((i2, p)); break; }
         }
         let Some((i2, j2)) = next else { break };
-        out.push(run(&a[i..i2], &b[j..j2]));
+        run(&a[i..i2], &b[j..j2], out);
         (i, j) = (i2, j2);
     }
-    if i < a.len() || j < b.len() { out.push(run(&a[i..], &b[j..])); }
+    if i < a.len() || j < b.len() { run(&a[i..], &b[j..], out); }
 }
 
 /// How far stage 2 reads around a pixel under material `m` (device px).
@@ -347,11 +365,13 @@ pub fn parts(prev: &Inputs, cur: &Inputs, scale: f32) -> Option<Parts> {
     }
     // Stage 2: what stage 1 changed, as far as the materials read around it, and the field on the ground.
     // Pictures' marks read their own cells (and the parallax its depth): only where a picture changed.
-    let st1: Vec<Bx> = merge(st1.into_iter().map(|x| meet(x, screen)).collect(), MAX_BOXES);
-    let pic_changed = b.iter().chain(a.iter()).any(|i| i.paint[3] == PICTURE && st1.iter().any(|x| !is_empty(meet(i.bounds(pad), *x))));
+    // Stage 2 grows what changed as it is; stage 1 draws it in a few boxes.
+    let changed1: Vec<Bx> = merge(st1.into_iter().map(|x| meet(x, screen)).collect(), MAX_SHADE_BOXES);
+    let st1: Vec<Bx> = merge(changed1.clone(), MAX_BOXES);
+    let pic_changed = b.iter().chain(a.iter()).any(|i| i.paint[3] == PICTURE && changed1.iter().any(|x| !is_empty(meet(i.bounds(pad), *x))));
     let rch = mats.iter().map(|m| reach(*m, look, s)).fold(0.0, f32::max)
         + if pic_changed { look.pics.iter().map(|p| 2.0 * p.pitch * s + p.depth * s).fold(0.0, f32::max) } else { 0.0 };
-    st2.extend(st1.iter().map(|x| grow(*x, rch)));
+    st2.extend(changed1.iter().map(|x| grow(*x, rch)));
     for f in &acting { st2.push(grow(*f, rch)); }
     // The lens acts on the pictures and 3D elements that let it (above) and on the dot ground.
     if mats.contains(&Material::Dottr) { st2.push(grow(lenses, rch)); }
@@ -386,7 +406,7 @@ pub fn parts(prev: &Inputs, cur: &Inputs, scale: f32) -> Option<Parts> {
         let has: std::collections::HashSet<Vec<u32>> = cur.annot.iter().map(key).collect();
         for i in pa.iter().filter(|i| !has.contains(&key(i))).chain(cur.annot.iter().filter(|i| !had.contains(&key(i)))) { st2.push(grow(rect(i.rect), 2.0)); }
     }
-    Some(Parts { stage1: st1, stage2: merge(st2.into_iter().map(|x| meet(x, screen)).collect(), MAX_BOXES), moved: mv.map(|(_, m)| m) })
+    Some(Parts { stage1: st1, stage2: merge(st2.into_iter().map(|x| meet(x, screen)).collect(), MAX_SHADE_BOXES), moved: mv.map(|(_, m)| m) })
 }
 
 /// A box as whole device pixels inside the frame (for a scissor), or `None` when it is empty.

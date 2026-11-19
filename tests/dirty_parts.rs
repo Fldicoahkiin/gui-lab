@@ -57,7 +57,7 @@ fn a_drawing_that_changes_its_strokes_in_number_dirties_only_itself_and_two_far_
     assert_eq!(p.stage1.len(), 2, "two boxes: {:?}", p.stage1);
     let total: f32 = p.stage1.iter().map(|b| area(*b)).sum();
     assert!(total < 0.25 * (W * H) as f32, "{total} px² of {}", W * H);
-    assert!(p.stage2.len() <= dirty::MAX_BOXES);
+    assert!(p.stage2.len() <= dirty::MAX_SHADE_BOXES);
 }
 
 #[test]
@@ -77,6 +77,51 @@ fn frames_drawn_in_the_boxes_are_the_frames_drawn_whole() {
             let b = whole.render(&mut v, &look);
             let diff = a.iter().zip(&b).filter(|(x, y)| x != y).count();
             assert_eq!(diff, 0, "{mat:?} frame {f} ({n:?}): {diff} bytes differ from the frame drawn whole");
+        }
+    }
+}
+
+/// Motes drifting all over a window-wide drawing, each a mark of its own (the home page's dust).
+#[derive(Clone, Copy)]
+struct M { t: f32, mat: Material }
+fn motes(s: &M) -> El<()> {
+    let (w, h) = (W as f32, H as f32);
+    let mut d = amenui::draw::Drawing::new(w, h);
+    for i in 0..16u32 {
+        let (hx, hy) = ((i.wrapping_mul(2654435761) % 1000) as f32 / 1000.0, ((i * 40503 + 17) % 1000) as f32 / 1000.0);
+        d.dot((hx * w + s.t * 9.0).rem_euclid(w), (hy * h - s.t * 4.0).rem_euclid(h), 1.4, Paint::TEXT);
+    }
+    col().key("page").child(canvas(d).key("motes").width(w))
+}
+fn drift(s: &mut M, t: f32) -> bool { s.t = t; true }
+fn open_motes(mat: Material) -> Ui<M, ()> {
+    let mut u = Ui::new(M { t: 1.0, mat }, motes, |_, _| {}, fonts(), W, H, 1.0).on_look(|s| Look { material: s.mat, ..Look::default() }).on_tick(drift);
+    u.tick(1.0);
+    u.settle();
+    u
+}
+
+#[test]
+fn motes_drifting_all_over_are_shaded_where_they_are_and_drawn_as_the_frame_drawn_whole() {
+    let (Ok(mut part), Ok(mut whole)) = (Offscreen::try_new(W, H), Offscreen::try_new(W, H)) else { eprintln!("no GPU adapter here: skipped"); return };
+    whole.r.partial = false;
+    for mat in [Material::Plain, Material::Dottr] {
+        let (mut u, mut v) = (open_motes(mat), open_motes(mat));
+        let look = u.look();
+        let _ = part.render(&mut u, &look);
+        let _ = whole.render(&mut v, &look);
+        for f in 1..5 {
+            let t = 1.0 + f as f32 / 60.0;
+            u.tick(t);
+            v.tick(t);
+            let a = part.render(&mut u, &look);
+            let b = whole.render(&mut v, &look);
+            let diff = a.iter().zip(&b).filter(|(x, y)| x != y).count();
+            assert_eq!(diff, 0, "{mat:?} frame {f}: {diff} bytes differ from the frame drawn whole");
+            // 16 motes, each shaded in a box round it as far as the material reads (dottr's ground reads
+            // farther): well under the window, which one box holding them all would be.
+            let share = part.r.cost.material as f64 / (W * H) as f64;
+            assert!(share < if mat == Material::Plain { 0.3 } else { 0.7 }, "{mat:?} frame {f}: the material shaded {:.0}% of the window", share * 100.0);
         }
     }
 }

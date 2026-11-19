@@ -15,6 +15,9 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
 - After 30 frames with one built-in global material and no override, the material pass (and its upsample) is a
   pipeline of its own for that material (the WGSL override constant `MAT`): `Renderer::specialise`,
   `Renderer::specialised`, `render::SPECIALISE_AFTER`.
+- Marks changed in place (drifting motes, a turning body's glyphs) are each their own box, not one box round them all;
+  many boxes are gathered by where they are, and the final frame is shaded in up to 32 boxes grown from what changed
+  (`dirty::MAX_SHADE_BOXES`; the G-buffer keeps 8).
 
 ## For Kern
 

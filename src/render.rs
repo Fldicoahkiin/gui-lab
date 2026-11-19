@@ -279,7 +279,7 @@ pub struct Renderer {
     sim_rows: u32,
     /// The boxes the frame being drawn is limited to.
     region: crate::dirty::Region,
-    /// The same as boxes (at most `dirty::MAX_BOXES` a stage), when not everything is drawn.
+    /// The same as boxes (at most `dirty::MAX_BOXES` and `MAX_SHADE_BOXES`), when not everything is drawn.
     parts: Option<crate::dirty::Parts>,
     /// Draw only what changed (DESIGN.md §1.19): the frame is kept here between draws and copied to the
     /// target; what the last frame was drawn from; zeroing a box of an image; the copy.
