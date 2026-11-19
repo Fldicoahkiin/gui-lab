@@ -8,6 +8,13 @@ crate and the `amenui` npm package (`web/`) always carry the same version, becau
 match the module that `web_app!` generates. The minimum Rust is the one CI builds with (`rust-version`
 in Cargo.toml); raising it is a breaking change before 1.0 only in the second number.
 
+## How selected text looks
+
+- `Look::select` (`style::Select { halo, alpha, ink }`, 3 px, 0.34, on by default): the selection halo is opaque, the
+  accent mixed into the ground as one colour (#5f2d18 on the dark theme), so halos that meet across glyphs and lines
+  show no box and no darker band; selected glyphs are drawn in the ink. The halo comes and goes in one frame.
+- `Look` has a new public field, `select`: code that builds one with every field named needs it.
+
 ## Number controls that keep their steps inside
 
 - `widgets::number`: never narrower than its steps and field; a width that leaves the label no room beside them puts

@@ -833,12 +833,16 @@ logical px, for the host to place its hidden input element and the input method'
 scrolling nodes outside it scroll by the caret's rect (a single-line field scrolls with `scroll_x` and its
 text leaf is `nowrap`; a multi-line field scrolls vertically).
 
-**How the selection is drawn** (rule 1): each selected glyph is drawn once more beneath itself with its
-outline moved out by `SELECT_HALO = 3` px (the same mechanism as `El::weight`, from the signed distance), in
-the accent at 0.34 opacity. The halos of neighbouring glyphs join into one shape that follows the glyphs'
-outlines, not a box. A glyph belongs to the selection if its center falls in one of the line boxes
-`Selection::geometry` gives (`Text::boxes`). The composing part has a 1.5 px underline. The selection is
-drawn only while the field has focus (like the caret).
+**How the selection is drawn** (rule 1, `Look::select`): each selected glyph is drawn once more beneath
+itself with its outline moved out by `Select::halo` px (3 by default; the same mechanism as `El::weight`,
+from the signed distance), hard-edged and opaque, in one colour: the accent mixed into the ground at
+`Select::alpha` (0.34; #5f2d18 on the dark theme). Because the halo is opaque, the halos of neighbouring
+glyphs and lines join into one shape that follows the glyphs' outlines, with no box and no darker band where
+two overlap. With `Select::ink` (on by default) the selected glyphs are drawn in the theme's ink whatever
+their paint, so dim text selected reads at 7 : 1 or more on the halo. The halo comes with the selection and
+goes with it, in the same frame, with no motion (it does not condense). A glyph belongs to the selection if
+its center falls in one of the line boxes `Selection::geometry` gives (`Text::boxes`). The composing part
+has a 1.5 px underline. The selection is drawn only while the field has focus (like the caret).
 
 **Read-only selection** (`El::selectable()`, inherited by the subtree): a press on selectable text (where
 nothing can be pressed) starts a selection; dragging finds the selectable text node under or nearest the
@@ -869,7 +873,9 @@ paste, undo and redo (â‰¥ 50 steps, a run of typing as one), composition ("n" â†
 nothing while composing; cancelling changes nothing; composing replaces the selection and the commit is one
 undo step), and how multi-line and single-line fields treat newlines. Through the runtime: on the website's
 input page a press in the middle of the text puts the caret there, a drag selects, a double click selects a
-word, the selection halo is exactly one per selected glyph, typing / Shift+arrows / copy / cut / paste /
+word, the selection halo is exactly one per selected glyph (`tests/select_look.rs`: across two lines it is one
+colour within 2/255 of #5f2d18, with no box and no darker band, the dim text in it at 7 : 1 or more, there in
+the first frame and gone in the frame after a press elsewhere), typing / Shift+arrows / copy / cut / paste /
 undo / select all, the composition shows in the field underlined, commit and cancel, the input method's rect
 is in the field, a long line scrolls sideways in the field with the caret inside (Home returns to 0), a
 multi-line field moves up and down by line and to the line end, and Enter inserts a newline; selecting three

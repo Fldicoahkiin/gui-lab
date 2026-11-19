@@ -652,7 +652,24 @@ pub struct Look {
     pub beat: crate::beat::Beat,
     /// Effects turned off (DESIGN.md §1.34): all on by default.
     pub off: Off,
+    /// How selected text looks (DESIGN.md §1.8.1).
+    pub select: Select,
 }
+/// How selected text looks (`Look::select`, DESIGN.md §1.8.1): each selected glyph drawn again under
+/// itself with its outline moved out `halo` px (logical), hard-edged and opaque, the accent at `alpha`
+/// over the ground as one colour, so neighbouring halos run together without a box or a darker band;
+/// with `ink`, the selected glyphs themselves are drawn in the theme's ink, whatever their paint. It
+/// comes with the selection and goes with it, with no motion.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Select {
+    /// How far the halo reaches past the glyph's outline, logical px (3).
+    pub halo: f32,
+    /// How much of the accent is in the halo's colour over the ground (0.34).
+    pub alpha: f32,
+    /// Selected glyphs are drawn in the ink (true).
+    pub ink: bool,
+}
+impl Default for Select { fn default() -> Self { Self { halo: 3.0, alpha: 0.34, ink: true } } }
 /// The effects the framework draws, each of which can be turned off without the application building
 /// its view again (DESIGN.md §1.34). An effect that is off goes straight to its end state: nothing is
 /// lost but the motion, it asks for no frames and draws no pass of its own. A switch takes effect on
@@ -756,7 +773,7 @@ impl Look {
 pub const SETTINGS: [&str; 19] = ["loose_scale", "legible_cap", "loose_max", "press_ms", "fx.pitch", "fx.jitter", "fx.glitch", "fx.wave_speed", "fx.wave_life",
     "fx.wave_width", "fx.wave_tail", "fx.push", "fx.lens", "fx.enter", "beat.bpm", "beat.steps", "beat.swing", "post.invert", "post.binary"];
 impl Default for Look {
-    fn default() -> Self { Self { fx: Fx::default(), theme: DARK, material: Material::Dottr, pics: [Markr::default(); 8], params: MaterialParams::all(), gaze: Gaze::default(), loose_scale: 1.0, quality: 1.0, overlay: 0, overlay_at: Corner::BottomRight, overlay_inset: [12.0, 12.0], overlay_keep: false, legible_cap: LEGIBLE_CAP, loose_max: 1.0, recompose: crate::morph::Recompose::default(), particles: crate::morph::Particles::default(), press_ms: 350.0, roles: [crate::el::Response::Nudge, crate::el::Response::Loosen], transition: crate::preset::Transition { duration_ms: 0.0, steps: [crate::preset::Step { kind: crate::preset::StepKind::None, from: 0.0, to: 0.0, a: 0.0, b: 0.0, c: 0.0, d: 0.0, e: 0.0 }; 4] }, scroll: Scroll::default(), post: crate::post::Post::default(), marks: Marks::default(), map: MapFx::default(), beat: crate::beat::Beat { bpm: 0.0, steps: 4, swing: 0.0 }, off: Off::default() } }
+    fn default() -> Self { Self { fx: Fx::default(), theme: DARK, material: Material::Dottr, pics: [Markr::default(); 8], params: MaterialParams::all(), gaze: Gaze::default(), loose_scale: 1.0, quality: 1.0, overlay: 0, overlay_at: Corner::BottomRight, overlay_inset: [12.0, 12.0], overlay_keep: false, legible_cap: LEGIBLE_CAP, loose_max: 1.0, recompose: crate::morph::Recompose::default(), particles: crate::morph::Particles::default(), press_ms: 350.0, roles: [crate::el::Response::Nudge, crate::el::Response::Loosen], transition: crate::preset::Transition { duration_ms: 0.0, steps: [crate::preset::Step { kind: crate::preset::StepKind::None, from: 0.0, to: 0.0, a: 0.0, b: 0.0, c: 0.0, d: 0.0, e: 0.0 }; 4] }, scroll: Scroll::default(), post: crate::post::Post::default(), marks: Marks::default(), map: MapFx::default(), beat: crate::beat::Beat { bpm: 0.0, steps: 4, swing: 0.0 }, off: Off::default(), select: Select::default() } }
 }
 /// A corner of the window (`Look::overlay_at`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

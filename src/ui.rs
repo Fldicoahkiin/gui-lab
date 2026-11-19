@@ -953,7 +953,7 @@ pub const BLINK: f32 = 0.53;
 pub const RAMP: f32 = 0.12;
 /// How tall a skeleton's bar is, as a fraction of its line's height.
 pub const SKELETON_BAR: f32 = 0.56;
-/// How far a selected glyph's halo reaches past its outline, logical px.
+/// How far a selected glyph's halo reaches past its outline by default, logical px (`Look::select`).
 pub const SELECT_HALO: f32 = 3.0;
 /// How far from a pulled edge (logical px) things loosen.
 const PULL_REACH: f32 = 160.0;
@@ -3451,6 +3451,7 @@ impl<S, M: Clone> Ui<S, M> {
         self.perf.pending.scene += (crate::perf::now_ms() - t0) as f32;
     }
     fn paint_inner(&mut self) {
+        let sel = self.look().select;
         self.scene.clear();
         self.glyphs.clear();
         self.owners.clear();
@@ -3721,18 +3722,22 @@ impl<S, M: Clone> Ui<S, M> {
                     // A selection (the field's, while it has focus, or the read-only one) is drawn by
                     // nearness: each selected glyph again, under itself, with its outline moved out, so
                     // neighbouring glyphs' halos run together and follow the letters, not a box.
+                    // The halo is opaque, the accent mixed into the ground (`Look::select`), so halos that
+                    // overlap make no darker band; it is there at once (born long ago) and goes at once.
                     let range = select.filter(|_| focused).or_else(|| ro.get(&i).copied());
+                    let mut chosen = vec![false; glyphs.len()];
                     if let Some((a, b)) = range {
                         let boxes = self.text.boxes(para, n.origin(), a, b);
                         for (k, (g, gid)) in glyphs.iter().enumerate() {
                             let (cx, cy) = ((g.rect[0] + g.rect[2] * 0.5) / s, (g.rect[1] + g.rect[3] * 0.5) / s);
                             if !boxes.iter().any(|r| r.inset(-1.0, -1.0, -1.0, -1.0).contains(cx, cy)) { continue; }
+                            chosen[k] = true;
                             let mut halo = *g;
-                            halo.extra[0] = wpx + SELECT_HALO * s;
-                            halo.paint = [0.0, 1.0, 0.34, halo.paint[3]];
+                            halo.extra[0] = wpx + sel.halo * s;
+                            halo.paint = [0.0, sel.alpha, 1.0, halo.paint[3]];
                             halo.look[1] = 0.0;
                             halo.resp = IGNORE;
-                            put(&mut sink, halo, ident(&n.key, (k as u32) | 0x4000_0000, *gid), None);
+                            if put(&mut sink, halo, ident(&n.key, (k as u32) | 0x4000_0000, *gid), None) && let Some(last) = sink.scene.instances.last_mut() { last.extra[3] = -1e4; }
                         }
                     }
                     // Text that recomposes remembers its glyphs, to see what changes in the next view.
@@ -3742,9 +3747,12 @@ impl<S, M: Clone> Ui<S, M> {
                         jobs.push(RecJob { node: i, rec: TextRec { s: para.s.to_owned(), face: para.face, size: para.size, line: para.line, width: para.width, print: para.print, track: para.track, origin: n.origin(), glyphs: ids, changed: f32::NEG_INFINITY } });
                     }
                     let mut drawn = vec![false; laid.len()];
-                    for g in &posed {
+                    for (k, g) in posed.iter().enumerate() {
                         let at = sink.scene.instances.len();
-                        if put(&mut sink, g.inst, ident(&n.key, g.seq as u32, g.glyph), Some(g.glyph)) {
+                        // Selected, in the ink (`Select::ink`).
+                        let mut inst = g.inst;
+                        if sel.ink && chosen[k] { inst.paint = [1.0, 0.0, 1.0, inst.paint[3]]; inst.look[1] = 0.0; }
+                        if put(&mut sink, inst, ident(&n.key, g.seq as u32, g.glyph), Some(g.glyph)) {
                             // Loosened by the material as its face changes.
                             if let Some(&l) = swept.get(g.seq) && let Some(last) = sink.scene.instances.last_mut() { last.extra[2] = last.extra[2].max(l); }
                             drawn[g.seq] = true;
