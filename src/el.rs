@@ -718,10 +718,12 @@ pub struct Props {
     pub pen: f32,
     /// It is a view scale's container (`El::view_scale`): the scale.
     pub view_scale: Option<f32>,
+    /// It is a stage (`El::stage`): when it is slow to draw, it holds its last image while input comes.
+    pub stage: bool,
 }
 impl Props {
     #[inline(never)]
-    fn new(style: Style, content: Content) -> Self { Props { key: String::new(), style, content, fill: None, border: None, radius: 0.0, focusable: false, tab_order: 0, skip_to: None, focus_shown: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, shift: (0.0, 0.0), shed: None, flow_field: None, stirr: None, trace: None, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, clips: false, calm: false, map_life: None, multiline: false, selectable: false, cursor: None, ripple: Ripple::default(), guide: None, skeleton: false, rtl: None, decode: None, form: None, turn: 0.0, reveal_by: Reveal::Glyph, ongoing: false, pass: false, opacity: 1.0, commit_scope: false, preview: false, fit: None, clamp: 0, plate: None, own_size: None, grain: false, show_clear: None, pen: 1.0, view_scale: None } }
+    fn new(style: Style, content: Content) -> Self { Props { key: String::new(), style, content, fill: None, border: None, radius: 0.0, focusable: false, tab_order: 0, skip_to: None, focus_shown: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, shift: (0.0, 0.0), shed: None, flow_field: None, stirr: None, trace: None, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, clips: false, calm: false, map_life: None, multiline: false, selectable: false, cursor: None, ripple: Ripple::default(), guide: None, skeleton: false, rtl: None, decode: None, form: None, turn: 0.0, reveal_by: Reveal::Glyph, ongoing: false, pass: false, opacity: 1.0, commit_scope: false, preview: false, fit: None, clamp: 0, plate: None, own_size: None, grain: false, show_clear: None, pen: 1.0, view_scale: None, stage: false } }
 }
 impl<M> std::ops::Deref for El<M> { type Target = Props; fn deref(&self) -> &Props { &self.props } }
 impl<M> std::ops::DerefMut for El<M> { fn deref_mut(&mut self) -> &mut Props { &mut self.props } }
@@ -1254,6 +1256,14 @@ impl<M> El<M> {
     /// takes no pointer, keeps its place in the layout and is still read by a screen reader. At most 64
     /// labels in one view (`ViewProblem::ShowClearMany`).
     pub fn show_clear(mut self, inset: f32, rank: u8) -> Self { self.show_clear = Some((inset.max(0.0), rank)); self }
+    /// The stage (DESIGN.md §1.35): the live piece a page is about, drawn apart from the controls around
+    /// it. While it draws within the frame it is drawn every frame like anything else. When its draws take
+    /// more than 0.6 of a frame (over the last 8), it is slow: on a frame that answers input it holds the
+    /// image it last drew, so the controls answer the hand in that frame, and it draws again on the first
+    /// frame without new input, the first after a release, and during a long drag at least every
+    /// `max(100 ms, 6 draws)` (at most 500 ms), replacing its image whole. It is no longer slow after 1 s
+    /// of draws under 0.4 of a frame. Nothing marks a stage that holds. Not for controls.
+    pub fn stage(mut self) -> Self { self.stage = true; self }
     /// A view of a drawing at scale `s` (a map that grows from a thumbnail to a window): everything this
     /// container holds is scaled as by `El::zoom` (positions, lengths, fills, corner radii, a drawing's
     /// dots) except the pen: the widths of lines (a drawing's strokes, a trace), of borders, and a trace's

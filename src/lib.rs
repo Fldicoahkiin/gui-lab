@@ -37,6 +37,7 @@ pub mod recipes;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod sample;
 pub mod sources;
+pub mod stage;
 /// AGENTS.md, so `cargo test` compiles every example in it.
 #[cfg(doctest)]
 #[doc = include_str!("../AGENTS.md")]

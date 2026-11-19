@@ -8,6 +8,15 @@ crate and the `amenui` npm package (`web/`) always carry the same version, becau
 match the module that `web_app!` generates. The minimum Rust is the one CI builds with (`rust-version`
 in Cargo.toml); raising it is a breaking change before 1.0 only in the second number.
 
+## A stage that holds while the hand works
+
+- `El::stage()`: the live piece of a page. When its draws take more than 0.6 of a frame it holds its last image on
+  frames that answer input, so the controls beside it answer in that frame, and draws again on the first frame
+  without input, after a release, and during a long drag every `max(100 ms, 6 draws)` up to 500 ms (DESIGN.md
+  §1.35). A stage that draws in time is drawn every frame as before.
+- `Ui::slow_stage(ms)` and `Ui::stage_state(key)`, for checks; `stage` holds the numbers.
+- `Props` has a new public field, `stage`.
+
 ## Fixes from the website
 
 - Pixel type set at its face's native size because a fitted box zoomed it under that size (the Lab's formula on a

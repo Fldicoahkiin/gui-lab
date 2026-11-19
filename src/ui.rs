@@ -108,6 +108,8 @@ pub struct Node<M> {
     show_clear: Option<(f32, u8)>,
     /// A view scale's container (`El::view_scale`).
     view_scale: Option<f32>,
+    /// A stage (`El::stage`).
+    stage: bool,
     /// Its opacity and its whole opacity as the view gave them, before `El::show_clear`.
     op0: (f32, f32),
     /// At its own size and in its parent's flow (not placed absolutely), so it takes room there.
@@ -294,7 +296,7 @@ const MARKS_OPEN: f32 = 3.0;
 /// Which instance of a flow subtree an instance is: glyphs and other instances are counted apart, and
 /// a glyph only matches the same glyph.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct Tag { flow: Rc<str>, glyph: bool, n: u32, gid: u32 }
+pub(crate) struct Tag { flow: Rc<str>, glyph: bool, n: u32, gid: u32 }
 
 /// A shared part on its way from its old rect (device px) to the one layout gives it now.
 struct FlowRec {
@@ -548,6 +550,12 @@ pub struct Ui<S, M> {
     commands: Option<fn(&mut S) -> Vec<Cmd>>,
     /// Instances of hidden nodes (laid out, not drawn), for sampling a morph's target.
     unseen: Vec<(usize, Instance)>,
+    /// The stages (`El::stage`) by key: their last images and how they draw.
+    stages: HashMap<String, crate::stage::Stage>,
+    /// Input came since the last frame (`tick`), and a press ended since then (for the stages).
+    stage_input: (bool, bool),
+    /// Added to every stage's draw, ms (`Ui::slow_stage`).
+    stage_add_ms: f32,
     /// The page instances as painted, before morph ramps and flows are applied; and their flow tags.
     base: Vec<Instance>,
     tags: Vec<Option<Tag>>,
@@ -1051,7 +1059,7 @@ impl<S, M: Clone> Ui<S, M> {
             state, view, update, text: Text::new(faces), size: (0.0, 0.0), scale, clock: 0.0, wall: 0.0, bclock: crate::beat::Clock::default(), sent: vec![], sets: vec![], nodes: vec![], scene: Scene::default(),
             owners: vec![], page_len: 0, field: Field::default(), scroll: HashMap::new(), births: HashMap::new(), ramp: None, text_births: HashMap::new(),
             hover: None, focus: None, after_focus: None, fit_short: vec![], grain_at: None, clears: HashMap::new(), clearing: false, clear_many: vec![], flow_own: vec![], fit_k: HashMap::new(), fit_last: None, pressed: None, capture: None, modal_at: None, modal_key: None, return_focus: None, split: None, splits: 0,
-            keyboard: false, marks: Marks::default(), sized: None, commands: None, unseen: vec![], base: vec![], tags: vec![], roles: vec![],
+            keyboard: false, marks: Marks::default(), sized: None, commands: None, unseen: vec![], stages: HashMap::new(), stage_input: (false, false), stage_add_ms: 0.0, base: vec![], tags: vec![], roles: vec![],
             run: None, painted_phase: 0, flows: HashMap::new(), ghosts: vec![], grows: vec![], ground_seen: None, ground_hold: None, body_len: 0, animating: false, lifted: HashMap::new(),
             gaze_of: None, gaze_seen: HashMap::new(), annots: vec![], readout: gaze::Readout::default(), hovered: None, pointer_of: None, scripted: false, ticked: None, warm: None, warmed: None, owed: false, ambient: 60.0, input_t: -1e9, frame_t: -1e9, tick_gap: 1.0 / 60.0, unused_key: None, shortcut: None, scrolled_of: None, released: None, input: None,
             dirty: true, look_of: None, locale_of: None, timing: Timing::default(), wake_of: None, latest_birth: f32::NEG_INFINITY, gaze_until: f32::NEG_INFINITY,
@@ -1414,7 +1422,7 @@ impl<S, M: Clone> Ui<S, M> {
     pub fn needs_frame(&self, now: f32) -> bool {
         if self.paced_until(now).is_some() { return false; }
         let b = self.beat_of(now);
-        self.dirty || self.clearing || self.stale_layout || self.stale_paint || self.owed || self.prep.pending() || self.held(now) || self.moving_at(b) || self.wake_at(b).is_some_and(|w| w <= b) || (self.sweeping && !self.arriving.is_empty())
+        self.dirty || self.clearing || self.stale_layout || self.stale_paint || self.owed || self.stage_behind() || self.prep.pending() || self.held(now) || self.moving_at(b) || self.wake_at(b).is_some_and(|w| w <= b) || (self.sweeping && !self.arriving.is_empty())
             || (self.plates_ageing() && self.clock - self.plate_frame >= PLATE_FRAME - 1e-4)
     }
     /// A `Cmd::Hold` is going on: frames go on (the same) until it ends.
@@ -1425,7 +1433,7 @@ impl<S, M: Clone> Ui<S, M> {
         let b = self.beat_of(now);
         let wanted = self.dirty || self.clearing || self.owed || self.prep.pending() || self.held(now) || self.moving_at(b) || (self.sweeping && !self.arriving.is_empty());
         if wanted && let Some(t) = self.paced_until(now) { return Some(t); }
-        if self.dirty || self.clearing || self.owed || self.prep.pending() || self.held(now) || self.moving_at(b) || (self.sweeping && !self.arriving.is_empty()) { return Some(now); }
+        if self.dirty || self.clearing || self.owed || self.stage_behind() || self.prep.pending() || self.held(now) || self.moving_at(b) || (self.sweeping && !self.arriving.is_empty()) { return Some(now); }
         if self.plates_ageing() { return Some((self.plate_frame + PLATE_FRAME).max(now)); }
         // A wake on the beat clock is that much later on the runtime's.
         self.wake_at(b).map(|w| (w + now - b).max(now))
@@ -1811,7 +1819,9 @@ impl<S, M: Clone> Ui<S, M> {
         // The readout: switched on or off, or a second past the last frame (it then says idle, once).
         let hud = self.timing.overlay != self.overlay || (self.overlay > 0 && !self.hud_idle && t >= self.overlay_at + 1.05);
         let sweep = !self.arriving.is_empty() && self.sweeping;
-        if repaint || scrolled || hud || sweep || self.clearing { self.paint(); } else { self.finish(); }
+        if repaint || scrolled || hud || sweep || self.clearing || self.stage_behind() { self.paint(); } else { self.finish(); }
+        // The frame is drawn: input from here on is the next frame's (for the stages).
+        self.stage_input = (false, false);
         self.track_motion(dt);
         if self.marks_moving { self.dirty = true; }
         self.moving = self.field_moving_at(t);
@@ -1893,7 +1903,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// finger's speed is measured from these.
     pub fn event_time(&mut self, t: f32) { self.event_t = Some(self.beat_of(t)); }
     /// A pointer moved (a mouse or pen also hovers).
-    pub fn pointer_moved(&mut self, id: u64, kind: PointerKind, x: f32, y: f32) { self.deferred(|ui| ui.pointer_moved_now(id, kind, x, y)) }
+    pub fn pointer_moved(&mut self, id: u64, kind: PointerKind, x: f32, y: f32) { self.stage_input.0 = true; self.deferred(|ui| ui.pointer_moved_now(id, kind, x, y)) }
     fn pointer_moved_now(&mut self, id: u64, kind: PointerKind, x: f32, y: f32) {
         let now = self.event_t.take().unwrap_or(self.clock);
         self.ev = now;
@@ -2018,7 +2028,7 @@ impl<S, M: Clone> Ui<S, M> {
     }
 
     /// Logical px.
-    pub fn pointer_move(&mut self, x: f32, y: f32) { self.ev = self.event_t.take().unwrap_or(self.clock); self.deferred(|ui| ui.pointer_move_now(x, y)) }
+    pub fn pointer_move(&mut self, x: f32, y: f32) { self.stage_input.0 = true; self.ev = self.event_t.take().unwrap_or(self.clock); self.deferred(|ui| ui.pointer_move_now(x, y)) }
     fn pointer_move_now(&mut self, x: f32, y: f32) {
         if !self.scripted { self.input_t = self.wall; }
         self.dirty = true;
@@ -2135,6 +2145,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// A press with Shift held or not (Shift extends a text selection).
     pub fn press_with(&mut self, x: f32, y: f32, shift: bool) {
         self.settle();
+        self.stage_input.0 = true;
         // A press without a release before it (a lost pointer-up) ends the old capture.
         self.capture = None;
         self.text_capture = None;
@@ -2205,6 +2216,7 @@ impl<S, M: Clone> Ui<S, M> {
     pub fn release(&mut self, x: f32, y: f32) {
         if !self.scripted { self.input_t = self.wall; }
         self.settle();
+        self.stage_input = (true, true);
         self.dirty = true;
         if let Some(k) = self.text_capture.take() && self.field_at().is_some_and(|f| self.nodes[f].key == k)
             && let Some(at) = self.field_at().and_then(|f| self.leaf_of(f)).and_then(|l| self.text_hit(l, x, y)) {
@@ -2224,7 +2236,7 @@ impl<S, M: Clone> Ui<S, M> {
     pub fn wheel(&mut self, x: f32, y: f32, dy: f32) { self.wheel_xy(x, y, 0.0, dy); }
     /// A wheel with both axes. A horizontal scroll node takes `dx`, or `dy` when there is no `dx`
     /// (most wheels only turn one way).
-    pub fn wheel_xy(&mut self, x: f32, y: f32, dx: f32, dy: f32) { self.deferred(|ui| ui.wheel_xy_now(x, y, dx, dy)) }
+    pub fn wheel_xy(&mut self, x: f32, y: f32, dx: f32, dy: f32) { self.stage_input.0 = true; self.deferred(|ui| ui.wheel_xy_now(x, y, dx, dy)) }
     fn wheel_xy_now(&mut self, x: f32, y: f32, dx: f32, dy: f32) {
         self.dirty = true;
         self.heard();
@@ -2248,6 +2260,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// Cmd+Z…). Returns whether anything used it.
     pub fn key_mods(&mut self, k: Key, mods: Mods) -> bool {
         self.settle();
+        self.stage_input.0 = true;
         let shift = mods.shift;
         self.dirty = true;
         self.heard();
@@ -2434,6 +2447,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// Text typed (or committed by an input method, or dropped in), for the focused field.
     pub fn text_input(&mut self, s: &str) -> bool {
         self.settle();
+        self.stage_input.0 = true;
         self.dirty = true;
         self.heard();
         self.keyboard = true;
@@ -3541,7 +3555,46 @@ impl<S, M: Clone> Ui<S, M> {
         let mut group: Option<(usize, u32, f32)> = None;
         let plates = self.plate_plan();
         let mut plate: Option<(usize, u32, u8)> = None;
+        // The stages (`El::stage`): one that holds is its last image, and its subtree is not painted; the
+        // one being drawn (its root, its first instance, when it began, ms).
+        let (input, released) = self.stage_input;
+        let mut stage_skip: Option<usize> = None;
+        let mut stage_open: Option<(usize, usize, f64)> = None;
+        let mut stage_seen: Vec<String> = vec![];
         for i in 0..self.nodes.len() {
+            if let Some(root) = stage_skip { if within(&self.nodes, i, root) { continue; } stage_skip = None; }
+            if let Some((root, start, t0)) = stage_open && !within(&self.nodes, i, root) {
+                self.stage_close(root, start, t0, &text_births, &seen_recs);
+                stage_open = None;
+            }
+            if stage_open.is_none() && self.nodes[i].stage {
+                let key = self.nodes[i].key.clone();
+                let size = (i + 1..self.nodes.len()).take_while(|&j| within(&self.nodes, j, i)).count() + 1;
+                let (rect, clip) = (self.nodes[i].rect, self.nodes[i].clip);
+                stage_seen.push(key.clone());
+                let st = self.stages.entry(key).or_default();
+                if st.draws_now(rect, clip, size, now, input, released) {
+                    let t0 = crate::perf::now_ms();
+                    // For checks: a stage made slower than it is (`Ui::slow_stage`).
+                    while crate::perf::now_ms() - t0 < self.stage_add_ms as f64 {}
+                    stage_open = Some((i, self.scene.instances.len(), t0));
+                } else {
+                    st.behind = true;
+                    let base = self.scene.instances.len() as u32;
+                    for (k, inst) in st.snap.iter().enumerate() {
+                        let (rel, id) = st.owners[k];
+                        self.scene.push(*inst);
+                        self.owners.push((i + rel, id));
+                        self.tags.push(st.tags[k].clone());
+                        if let Some(&b) = self.births.get(&id) { births.insert(id, b); }
+                    }
+                    for g in &st.groups { self.scene.groups.push(crate::scene::Group { start: g.start + base, end: g.end + base, opacity: g.opacity }); }
+                    for &(h, b) in &st.texts { text_births.insert(h, b); }
+                    for k in &st.recs { seen_recs.insert(k.clone()); }
+                    stage_skip = Some(i);
+                    continue;
+                }
+            }
             // A plate's subtree (`El::plate`): its instances, kept by the renderer.
             if let Some((root, start, slot)) = plate && !within(&self.nodes, i, root) {
                 self.plate_span(slot, start);
@@ -3950,6 +4003,15 @@ impl<S, M: Clone> Ui<S, M> {
         }
         if let Some((_, start, op)) = group && (self.scene.instances.len() as u32) > start { self.scene.groups.push(crate::scene::Group { start, end: self.scene.instances.len() as u32, opacity: op }); }
         if let Some((_, start, slot)) = plate { self.plate_span(slot, start); }
+        if let Some((root, start, t0)) = stage_open { self.stage_close(root, start, t0, &text_births, &seen_recs); }
+        // A drawn stage keeps its see-through groups with its image; a stage no longer in the view is gone.
+        for st in self.stages.values_mut() {
+            let (a, b) = st.span;
+            if st.behind || b <= a { continue; }
+            st.groups = self.scene.groups.iter().filter(|g| (g.start as usize) >= a && (g.end as usize) <= b).map(|g| crate::scene::Group { start: g.start - a as u32, end: g.end - a as u32, opacity: g.opacity }).collect();
+            st.span = (0, 0);
+        }
+        self.stages.retain(|k, _| stage_seen.contains(k));
         if !self.plate_clear.is_empty() {
             // Serials are unique across every `Ui` so a renderer shared by two never skips one.
             static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -3989,6 +4051,37 @@ impl<S, M: Clone> Ui<S, M> {
         self.decode_pass();
         self.finish();
     }
+    /// A stage drawn in this paint, from `start` (its first instance) to here: its image, kept for
+    /// the paints it holds through, and how long it took.
+    fn stage_close(&mut self, root: usize, start: usize, t0: f64, text_births: &HashMap<u64, f32>, recs: &HashSet<String>) {
+        let ms = (crate::perf::now_ms() - t0) as f32;
+        let frame_ms = if self.tick_gap > 0.0 { self.tick_gap * 1000.0 } else { 1000.0 / 60.0 };
+        let end = self.scene.instances.len();
+        let size = (root + 1..self.nodes.len()).take_while(|&j| within(&self.nodes, j, root)).count() + 1;
+        let keys: Vec<(u64, &str)> = (root..root + size).map(|j| {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::hash::DefaultHasher::new();
+            self.nodes[j].key.hash(&mut h);
+            (h.finish(), self.nodes[j].key.as_str())
+        }).collect();
+        let now = self.clock;
+        let n = &self.nodes[root];
+        let (rect, clip) = (n.rect, n.clip);
+        let Some(st) = self.stages.get_mut(&n.key) else { return };
+        st.snap = self.scene.instances[start..end].to_vec();
+        st.owners = self.owners[start..end].iter().map(|&(j, id)| (j - root, id)).collect();
+        st.tags = self.tags[start..end].to_vec();
+        st.texts = keys.iter().filter_map(|(h, _)| text_births.get(h).map(|b| (*h, *b))).collect();
+        st.recs = keys.iter().filter(|(_, k)| recs.contains(*k)).map(|(_, k)| (*k).to_owned()).collect();
+        (st.rect, st.clip, st.nodes, st.span) = (rect, clip, size, (start, end));
+        st.drew(ms, now, frame_ms);
+    }
+    /// For checks: every stage's draw takes `ms` longer (`El::stage`; Y.5's slow piece).
+    pub fn slow_stage(&mut self, ms: f32) { self.stage_add_ms = ms.max(0.0); }
+    /// Whether the stage under `key` is slow, and how many times it has drawn (`El::stage`).
+    pub fn stage_state(&self, key: &str) -> Option<(bool, usize)> { self.stages.get(key).map(|s| (s.slow, s.count)) }
+    /// A stage held through a paint: it draws again when it may.
+    fn stage_behind(&self) -> bool { self.stages.values().any(|s| s.behind) }
     /// What text to read and controls hold (DESIGN.md §1.15): each of their instances that has some ink
     /// of something else (not legible) drawn before it within `r1` of it holds the looseness there to the
     /// legibility cap. `r0 = max(3, size / 4)` and `r1 = r0 + max(6, size / 2)` logical px, by the type
@@ -6661,7 +6754,7 @@ fn measure_key(c: &Content) -> u64 {
 /// A virtual list's rows are built here, for what its viewport shows.
 #[allow(clippy::too_many_arguments)]
 fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], off: (bool, bool), flow: Option<(Rc<str>, usize)>, inh: Inherit, vx: &mut VirtCtx, built: &mut Built, nodes: &mut Vec<Node<M>>) -> usize {
-    let El { props: crate::el::Props { key, mut style, mut content, fill, border, radius, mut focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, mut commit, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, map_life, multiline, selectable, cursor, ripple, guide, skeleton, rtl, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview, fit, clamp, plate, own_size, grain, show_clear, pen, view_scale }, mut on_press, mut on_key, mut on_drag, mut on_blur, modal, mut on_text, virt, access, mut on_pick, mut on_wheel, mut on_move, on_visible, on_outline, mut children } = el;
+    let El { props: crate::el::Props { key, mut style, mut content, fill, border, radius, mut focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, mut commit, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, map_life, multiline, selectable, cursor, ripple, guide, skeleton, rtl, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview, fit, clamp, plate, own_size, grain, show_clear, pen, view_scale, stage }, mut on_press, mut on_key, mut on_drag, mut on_blur, modal, mut on_text, virt, access, mut on_pick, mut on_wheel, mut on_move, on_visible, on_outline, mut children } = el;
     // A view scale scales what it holds, not its pen (`El::view_scale`).
     if let Some(s) = view_scale { children = children.into_iter().map(|c| c.zoom_by(s, true)).collect(); }
     let mut inh = inh;
@@ -6736,7 +6829,7 @@ fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], of
         content, fill, border, radius, on_press, on_key, on_drag, on_blur, loose, wipe, bar, reveal, commit, modal, hidden, shift, shed, flow_field, stirr, trace, flow: flow.clone(),
         mat: inh.code(), loosen: inh.loosen, annotate, scope: gaze_scope, anchor, clips, calm, map_life, on_text, multiline, selectable: inh.select, cursor,
         virt: virt_info, access, respond, legible, ripple: inh.scope.clone(), ripple_scope: ripple.container || commit_scope, recompose, recompose_always: is_text && ripple.recompose == Some(true), unframed: ripple.unframed, keyed,
-        on_pick, on_wheel, on_move, guide, on_visible, on_outline, decode, skeleton: inh.skeleton, form, turn, xf: None, reveal_by, ongoing: ongoing || parent.is_some_and(|p| nodes[p].ongoing), pass, opacity, opacity_all: opacity * parent.map_or(1.0, |p| nodes[p].opacity_all), commit_scope, fit, clamp, shown: None, plate, own_size, grain, show_clear, view_scale, op0: (0.0, 0.0), pen, own_in_flow: own_size.is_some() && style.position != taffy::Position::Absolute, local: taffy::Layout::new(), exact: (0.0, 0.0), tid: placeholder,
+        on_pick, on_wheel, on_move, guide, on_visible, on_outline, decode, skeleton: inh.skeleton, form, turn, xf: None, reveal_by, ongoing: ongoing || parent.is_some_and(|p| nodes[p].ongoing), pass, opacity, opacity_all: opacity * parent.map_or(1.0, |p| nodes[p].opacity_all), commit_scope, fit, clamp, shown: None, plate, own_size, grain, show_clear, view_scale, stage, op0: (0.0, 0.0), pen, own_in_flow: own_size.is_some() && style.position != taffy::Position::Absolute, local: taffy::Layout::new(), exact: (0.0, 0.0), tid: placeholder,
     });
     { let n = nodes.last_mut().expect("pushed"); n.op0 = (n.opacity, n.opacity_all); }
     crate::el::snap_style(&mut style);

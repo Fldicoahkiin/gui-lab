@@ -2959,6 +2959,35 @@ the effect settles on, and the page asks for no frames in the 2 s after; a flow 
 everything is on by default; with `ground` off the empty ground is the theme's ground under a front and the pointer,
 and no frames are asked for once the front is over).
 
+### 1.35 The stage
+
+`El::stage()` marks the live piece a page is about (a Lab cell's picture, a demo's canvas), so that controls beside
+it answer the hand even when the piece is slow to draw. A stage that draws within the frame is drawn every frame
+like anything else: the thumb, the value and the piece all show a change in the same frame. The runtime times each
+draw of a stage's subtree; when its draws average more than 0.6 of a frame (the frame being the time between
+ticks) over the last 8, the stage is **slow**, and it is no longer slow once its draws have stayed under 0.4 of a
+frame for 1 s.
+
+A slow stage holds the image it last drew on a frame that answers input (a pointer move, a press, a key, text, the
+wheel): its subtree is not painted, and the instances it drew last are drawn in its place, so the renderer has
+nothing new to draw there and the controls are drawn in the frame. It draws again on the first frame without new
+input, on the first frame after a release, and during a long stream of input at least every
+`max(100 ms, 6 × its average draw)`, at most 500 ms (`stage::HOLD_MIN_S`, `HOLD_DRAWS`, `HOLD_MAX_S`). A draw
+replaces the image whole, at once (a cut), and nothing marks a stage that holds. A stage whose box, clip or
+number of elements changed draws whatever the input. When a stage's own device scale steps down under load
+(the governor, which comes with the stage's own render target), that acts first; a stage is held only when the
+lowest scale is still slow. Not for controls: what is inside a stage that holds does not change while it
+holds.
+
+`Ui::slow_stage(ms)` adds `ms` to every stage's draw, for checks; `Ui::stage_state(key)` says whether a stage is
+slow and how many times it has drawn.
+
+Acceptance: `tests/stage.rs` (with 40 ms added to a stage's draw, a 2 s drag of a slider beside it at 60 Hz moves
+the knob and changes the value in every one of the 120 frames, every frame that does not draw the stage takes
+under 16.7 ms, the stage draws at most once per hold during the drag (the count is printed) and on the first
+frame after the release; a stage that draws in time draws every frame of a drag; a held stage asks for a frame and
+draws on the first frame without input).
+
 ## 2. Parameters must be exact
 
 Sliders are not the main means. The number control (`number`):
@@ -3434,6 +3463,7 @@ language marking names the current language); `labsheet <dir> body` gives `body.
 | Text on a form with depth and facing, hits where things are drawn, words shown whole, the warm-up and the application's own preparation, the audit and the measured ink box (§1.23, §1.26, §1.31) | Done: `cargo test` (with `tests/form.rs`, `tests/pointer.rs`, `tests/warmup.rs`, `tests/audit.rs` and the unit tests of `form.rs`, `hit.rs`, `mesh.rs`), no `clippy` warnings (native and web), rustdoc without warnings; `render --page recipe-form --audit --strict` exits 0, and the audit of every recipe in every material, dark and light, has no P0 or P1 |
 | The legible text under effects, tails with a clear way out, runs of frames at a fixed rate, the materials past half loose, the Crack transition and the beat (§1.6.2, §1.17, §1.30, §1.32, §4.1) | Done: `cargo test` (with `tests/wrap.rs`, `tests/strand.rs`, `tests/frames.rs`, `tests/sample.rs`, `tests/transition.rs`, `tests/beat.rs` and the unit tests of `beat.rs`), no `clippy` warnings (native and web), rustdoc without warnings. Not done: plates, gaze echoes and dashed `INK` leaders |
 | Layout on a 1/64 px grid, pinned absolute children, fitting a subtree, clamping text, previews, clearing the focus, line inks, text that holds what is under it, faces that come later, plates, effect switches (§1.2, §1.6.5, §1.8, §1.15, §1.31, §1.33, §1.34) | Done: `cargo test` (with `tests/off.rs`, `tests/render.rs`, `tests/text.rs`, `tests/menu.rs`, `tests/access.rs`, `tests/focus.rs`, `tests/legible.rs`, `tests/frames.rs`, `tests/transform.rs`, `tests/faces.rs`, `tests/plate.rs`), no `clippy` warnings natively and for `wasm32` |
+| A stage that holds its last image while input comes when it is slow to draw (§1.35) | Done: `cargo test` (`tests/stage.rs`); its own render target and device scale are not built yet (Y.5 row 12) |
 
 Since the split into two repositories, the tools `check`, `pages`, `scenes`, `film`, `samples`, `craft`, `bench`, `shot`,
 `labsheet`, `scroll` and `window`, and the tests that drive gallery pages, are in the website repository.
