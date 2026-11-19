@@ -18,6 +18,9 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
   and its scope takes in what the material draws round the box (the nearness spread and a front's push). A card that
   switched to `near` kept the old outline round it for two seconds and then swapped it in one frame, and every frame
   until then was drawn whole. The commit's own front stays in the scope too, as the fronts of other presses there did.
+- `near` draws no bands round text with strokes under 3 px. Only the shapes' nearness takes a label's surroundings
+  into an element's own material, so round a label in a control its bands showed as stray dashes over the ascenders
+  and a hook under a descender. Titles keep their bands.
 
 ## A stage at its own scale
 
