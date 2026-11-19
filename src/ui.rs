@@ -1008,13 +1008,16 @@ impl<S, M: Clone> Ui<S, M> {
     /// `f` returns whether the view changed.
     pub fn on_tick(mut self, f: fn(&mut S, f32) -> bool) -> Self { self.ticked = Some(f); self }
     /// What the stages' pieces (`El::stage`) do by themselves on every tick, after `on_tick`: `f` steps
-    /// them and returns the keys of the stages whose pieces changed. When nothing else changed the view,
-    /// only those stages are viewed again (`Ui::stage_view`), in the boxes the last layout gave them, and
-    /// drawn again; the rest of the page is the last frame's (DESIGN.md §1.35).
+    /// them and returns the keys of the stages whose pieces changed, and of the elements beside them that
+    /// changed with them (`El::steps`: a formula, a label). When nothing else changed the view, only those
+    /// are viewed again (`Ui::stage_view`), in the boxes the last layout gave them, and drawn again; the
+    /// rest of the page is the last frame's (DESIGN.md §1.35).
     pub fn on_step(mut self, f: fn(&mut S, f32) -> Vec<String>) -> Self { self.stepped = Some(f); self }
-    /// A stage's subtree alone (`El::stage`, by its key), as the page's view would make it: what a stage
-    /// that stepped (`Ui::on_step`) is viewed by. `None`, or a subtree laid out otherwise (other elements,
-    /// other styles, other sizes of text), and the whole page is viewed and laid out again.
+    /// A stage's subtree alone (`El::stage`, or `El::steps`, by its key), as the page's view would make
+    /// it: what one that stepped (`Ui::on_step`) is viewed by. `None`, or a subtree laid out otherwise
+    /// (other elements, other styles, text that measures otherwise), and the whole page is viewed and
+    /// laid out again. Text whose words changed but measures the same (figures of one width) is laid out
+    /// the same.
     pub fn stage_view(mut self, f: fn(&S, &str) -> Option<El<M>>) -> Self { self.stage_of = Some(f); self }
     /// Let the state know how far the renderer's warm-up is, each time it moves on and once more with
     /// `None` when it is done (DESIGN.md §1.9), so the view can show it (a loading line, a mark that
@@ -1850,8 +1853,10 @@ impl<S, M: Clone> Ui<S, M> {
         let hud = self.timing.overlay != self.overlay || (self.overlay > 0 && !self.hud_idle && t >= self.overlay_at + 1.05);
         let sweep = !self.arriving.is_empty() && self.sweeping;
         if repaint || scrolled || hud || sweep || self.clearing || self.stage_behind() { self.paint(); } else { self.finish(); }
-        // The frame is drawn: input from here on is the next frame's (for the stages).
-        self.stage_input = (false, false);
+        // The frame is drawn: input from here on is the next frame's (for the stages). Input whose layout
+        // waits for the frame (coalesced, `Ui::settle`) is this frame's still: the paint that lays it out
+        // reads it, and only then is it spent.
+        if !self.stale() { self.stage_input = (false, false); }
         self.track_motion(dt);
         if self.marks_moving { self.dirty = true; }
         self.moving = self.field_moving_at(t);
@@ -2842,8 +2847,13 @@ impl<S, M: Clone> Ui<S, M> {
     /// Lay out and paint what pointer moves, wheels and ticks left waiting: the renderer does it before
     /// it draws, and every other input before it looks at the page.
     pub fn settle(&mut self) {
+        if !self.stale() { return; }
         if self.stale_layout { self.relayout(); } else if !self.stale_stages.is_empty() { let k = std::mem::take(&mut self.stale_stages); self.restage(k); } else if self.stale_paint { self.paint(); }
+        // The input this paint answered is spent (for the stages: `tick` leaves it while the paint waits).
+        self.stage_input = (false, false);
     }
+    /// Laying out or painting waits for the frame (`Ui::settle`).
+    fn stale(&self) -> bool { self.stale_layout || self.stale_paint || !self.stale_stages.is_empty() }
     /// Lay out once per frame what pointer moves, wheels and ticks change, before the frame is drawn
     /// (`Ui::settle`), instead of at each: for a host that hands over several events a frame and ticks
     /// before each (the web and desktop hosts turn it on). Off, each one lays out at once.
@@ -3626,8 +3636,9 @@ impl<S, M: Clone> Ui<S, M> {
             }
             // Restaging: a stage that did not step is the last paint's, as the rest of the page is.
             let copied = kept.as_ref().is_some_and(|k| !k.has(&self.nodes, i));
-            if copied && self.nodes[i].stage.is_some() { stage_seen.push(self.nodes[i].key.clone()); }
-            if stage_open.is_none() && self.nodes[i].stage.is_some() && !copied {
+            let is_stage = self.nodes[i].stage.as_ref().is_some_and(|c| c.held);
+            if copied && is_stage { stage_seen.push(self.nodes[i].key.clone()); }
+            if stage_open.is_none() && is_stage && !copied {
                 let key = self.nodes[i].key.clone();
                 let size = (i + 1..self.nodes.len()).take_while(|&j| within(&self.nodes, j, i)).count() + 1;
                 let (rect, clip) = (self.nodes[i].rect, self.nodes[i].clip);
@@ -4216,7 +4227,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// content. Their boxes are kept; whether it was put.
     fn swap_stage(&mut self, i: usize, el: El<M>) -> bool {
         let key = self.nodes[i].key.clone();
-        if !el.props.stage || (!el.props.key.is_empty() && el.props.key != key) { return false; }
+        if !(el.props.stage || el.props.steps) || (!el.props.key.is_empty() && el.props.key != key) { return false; }
         let Some(ctx) = self.nodes[i].stage.as_deref().cloned() else { return false };
         let len = (i + 1..self.nodes.len()).take_while(|&j| within(&self.nodes, j, i)).count() + 1;
         let mut nodes = std::mem::take(&mut self.nodes);
@@ -4231,7 +4242,8 @@ impl<S, M: Clone> Ui<S, M> {
             new.key == old.key && new.parent == old.parent && new.modal.is_none() && new.fit.is_none()
                 && matches!(new.content, Content::None) == matches!(old.content, Content::None)
                 && self.tree.style(old.tid).is_ok_and(|st| *st == built.styles[j])
-                && self.mkeys.get(&old.tid) == Some(&measure_key(&new.content))
+                && (self.mkeys.get(&old.tid) == Some(&measure_key(&new.content))
+                    || new.clamp == 0 && same_measure(&mut self.text, &old.content, &new.content, old.local.size.width - old.local.padding.left - old.local.padding.right - old.local.border.left - old.local.border.right))
         });
         if !same {
             nodes.truncate(i);
@@ -4241,6 +4253,8 @@ impl<S, M: Clone> Ui<S, M> {
         }
         for (j, old) in tail.drain(..len).enumerate() {
             let n = &mut nodes[i + j];
+            // Text that changed and measures as it did: the tree measures it by its new content from now on.
+            if !matches!(n.content, Content::None) { self.mkeys.insert(old.tid, measure_key(&n.content)); }
             (n.local, n.exact, n.tid, n.rect, n.clip, n.inner, n.extent, n.shown, n.xf, n.written) = (old.local, old.exact, old.tid, old.rect, old.clip, old.inner, old.extent, old.shown, old.xf, old.written);
         }
         nodes.append(&mut tail);
@@ -6816,6 +6830,20 @@ fn compute_layout(tree: &mut taffy::TaffyTree<usize>, root: NodeId, space: Size<
     };
     tree.compute_layout_with_measure(root, space, measure)
 }
+/// Whether text `b` measures as `a` does, so a layout of one is a layout of the other: the same size
+/// at its widest, at its narrowest and at the width `w` it was laid out at (a label beside a stage
+/// whose number changed, in figures of one width).
+fn same_measure(text: &mut Text, a: &Content, b: &Content, w: f32) -> bool {
+    let (Content::Text { s: sa, size, line, font, around: None, nowrap, track, .. }, Content::Text { s: sb, size: size2, line: line2, font: font2, around: None, nowrap: nowrap2, track: track2, .. }) = (a, b) else { return false };
+    if size != size2 || line != line2 || font != font2 || nowrap != nowrap2 || track != track2 { return false; }
+    let face = font.resolve([0; 3]);
+    let setting = crate::text::Setting { around: None, track: *track };
+    [None, Some(0.0), Some(w.max(0.0))].into_iter().all(|limit| {
+        let limit = if *nowrap { None } else { limit };
+        let (x, y) = (text.measure_around(sa, face, *size, *line, limit, setting), text.measure_around(sb, face, *size, *line, limit, setting));
+        (x.0 - y.0).abs() < 0.01 && (x.1 - y.1).abs() < 0.01
+    })
+}
 /// Whether a subtree has an element at its own size (`El::own_size`).
 fn has_own<M>(el: &El<M>) -> bool { el.own_size.is_some() || el.children.iter().any(has_own) }
 /// Whether a view has a box marked `El::fit`.
@@ -6977,7 +7005,7 @@ fn runs_of(nodes: impl Iterator<Item = usize>, count: usize) -> Option<Vec<(usiz
 /// What a stage's root was flattened with (`El::stage`, `Ui::stage_view`): so its subtree alone can be
 /// flattened again in place.
 #[derive(Clone)]
-struct StageCtx { parent: Option<usize>, path: String, roles: [u8; 3], off: (bool, bool), flow: Option<(Rc<str>, usize)>, inh: Inherit }
+struct StageCtx { parent: Option<usize>, path: String, roles: [u8; 3], off: (bool, bool), flow: Option<(Rc<str>, usize)>, inh: Inherit, held: bool }
 
 /// The rows `first..last` a viewport `h` tall at offset `off` shows.
 fn visible_rows(off: f32, h: f32, count: usize, row_h: f32) -> (usize, usize) {
@@ -7010,8 +7038,8 @@ fn measure_key(c: &Content) -> u64 {
 /// A virtual list's rows are built here, for what its viewport shows.
 #[allow(clippy::too_many_arguments)]
 fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], off: (bool, bool), flow: Option<(Rc<str>, usize)>, inh: Inherit, vx: &mut VirtCtx, built: &mut Built, nodes: &mut Vec<Node<M>>) -> usize {
-    let stage_at = el.props.stage.then(|| Box::new(StageCtx { parent, path: path.clone(), roles, off, flow: flow.clone(), inh: inh.clone() }));
-    let El { props: crate::el::Props { key, mut style, mut content, fill, border, radius, mut focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, mut commit, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, map_life, multiline, selectable, cursor, ripple, guide, skeleton, rtl, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview, fit, clamp, plate, own_size, grain, show_clear, pen, view_scale, stage: _, stack }, mut on_press, mut on_key, mut on_drag, mut on_blur, modal, mut on_text, virt, access, mut on_pick, mut on_wheel, mut on_move, on_visible, on_outline, mut children } = el;
+    let stage_at = (el.props.stage || el.props.steps).then(|| Box::new(StageCtx { parent, path: path.clone(), roles, off, flow: flow.clone(), inh: inh.clone(), held: el.props.stage }));
+    let El { props: crate::el::Props { key, mut style, mut content, fill, border, radius, mut focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, mut commit, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, map_life, multiline, selectable, cursor, ripple, guide, skeleton, rtl, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview, fit, clamp, plate, own_size, grain, show_clear, pen, view_scale, stage: _, stack, steps: _ }, mut on_press, mut on_key, mut on_drag, mut on_blur, modal, mut on_text, virt, access, mut on_pick, mut on_wheel, mut on_move, on_visible, on_outline, mut children } = el;
     // A view scale scales what it holds, not its pen (`El::view_scale`).
     if let Some(s) = view_scale { children = children.into_iter().map(|c| c.zoom_by(s, true)).collect(); }
     let mut inh = inh;

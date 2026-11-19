@@ -8,6 +8,14 @@ crate and the `amenui` npm package (`web/`) always carry the same version, becau
 match the module that `web_app!` generates. The minimum Rust is the one CI builds with (`rust-version`
 in Cargo.toml); raising it is a breaking change before 1.0 only in the second number.
 
+## Stages, from the site
+
+- A slow stage holds with input coalesced (`Ui::coalesce`, as the web and desktop hosts run): the input of a frame
+  waited for the frame's layout, and the tick had spent it before, so the stage drew every frame of a drag.
+- `El::steps` marks an element beside a stage that changes with it (a formula, a label): `Ui::on_step` returns its key
+  with the stage's and `Ui::stage_view` gives it, so an experiment's own page no longer lays out every frame. Text
+  whose words changed but measures as before counts as laid out the same.
+
 ## Flexbox only
 
 - taffy is built with flexbox alone (no grid, block layout or calc), about 170 KB less in a web module. A

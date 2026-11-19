@@ -51,17 +51,22 @@ fn piece(u: &Ui<S, Msg>) -> Vec<[f32; 4]> {
 }
 
 #[test]
-fn a_slow_stage_holds_while_the_hand_drags_and_the_slider_answers_every_frame() {
+fn a_slow_stage_holds_while_the_hand_drags_and_the_slider_answers_every_frame() { drag(false); }
+/// As the hosts run it: input coalesced, laid out once a frame when the frame is drawn (`Ui::settle`).
+#[test]
+fn a_slow_stage_holds_with_input_coalesced() { drag(true); }
+fn drag(coalesced: bool) {
     let mut u = open();
+    u.coalesce(coalesced);
     u.slow_stage(40.0);
     let r = u.node("level").expect("the slider").rect;
     // Frames at rest: the stage becomes slow.
     let mut t = u.now();
-    for _ in 0..12 { t += 1.0 / 60.0; u.tick(t); }
+    for _ in 0..12 { t += 1.0 / 60.0; u.tick(t); u.settle(); }
     assert_eq!(u.stage_state("stage").map(|s| s.0), Some(true), "40 ms draws are slow");
     let (x0, y) = (r.x + 10.0, r.y + r.h * 0.5);
     u.press(x0, y);
-    t += 1.0 / 60.0; u.tick(t);
+    t += 1.0 / 60.0; u.tick(t); u.settle();
     let mut before = shown(&u);
     let (mut late, mut redraws, mut last_redraw, mut held_frames) = (0, 0, t, 0);
     let mut gaps: Vec<f32> = vec![];
@@ -72,6 +77,7 @@ fn a_slow_stage_holds_while_the_hand_drags_and_the_slider_answers_every_frame() 
         u.pointer_move(x, y);
         t += 1.0 / 60.0;
         u.tick(t);
+        u.settle();
         let ms = w0.elapsed().as_secs_f32() * 1000.0;
         let redrew = u.stage_state("stage").map_or(0, |s| s.1) > drawn_before;
         let now = shown(&u);
@@ -88,7 +94,7 @@ fn a_slow_stage_holds_while_the_hand_drags_and_the_slider_answers_every_frame() 
             if ms > 16.7 { late += 1; }
         }
     }
-    eprintln!("stage redraws during a 2 s drag: {redraws} (gaps {gaps:.3?} s); frames that held: {held_frames}, of them over 16.7 ms: {late}");
+    eprintln!("coalesced {coalesced}: stage redraws during a 2 s drag: {redraws} (gaps {gaps:.3?} s); frames that held: {held_frames}, of them over 16.7 ms: {late}");
     assert_eq!(late, 0, "a frame that did not redraw the stage was late");
     let hold = (6.0 * 0.040f32).clamp(0.1, 0.5);
     assert!(gaps.iter().skip(1).all(|g| *g >= hold - 1.0 / 60.0 - 1e-3), "two stage redraws closer than one hold ({hold} s): {gaps:?}");
@@ -97,7 +103,7 @@ fn a_slow_stage_holds_while_the_hand_drags_and_the_slider_answers_every_frame() 
     let drawn = u.stage_state("stage").map_or(0, |s| s.1);
     let before = piece(&u);
     u.release(x0 + r.w - 20.0, y);
-    t += 1.0 / 60.0; u.tick(t);
+    t += 1.0 / 60.0; u.tick(t); u.settle();
     assert!(u.stage_state("stage").map_or(0, |s| s.1) > drawn, "the frame after the release did not draw the stage");
     assert_ne!(piece(&u), before, "the stage shows the piece as it is now");
 }

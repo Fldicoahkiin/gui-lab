@@ -722,10 +722,12 @@ pub struct Props {
     pub stage: bool,
     /// It is a stack (`stack`): its children are laid over one another, centred.
     pub stack: bool,
+    /// It can be viewed alone when it steps (`El::steps`).
+    pub steps: bool,
 }
 impl Props {
     #[inline(never)]
-    fn new(style: Style, content: Content) -> Self { Props { key: String::new(), style, content, fill: None, border: None, radius: 0.0, focusable: false, tab_order: 0, skip_to: None, focus_shown: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, shift: (0.0, 0.0), shed: None, flow_field: None, stirr: None, trace: None, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, clips: false, calm: false, map_life: None, multiline: false, selectable: false, cursor: None, ripple: Ripple::default(), guide: None, skeleton: false, rtl: None, decode: None, form: None, turn: 0.0, reveal_by: Reveal::Glyph, ongoing: false, pass: false, opacity: 1.0, commit_scope: false, preview: false, fit: None, clamp: 0, plate: None, own_size: None, grain: false, show_clear: None, pen: 1.0, view_scale: None, stage: false, stack: false } }
+    fn new(style: Style, content: Content) -> Self { Props { key: String::new(), style, content, fill: None, border: None, radius: 0.0, focusable: false, tab_order: 0, skip_to: None, focus_shown: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, shift: (0.0, 0.0), shed: None, flow_field: None, stirr: None, trace: None, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, clips: false, calm: false, map_life: None, multiline: false, selectable: false, cursor: None, ripple: Ripple::default(), guide: None, skeleton: false, rtl: None, decode: None, form: None, turn: 0.0, reveal_by: Reveal::Glyph, ongoing: false, pass: false, opacity: 1.0, commit_scope: false, preview: false, fit: None, clamp: 0, plate: None, own_size: None, grain: false, show_clear: None, pen: 1.0, view_scale: None, stage: false, stack: false, steps: false } }
 }
 impl<M> std::ops::Deref for El<M> { type Target = Props; fn deref(&self) -> &Props { &self.props } }
 impl<M> std::ops::DerefMut for El<M> { fn deref_mut(&mut self) -> &mut Props { &mut self.props } }
@@ -1266,6 +1268,10 @@ impl<M> El<M> {
     /// `max(100 ms, 6 draws)` (at most 500 ms), replacing its image whole. It is no longer slow after 1 s
     /// of draws under 0.4 of a frame. Nothing marks a stage that holds. Not for controls.
     pub fn stage(mut self) -> Self { self.stage = true; self }
+    /// It changes with a stage's piece and can be viewed alone (`Ui::on_step`, `Ui::stage_view`), as a
+    /// stage is, without being one: a formula or a label beside the piece that follows it. It is drawn
+    /// every frame like anything else, never held and never at a stage's scale.
+    pub fn steps(mut self) -> Self { self.steps = true; self }
     /// A view of a drawing at scale `s` (a map that grows from a thumbnail to a window): everything this
     /// container holds is scaled as by `El::zoom` (positions, lengths, fills, corner radii, a drawing's
     /// dots) except the pen: the widths of lines (a drawing's strokes, a trace), of borders, and a trace's

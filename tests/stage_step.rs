@@ -1,8 +1,9 @@
 //! A stage that steps by itself (`Ui::on_step`, `Ui::stage_view`, DESIGN.md §1.35): when only its
 //! piece changed, only it is viewed and drawn again, with no layout, and the frame is the one a whole
 //! view, layout and paint of the page gives, instance for instance; a step that lays the stage out
-//! otherwise views the whole page.
-use amenui::el::{El, Paint, canvas, col, row, text};
+//! otherwise views the whole page. A count beside the stage that changes with it (`El::steps`) is viewed
+//! and drawn with it, as long as it measures the same.
+use amenui::el::{El, Font, Paint, canvas, col, row, text};
 use amenui::style::{Look, Material};
 use amenui::ui::Ui;
 
@@ -21,10 +22,14 @@ fn stage(s: &S, k: usize) -> El<()> {
         .child(canvas(d).key(format!("cell{k}/d")).width(180.0))
         .child(text("ω = 1.20", 11.0, Paint::DIM))
 }
+/// Cell `k`'s count, beside its stage and changing with it (`El::steps`): figures of one width, so it
+/// measures the same whatever the count.
+fn count(s: &S, k: usize) -> El<()> { text(format!("n = {:>2}", s.n[k]), 11.0, Paint::DIM).font(Font::Mono).key(format!("cell{k}/n")).steps() }
 fn view(s: &S) -> El<()> {
     let cell = |k: usize| col().key(format!("cell{k}")).width(190.0).gap(4.0).flow(format!("cell-{k}"))
         .child(text(format!("[ CELL {k} ]"), 12.0, Paint::TEXT))
         .child(stage(s, k))
+        .child(count(s, k))
         .child(text("a caption under the stage, long enough to wrap onto a second line", 12.0, Paint::DIM));
     col().key("page").pad(10.0, 10.0).gap(10.0)
         .child(text("The lab", 20.0, Paint::TEXT))
@@ -37,8 +42,8 @@ fn open(staged: bool) -> Ui<S, ()> {
     let s = S { t: 0.0, n: [20, 12, 16], tall: false };
     let u = Ui::new(s, view, |_, _| {}, fonts(), 640, 420, 1.0).on_look(|_| Look { material: Material::Plain, ..Look::default() });
     let mut u = if staged {
-        u.on_step(|s, t| { step(s, t); vec!["cell1/stage".to_owned()] })
-            .stage_view(|s, key| (0..3).find(|&k| key == format!("cell{k}/stage")).map(|k| stage(s, k)))
+        u.on_step(|s, t| { step(s, t); vec!["cell1/stage".to_owned(), "cell1/n".to_owned()] })
+            .stage_view(|s, key| (0..3).find_map(|k| if key == format!("cell{k}/stage") { Some(stage(s, k)) } else if key == format!("cell{k}/n") { Some(count(s, k)) } else { None }))
     } else {
         u.on_tick(|s, t| { step(s, t); true })
     };

@@ -3011,17 +3011,26 @@ frame is the one a whole view, layout and paint of the page would give, instance
 subtree is laid out otherwise (it grew, an element came or went, a text changed what is measured), a stage that
 holds a 3D scene, an animation or a transition in flight, or anything else that changed the view on that tick,
 and the whole page is viewed, laid out and painted again. `perf().counters.restages` counts the frames drawn so.
+What changes with a piece outside its stage (an experiment's formula, a label with the value) is marked
+`El::steps`: `on_step` returns its key with the stage's, `stage_view` gives its subtree, and it is put in
+place as a stage is, but drawn every frame like anything else (never held, never at a stage's scale). Text
+counts as laid out the same when its words changed but it measures as before at its widest, at its
+narrowest and at its width (figures of one width: the mono face, or a fixed box).
+
+The hold reads the input of the frame that lays it out: with input coalesced (`Ui::coalesce`, as the hosts
+run), a tick leaves the frame's input to the paint that `Ui::settle` makes, and that paint spends it.
 
 `Ui::slow_stage(ms)` adds `ms` to every stage's draw, for checks; `Ui::stage_state(key)` says whether a stage is
 slow and how many times it has drawn.
 
-Acceptance: `tests/stage.rs` (with 40 ms added to a stage's draw, a 2 s drag of a slider beside it at 60 Hz moves
+Acceptance: `tests/stage.rs` (with 40 ms added to a stage's draw, a 2 s drag of a slider beside it at 60 Hz, with input coalesced or not, moves
 the knob and changes the value in every one of the 120 frames, every frame that does not draw the stage takes
 under 16.7 ms, the stage draws at most once per hold during the drag (the count is printed) and on the first
 frame after the release; a stage that draws in time draws every frame of a drag; a held stage asks for a frame and
 draws on the first frame without input); `tests/stage_step.rs` (a stage that steps alone for 150 frames is
 viewed alone with no layout, and every frame's instances, owners, held text and boxes are those of a page viewed,
-laid out and painted whole; a step that makes the stage taller lays the page out). On the website's Lab index at
+laid out and painted whole, with a count beside the stage marked `El::steps` viewed with it; a step that makes
+the stage taller lays the page out). On the website's Lab index at
 1440×900 2× with one cell running, a frame takes 2.9 ms median and 3.1 ms p95 on the CPU, from 6.9 ms.
 
 ## 2. Parameters must be exact
