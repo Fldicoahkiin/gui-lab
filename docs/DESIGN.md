@@ -2055,6 +2055,18 @@ copied whole to the target each frame (the web swap chain gives a new image ever
   union. Acceptance: `tests/dirty_parts.rs` (a drawing that gains strokes redraws only its own cell, two
   cells far apart are two boxes under a quarter of the window, and seven frames of cells changing under three
   materials, drawn in their boxes, are byte for byte the frames drawn whole).
+- **Scrolling moves the last frame**: when one scroll container's offset moves by whole device pixels, with no
+  trace showing in this frame or the last and the ground not in transition, the renderer copies the G-buffer and
+  the kept frame inside the viewport by the offset (`dirty::Move`, `Renderer::carry`: copies into a second set of
+  images, then the views swap) and the boxes are taken against the last frame moved: the band scrolled into
+  view, the strips along the viewport's edges that the material reads across (its reach, beyond the band), the
+  scroll bar and what changed. Instances carried with the content are compared at their moved place; what was
+  clipped at the viewport's edge keeps that edge. The field map is stirred by an element's motion within the
+  content it scrolls with, so scrolling past it is not a change. `Renderer::cost` counts what a frame shades
+  (material and G-buffer pixels), the pixels moved and the bytes uploaded. Acceptance: `tests/scroll_move.rs`
+  (a slow scroll down and back up under four materials at two scales is byte for byte the frame drawn whole at
+  every step, with the material shading under half of a small window; a fast scroll with its trace is not
+  moved).
 - The whole screen: the look changed (theme, material, parameters…), the window changed, a commit is showing,
   particles are flying, the low-resolution pass is being drawn, or a material that reads the material clock
   (`dottr`, `glitchr`) is in use and the clock moved.
