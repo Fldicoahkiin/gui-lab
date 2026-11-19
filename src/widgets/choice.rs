@@ -20,6 +20,10 @@ use taffy::AlignItems;
 /// `msg` gets the index pressed. Options are keyed `key:i` (a `/` would collide with the path keys
 /// of unkeyed children).
 pub fn choice<M: Clone>(key: &str, label: &str, options: &[&str], current: usize, msg: impl Fn(usize) -> M) -> El<M> {
+    // The body is built once per message type, not once for every closure an application passes.
+    choice_in(key, label, options, current, &msg)
+}
+fn choice_in<M: Clone>(key: &str, label: &str, options: &[&str], current: usize, msg: &dyn Fn(usize) -> M) -> El<M> {
     let mut opts = row().key(format!("{key}/options")).wrap().gap(6.0).grow(1.0);
     for (i, o) in options.iter().enumerate() {
         let on = i == current;
@@ -36,7 +40,10 @@ pub fn choice<M: Clone>(key: &str, label: &str, options: &[&str], current: usize
 
 /// Segments are keyed `key:i`; `height` is the control's height, logical px.
 pub fn segmented<M: Clone + 'static>(key: &str, options: &[&str], current: usize, height: f32, msg: impl Fn(usize) -> M + 'static) -> El<M> {
-    let msg: Rc<dyn Fn(usize) -> M> = Rc::new(msg);
+    // The body is built once per message type, not once for every closure an application passes.
+    segmented_in(key, options, current, height, Rc::new(msg))
+}
+fn segmented_in<M: Clone + 'static>(key: &str, options: &[&str], current: usize, height: f32, msg: Rc<dyn Fn(usize) -> M>) -> El<M> {
     let n = options.len();
     let keys = {
         let msg = msg.clone();

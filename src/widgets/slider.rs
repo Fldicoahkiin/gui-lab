@@ -22,7 +22,10 @@ pub fn slider_value(d: &Drag, spec: Spec) -> f32 {
 }
 
 pub fn slider<M: Clone + 'static>(key: &str, value: f32, spec: Spec, width: f32, msg: impl Fn(f32) -> M + 'static) -> El<M> {
-    let msg = std::rc::Rc::new(msg);
+    // The body is built once per message type, not once for every closure an application passes.
+    slider_in(key, value, spec, width, std::rc::Rc::new(msg))
+}
+fn slider_in<M: Clone + 'static>(key: &str, value: f32, spec: Spec, width: f32, msg: std::rc::Rc<dyn Fn(f32) -> M>) -> El<M> {
     let f = ((value - spec.min) / (spec.max - spec.min).max(1e-6)).clamp(0.0, 1.0);
     let run = (width - KNOB).max(0.0);
     let keys = {

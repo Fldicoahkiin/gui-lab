@@ -33,10 +33,17 @@ pub const TOGGLE: usize = usize::MAX;
 /// drive it, then the label and a `[ params ]` toggle that opens those numbers as controls.
 #[allow(clippy::too_many_arguments)]
 pub fn frame<M: Clone + 'static>(key: &str, name: &str, hint: &str, piece: El<M>, formula: String, params: &Params, msg: impl Fn(usize, Edit) -> M + 'static, label: &str) -> El<M> {
-    let msg = std::rc::Rc::new(msg);
-    let mut stage = col().key(format!("{key}/stage")).fill_width().min_width(0.0).clip().child(piece.fill_width().fill_height());
+    // The cell is built once, sending `(i, edit)`, and mapped to `M`: only the mapping is built per message type.
+    let mut c = cell(key, name, hint, formula, params, label).map(std::rc::Rc::new(move |(i, e)| msg(i, e)));
+    if let Some(stage) = c.children.get_mut(1) { stage.children.push(piece.fill_width().fill_height()); }
+    c
+}
+/// The cell without its piece (the stage, second, is empty), sending `(i, edit)`.
+fn cell(key: &str, name: &str, hint: &str, formula: String, params: &Params, label: &str) -> El<(usize, Edit)> {
+    let msg = |i: usize, e: Edit| (i, e);
+    let mut stage = col().key(format!("{key}/stage")).fill_width().min_width(0.0).clip();
     stage.style.aspect_ratio = Some(1.0 / STAGE);
-    let toggle = { let m = msg.clone(); text(if params.open { "[ − params ]" } else { "[ params ]" }, 11.0, if params.open { Paint::TEXT } else { Paint::DIM }).font(Font::Mono)
+    let toggle = { let m = msg; text(if params.open { "[ − params ]" } else { "[ params ]" }, 11.0, if params.open { Paint::TEXT } else { Paint::DIM }).font(Font::Mono)
         .key(format!("{key}/params")).focusable(true).role(crate::el::Role::Button).label("params").cursor(crate::el::Cursor::Pointer).on_press(m(TOGGLE, Edit::Cancel)) };
     let mut c = col().key(key.to_owned()).fill_width().min_width(0.0).pad(12.0, 10.0).gap(8.0).border(1.0, Paint::FAINT)
         .child(row().fill_width().gap(8.0)
@@ -52,8 +59,7 @@ pub fn frame<M: Clone + 'static>(key: &str, name: &str, hint: &str, piece: El<M>
     if params.open {
         let mut nums = row().key(format!("{key}/nums")).wrap().gap(4.0);
         for (i, p) in params.caption().iter().enumerate() {
-            let m = msg.clone();
-            nums = nums.child(crate::widgets::number(&format!("{key}/p{i}"), &p.name, p.value, p.spec, p.draft.as_deref(), move |e| m(i, e)).width(176.0).zoom(0.72));
+            nums = nums.child(crate::widgets::number(&format!("{key}/p{i}"), &p.name, p.value, p.spec, p.draft.as_deref(), move |e| msg(i, e)).width(176.0).zoom(0.72));
         }
         c = c.child(nums);
     }

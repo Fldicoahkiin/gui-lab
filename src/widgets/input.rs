@@ -240,10 +240,14 @@ fn shown<M>(edit: &TextEdit, placeholder: &str, size: f32, line: Option<f32>) ->
 /// `width` is the field's width and `max` the most characters it takes; `placeholder` is shown, dim,
 /// while it is empty.
 pub fn input<M: Clone + 'static>(key: &str, edit: &TextEdit, placeholder: &str, width: f32, max: usize, msg: impl Fn(TextEdit) -> M + 'static) -> El<M> {
+    // The body is built once per message type, not once for every closure an application passes.
+    input_in(key, edit, placeholder, width, max, std::rc::Rc::new(msg))
+}
+fn input_in<M: Clone + 'static>(key: &str, edit: &TextEdit, placeholder: &str, width: f32, max: usize, msg: std::rc::Rc<dyn Fn(TextEdit) -> M>) -> El<M> {
     let now = edit.clone();
     row().key(key).width(width).height(CONTROL_H).pad(10.0, 0.0).radius(RADIUS).align(AlignItems::CENTER)
         .fill(Paint::GROUND).border(LINE, Paint::DIM).scroll_x().cursor(Cursor::Text).role(Role::TextBox).label(placeholder).text_value(edit.text.clone())
-        .on_text(move |ev| now.handle(&ev, max, false).map(&msg))
+        .on_text(move |ev| now.handle(&ev, max, false).map(&*msg))
         .child(shown(edit, placeholder, LABEL, None).nowrap().key(format!("{key}/text")))
 }
 

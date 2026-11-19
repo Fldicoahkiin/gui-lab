@@ -44,16 +44,20 @@ pub enum Edit { Draft(String), Set(f32), Cancel }
 
 /// `draft` is the text being typed, if any; the application keeps it in its state.
 pub fn number<M: Clone + 'static>(key: &str, label: &str, value: f32, spec: Spec, draft: Option<&str>, msg: impl Fn(Edit) -> M + 'static) -> El<M> {
-    let msg: Rc<dyn Fn(Edit) -> M> = Rc::new(msg);
+    // The control is built once, sending `Edit`, and mapped to `M`: only the mapping is built per message type.
+    control(key, label, value, spec, draft).map(Rc::new(msg))
+}
+/// The control, sending what it asks for as it is.
+fn control(key: &str, label: &str, value: f32, spec: Spec, draft: Option<&str>) -> El<Edit> {
     let draft: Option<String> = draft.map(str::to_owned);
     let editing = draft.is_some();
     let step = |dir: f32, glyph: &str, k: &str| row().key(format!("{key}/{k}")).center().width(CONTROL_H).height(CONTROL_H).radius(RADIUS)
-        .fill(Paint::GROUND).border(LINE, Paint::FAINT).on_press(msg(Edit::Set(spec.clamp(value + dir * spec.step)))).label(crate::i18n::tr(&format!("widget.number.{k}")))
+        .fill(Paint::GROUND).border(LINE, Paint::FAINT).on_press(Edit::Set(spec.clamp(value + dir * spec.step))).label(crate::i18n::tr(&format!("widget.number.{k}")))
         // The mono face: the pixel CJK face has no minus sign, and the steps then match in every theme.
         .child(text(glyph, LABEL + 2.0, Paint::TEXT).font(Font::Mono));
     let handler = {
-        let (msg, draft) = (msg.clone(), draft.clone());
-        move |k: Key, shift: bool| -> Option<M> {
+        let draft = draft.clone();
+        move |k: Key, shift: bool| -> Option<Edit> {
             let e = match k {
                 Key::Char(c) if c.is_ascii_digit() || c == '.' || c == '-' => {
                     let mut s = draft.clone().unwrap_or_default();
@@ -73,18 +77,17 @@ pub fn number<M: Clone + 'static>(key: &str, label: &str, value: f32, spec: Spec
                 }
                 _ => return None,
             };
-            Some(msg(e))
+            Some(e)
         }
     };
     // The handler is captured at the press, so `value` here is the value the scrub started from.
     let scrub = {
-        let msg = msg.clone();
         let moved = std::cell::Cell::new(false);
-        move |d: Drag| -> Option<M> {
+        move |d: Drag| -> Option<Edit> {
             if d.phase == Phase::Start { return None; }
             moved.set(moved.get() || d.dx.abs() >= SCRUB * 0.5);
             if !moved.get() { return None; }
-            Some(msg(Edit::Set(spec.clamp(value + (d.dx / SCRUB).round() * spec.step))))
+            Some(Edit::Set(spec.clamp(value + (d.dx / SCRUB).round() * spec.step)))
         }
     };
     let shown = draft.clone().unwrap_or_else(|| spec.show(value));
@@ -100,7 +103,7 @@ pub fn number<M: Clone + 'static>(key: &str, label: &str, value: f32, spec: Spec
             if editing { t.recompose(false) } else { t }
         });
     if editing {
-        field = field.child(space(1.5, 16.0).fill(Paint::ACCENT)).on_blur(msg(Edit::Cancel));
+        field = field.child(space(1.5, 16.0).fill(Paint::ACCENT)).on_blur(Edit::Cancel);
     }
     field = field.child(space(0.0, 0.0).grow(1.0)).child(text(spec.unit, LABEL - 2.0, Paint::DIM));
     // The steps and the field never shrink, and the control is never narrower than they are: a width

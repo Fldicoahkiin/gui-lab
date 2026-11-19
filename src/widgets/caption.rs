@@ -25,11 +25,15 @@ impl CaptionParam {
 
 /// The caption: the formula line, then one small number control per parameter.
 pub fn caption<M: Clone + 'static>(key: &str, formula: impl Into<String>, params: &[CaptionParam], msg: impl Fn(usize, Edit) -> M + 'static) -> El<M> {
+    // The caption is built once, sending `(i, edit)`, and mapped to `M`: only the mapping is built per message type.
     let msg = Rc::new(msg);
+    lines(key, formula.into(), params).map(Rc::new(move |(i, e)| msg(i, e)))
+}
+/// The caption, sending `(i, edit)` for parameter `i`.
+fn lines(key: &str, formula: String, params: &[CaptionParam]) -> El<(usize, Edit)> {
     let mut nums = row().key(format!("{key}/nums")).wrap().gap(6.0);
     for (i, p) in params.iter().enumerate() {
-        let m = msg.clone();
-        nums = nums.child(number(&format!("{key}/p{i}"), &p.name, p.value, p.spec, p.draft.as_deref(), move |e| m(i, e)).width(208.0).zoom(0.8));
+        nums = nums.child(number(&format!("{key}/p{i}"), &p.name, p.value, p.spec, p.draft.as_deref(), move |e| (i, e)).width(208.0).zoom(0.8));
     }
     col().key(key.to_owned()).gap(6.0).fill_width().min_width(0.0)
         .child(text(formula, 11.5, Paint::DIM).font(Font::Mono).key(format!("{key}/formula")).recompose(false))

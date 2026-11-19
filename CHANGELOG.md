@@ -8,6 +8,13 @@ crate and the `amenui` npm package (`web/`) always carry the same version, becau
 match the module that `web_app!` generates. The minimum Rust is the one CI builds with (`rust-version`
 in Cargo.toml); raising it is a breaking change before 1.0 only in the second number.
 
+## Widgets built once per message type
+
+- `widgets::number`, `caption` and `experiment::frame` build their controls once, with their own messages, and map
+  them to the application's; `segmented`, `choice`, `slider` and `input` build their body once per message type
+  rather than once for every closure passed to them. Nothing changes in what they show or send. The website's full
+  module is 11,819 bytes smaller gzipped (2,832,825 to 2,821,006).
+
 ## How selected text looks
 
 - `Look::select` (`style::Select { halo, alpha, ink }`, 3 px, 0.34, on by default): the selection halo is opaque, the
