@@ -696,6 +696,11 @@ pub struct El<M> {
     /// It keeps its own size when zoomed (`El::own_size`): the point of its box (0–1 across, down) that
     /// stays where the zoomed box would put it, and the zoom it was given (1: none).
     pub own_size: Option<([f32; 2], f32)>,
+    /// How much a view scale above it (`El::view_scale`) scaled its geometry and not its pen: a drawing's
+    /// strokes are drawn this much wider than its scale makes them (1: none).
+    pub pen: f32,
+    /// It is a view scale's container (`El::view_scale`): the scale.
+    pub view_scale: Option<f32>,
     /// What it holds, in order.
     pub children: Vec<El<M>>,
 }
@@ -809,7 +814,7 @@ impl<M> El<M> {
     fn new(style: Style, content: Content) -> Self {
         // Nothing shrinks unless asked: fixed sizes stay fixed inside columns and scroll areas.
         let style = Style { flex_shrink: 0.0, ..style };
-        Self { key: String::new(), style, content, fill: None, border: None, radius: 0.0, on_press: None, on_key: None, on_drag: None, on_blur: None, focusable: false, tab_order: 0, skip_to: None, focus_shown: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, modal: None, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, shift: (0.0, 0.0), shed: None, flow_field: None, stirr: None, trace: None, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, clips: false, calm: false, map_life: None, on_text: None, multiline: false, selectable: false, cursor: None, virt: None, access: None, ripple: Ripple::default(), on_pick: None, on_wheel: None, on_move: None, guide: None, skeleton: false, rtl: None, on_visible: None, on_outline: None, decode: None, form: None, turn: 0.0, reveal_by: Reveal::Glyph, ongoing: false, pass: false, opacity: 1.0, commit_scope: false, preview: false, fit: None, clamp: 0, plate: None, own_size: None, children: vec![] }
+        Self { key: String::new(), style, content, fill: None, border: None, radius: 0.0, on_press: None, on_key: None, on_drag: None, on_blur: None, focusable: false, tab_order: 0, skip_to: None, focus_shown: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, modal: None, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, shift: (0.0, 0.0), shed: None, flow_field: None, stirr: None, trace: None, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, clips: false, calm: false, map_life: None, on_text: None, multiline: false, selectable: false, cursor: None, virt: None, access: None, ripple: Ripple::default(), on_pick: None, on_wheel: None, on_move: None, guide: None, skeleton: false, rtl: None, on_visible: None, on_outline: None, decode: None, form: None, turn: 0.0, reveal_by: Reveal::Glyph, ongoing: false, pass: false, opacity: 1.0, commit_scope: false, preview: false, fit: None, clamp: 0, plate: None, own_size: None, pen: 1.0, view_scale: None, children: vec![] }
     }
     /// Its key: unique on the page, stable across views (focus, scroll, births and recomposition follow it).
     pub fn key(mut self, k: impl Into<String>) -> Self { self.key = k.into(); self }
@@ -1157,7 +1162,7 @@ impl<M> El<M> {
 
     /// The same tree sending other messages: lets one application embed another's view.
     pub fn map<N: 'static>(self, f: Rc<dyn Fn(M) -> N>) -> El<N> where M: 'static {
-        let El { key, style, content, fill, border, radius, on_press, on_key, on_drag, on_blur, focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, commit, modal, fonts, loose, wipe, flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, map_life, on_text, multiline, selectable, cursor, virt, access, ripple, on_pick, on_wheel, on_move, guide, skeleton, rtl, on_visible, on_outline, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview, fit, clamp, plate, own_size, children } = self;
+        let El { key, style, content, fill, border, radius, on_press, on_key, on_drag, on_blur, focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, commit, modal, fonts, loose, wipe, flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, map_life, on_text, multiline, selectable, cursor, virt, access, ripple, on_pick, on_wheel, on_move, guide, skeleton, rtl, on_visible, on_outline, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview, fit, clamp, plate, own_size, pen, view_scale, children } = self;
         let virt = virt.map(|v| { let f = f.clone(); let b = v.build; Virtual { count: v.count, row_h: v.row_h, overscan: v.overscan, selected: v.selected, build: Rc::new(move |i: usize| b(i).map(f.clone())) as Rc<dyn Fn(usize) -> El<N>> } });
         let on_key = on_key.map(|k| { let f = f.clone(); Rc::new(move |key: Key, shift: bool| k(key, shift).map(|m| f(m))) as OnKey<N> });
         let on_text = on_text.map(|t| { let f = f.clone(); Rc::new(move |i: TextInput| t(i).map(|m| f(m))) as OnText<N> });
@@ -1170,7 +1175,7 @@ impl<M> El<M> {
         El {
             key, style, content, fill, border, radius, on_press: on_press.map(|m| f(m)), on_key, on_drag, on_blur: on_blur.map(|m| f(m)),
             focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, commit, modal: modal.map(|m| Modal { dismiss: f(m.dismiss), beneath: m.beneath }),
-            fonts, loose, wipe, flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, map_life, on_text, multiline, selectable, cursor, virt, access, ripple, on_pick, on_wheel, on_move, guide, skeleton, rtl, on_visible, on_outline, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview, fit, clamp, plate, own_size, children: children.into_iter().map(|c| c.map(f.clone())).collect(),
+            fonts, loose, wipe, flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, map_life, on_text, multiline, selectable, cursor, virt, access, ripple, on_pick, on_wheel, on_move, guide, skeleton, rtl, on_visible, on_outline, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview, fit, clamp, plate, own_size, pen, view_scale, children: children.into_iter().map(|c| c.map(f.clone())).collect(),
         }
     }
 }
@@ -1210,7 +1215,20 @@ impl<M> El<M> {
     /// borders (never thinner than a hairline), type, `shift`, a print lattice's pitch, `Around`'s
     /// outlines, gap and narrowest piece, a pose's moves and depth, a stirr's reach, a guide and a trace. A widget made for one size shown at another
     /// (the film scales its controls with the stage, so a small window does not overflow).
-    pub fn zoom(mut self, k: f32) -> Self {
+    pub fn zoom(self, k: f32) -> Self { self.zoom_by(k, false) }
+    /// A view of a drawing at scale `s` (a map that grows from a thumbnail to a window): everything this
+    /// container holds is scaled as by `El::zoom` (positions, lengths, fills, corner radii, a drawing's
+    /// dots) except the pen: the widths of lines (a drawing's strokes, a trace), of borders, and a trace's
+    /// dashes and gaps stay as at 1, and own-size elements (`El::own_size`) keep their size, whether added before or after this. A dot is never
+    /// less than one device pixel across, drawn whole (not fainter) at that size. The container keeps
+    /// its own box. Set it from the state to animate it.
+    pub fn view_scale(mut self, s: f32) -> Self {
+        self.view_scale = Some(s.max(1e-3));
+        self
+    }
+    /// `El::zoom`, the pen too unless `keep_pen` (`El::view_scale`, applied to its children as the view
+    /// is laid out, so children added after it are scaled too).
+    pub(crate) fn zoom_by(mut self, k: f32, keep_pen: bool) -> Self {
         if (k - 1.0).abs() < 1e-4 || k <= 0.0 { return self; }
         if let Some((a, z)) = self.own_size {
             // Its own size: only where it is scales.
@@ -1226,7 +1244,11 @@ impl<M> El<M> {
         }
         zoom_style(&mut self.style, k);
         self.radius *= k;
-        if let Some((w, p)) = self.border { self.border = Some(((w * k).max(w.min(1.0)), p)); }
+        if keep_pen {
+            // The border keeps its width: its room in the layout as well as its stroke.
+            if let Some((w, _)) = self.border { let b = taffy::LengthPercentage::length(w); self.style.border = taffy::Rect { left: b, right: b, top: b, bottom: b }; }
+            self.pen *= k;
+        } else if let Some((w, p)) = self.border { self.border = Some(((w * k).max(w.min(1.0)), p)); }
         self.shift = (self.shift.0 * k, self.shift.1 * k);
         if let Content::Text { size, line, weight, print, around, pose, .. } = &mut self.content {
             *size *= k; *line *= k; *weight *= k; *print *= k;
@@ -1249,9 +1271,9 @@ impl<M> El<M> {
         if let Some(g) = &mut self.guide { *g = Rc::new(g.iter().map(|&(x, y)| (x * k, y * k)).collect()); }
         if let Some(t) = &mut self.trace {
             t.points = Rc::new(t.points.iter().map(|&[x, y]| [x * k, y * k]).collect());
-            t.weight *= k; t.dash *= k; t.gap *= k;
+            if !keep_pen { t.weight *= k; t.dash *= k; t.gap *= k; }
         }
-        self.children = std::mem::take(&mut self.children).into_iter().map(|c| c.zoom(k)).collect();
+        self.children = std::mem::take(&mut self.children).into_iter().map(|c| c.zoom_by(k, keep_pen)).collect();
         self
     }
 }

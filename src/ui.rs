@@ -100,6 +100,8 @@ pub struct Node<M> {
     shift: (f32, f32),
     /// Kept at its own size when zoomed (`El::own_size`): its anchor and the zoom.
     own_size: Option<([f32; 2], f32)>,
+    /// How much wider than its scale its drawing's strokes are drawn (`El::view_scale`; 1: as scaled).
+    pen: f32,
     /// At its own size and in its parent's flow (not placed absolutely), so it takes room there.
     own_in_flow: bool,
     shed: Option<crate::motes::Shed>,
@@ -3790,7 +3792,7 @@ impl<S, M: Clone> Ui<S, M> {
                         if let crate::draw::Mark::Blade(b) = m {
                             // Its segments (6, or 2 when it is short) and its head, each worked out on the GPU
                             // from the map at its root (scene.rs `Instance::xf`).
-                            let (rx, ry, len, w) = (ox + b.root.0 * k, oy + b.root.1 * k, b.len * k, (b.width * k).max(0.5));
+                            let (rx, ry, len, w) = (ox + b.root.0 * k, oy + b.root.1 * k, b.len * k, (b.width * k / n.pen).max(0.5));
                             let segs = crate::draw::Blade::segments(b.len * k / s) as u32;
                             let bounds = [rx - len - w, ry - len - w, 2.0 * (len + w), len + 2.0 * w];
                             let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round();
@@ -3829,13 +3831,20 @@ impl<S, M: Clone> Ui<S, M> {
                             continue;
                         }
                         let (rect, radius, xf, p, ramp) = match *m {
+                            // Under a view scale (`El::view_scale`) a dot under 1.5 device px across is one whole
+                            // device pixel, the one its centre is in: never gone, never fainter.
+                            crate::draw::Mark::Dot { x, y, r, paint } if n.pen != 1.0 && r * k < 0.75 => {
+                                let (cx, cy) = ((ox + x * k).floor(), (oy + y * k).floor());
+                                ([cx, cy, 1.0, 1.0], 0.0, [0.0; 4], paint, None)
+                            }
                             crate::draw::Mark::Dot { x, y, r, paint } => {
                                 let rr = (r * k).max(0.5);
                                 ([ox + x * k - rr, oy + y * k - rr, rr * 2.0, rr * 2.0], rr, [0.0; 4], paint, None)
                             }
                             crate::draw::Mark::Line { a, b, w, paint, far, mid } => {
                                 let (dx, dy) = ((b.0 - a.0) * k, (b.1 - a.1) * k);
-                                let (len, ww) = ((dx * dx + dy * dy).sqrt(), (w * k).max(0.5));
+                                // Its width as at 1 under a view scale: the pen does not scale.
+                                let (len, ww) = ((dx * dx + dy * dy).sqrt(), (w * k / n.pen).max(0.5));
                                 let (cx, cy) = (ox + (a.0 + b.0) * 0.5 * k, oy + (a.1 + b.1) * 0.5 * k);
                                 ([cx - (len + ww) * 0.5, cy - ww * 0.5, len + ww, ww], ww * 0.5, Instance::turned(dy.atan2(dx), 1.0, 1.0), paint, far.map(|f| (f, mid)))
                             }
@@ -6313,7 +6322,9 @@ fn measure_key(c: &Content) -> u64 {
 /// A virtual list's rows are built here, for what its viewport shows.
 #[allow(clippy::too_many_arguments)]
 fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], off: (bool, bool), flow: Option<(Rc<str>, usize)>, inh: Inherit, vx: &mut VirtCtx, built: &mut Built, nodes: &mut Vec<Node<M>>) -> usize {
-    let El { key, mut style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, map_life, mut on_text, multiline, selectable, cursor, virt, access, ripple, mut on_pick, mut on_wheel, mut on_move, guide, skeleton, rtl, on_visible, on_outline, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview, fit, clamp, plate, own_size, mut children } = el;
+    let El { key, mut style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, map_life, mut on_text, multiline, selectable, cursor, virt, access, ripple, mut on_pick, mut on_wheel, mut on_move, guide, skeleton, rtl, on_visible, on_outline, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview, fit, clamp, plate, own_size, pen, view_scale, mut children } = el;
+    // A view scale scales what it holds, not its pen (`El::view_scale`).
+    if let Some(s) = view_scale { children = children.into_iter().map(|c| c.zoom_by(s, true)).collect(); }
     let mut inh = inh;
     if let Some(r) = rtl { inh.rtl = r; }
     style.direction = if inh.rtl { taffy::Direction::Rtl } else { taffy::Direction::Ltr };
@@ -6386,7 +6397,7 @@ fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], of
         content, fill, border, radius, on_press, on_key, on_drag, on_blur, loose, wipe, bar, reveal, commit, modal, hidden, shift, shed, flow_field, stirr, trace, flow: flow.clone(),
         mat: inh.code(), loosen: inh.loosen, annotate, scope: gaze_scope, anchor, clips, calm, map_life, on_text, multiline, selectable: inh.select, cursor,
         virt: virt_info, access, respond, legible, ripple: inh.scope.clone(), ripple_scope: ripple.container || commit_scope, recompose, recompose_always: is_text && ripple.recompose == Some(true), unframed: ripple.unframed, keyed,
-        on_pick, on_wheel, on_move, guide, on_visible, on_outline, decode, skeleton: inh.skeleton, form, turn, xf: None, reveal_by, ongoing: ongoing || parent.is_some_and(|p| nodes[p].ongoing), pass, opacity, opacity_all: opacity * parent.map_or(1.0, |p| nodes[p].opacity_all), commit_scope, fit, clamp, shown: None, plate, own_size, own_in_flow: own_size.is_some() && style.position != taffy::Position::Absolute, local: taffy::Layout::new(), exact: (0.0, 0.0), tid: placeholder,
+        on_pick, on_wheel, on_move, guide, on_visible, on_outline, decode, skeleton: inh.skeleton, form, turn, xf: None, reveal_by, ongoing: ongoing || parent.is_some_and(|p| nodes[p].ongoing), pass, opacity, opacity_all: opacity * parent.map_or(1.0, |p| nodes[p].opacity_all), commit_scope, fit, clamp, shown: None, plate, own_size, pen, own_in_flow: own_size.is_some() && style.position != taffy::Position::Absolute, local: taffy::Layout::new(), exact: (0.0, 0.0), tid: placeholder,
     });
     crate::el::snap_style(&mut style);
     // Every element is the box its absolutely placed children are pinned in (all four insets against

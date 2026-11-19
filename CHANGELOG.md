@@ -8,6 +8,13 @@ crate and the `amenui` npm package (`web/`) always carry the same version, becau
 match the module that `web_app!` generates. The minimum Rust is the one CI builds with (`rust-version`
 in Cargo.toml); raising it is a breaking change before 1.0 only in the second number.
 
+## A view scale
+
+- `El::view_scale(s)`: what a container holds is scaled by `s` except the pen: line, border and trace widths and a
+  trace's dashes stay as at 1, own-size labels keep their size, and a dot is never less than one whole device pixel
+  (DESIGN.md §1.2). `El::zoom` is unchanged.
+- `El` has two new public fields, `pen` and `view_scale`: code that builds one with every field named needs them.
+
 ## Labels at their own size
 
 - `El::own_size(ax, ay)`: an element that keeps its own size when it is zoomed (`El::zoom`, `El::fit`) or rides a

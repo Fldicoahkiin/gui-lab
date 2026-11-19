@@ -530,3 +530,90 @@ fn a_reflow_fit_wraps_at_the_box_width_and_shrinks_only_what_still_overflows() {
     let bar = a.node("bar/a").unwrap().rect;
     assert!((bar.w - 300.0 * k).abs() < 1.0, "the bar is {} wide at {k}", bar.w);
 }
+
+/// A view scale (`El::view_scale`): a drawing with lines, a bordered box, two dots and a label at its
+/// own size.
+mod view {
+    use amenui::draw::Drawing;
+    use amenui::el::{El, Paint, canvas, col, space, text};
+    use amenui::style::{Look, Material};
+    pub const W: f32 = 400.0;
+    pub const H: f32 = 300.0;
+    #[derive(Clone, Copy)]
+    pub struct S { pub s: f32 }
+    pub fn view(s: &S) -> El<()> {
+        let mut d = Drawing::new(W, H);
+        d.line((40.0, 100.0), (360.0, 100.0), 2.0, Paint::INK);
+        d.line((200.0, 20.0), (200.0, 280.0), 1.0, Paint::INK);
+        d.dot(100.0, 200.0, 1.5, Paint::INK);
+        d.dot(300.0, 200.0, 6.0, Paint::INK);
+        let inner = col().key("drawing").width(W).height(H)
+            .child(canvas(d).key("ink").width(W).absolute(Some(0.0), Some(0.0), None, None))
+            .child(space(100.0, 50.0).key("frame").border(1.0, Paint::INK).absolute(Some(40.0), Some(220.0), None, None))
+            .child(text("Ridge", 13.0, Paint::INK).key("label").own_size(0.5, 1.0).absolute(Some(230.0), Some(150.0), None, None));
+        col().key("page").fill_width().fill_height().child(col().key("view").width(W).height(H).view_scale(s.s).child(inner))
+    }
+    pub fn look(_: &S) -> Look { Look { material: Material::Plain, ..Look::default() } }
+}
+
+#[test]
+fn a_view_scale_scales_geometry_and_not_the_pen() {
+    use amenui::ui::Ui;
+    let (w, h) = (view::W as u32, view::H as u32);
+    let Ok(mut o) = Offscreen::try_new(w, h) else { eprintln!("no GPU adapter here: skipped"); return };
+    let shot = |o: &mut Offscreen, s: f32| {
+        let mut u = Ui::new(view::S { s }, view::view, |_, _| {}, fonts(), w, h, 1.0).on_look(view::look);
+        u.tick(3.0);
+        u.settle();
+        let l = u.look();
+        o.r.partial = false;
+        let px = o.render(&mut u, &l);
+        (px, u)
+    };
+    let (px1, u1) = shot(&mut o, 1.0);
+    let at = |px: &[u8], x: u32, y: u32| { let i = ((y * w + x) * 4) as usize; [px[i] as i32, px[i + 1] as i32, px[i + 2] as i32] };
+    let ground = at(&px1, w - 2, h - 2);
+    let inked = |px: &[u8], x: u32, y: u32| { let c = at(px, x, y); (0..3).map(|i| (c[i] - ground[i]).abs()).sum::<i32>() > 60 };
+    // How many rows down column `x` from `y0` to `y1` are ink, and how many columns along row `y`.
+    let rows = |px: &[u8], x: u32, y0: u32, y1: u32| (y0..y1).filter(|&y| inked(px, x, y)).count();
+    let cols = |px: &[u8], y: u32, x0: u32, x1: u32| (x0..x1).filter(|&x| inked(px, x, y)).count();
+    let frame1 = u1.node("frame").expect("frame").rect;
+    let (hline1, vline1) = (rows(&px1, 120, 90, 110), cols(&px1, 60, 190, 210));
+    let border1 = rows(&px1, (frame1.x + frame1.w * 0.5) as u32, frame1.y as u32 - 2, (frame1.y + 10.0) as u32);
+    let label1 = u1.node("label").expect("label").rect;
+    assert!(hline1 >= 2 && vline1 >= 1 && border1 >= 1, "drawn at 1: {hline1} {vline1} {border1}");
+    for s in [0.8f32, 0.64, 0.4] {
+        let (px, u) = shot(&mut o, s);
+        // Lines and borders as wide as at 1, pixel for pixel.
+        assert_eq!(rows(&px, (120.0 * s) as u32, (100.0 * s) as u32 - 6, (100.0 * s) as u32 + 6), hline1, "{s}: the 2 px line");
+        assert_eq!(cols(&px, (60.0 * s) as u32, (200.0 * s) as u32 - 6, (200.0 * s) as u32 + 6), vline1, "{s}: the 1 px line");
+        let fr = u.node("frame").expect("frame").rect;
+        assert_eq!(rows(&px, (fr.x + fr.w * 0.5) as u32, fr.y as u32 - 2, (fr.y + 10.0 * s) as u32), border1, "{s}: the border");
+        // Geometry s times, within half a pixel.
+        assert!((fr.x - 40.0 * s).abs() <= 0.5 && (fr.y - 220.0 * s).abs() <= 0.5 && (fr.w - 100.0 * s).abs() <= 0.5 && (fr.h - 50.0 * s).abs() <= 0.5, "{s}: the frame at {fr:?}");
+        let marks = u.instances_of("ink");
+        let centre = |i: &amenui::scene::Instance| (i.rect[0] + i.rect[2] * 0.5, i.rect[1] + i.rect[3] * 0.5);
+        let big = marks.iter().find(|i| i.rect[2] > 4.0 * s && i.rect[2] < 13.0 * s && (i.rect[2] - i.rect[3]).abs() < 0.01).expect("the large dot");
+        let c = centre(big);
+        assert!((c.0 - 300.0 * s).abs() <= 0.5 && (c.1 - 200.0 * s).abs() <= 0.5 && (big.rect[2] - 12.0 * s).abs() <= 0.5, "{s}: the large dot {:?}", big.rect);
+        let hl = marks.iter().find(|i| i.rect[2] > 100.0 * s && i.rect[3] < 4.0).expect("the long line");
+        assert!((hl.rect[2] - (320.0 * s + 2.0)).abs() <= 0.5, "{s}: the line is {} long", hl.rect[2]);
+        // The small dot: one device pixel across at 0.4 (1.2 px scaled), drawn whole.
+        if s < 0.5 {
+            let small = marks.iter().find(|i| (centre(i).0 - 100.0 * s).abs() < 2.0 && (centre(i).1 - 200.0 * s).abs() < 2.0).expect("the small dot");
+            assert_eq!((small.rect[2], small.rect[3]), (1.0, 1.0), "{s}: the small dot");
+            let (x, y) = (small.rect[0] as u32, small.rect[1] as u32);
+            let c = at(&px, x, y);
+            let ink = at(&px1, 100, 200);
+            assert!((0..3).all(|i| (c[i] - ink[i]).abs() <= 24), "{s}: the small dot is {c:?}, the ink {ink:?}");
+            assert!(!inked(&px, x + 1, y) && !inked(&px, x, y + 1), "{s}: the small dot is wider than a pixel");
+        }
+        // The label at its own size, its anchor where the scale puts it.
+        let l = u.node("label").expect("label").rect;
+        assert!((l.w - label1.w).abs() < 1e-3 && (l.h - label1.h).abs() < 1e-3, "{s}: the label is {l:?}");
+        let (ax, ay) = (label1.x + label1.w * 0.5, label1.bottom());
+        assert!((l.x + l.w * 0.5 - ax * s).abs() < 1.0 && (l.bottom() - ay * s).abs() < 1.0, "{s}: the label's anchor");
+        let crop = |px: &[u8], r: amenui::ui::Rect| -> Vec<[i32; 3]> { (0..r.h as u32).flat_map(|y| (0..r.w as u32).map(move |x| (x, y))).map(|(x, y)| at(px, r.x as u32 + x, r.y as u32 + y)).collect() };
+        assert!(crop(&px, l) == crop(&px1, label1), "{s}: the label's type is not as at 1");
+    }
+}

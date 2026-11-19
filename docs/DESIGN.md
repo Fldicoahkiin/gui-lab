@@ -187,6 +187,16 @@ reported (`ViewProblem::OwnSizeOver`, P1 in the audit). `El::fit` measures a sub
 at the scale found, and solves the scale from the two sizes (a fixed part and a part that scales), still two
 passes. On a growing picture it rides at its own point (§1.10). `tests/own_size.rs`.
 
+**A view scale** (`El::view_scale(s)`): a view of a drawing at scale `s` (a map growing from a thumbnail to a window).
+Everything the container holds is scaled as by `El::zoom` (positions, lengths, fills, corner radii, a drawing's dots)
+except the pen: the widths of a drawing's strokes and blades, of borders (their room in the layout too) and of a trace,
+and a trace's dashes and gaps, stay as at 1; own-size elements keep their size. A dot scaled under 1.5 device px across
+is drawn as the one whole device pixel its centre is in, never gone and never fainter. The container keeps its own
+box; it applies to its children as the view is laid out, so it may be set before or after they are added. `El::zoom`
+is unchanged and scales the pen too. `tests/render.rs` (`a_view_scale_scales_geometry_and_not_the_pen`: at 0.8, 0.64
+and 0.4, line and border widths pixel for pixel as at 1, geometry `s` times within half a pixel, a 1.5 px dot one
+device pixel at 0.4, the label's type as at 1).
+
 **Clamping text** (`El::clamp(lines)`): a text element shows at most `lines` lines; text that does not fit ends in
 the face's own ellipsis on the last line, in the text's colour and size, on the baseline, drawn by the material as
 the rest of the line is (no fade, no mask). It breaks after a word, or between characters when that would leave more
