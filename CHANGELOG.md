@@ -8,6 +8,14 @@ crate and the `amenui` npm package (`web/`) always carry the same version, becau
 match the module that `web_app!` generates. The minimum Rust is the one CI builds with (`rust-version`
 in Cargo.toml); raising it is a breaking change before 1.0 only in the second number.
 
+## Drawn once
+
+- `El::cached()`: a subtree drawn once onto a plate and laid on from it while it draws the same, so a large page
+  of small text costs no instances; drawn again when it changes and after a new window size.
+- `el::cached_view(over, from, ink)`: part of a cached subtree, scaled into an element, read as coverage
+  nearest (a magnifier's pixels).
+- `El::clip_round(radius)`: a clip with round corners, or a circle.
+
 ## Fixes from the website: controls at rest
 
 - A front pushes text to read and controls about the centre of the control they are in, and a surface that holds

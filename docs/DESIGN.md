@@ -3123,6 +3123,39 @@ stays at 1.5; no step up while a pointer is down; at 1.5 on a 2× device, every 
 under a tip drawn over it is the one at the device's scale, and the stage's are not). On the website's Lab index at
 1440×900 2× with one cell running, a frame takes 2.9 ms median and 3.1 ms p95 on the CPU, from 6.9 ms.
 
+### 1.36 Drawn once: cached subtrees and round clips
+
+A page of thousands of small glyphs (the Lab's Loupe: a source file at 2.75 px, about 20,000 glyphs) costs as many
+instances every frame it is drawn. `El::cached()` draws such a subtree once and keeps it.
+
+- A cached element is a plate (§1.33, `fade_s` 0, with its limits and its rules: a picture, not content; it
+  clips its children). When the page is painted, its subtree's instances are hashed. Equal to what the plate
+  holds, and the plate not emptied this frame, they are dropped from the scene: the plate's span is empty and
+  the plate lays on what it kept, so the frame costs no instances for it. Different, the plate is emptied and
+  they are drawn onto it, once. A restage that copies the subtree from the last paint with nothing in it
+  leaves it as it was.
+- So it is drawn again whenever what it draws changes: it scrolls or moves, it loosens (a front passing, its
+  birth), its words change, the window changes size (which empties every plate). A stage, a 3D view or a
+  see-through group inside it is drawn with the rest, each time the rest is.
+- `el::cached_view(over, from, ink)` shows the part `from` (logical px on the page: x, y, w, h) of what the
+  cached element `over` drew, scaled to its own box. Each pixel of the plate's ink is read as its coverage
+  (alpha), nearest, and drawn as a glyph's coverage in `ink`: at a whole zoom each source pixel is a square of
+  whole pixels, and the material draws it as text. It is one instance (`Instance::cached_slot`: its
+  coordinates are packed below −1 with the slot; its batch, `scene::CACHED_BATCH` + slot, binds the plate's
+  ink where a glyph's atlas would be). It draws nothing before the cached element has drawn once in this
+  window, or inside the cached element itself.
+- `El::clip_round(radius)` clips the subtree to the box inside the border with round corners (half the side:
+  a circle). The radius rides in each instance's `look[3]` above its in-place flag (twice the radius in
+  quarter device px); the ink stage discards past half a pixel outside and antialiases the edge. A square
+  clip inside it that cuts it is square; a clip around it that cuts it keeps its own straight edge. Presses
+  are still taken anywhere in the box.
+
+Acceptance: `tests/cached.rs` (a cached page drawn the first frame as without caching, then laid on with no
+instances of its own while something else changes and the same as uncached; a frame with nothing new
+identical; drawn again when its words change, with no old ink; after a new window size as uncached; a
+cached view at ×4 inside a round clip of radius 40: every source pixel a 4 × 4 square of one colour, with
+ink, and the box's corners outside the circle as the page without it).
+
 ## 2. Parameters must be exact
 
 Sliders are not the main means. The number control (`number`):

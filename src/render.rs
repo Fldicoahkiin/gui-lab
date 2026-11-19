@@ -86,7 +86,7 @@ pub const PLATE_TICK: f32 = 1.0 / 120.0;
 
 /// One plate's kept images and the group that lays them on (binding 2: ink, 3: near, 10: the ink's age,
 /// 9: the nearness's age).
-struct PlateTex { ink: wgpu::TextureView, near: wgpu::TextureView, age: wgpu::TextureView, near_age: wgpu::TextureView, bind: wgpu::BindGroup }
+struct PlateTex { ink: wgpu::TextureView, near: wgpu::TextureView, age: wgpu::TextureView, near_age: wgpu::TextureView, bind: wgpu::BindGroup, view: wgpu::BindGroup }
 const ATLAS_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg8Unorm;
 
 const MARKS_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg8Unorm;
@@ -704,6 +704,7 @@ impl Renderer {
     /// The bind group a batch of stage 1 draws with: its picture's, or its 3D element's resolve.
     fn batch_group(&self, picture: u32) -> Option<&wgpu::BindGroup> {
         if picture >= crate::scene::MESH_BATCH { return self.mesh.targets.get((picture - crate::scene::MESH_BATCH) as usize).map(|t| &t.stage1); }
+        if picture >= crate::scene::CACHED_BATCH { return self.plates.get((picture - crate::scene::CACHED_BATCH) as usize).and_then(|p| p.as_ref()).map(|p| &p.view); }
         self.pictures.get(&picture).or_else(|| self.pictures.get(&u32::MAX))
     }
 
@@ -1406,8 +1407,10 @@ impl Renderer {
                 let (ink, near) = (Self::target(&self.device, w, h, INK), Self::target(&self.device, w, h, NEAR));
                 let (age, near_age) = (Self::target(&self.device, w, h, PLATE_AGE), Self::target(&self.device, w, h, PLATE_AGE));
                 let bind = Self::bind(&self.device, &self.layout, &self.ubuf, &self.sampler, [&ink, &near, &self.marks_view, &self.palette_view, &self.chars_view, &self.blank, &near_age, &self.fmap_view, &age]);
+                // What `el::cached_view` draws with: the plate's ink where a glyph's atlas would be.
+                let view = Self::bind(&self.device, &self.layout, &self.ubuf, &self.sampler, [&ink, &self.blank, &self.marks_view, &self.palette_view, &self.chars_view, &self.blank, &self.blank, &self.fmap_view, &self.hold]);
                 for v in [&ink, &near, &age, &near_age] { let _ = clear(enc, v, wgpu::Color::TRANSPARENT); }
-                self.plates[slot] = Some(PlateTex { ink, near, age, near_age, bind });
+                self.plates[slot] = Some(PlateTex { ink, near, age, near_age, bind, view });
                 self.plate_inked[slot] = false;
             }
         }

@@ -9,13 +9,16 @@ pub const PICTURE: f32 = 2.0;
 pub const MESH: f32 = 3.0;
 /// Batches of mesh instances are keyed by this plus their index (pictures by their id).
 pub const MESH_BATCH: u32 = 0x4000_0000;
+/// Batches that read a cached plate's ink (`el::cached_view`) are `CACHED_BATCH + slot`.
+pub const CACHED_BATCH: u32 = 0x2000_0000;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Instance {
     /// Device px. Glyphs include the spread padding; shapes and pictures are padded by the renderer.
     pub rect: [f32; 4],
-    /// Glyphs and pictures: texture coordinates x0, y0, x1, y1. Shapes: corner radius (device px) in x.
+    /// Glyphs and pictures: texture coordinates x0, y0, x1, y1 (below −1: a cached plate's, see
+    /// `cached_slot`). Shapes: corner radius (device px) in x.
     pub uv: [f32; 4],
     /// tone, accent, alpha, kind
     pub paint: [f32; 4],
@@ -28,7 +31,8 @@ pub struct Instance {
     /// Material override code (0 = the global material; else `128 + level × 16 + id`, see
     /// `style::override_code`), accent hue (0, 1, 2), whether it reads the field map (1; 0 for a
     /// stirring element's own subtree, what a morph shows, flying tiles, motes; DESIGN.md §1.29), and
-    /// whether the map's flow leaves it in place (1 for pictures and 3D views, else 0).
+    /// whether the map's flow leaves it in place (1 for pictures and 3D views, else 0) plus twice its clip's
+    /// corner radius in quarter device px (`El::clip_round`; 0 for a square clip).
     pub look: [f32; 4],
     /// How the field may move it (DESIGN.md §1.15): the most looseness fronts may add (0 for `Ignore`
     /// and `Nudge`, `Look::legible_cap` for legible `Loosen`, else 1); how fronts push it (0: not at all,
@@ -55,6 +59,9 @@ impl Instance {
     /// A blade's segment or head (draw.rs `Blade`): its shape is worked out on the GPU from the field map.
     pub fn blade(&self) -> bool { (self.paint[3] == SHAPE && self.extra[1] >= 0.5) || self.blade_head() }
     pub(crate) fn blade_head(&self) -> bool { self.paint[3] == GLYPH && self.extra[1] < -0.5 }
+    /// A view of a cached plate (`el::cached_view`): a glyph whose texture coordinates are packed as
+    /// `−1 − 4 × slot − t` (t 0–1 in the window-sized plate), so they are below −1; the slot.
+    pub fn cached_slot(&self) -> Option<u32> { (self.paint[3] == GLYPH && self.uv[0] < -0.5).then(|| ((-1.0 - self.uv[0]) / 4.0).floor().max(0.0) as u32) }
     /// The axis-aligned box (x0, y0, x1, y1) its transformed `rect` covers, grown by `pad` (device px).
     pub fn bounds(&self, pad: f32) -> [f32; 4] {
         let r = self.rect;
@@ -147,11 +154,11 @@ impl Scene {
     pub fn begin_layer(&mut self) { self.layer = Some(self.instances.len() as u32); }
     pub fn push(&mut self, i: Instance) {
         let n = self.instances.len() as u32;
-        let picture = if i.paint[3] == PICTURE { Some(i.extra[1] as u32) } else if i.paint[3] == MESH { Some(MESH_BATCH + i.extra[1] as u32) } else { None };
+        let picture = if i.paint[3] == PICTURE { Some(i.extra[1] as u32) } else if i.paint[3] == MESH { Some(MESH_BATCH + i.extra[1] as u32) } else { i.cached_slot().map(|k| CACHED_BATCH + k) };
         // A batch never straddles the start of the layer, so the renderer can draw the two apart.
         match self.batches.last_mut() {
             // Glyphs and shapes join any batch whose group holds the glyph atlas: not a 3D element's.
-            Some(b) if picture.map_or(b.picture < MESH_BATCH, |p| p == b.picture) && self.layer != Some(n) => b.end = n + 1,
+            Some(b) if picture.map_or(b.picture < CACHED_BATCH, |p| p == b.picture) && self.layer != Some(n) => b.end = n + 1,
             _ => self.batches.push(Batch { start: n, end: n + 1, picture: picture.unwrap_or(0) }),
         }
         self.instances.push(i);

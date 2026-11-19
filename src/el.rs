@@ -219,6 +219,15 @@ pub enum Content {
     Canvas(Rc<crate::draw::Drawing>),
     /// Character marks over a picture at a pitch of its own (`el::cells`, DESIGN.md §1.6.1).
     Cells(Rc<Cells>),
+    /// What a cached subtree drew, read back as coverage (`el::cached_view`, DESIGN.md §1.36).
+    CachedView {
+        /// The key of the element marked `El::cached`.
+        over: String,
+        /// The part of the page it shows, logical px: x, y, width, height.
+        from: [f32; 4],
+        /// The ink its coverage is drawn in.
+        ink: Paint,
+    },
 }
 
 /// The picture beneath an element as character marks (`el::cells`, DESIGN.md §1.6.1): the element's box
@@ -706,6 +715,10 @@ pub struct Props {
     pub clamp: u16,
     /// What its subtree draws stays (`El::plate`).
     pub plate: Option<Plate>,
+    /// Its subtree is drawn once and kept until it changes (`El::cached`).
+    pub cached: bool,
+    /// Its clip has round corners of this radius, logical px (`El::clip_round`).
+    pub clip_radius: f32,
     /// It keeps its own size when zoomed (`El::own_size`): the point of its box (0–1 across, down) that
     /// stays where the zoomed box would put it, and the zoom it was given (1: none).
     pub own_size: Option<([f32; 2], f32)>,
@@ -727,7 +740,7 @@ pub struct Props {
 }
 impl Props {
     #[inline(never)]
-    fn new(style: Style, content: Content) -> Self { Props { key: String::new(), style, content, fill: None, border: None, radius: 0.0, focusable: false, tab_order: 0, skip_to: None, focus_shown: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, shift: (0.0, 0.0), shed: None, flow_field: None, stirr: None, trace: None, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, clips: false, calm: false, map_life: None, multiline: false, selectable: false, cursor: None, ripple: Ripple::default(), guide: None, skeleton: false, rtl: None, decode: None, form: None, turn: 0.0, reveal_by: Reveal::Glyph, ongoing: false, pass: false, opacity: 1.0, commit_scope: false, preview: false, fit: None, clamp: 0, plate: None, own_size: None, grain: false, show_clear: None, pen: 1.0, view_scale: None, stage: false, stack: false, steps: false } }
+    fn new(style: Style, content: Content) -> Self { Props { key: String::new(), style, content, fill: None, border: None, radius: 0.0, focusable: false, tab_order: 0, skip_to: None, focus_shown: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, shift: (0.0, 0.0), shed: None, flow_field: None, stirr: None, trace: None, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, clips: false, calm: false, map_life: None, multiline: false, selectable: false, cursor: None, ripple: Ripple::default(), guide: None, skeleton: false, rtl: None, decode: None, form: None, turn: 0.0, reveal_by: Reveal::Glyph, ongoing: false, pass: false, opacity: 1.0, commit_scope: false, preview: false, fit: None, clamp: 0, plate: None, cached: false, clip_radius: 0.0, own_size: None, grain: false, show_clear: None, pen: 1.0, view_scale: None, stage: false, stack: false, steps: false } }
 }
 impl<M> std::ops::Deref for El<M> { type Target = Props; fn deref(&self) -> &Props { &self.props } }
 impl<M> std::ops::DerefMut for El<M> { fn deref_mut(&mut self) -> &mut Props { &mut self.props } }
@@ -1152,6 +1165,19 @@ impl<M> El<M> {
     /// most twice its area; more are drawn as plain elements and `Ui::problems` says so. For music
     /// videos, the lab and pages that say they are a drawing board; not for ordinary pages.
     pub fn plate(mut self, p: Plate) -> Self { self.plate = Some(Plate { fade_s: (p.fade_s.clamp(0.0, 60.0) * 2.0).round() / 2.0 }); self.clip() }
+    /// Draw this subtree once and keep it (DESIGN.md §1.36): a frame that would draw it as it was draws
+    /// nothing of it and lays on what it kept, so a large page of small text costs no instances while it
+    /// stays as it is. It is drawn again when what it draws changes (it scrolls, moves, loosens) and after
+    /// the window changes size. It is a plate (`El::plate`, with its limits): a picture, not content, not
+    /// selectable or read by assistive technology, and it clips its children. Another element shows
+    /// part of it with `el::cached_view`. A stage, a 3D view or a see-through group inside it is drawn
+    /// as the rest is, every time it is drawn, not by itself.
+    pub fn cached(mut self) -> Self { self.cached = true; self.plate(Plate { fade_s: 0.0 }) }
+    /// Clip the subtree to the box inside the border with round corners of `radius` logical px (half the
+    /// box's side: a circle). Edges are antialiased. Where a clip around it cuts the box, that clip's own
+    /// edge is straight, and the corners stay where the uncut box has them only when it is not cut. A
+    /// press is still taken anywhere in the box.
+    pub fn clip_round(mut self, radius: f32) -> Self { self.clip_radius = radius.max(0.0); self.clip() }
     /// A preview of components (a gallery's or a document's specimen), for the whole subtree: a modal
     /// element in it (a sheet, a context menu, a dialog) is drawn where it is written, laid out and
     /// clipped by this container, without a layer: nothing beneath it is held loose, focus is not kept
@@ -1354,6 +1380,13 @@ pub fn wrap_text<M: Clone>(src: &str) -> El<M> { crate::markdown::page(src, "wra
 /// A text leaf with an explicit line height.
 pub fn text_lh<M>(s: impl Into<String>, size: f32, line: f32, paint: Paint) -> El<M> {
     El::new(Style::default(), Content::Text { s: s.into(), size, line, paint, font: Font::Body, print: 0.0, caret: None, weight: 0.0, around: None, select: None, mark: None, nowrap: false, pose: None, track: 0.0 })
+}
+/// Part of what a cached subtree (`El::cached`, under the key `over`) drew, scaled to this element's
+/// box: `from` is that part on the page (logical px: x, y, width, height). Each pixel of the cached image
+/// is its coverage, in `ink`, sampled nearest: at a whole zoom a pixel there is a square of whole pixels
+/// here. Nothing is drawn until the cached element has drawn once in this window.
+pub fn cached_view<M>(over: impl Into<String>, from: [f32; 4], ink: Paint) -> El<M> {
+    El::new(Style::default(), Content::CachedView { over: over.into(), from, ink })
 }
 /// A picture by id (`Renderer::set_picture`), as wide as its parent and `ratio` times as tall.
 pub fn picture<M>(id: u32, ratio: f32) -> El<M> { El::new(Style { size: Size { width: percent(1.0), height: auto() }, ..Default::default() }, Content::Picture { id, ratio, fx: 0 }) }

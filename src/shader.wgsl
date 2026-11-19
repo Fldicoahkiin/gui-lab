@@ -311,7 +311,7 @@ fn vs_pad(iv: VIn, spad: f32) -> VOut {
   var push = select(fronts_push(centre), vec2f(0.0), still);
   // The field map's flow carries what may be pushed and reads it (look.z), by its centre; not a picture
   // or a 3D view (look.w), which loosens in place.
-  if (!still && i.look.z > 0.5 && i.look.w < 0.5) { push += fmap_flow(centre) * u.fmap.y; }
+  if (!still && i.look.z > 0.5 && i.look.w % 2.0 < 0.5) { push += fmap_flow(centre) * u.fmap.y; }
   // A legible piece moves by whole device pixels, so its glyphs are never sampled between texels (a
   // label pushed by a press would blur for that frame and lose its contrast).
   if (i.resp.y > 1.5) { push = round(push); }
@@ -329,6 +329,12 @@ fn vs_pad(iv: VIn, spad: f32) -> VOut {
   return o;
 }
 
+/// How far outside its round clip (`El::clip_round`) the pixel is, device px (−1: a square clip).
+fn clip_d(i: VOut) -> f32 {
+  let r = floor(i.look.w * 0.5) * 0.25;
+  if (r <= 0.0) { return -1.0; }
+  return box_d(i.pos.xy - i.clip.xy, i.clip.zw - i.clip.xy, r);
+}
 fn box_d(local: vec2f, size: vec2f, r: f32) -> f32 {
   let rr = min(r, min(size.x, size.y) * 0.5);
   let q = abs(local - size * 0.5) - (size * 0.5 - vec2f(rr));
@@ -339,6 +345,7 @@ fn box_d(local: vec2f, size: vec2f, r: f32) -> f32 {
 // the atlas' nearness)
 fn inst(i: VOut) -> vec4f {
   if (i.pos.x < i.clip.x || i.pos.y < i.clip.y || i.pos.x >= i.clip.z || i.pos.y >= i.clip.w) { discard; }
+  if (clip_d(i) > 0.5) { discard; }
   let kind = i.paint.w;
   if (kind > 2.5) {
     // A 3D element (DESIGN.md §1.18): its resolve gives the silhouette's and the faces' signed nearness
@@ -362,6 +369,16 @@ fn inst(i: VOut) -> vec4f {
     let inside = d <= 0.0 && ta > 0.5;
     let near = clamp(0.5 - d / (2.0 * u.fd.z), 0.0, 1.0) * step(0.5, ta);
     return vec4f(clamp(0.5 - d, 0.0, 1.0) * ta, near, select(0.0, 1.0, inside), d);
+  }
+  if (kind < 0.5 && i.uvr.x < -0.5) {
+    // A view of a cached plate (`el::cached_view`): its ink's coverage at the texel under the pixel,
+    // nearest, as a glyph's (tex0 is the plate's ink here).
+    let t = -1.0 - i.uv - 4.0 * floor((-1.0 - i.uvr.x) / 4.0);
+    let dims = vec2f(textureDimensions(tex0));
+    let q = vec2i(clamp(floor(t * dims), vec2f(0.0), dims - 1.0));
+    let cov = textureLoad(tex0, q, 0).a;
+    let near = select(0.0, 0.25 + 0.5 * cov, cov > 0.0);
+    return vec4f(cov, near, 0.0, (0.5 - near) * 2.0 * u.fd.z);
   }
   if (kind < 0.5) {
     let g = textureSampleLevel(tex0, samp, i.uv, 0.0);
@@ -525,7 +542,7 @@ fn ink_of(iv: VOut, solid: bool) -> vec4f {
   let ramped = is_ramp(iv);
   if (ramped) { ramp = ramp_at(iv); i.paint = vec4f(mix(ramp.p0, ramp.p1, ramp.f), i.paint.w); }
   let s = inst(i);
-  var a = s.x * i.paint.z * rm_fade(i);
+  var a = s.x * i.paint.z * rm_fade(i) * clamp(0.5 - clip_d(i), 0.0, 1.0);
   // A shape scribblr fades (its alpha before the fade in uv.y) keeps its fill within `r0` of text to read
   // that holds it, to a one-pixel edge: no soft rim.
   if (i.paint.w > 0.5 && i.paint.w < 1.5 && i.uvr.y > 0.0) { a = mix(a, s.x * i.uvr.y * rm_fade(i), core_at(i.pos.xy)); }

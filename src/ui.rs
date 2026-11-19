@@ -197,6 +197,12 @@ pub struct Node<M> {
     pub shown: Option<String>,
     /// What its subtree draws stays (`El::plate`).
     pub plate: Option<crate::el::Plate>,
+    /// Its subtree is drawn once and kept until it changes (`El::cached`).
+    pub cached: bool,
+    /// Its own clip's corner radius (`El::clip_round`, logical px).
+    clip_radius: f32,
+    /// The corner radius of the clip it is drawn in (logical px; 0: square).
+    pub clip_r: f32,
     /// The box layout gave it, relative to its parent (scrolling does not change it).
     local: taffy::Layout,
     /// Where taffy put it in its parent before rounding to whole px (for `El::own_size`).
@@ -217,7 +223,7 @@ impl<M> Node<M> {
             Content::Picture { .. } => "image",
             Content::Scene3d(_) => "mesh",
             Content::Canvas(_) => "drawing",
-            Content::Cells(_) => "image",
+            Content::Cells(_) | Content::CachedView { .. } => "image",
             Content::None if self.focusable || self.on_press.is_some() || self.on_drag.is_some() => "control",
             Content::None if self.fill.is_some() || self.border.is_some() => "shape",
             Content::None => "box",
@@ -699,6 +705,8 @@ pub struct Ui<S, M> {
     /// lasts (plate clock); slots to empty before the next frame; plates over the limit; the plate clock
     /// (it stops while a `Hold` lasts) and when a frame was last drawn for aging.
     plate_slots: [Option<(String, f32, f32)>; crate::scene::PLATES],
+    /// What each cached plate last drew (`El::cached`): a hash of its instances.
+    plate_sig: [Option<u64>; crate::scene::PLATES],
     plate_clear: Vec<u8>,
     plate_over: Vec<String>,
     pclock: f32,
@@ -1118,7 +1126,7 @@ impl<S, M: Clone> Ui<S, M> {
             gaze_of: None, gaze_seen: HashMap::new(), annots: vec![], focused: None, focus_moved: false, readout: gaze::Readout::default(), hovered: None, pointer_of: None, scripted: false, ticked: None, warm: None, warmed: None, owed: false, soft_shown: false, ambient: 60.0, input_t: -1e9, frame_t: -1e9, tick_gap: 1.0 / 60.0, unused_key: None, shortcut: None, scrolled_of: None, released: None, input: None,
             dirty: true, look_of: None, locale_of: None, timing: Timing::default(), wake_of: None, latest_birth: f32::NEG_INFINITY, gaze_until: f32::NEG_INFINITY,
             marks_moving: false, caret: None, caret_on: true, static_loose: false, mclock: 0.0, moving: false, gclock: 0.0, ground_moving: false,
-            perf: crate::perf::Perf { quality: 1.0, ..Default::default() }, span: 0, painting: false, overlay: 0, overlay_at: 0.0, overlay_box: None, overlay_w: (0, (0.0, 0.0), 0.0), fade_s: REDUCED_FADE, came: vec![], arriving: HashMap::new(), sweeping: false, swept_nodes: vec![], remeasure: false, plate_slots: Default::default(), plate_clear: vec![], plate_over: vec![], pclock: 0.0, plate_frame: f32::NEG_INFINITY, assets: HashMap::new(), assets_asked: Default::default(), shape_seen: 0.0, hud_idle: false, rebuilt: 0,
+            perf: crate::perf::Perf { quality: 1.0, ..Default::default() }, span: 0, painting: false, overlay: 0, overlay_at: 0.0, overlay_box: None, overlay_w: (0, (0.0, 0.0), 0.0), fade_s: REDUCED_FADE, came: vec![], arriving: HashMap::new(), sweeping: false, swept_nodes: vec![], remeasure: false, plate_slots: Default::default(), plate_sig: Default::default(), plate_clear: vec![], plate_over: vec![], pclock: 0.0, plate_frame: f32::NEG_INFINITY, assets: HashMap::new(), assets_asked: Default::default(), shape_seen: 0.0, hud_idle: false, rebuilt: 0,
             text_capture: None, sel: None, sel_drag: false, clicks: (f32::NEG_INFINITY, 0.0, 0.0, 0), a11y_sent: HashMap::new(), a11y_focus: None,
             tree: TaffyTree::new(), tids: HashMap::new(), mkeys: HashMap::new(), virt_views: HashMap::new(), virt_made: HashMap::new(), stack_w: HashMap::new(),
             scrolling: Scrolling::default(), touch: None, touches: HashSet::new(), touching: false, fling: None, over: HashMap::new(), motion: HashMap::new(), scroll_paint: false, event_t: None, ev: 0.0,
@@ -1644,8 +1652,30 @@ impl<S, M: Clone> Ui<S, M> {
         if off.fronts && self.field.fronts.iter().any(|f| f[3] > 0.0) { for f in &mut self.field.fronts { f[3] = 0.0; } cut = true; }
         if cut { self.dirty = true; self.paint(); }
     }
-    /// The plate in `slot` drew the instances from `start` to now.
-    fn plate_span(&mut self, slot: u8, start: u32) {
+    /// The plate in `slot` drew the instances from `start` to now (the subtree of `root`).
+    fn plate_span(&mut self, root: usize, slot: u8, start: u32) {
+        // A cached subtree (`El::cached`) that draws what its plate holds draws nothing: the plate lays on
+        // what it kept. One that draws something else is drawn onto an emptied plate. One copied from the
+        // last paint with nothing in it (a restage) is as it was.
+        if self.nodes[root].cached {
+            let (a, b) = (start as usize, self.scene.instances.len());
+            if b > a {
+                use std::hash::{Hash, Hasher};
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                bytemuck::cast_slice::<Instance, u8>(&self.scene.instances[a..b]).hash(&mut h);
+                let sig = h.finish();
+                let k = slot as usize;
+                if self.plate_sig[k] == Some(sig) && !self.plate_clear.contains(&slot) {
+                    self.scene.truncate(a);
+                    self.owners.truncate(a);
+                    self.tags.truncate(a);
+                    self.glyphs.log.retain(|g| g.inst < a);
+                } else {
+                    self.plate_sig[k] = Some(sig);
+                    if !self.plate_clear.contains(&slot) { self.plate_clear.push(slot); }
+                }
+            }
+        }
         let end = self.scene.instances.len() as u32;
         let fade = self.plate_slots[slot as usize].as_ref().map_or(0.0, |p| p.2);
         if end > start && let Some(p) = &mut self.plate_slots[slot as usize] { p.1 = self.pclock; }
@@ -2422,7 +2452,7 @@ impl<S, M: Clone> Ui<S, M> {
             let a = n.access.clone().unwrap_or_default();
             let role = a.role.or_else(|| match &n.content {
                 Content::Text { .. } if !spoken => Some(Role::Text),
-                Content::Picture { .. } | Content::Scene3d(_) | Content::Canvas(_) | Content::Cells(_) => Some(Role::Img),
+                Content::Picture { .. } | Content::Scene3d(_) | Content::Canvas(_) | Content::Cells(_) | Content::CachedView { .. } => Some(Role::Img),
                 Content::None if n.on_press.is_some() && n.focusable && !spoken => Some(Role::Button),
                 _ => None,
             });
@@ -3417,6 +3447,8 @@ impl<S, M: Clone> Ui<S, M> {
         }
         let screen = Rect::new(0.0, 0.0, self.size.0, self.size.1);
         let mut inside = vec![screen; nodes.len()];
+        // The corner radius of each node's inside clip (`El::clip_round`).
+        let mut inside_r = vec![0.0f32; nodes.len()];
         // Each node's top left before taffy rounded it, so an own-size element's anchor is placed exactly.
         let mut exact = vec![(0.0f32, 0.0f32); nodes.len()];
         for i in 0..nodes.len() {
@@ -3456,6 +3488,9 @@ impl<S, M: Clone> Ui<S, M> {
             n.inner = inner_border.inset(p.left, p.top, p.right, p.bottom);
             // A box clips inside its border, so what it holds never covers it.
             inside[i] = if n.preview { clip.intersect(&inner_border.inset(1.0, 1.0, 1.0, 1.0)) } else if n.scroll || n.clips { clip.intersect(&inner_border) } else { clip };
+            // A round clip (`El::clip_round`) is the box's; a square one inside it that cuts it is square.
+            n.clip_r = n.parent.map_or(0.0, |p| inside_r[p]);
+            inside_r[i] = if n.clip_radius > 0.0 && n.clips { n.clip_radius } else if inside[i] == clip { n.clip_r } else { 0.0 };
             if n.virt.is_some() { self.virt_views.insert(n.key.clone(), n.rect.h); }
         }
         // Who came into view or left it (`El::on_visible`); what is gone is forgotten, so it is told
@@ -3726,7 +3761,7 @@ impl<S, M: Clone> Ui<S, M> {
             }
             // A plate's subtree (`El::plate`): its instances, kept by the renderer.
             if let Some((root, start, slot)) = plate && !within(&self.nodes, i, root) {
-                self.plate_span(slot, start);
+                self.plate_span(root, slot, start);
                 plate = None;
             }
             if plate.is_none() && let Some(&slot) = plates.get(&i) { plate = Some((i, self.scene.instances.len() as u32, slot)); }
@@ -3764,6 +3799,8 @@ impl<S, M: Clone> Ui<S, M> {
             let hidden = match (role, &self.run) { (1, Some(r)) => now >= r.src_until, (2, Some(r)) => now < r.dst_from, _ => n.hidden };
             let c = n.clip;
             let clip = [c.x * s, c.y * s, c.right() * s, c.bottom() * s];
+            // A round clip's radius rides in look[3] above its flag (device px in quarters, × 2).
+            let clip_q = 2.0 * (n.clip_r * s * 4.0).round();
             if n.calm && !hidden && !unseen && calms < self.field.calm.len() {
                 // Its box as seen, a little larger, so a front's push cannot carry an edge across it.
                 let r = seen;
@@ -3836,7 +3873,7 @@ impl<S, M: Clone> Ui<S, M> {
                 inst.look[2] = reads;
                 // A picture or a 3D view loosens where the map is, in place: its flow never carries it
                 // off its own box (so a trail never shows the page under a picture, §1.29).
-                inst.look[3] = if in_place || inst.paint[3] == PICTURE || inst.paint[3] == MESH { 1.0 } else { 0.0 };
+                inst.look[3] = if in_place || inst.paint[3] == PICTURE || inst.paint[3] == MESH { 1.0 } else { 0.0 } + clip_q;
                 inst.paint[2] *= dim;
                 inst.extra[2] = loose;
                 // Hidden instances are kept for sampling only: they get no birth time, so a view that
@@ -3879,7 +3916,7 @@ impl<S, M: Clone> Ui<S, M> {
                             put(&mut sink, block(bar, h * 0.5), ident(&n.key, u32::MAX - 32 - k as u32, 0), None);
                         }
                     },
-                    Content::Picture { .. } | Content::Scene3d(_) | Content::Canvas(_) | Content::Cells(_) => { put(&mut sink, block(n.inner, n.radius.max(4.0)), ident(&n.key, u32::MAX - 22, 0), None); }
+                    Content::Picture { .. } | Content::Scene3d(_) | Content::Canvas(_) | Content::Cells(_) | Content::CachedView { .. } => { put(&mut sink, block(n.inner, n.radius.max(4.0)), ident(&n.key, u32::MAX - 22, 0), None); }
                     Content::None => {}
                 }
                 continue;
@@ -4050,6 +4087,20 @@ impl<S, M: Clone> Ui<S, M> {
                         look: [mat, hue + 4.0 * (ax as f32 + 2048.0 * ay as f32), 0.0, 1.0], resp, xf: [0.0; 4] };
                     put(&mut sink, inst, ident(&n.key, u32::MAX - 2, id), None);
                 }
+                Content::CachedView { over, from, ink } => {
+                    // One glyph-like instance whose coverage is read, nearest, from the cached plate's ink
+                    // (window-sized, device px); its coordinates there are packed below −1 with the slot
+                    // (scene.rs `Instance::cached_slot`).
+                    let Some(slot) = self.plate_slots.iter().position(|p| p.as_ref().is_some_and(|p| &p.0 == over)) else { continue };
+                    // Not inside what it reads (a pass cannot read the image it draws into).
+                    if self.plate_sig[slot].is_none() || plate.is_some_and(|(_, _, k)| k as usize == slot) { continue; }
+                    let (ww, wh) = (self.size.0.max(1e-3), self.size.1.max(1e-3));
+                    let e = |v: f32| -1.0 - 4.0 * slot as f32 - v.clamp(0.0, 1.0);
+                    let uv = [e(from[0] / ww), e(from[1] / wh), e((from[0] + from[2]) / ww), e((from[1] + from[3]) / wh)];
+                    let inst = Instance { rect: dev(n.inner), uv, paint: [ink.tone, ink.accent, ink.alpha, GLYPH], clip,
+                        extra: [0.0; 4], look: [mat, ink.hue.min(2) as f32, 0.0, 0.0], resp, xf: [0.0; 4] };
+                    put(&mut sink, inst, ident(&n.key, u32::MAX - 4, slot as u32), None);
+                }
                 Content::Canvas(d) => {
                     // Each mark a shape with its true outline, in the drawing's space scaled to the box.
                     let k = n.inner.w / d.w.max(1e-3) * s;
@@ -4156,7 +4207,7 @@ impl<S, M: Clone> Ui<S, M> {
             }
         }
         if let Some((_, start, op)) = group && (self.scene.instances.len() as u32) > start { self.scene.groups.push(crate::scene::Group { start, end: self.scene.instances.len() as u32, opacity: op }); }
-        if let Some((_, start, slot)) = plate { self.plate_span(slot, start); }
+        if let Some((root, start, slot)) = plate { self.plate_span(root, slot, start); }
         if let Some((root, start, t0)) = stage_open { self.stage_close(root, start, t0, &text_births, &seen_recs); }
         // A drawn stage keeps its see-through groups with its image; a stage no longer in the view is gone.
         for (_, st) in &mut self.stages {
@@ -5001,7 +5052,7 @@ impl<S, M: Clone> Ui<S, M> {
                     let carried = |inst: &Instance| -> [f32; 2] {
                         let c = if inst.resp[1] > 1.5 { [inst.resp[2], inst.resp[3]] } else { [inst.rect[0] + inst.rect[2] * 0.5, inst.rect[1] + inst.rect[3] * 0.5] };
                         let calm_here = calm.iter().any(|b| c[0] >= b[0] && c[1] >= b[1] && c[0] < b[2] && c[1] < b[3]);
-                        if inst.look[2] <= 0.5 || inst.look[3] >= 0.5 || inst.resp[1] < 0.5 || calm_here { return [0.0; 2]; }
+                        if inst.look[2] <= 0.5 || inst.look[3] % 2.0 >= 0.5 || inst.resp[1] < 0.5 || calm_here { return [0.0; 2]; }
                         let f = self.fmap.flow_at(c[0] / s, c[1] / s);
                         [f[0] * drift * s, f[1] * drift * s]
                     };
@@ -7153,7 +7204,7 @@ fn measure_key(c: &Content) -> u64 {
         }
         Content::Picture { ratio, .. } => ratio.to_bits().hash(&mut h),
         // Sized by its style alone.
-        Content::Scene3d(_) | Content::Cells(_) => 3u8.hash(&mut h),
+        Content::Scene3d(_) | Content::Cells(_) | Content::CachedView { .. } => 3u8.hash(&mut h),
         Content::Canvas(d) => (d.h / d.w.max(1e-3)).to_bits().hash(&mut h),
         Content::None => 0u8.hash(&mut h),
     }
@@ -7168,7 +7219,7 @@ fn measure_key(c: &Content) -> u64 {
 #[allow(clippy::too_many_arguments)]
 fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], off: (bool, bool), flow: Option<(Rc<str>, usize)>, inh: Inherit, vx: &mut VirtCtx, built: &mut Built, nodes: &mut Vec<Node<M>>) -> usize {
     let stage_at = (el.props.stage || el.props.steps).then(|| Box::new(StageCtx { parent, path: path.clone(), roles, off, flow: flow.clone(), inh: inh.clone(), held: el.props.stage }));
-    let El { props: crate::el::Props { key, mut style, mut content, fill, border, radius, mut focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, mut commit, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, map_life, multiline, selectable, cursor, ripple, guide, skeleton, rtl, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview, fit, clamp, plate, own_size, grain, show_clear, pen, view_scale, stage: _, stack, steps: _ }, mut on_press, mut on_key, mut on_drag, mut on_blur, modal, mut on_text, virt, access, mut on_pick, mut on_wheel, mut on_move, on_visible, on_outline, mut children } = el;
+    let El { props: crate::el::Props { key, mut style, mut content, fill, border, radius, mut focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, mut commit, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, map_life, multiline, selectable, cursor, ripple, guide, skeleton, rtl, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview, fit, clamp, plate, cached, clip_radius, own_size, grain, show_clear, pen, view_scale, stage: _, stack, steps: _ }, mut on_press, mut on_key, mut on_drag, mut on_blur, modal, mut on_text, virt, access, mut on_pick, mut on_wheel, mut on_move, on_visible, on_outline, mut children } = el;
     // A view scale scales what it holds, not its pen (`El::view_scale`).
     if let Some(s) = view_scale { children = children.into_iter().map(|c| c.zoom_by(s, true)).collect(); }
     let mut inh = inh;
@@ -7243,7 +7294,7 @@ fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], of
         content, fill, border, radius, on_press, on_key, on_drag, on_blur, loose, wipe, bar, reveal, commit, modal, hidden, shift, shed, flow_field, stirr, trace, flow: flow.clone(),
         mat: inh.code(), loosen: inh.loosen, annotate, scope: gaze_scope, anchor, clips, calm, map_life, on_text, multiline, selectable: inh.select, cursor,
         virt: virt_info, access, respond, legible, ripple: inh.scope.clone(), ripple_scope: ripple.container || commit_scope, recompose, recompose_always: is_text && ripple.recompose == Some(true), unframed: ripple.unframed, keyed,
-        on_pick, on_wheel, on_move, guide, on_visible, on_outline, decode, skeleton: inh.skeleton, form, turn, xf: None, reveal_by, ongoing: ongoing || parent.is_some_and(|p| nodes[p].ongoing), pass, opacity, opacity_all: opacity * parent.map_or(1.0, |p| nodes[p].opacity_all), commit_scope, fit, clamp, shown: None, plate, own_size, grain, show_clear, view_scale, stage: stage_at, op0: (0.0, 0.0), pen, own_in_flow: own_size.is_some() && style.position != taffy::Position::Absolute, local: taffy::Layout::new(), exact: (0.0, 0.0), tid: placeholder,
+        on_pick, on_wheel, on_move, guide, on_visible, on_outline, decode, skeleton: inh.skeleton, form, turn, xf: None, reveal_by, ongoing: ongoing || parent.is_some_and(|p| nodes[p].ongoing), pass, opacity, opacity_all: opacity * parent.map_or(1.0, |p| nodes[p].opacity_all), commit_scope, fit, clamp, shown: None, plate, cached, clip_radius, clip_r: 0.0, own_size, grain, show_clear, view_scale, stage: stage_at, op0: (0.0, 0.0), pen, own_in_flow: own_size.is_some() && style.position != taffy::Position::Absolute, local: taffy::Layout::new(), exact: (0.0, 0.0), tid: placeholder,
     });
     { let n = nodes.last_mut().expect("pushed"); n.op0 = (n.opacity, n.opacity_all); }
     crate::el::snap_style(&mut style);
