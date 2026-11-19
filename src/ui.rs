@@ -323,7 +323,9 @@ struct Keyed { grow: usize, old: Instance, pin: [f32; 2], keep_h: bool }
 /// (a word, one box of lines), so that part keeps its own shape.
 /// `pin`: the point of that box (0–1 across, down) the picture carries: its centre, or a label's own
 /// anchor (`El::own_size`).
-struct Ghost { inst: Instance, start: f32, dur: f32, loosen: bool, ride: Option<usize>, anchor: [f32; 4], pin: [f32; 2] }
+/// `scaled`: it was drawn under a view scale (`El::view_scale`) and not at its own size, so it is the
+/// layout's geometry and goes with the picture's transform, its pen kept, not at its own size.
+struct Ghost { inst: Instance, start: f32, dur: f32, loosen: bool, ride: Option<usize>, anchor: [f32; 4], pin: [f32; 2], scaled: bool }
 /// A look's ground and second ground.
 type Grounds = ([f32; 3], [f32; 3]);
 /// A flow subtree's picture on its way (`Cmd::Flow`): its box (x, y, w, h) and the part of it that shows
@@ -350,11 +352,26 @@ impl Grow {
         let (nx, ny) = (p[0] + u * p[2], p[1] + v * p[3]);
         [r[0] + nx - cx, r[1] + ny - cy, r[2], r[3]]
     }
+    /// Where a rect of the old subtree's scaled geometry is at `e` of the way: taken by the picture's
+    /// transform; a line (`keep_h`) keeps its width across and its round ends.
+    fn carry(&self, r: [f32; 4], e: f32, keep_h: bool) -> [f32; 4] {
+        let p = self.picture(e);
+        let (kx, ky) = (p[2] / self.p0[2].max(1e-3), p[3] / self.p0[3].max(1e-3));
+        let at = |x: f32, y: f32| [p[0] + (x - self.p0[0]) * kx, p[1] + (y - self.p0[1]) * ky];
+        if keep_h {
+            let c = at(r[0] + r[2] * 0.5, r[1] + r[3] * 0.5);
+            let w = (r[2] - r[3]) * kx + r[3];
+            return [c[0] - w * 0.5, c[1] - r[3] * 0.5, w, r[3]];
+        }
+        let a = at(r[0], r[1]);
+        [a[0], a[1], r[2] * kx, r[3] * ky]
+    }
 }
 /// A page instance as it was drawn, kept across a relayout for `Cmd::Flow`.
 /// `key`: its element's key when the element is keyed, `slot` which of that element's instances it is
-/// (glyph or not, the count, the glyph), `own` whether the element keeps its own size.
-struct Old { id: u64, node: usize, pin: [f32; 2], tag: Option<Tag>, inst: Instance, key: Option<Rc<str>>, slot: (bool, u32, u32), own: bool }
+/// (glyph or not, the count, the glyph), `own` whether the element keeps its own size, `scaled` whether
+/// it is under a view scale (`El::view_scale`) at the layout's scale (not its own size).
+struct Old { id: u64, node: usize, pin: [f32; 2], tag: Option<Tag>, inst: Instance, key: Option<Rc<str>>, slot: (bool, u32, u32), own: bool, scaled: bool }
 
 /// A text's glyphs as last painted, kept to see what changed in the next view (DESIGN.md §1.16).
 /// `changed` is when its string last changed (seconds), to tell a readout that changes every frame.
@@ -4943,10 +4960,17 @@ impl<S, M: Clone> Ui<S, M> {
             // Riding with a growing picture, over it, inside the part of it that shows (drawn after it).
             if let Some(gr) = g.ride.and_then(|r| self.grows.get(r)) {
                 let e = gr.ease(now);
-                let p = [g.anchor[0] + g.pin[0] * g.anchor[2], g.anchor[1] + g.pin[1] * g.anchor[3]];
-                let a = gr.ride([p[0], p[1], 0.0, 0.0], e);
-                inst.rect[0] += a[0] - p[0];
-                inst.rect[1] += a[1] - p[1];
+                if g.scaled {
+                    // The view's geometry: with the picture's transform, its pen kept.
+                    let r = inst.rect;
+                    let line = inst.paint[3] == SHAPE && r[2] > r[3] + 0.5 && (r[3] - 2.0 * inst.uv[0]).abs() < 0.01;
+                    inst.rect = gr.carry(r, e, line);
+                } else {
+                    let p = [g.anchor[0] + g.pin[0] * g.anchor[2], g.anchor[1] + g.pin[1] * g.anchor[3]];
+                    let a = gr.ride([p[0], p[1], 0.0, 0.0], e);
+                    inst.rect[0] += a[0] - p[0];
+                    inst.rect[1] += a[1] - p[1];
+                }
                 inst.clip = gr.shows(e);
                 if self.scene.layer.is_none() { riding.push(inst); continue; }
             }
@@ -5083,7 +5107,7 @@ impl<S, M: Clone> Ui<S, M> {
             self.base[i].extra[3] = sg[k].extra[3];
         }
         let (out, inn) = if reduced { (dur, [now, now + dur]) } else { (0.3 * dur, [now + 0.7 * dur, now + dur]) };
-        for inst in sg[n..].iter().chain(&so) { self.ghosts.push(Ghost { inst: *inst, start: now, dur: out, loosen: false, ride: None, anchor: inst.rect, pin: [0.5, 0.5] }); }
+        for inst in sg[n..].iter().chain(&so) { self.ghosts.push(Ghost { inst: *inst, start: now, dur: out, loosen: false, ride: None, anchor: inst.rect, pin: [0.5, 0.5], scaled: false }); }
         for &i in dg[n..].iter().chain(&d_other) {
             let id = self.owners[i].1;
             self.flows.insert(id, FlowRec { from: self.base[i].rect, clip: self.base[i].clip, start: now, dur, loose: 0.0, src: None, fade_in: Some(inn), grow: None, keyed: None });
@@ -5204,9 +5228,21 @@ impl<S, M: Clone> Ui<S, M> {
     /// The page as it is drawn now, for a flow.
     fn record(&self) -> Vec<Old> {
         let slots = self.slots();
+        // The nearest view scale above a node, own-size elements on the way included.
+        let view = |mut v: usize| -> Option<usize> {
+            let mut own = false;
+            loop {
+                own |= self.nodes[v].own_size.is_some();
+                let p = self.nodes[v].parent?;
+                if self.nodes[p].view_scale.is_some() { return (!own).then_some(p); }
+                v = p;
+            }
+        };
         (0..self.page_len).map(|i| {
             let n = &self.nodes[self.owners[i].0];
-            Old { id: self.owners[i].1, node: self.owners[i].0, pin: n.own_size.map_or([0.5, 0.5], |o| o.0), tag: self.tags[i].clone(), inst: self.scene.instances[i], key: n.keyed.then(|| Rc::from(n.key.as_str())), slot: slots[i], own: n.own_size.is_some() }
+            let own = n.own_size.is_some();
+            let scaled = !own && view(self.owners[i].0).is_some();
+            Old { id: self.owners[i].1, node: self.owners[i].0, pin: n.own_size.map_or([0.5, 0.5], |o| o.0), tag: self.tags[i].clone(), inst: self.scene.instances[i], key: n.keyed.then(|| Rc::from(n.key.as_str())), slot: slots[i], own, scaled }
         }).collect()
     }
     /// Which of its element's instances each page instance is: glyph or not, how many of that kind came
@@ -5346,7 +5382,7 @@ impl<S, M: Clone> Ui<S, M> {
                 if cx < r[0] + 3.0 || cy < r[1] + 3.0 || cx > r[2] - 3.0 || cy > r[3] - 3.0 { (ride, loosen) = (None, false); }
             }
             let (start, dur) = if on_it && ride.is_some() { if xfade.contains(&k) { (now + flight, out) } else { (now + flight - 1e-4, 1e-4) } } else { (now, out) };
-            going.push((k, Ghost { inst: o.inst, start, dur, loosen, ride, anchor: o.inst.rect, pin: o.pin }));
+            going.push((k, Ghost { inst: o.inst, start, dur, loosen, ride, anchor: o.inst.rect, pin: o.pin, scaled: o.scaled }));
         }
         // What rides moves by parts of its element, each part whole: an element's glyphs together (a
         // word or label), and lines or shapes that touch (one box of four lines) together, so a part
@@ -5356,7 +5392,8 @@ impl<S, M: Clone> Ui<S, M> {
         // By what each covers, turned (a drawing's strokes are), as (x0, y0, x1, y1).
         let touch = |a: [f32; 4], b: [f32; 4]| a[0] <= b[2] && b[0] <= a[2] && a[1] <= b[3] && b[1] <= a[3];
         let mut by_node: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
-        for (j, (k, g)) in going.iter().enumerate() { if let Some(r) = g.ride { by_node.entry((old[*k].node, r)).or_default().push(j); } }
+        // (What is scaled with the view goes with the picture's transform instance by instance.)
+        for (j, (k, g)) in going.iter().enumerate() { if let Some(r) = g.ride && !g.scaled { by_node.entry((old[*k].node, r)).or_default().push(j); } }
         for js in by_node.values() {
             for (a, &x) in js.iter().enumerate() { for &y in &js[a + 1..] {
                 let (gx, gy) = (&going[x].1.inst, &going[y].1.inst);

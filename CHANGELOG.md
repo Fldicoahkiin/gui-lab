@@ -18,6 +18,8 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
   with the picture instead of fading out and in, its size on the picture's cubic (DESIGN.md §1.10). Own-size type at
   another size on the new page is reported (`ViewProblem::FlowOwnSize`) and cross-fades once the picture lands. A
   picture with the same flow id whose box changed now grows.
+- `Cmd::Flow`: under a view scale, what rides on a growing or shrinking picture goes with the picture's transform, its pen
+  kept, instead of at its own size by parts, so a drawing shrinks into the window with its picture.
 - `ViewProblem` has two new variants, and `Props` a new field, `show_clear`.
 
 ## Grain in a region
