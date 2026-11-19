@@ -1219,19 +1219,11 @@ impl Renderer {
         let staged = qs < 0.99 && self.stage_boxes(ui.scene());
         // Scrolling under the automatic level (Fable's ruling, DESIGN.md §1.12): the scroll areas are shaded
         // at the level, no lower than the material's floor, from the first frame that scrolls; 100 ms after
-        // the last delta one frame is drawn sharp everywhere.
-        let soft = SOFT_SCROLL && auto && q < 1.0 && ui.scroll_soft();
-        let q = if soft { q.max(soft_floor(look.material)) } else { q };
-        let lo_loose = q < 1.0 && (loose || soft || self.always_lo);
-        let ql = if lo_loose && staged { q.min(qs) } else if staged { qs } else { q };
-        self.stage_u.2[2] = if staged && !lo_loose { 1.0 } else { 0.0 };
-        self.stage_u.2[3] = if soft { 1.0 } else { 0.0 };
-        if !staged { self.stage_u.2[0] = 0.0; self.stage_u.2[1] = 0.0; }
-        let rescaled = (qs - self.stage_q).abs() > 1e-3 || (self.soft_q < 1.0 && !soft);
-        self.stage_q = qs;
-        self.soft_q = if soft { q } else { 1.0 };
-        ui.soft_drawn(soft);
-        let lo = (lo_loose || staged).then(|| { let (w, h) = self.lo_for(ql); [1.0 / ql, ql, w as f32, h as f32] });
+        // the last delta one frame is drawn sharp everywhere. Not when the frame can move the last one and
+        // shade only the band scrolled in (`dirty::Move`, decided below): that is cheaper still, and sharp.
+        let soft_wanted = SOFT_SCROLL && auto && q < 1.0 && ui.scroll_soft();
+        let lo_loose = q < 1.0 && (loose || self.always_lo);
+        let rescaled = (qs - self.stage_q).abs() > 1e-3;
         let pending = ui.perf().pending;
         // The field map (DESIGN.md §1.29): its bytes when they changed (a few KB), and the numbers.
         let snap = ui.fieldmap().snapshot().clone();
@@ -1260,8 +1252,21 @@ impl Renderer {
         self.had_groups = !ui.scene().groups.is_empty();
         self.had_plates = ui.scene().plates.len();
         self.was_ageing = ui.scene().plate_ageing;
-        let parts = match (&self.prev, self.partial) { (Some(p), true) => crate::dirty::parts(p, &inputs, scale), _ => None };
+        let mut parts = match (&self.prev, self.partial) { (Some(p), true) => crate::dirty::parts(p, &inputs, scale), _ => None };
         if let Some(old) = self.prev.replace(inputs) { self.spare = (old.instances, old.annot); }
+        let soft = soft_wanted && !parts.as_ref().is_some_and(|p| p.moved.is_some());
+        // Softened, or the first frame after (drawn sharp), the frame is drawn whole.
+        if soft || self.soft_q < 1.0 { parts = None; }
+        let q = if soft { q.max(soft_floor(look.material)) } else { q };
+        let lo_loose = lo_loose || soft && q < 1.0;
+        let ql = if lo_loose && staged { q.min(qs) } else if staged { qs } else { q };
+        self.stage_u.2[2] = if staged && !lo_loose { 1.0 } else { 0.0 };
+        self.stage_u.2[3] = if soft { 1.0 } else { 0.0 };
+        if !staged { self.stage_u.2[0] = 0.0; self.stage_u.2[1] = 0.0; }
+        self.stage_q = qs;
+        self.soft_q = if soft { q } else { 1.0 };
+        ui.soft_drawn(soft);
+        let lo = (lo_loose || staged).then(|| { let (w, h) = self.lo_for(ql); [1.0 / ql, ql, w as f32, h as f32] });
         self.region = parts.as_ref().map_or(crate::dirty::Region::All, |p| p.region());
         self.parts = parts;
         self.frame_q(target, Frame { scene: ui.scene(), field: ui.field(), look, lib: ui.meshes(), scale, t: now, mt, split, tiles, grid }, true, lo);

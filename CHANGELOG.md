@@ -8,6 +8,11 @@ crate and the `amenui` npm package (`web/`) always carry the same version, becau
 match the module that `web_app!` generates. The minimum Rust is the one CI builds with (`rust-version`
 in Cargo.toml); raising it is a breaking change before 1.0 only in the second number.
 
+## Frame rate
+
+- Scrolling under the automatic level is not softened on a frame that can move the last one (`dirty::Move`):
+  that frame shades only the strip scrolled in, sharp.
+
 ## For Kern
 
 - `pair::Faces` resolves a role as the page's root does (its `El::fonts`), and the faces kept follow it; a Lab page

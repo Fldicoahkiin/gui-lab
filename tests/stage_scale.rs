@@ -133,10 +133,12 @@ mod scrolling {
 fn a_scroll_area_softens_only_while_it_scrolls_under_the_automatic_level() {
     let (w, h) = (300u32, 220u32);
     if Offscreen::try_new(w, h).is_err() { eprintln!("no GPU adapter here: skipped"); return; }
-    // A frame of the page, `wheel` scrolled at 3 s, drawn at `t`, with the automatic level at `level`.
-    let shot = |q: f32, level: usize, t: f32| {
+    // A frame of the page, `wheel` scrolled at 3 s, drawn at `t`, with the automatic level at `level`;
+    // `moves`: the frame may move the last one (`dirty::Move`), and then it is not softened.
+    let shot_in = |q: f32, level: usize, t: f32, moves: bool| {
         let mut o = Offscreen::new(w, h);
         o.r.auto.level = level;
+        o.r.partial = moves;
         let mut ui = Ui::new(scrolling::S { q }, scrolling::view, |_, _| {}, fonts(), w, h, 1.0).on_look(scrolling::look);
         ui.tick(2.9);
         let look = ui.look();
@@ -149,6 +151,7 @@ fn a_scroll_area_softens_only_while_it_scrolls_under_the_automatic_level() {
         let r = ui.node("list").expect("list").rect;
         (px, [r.x as u32, r.y as u32, r.right().ceil() as u32, r.bottom().ceil() as u32], soft_now, ui.scroll_soft())
     };
+    let shot = |q: f32, level: usize, t: f32| shot_in(q, level, t, false);
     let (sharp, list, moving, _) = shot(0.0, 0, 3.0);
     assert!(moving, "the wheel moved the list");
     let (soft, ..) = shot(0.0, 2, 3.0);
@@ -168,4 +171,7 @@ fn a_scroll_area_softens_only_while_it_scrolls_under_the_automatic_level() {
     assert!(in_diff > 50, "the scroll area is shaded softened (the dottr ground between the lines): {in_diff} pixels differ");
     assert!(sharp == fixed, "a level the look fixes never softens scrolling");
     assert!(stopped == stopped_sharp, "the frame after it stops is sharp");
+    // When the frame can move the last one, it does, sharp: softening stands down.
+    let (moved, ..) = shot_in(0.0, 2, 3.0, true);
+    assert!(moved == sharp, "a frame that moves the last one is not softened");
 }

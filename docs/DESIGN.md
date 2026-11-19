@@ -1541,14 +1541,16 @@ read, with no sharpening. The ink stays at full resolution: a reduced texel whos
 at rest, so glyphs, strokes of 2 px or less, focus corners and the edges of panels and the chrome are shaded
 in the full-resolution pass; the annotation layer and overlays are drawn after the material and never
 reduced. Once it stops, `Ui::needs_frame` asks for one more frame (`Ui::soft_drawn` says the last one was
-softened) and that frame is drawn sharp everywhere. The real costs of scrolling are elsewhere (shading only the
-strip that scrolled in, the per-pixel cost of `shade`); 0.5 is the fallback.
+softened) and that frame is drawn sharp everywhere. Softening stands down on a frame that can move the last
+one (`dirty::Move`, §1.19): that frame shades only the strip that scrolled in and what changed, sharp, which
+costs less than any reduced pass; a softened frame, and the sharp one after it, are drawn whole. The real costs
+of scrolling are there (the move, the per-pixel cost of `shade`); 0.5 is the fallback.
 
 **Acceptance**: `tests/perf.rs` (the level steps down on slow intervals while something moves and never at rest,
 a missed frame restarts the wait up, costly frames do not raise it, last-second statistics, F2 and the menu
 open the readout and its text is in the annotation layer, it wakes every 0.5 s while open);
 `tests/stage_scale.rs` (a scroll area softens while it scrolls and nothing outside it does, a fixed level never
-softens, the frame due after it stops is sharp); `check` item 12: under every material at rest, `q = 0.5` (with `lo` forced) and `q = 1` are
+softens, the frame due after it stops is sharp, a frame that moves the last one is not softened); `check` item 12: under every material at rest, `q = 0.5` (with `lo` forced) and `q = 1` are
 identical pixel for pixel and body text equals `plain` (with item 5's tolerance), with a control: once
 loosened, the two resolutions can be told apart. Frame times on llvmpipe (relative comparison only) are in
 §9.
