@@ -129,3 +129,30 @@ fn the_drawings_of_a_frame_share_one_table() {
     // past the palette hue 0.
     assert_eq!(hues, vec![3.0, 4.0, 4.0, 6.0, 0.0]);
 }
+
+/// A band that clips a picture and the rays over it (W-04 in its phone band): a ray that runs out of
+/// the band is cut at its edge, so what is drawn of it is on the picture; with a picture shorter than
+/// the band, the ray's part under it is drawn off the picture.
+fn band(pic_h: f32) -> El<()> {
+    let mut d = Drawing::new(W as f32, H as f32);
+    d.palette(vec![ROOT, MID, TIP]);
+    let (p0, mid, far) = RAY;
+    d.ramp((40.0, 20.0), (400.0, 180.0), 1.0, p0, Some(mid), far);
+    d.line((40.0, 30.0), (400.0, 190.0), 2.0, Paint::hue(5));
+    col().key("page").width(W as f32).height(H as f32).child(col().key("band").width(W as f32).height(100.0).clip()
+        .child(picture(PIC, pic_h / W as f32).key("sky").width(W as f32).absolute(Some(0.0), Some(0.0), None, None))
+        .child(canvas(d).key("rays").width(W as f32).pass(true).absolute(Some(0.0), Some(0.0), None, None)))
+}
+
+#[test]
+fn a_mark_cut_by_its_clip_is_on_the_picture_when_what_is_drawn_of_it_is() {
+    for (pic_h, reported) in [(100.0f32, false), (60.0, true)] {
+        let mut u = Ui::new(pic_h, |h: &f32| band(*h), |_, _| {}, fonts(), W, H, 1.0).on_look(|_| Look { material: Material::Plain, theme: theme(false), ..Look::default() });
+        u.tick(3.0);
+        u.settle();
+        let p = u.problems();
+        let own = p.iter().any(|p| matches!(p, ViewProblem::OwnColourOffPicture { key } if key == "rays"));
+        let ramp = p.iter().any(|p| matches!(p, ViewProblem::RampHue { key } if key == "rays"));
+        assert_eq!((own, ramp), (reported, reported), "a picture {pic_h} px tall in a band 100 px tall: {p:?}");
+    }
+}

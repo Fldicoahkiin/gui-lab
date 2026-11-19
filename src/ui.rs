@@ -1385,8 +1385,11 @@ impl<S, M: Clone> Ui<S, M> {
             let own_hue = q.paint[3] == SHAPE && q.paint[1] > 0.0 && q.look[1] > 2.5;
             let ramp = q.paint[3] == SHAPE && q.uv[2] < -0.5 && ramp_hues(q);
             if !own_hue && !ramp { continue; }
+            // What of it is drawn (inside its clip): a mark that crosses the clip's edge is cut there.
             let b = q.bounds(0.0);
-            if pictures.iter().any(|p| b[0] >= p[0] && b[1] >= p[1] && b[2] <= p[2] && b[3] <= p[3]) { continue; }
+            let b = [b[0].max(q.clip[0]), b[1].max(q.clip[1]), b[2].min(q.clip[2]), b[3].min(q.clip[3])];
+            if b[0] >= b[2] || b[1] >= b[3] { continue; }
+            if pictures.iter().any(|p| b[0] >= p[0] - 0.5 && b[1] >= p[1] - 0.5 && b[2] <= p[2] + 0.5 && b[3] <= p[3] + 0.5) { continue; }
             let key = &self.nodes[self.owners[i].0].key;
             if own_hue && own.insert(key.clone()) { out.push(P::OwnColourOffPicture { key: key.clone() }); }
             if ramp && seen.insert(key.clone()) { out.push(P::RampHue { key: key.clone() }); }
@@ -3545,7 +3548,11 @@ impl<S, M: Clone> Ui<S, M> {
             // Within a group, a see-through descendant is made so by its own alpha.
             let fade = group.map_or(1.0, |(_, _, op)| n.opacity_all / op.max(1e-6));
             let seen = n.rect.intersect(&n.clip);
-            if seen.w <= 0.0 || seen.h <= 0.0 || veiled[i] { continue; }
+            // Text whose glyphs are posed (`El::pose`) may be drawn away from its box: it is culled by
+            // where its glyphs go (below), not by its box.
+            let posed_text = matches!(n.content, Content::Text { pose: Some(_), .. });
+            let unseen = seen.w <= 0.0 || seen.h <= 0.0;
+            if veiled[i] || unseen && (!posed_text || n.clip.w <= 0.0 || n.clip.h <= 0.0) { continue; }
             let role = self.roles[i];
             // Reads the field map (DESIGN.md §1.29): not a stirring element's own subtree, not what a
             // morph shows (its hand-over must match the first stage exactly).
@@ -3553,7 +3560,7 @@ impl<S, M: Clone> Ui<S, M> {
             let hidden = match (role, &self.run) { (1, Some(r)) => now >= r.src_until, (2, Some(r)) => now < r.dst_from, _ => n.hidden };
             let c = n.clip;
             let clip = [c.x * s, c.y * s, c.right() * s, c.bottom() * s];
-            if n.calm && !hidden && calms < self.field.calm.len() {
+            if n.calm && !hidden && !unseen && calms < self.field.calm.len() {
                 // Its box as seen, a little larger, so a front's push cannot carry an edge across it.
                 let r = seen;
                 self.field.calm[calms] = [(r.x - 4.0) * s, (r.y - 4.0) * s, (r.right() + 4.0) * s, (r.bottom() + 4.0) * s];
@@ -3661,8 +3668,9 @@ impl<S, M: Clone> Ui<S, M> {
                     let Some(para) = n.para() else { continue };
                     let wpx = weight * s;
                     let focused = caret_at.is_some_and(|f| within(&self.nodes, i, f));
-                    // Lines the clip hides are not made into instances at all.
-                    let rows = Some((clip[1], clip[3]));
+                    // Lines the clip hides are not made into instances at all (posed glyphs go elsewhere: all
+                    // of them are posed, and those the clip hides then left out).
+                    let rows = if pose.is_some() { None } else { Some((clip[1], clip[3])) };
                     let mut glyphs: Vec<(Instance, u32)> = vec![];
                     // A face arriving (DESIGN.md §1.6.5) sweeps along each line of text on screen.
                     let window = Rect::new(0.0, 0.0, self.size.0, self.size.1);
@@ -3718,6 +3726,7 @@ impl<S, M: Clone> Ui<S, M> {
                         crate::form::reveal_whole(&mut posed, &groups, (0.0, 0.0), [clip[0].max(window[0]), clip[1].max(window[1]), clip[2].min(window[2]), clip[3].min(window[3])]);
                     }
                     if pose.is_some() || n.reveal_by != crate::el::Reveal::Glyph { crate::form::arrange(&mut posed, n.form.as_ref().filter(|_| pose.is_some()), &self.text.pixels); }
+                    if pose.is_some() { posed.retain(|g| { let b = g.inst.bounds(0.0); b[0] < clip[2] && b[2] > clip[0] && b[1] < clip[3] && b[3] > clip[1] }); }
                     let glyphs: Vec<(Instance, u32)> = posed.iter().map(|g| (g.inst, g.glyph)).collect();
                     // A selection (the field's, while it has focus, or the read-only one) is drawn by
                     // nearness: each selected glyph again, under itself, with its outline moved out, so
@@ -6516,7 +6525,12 @@ struct Fitted { k: f32, at: (f32, f32), pixel: Vec<(String, f32, f32)>, w: Optio
 /// same order).
 fn fit_apply<M>(el: &mut El<M>, ks: &[Fitted]) {
     fn snap<M>(el: &mut El<M>, k: f32, pixel: &[(String, f32, f32)]) {
-        if let Content::Text { s, size, .. } = &mut el.content && let Some(p) = pixel.iter().find(|p| p.0 == *s && (p.1 * k - *size).abs() < 1e-3) { *size = p.2; }
+        if let Content::Text { s, size, line, .. } = &mut el.content && let Some(p) = pixel.iter().find(|p| p.0 == *s && (p.1 * k - *size).abs() < 1e-3) {
+            // Set larger than the scale makes it (a pixel face is never under its native size): its lines
+            // as much further apart, so wrapped lines do not overlap and the box holds them.
+            if p.2 > *size + 1e-4 && *size > 0.0 { *line *= p.2 / *size; }
+            *size = p.2;
+        }
         for c in &mut el.children { snap(c, k, pixel); }
     }
     fn go<M>(el: &mut El<M>, ks: &[Fitted], at: &mut usize) {

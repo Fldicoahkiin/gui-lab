@@ -156,7 +156,9 @@ natural size, then zoomed (`El::zoom`) by the scale that fits the container's co
 same layout: two taffy passes, no hook after layout. The scale depends only on the box and the natural size, so a
 larger box never gets a smaller scale. Pixel type does not change the scale: each pixel text in the subtree is set
 at the largest whole multiple of its face's size that is no larger than the scale makes it, so it is only ever smaller
-than in proportion and never overflows. At `min` and still too large it is drawn at `min` and clipped, and
+than in proportion and never overflows; under its face's native size it is set at that size (never smaller), and its
+lines are then that much further apart, so wrapped lines do not overlap and its box holds them (`tests/param_boxes.rs`,
+`a_formula_scaled_with_its_cell_is_as_tall_as_its_wrapped_lines`). At `min` and still too large it is drawn at `min` and clipped, and
 `Ui::problems` reports `FitShort`; in a direction it overflows it is placed from the start (left, top), so its
 beginning is seen and its end cut, and in the other it follows `align`. Exactly at `min` and within the content box
 (inside any border) it is not cut and nothing is reported. `tests/render.rs`
@@ -2271,7 +2273,8 @@ So the foundation changed in five places, with no special cases in the effect pa
 - **Glyph poses** (`El::pose(|GlyphAt| Pose)`): asked once per laid-out glyph when the scene is built (index,
   count, center, content box, the range of all glyph centers), giving a translation, an angle, two scales,
   multipliers for tone and opacity, and a minimum accent; glyphs with opacity 0 aren't drawn. No layout or
-  shaping: pointer movement only rebuilds the scene.
+  shaping: pointer movement only rebuilds the scene. Posed text is culled by where its glyphs go, not by its box: a
+  box outside its clip still draws the glyphs posed into it, and the glyphs posed outside the clip are not made.
 - **Drawings** (`el::canvas(Drawing)`, `src/draw.rs`): an element whose content is marks in its own coordinate
   space (`Mark::Dot`, `Mark::Line`), scaled to the element's width with the height in proportion. Each mark is a
   shape instance: a dot is a rounded square and a stroke a turned bar with round ends, so they have true
@@ -2298,7 +2301,7 @@ So the foundation changed in five places, with no special cases in the effect pa
   where ink is written as its own colour, they are exact and a ramp between two is mixed in OKLab as between theme
   hues (a ramp packs its stops' hues in 6 bits each). Off a picture, where ink is one of the theme's three accents a
   pixel, a mark in one of them is drawn in hue 0 and reported (`ViewProblem::OwnColourOffPicture`, a P1 in the
-  audit), as a ramp across hues is there; so is a hue past the drawing's palette or the table, and outside a drawing
+  audit; what is drawn of a mark, cut by its clip, is what must be on a picture), as a ramp across hues is there; so is a hue past the drawing's palette or the table, and outside a drawing
   a hue of 3 or more is hue 0. `tests/own_colours.rs` (W-04's ray in its own three colours over its sky, by hand in
   OKLab within 2 / 255 under a dark and a light theme and the same pixels under both; off a picture hue 0 and a P1;
   two drawings sharing a colour count it once).

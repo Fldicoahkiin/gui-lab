@@ -8,6 +8,14 @@ crate and the `amenui` npm package (`web/`) always carry the same version, becau
 match the module that `web_app!` generates. The minimum Rust is the one CI builds with (`rust-version`
 in Cargo.toml); raising it is a breaking change before 1.0 only in the second number.
 
+## Fixes from the website
+
+- Pixel type set at its face's native size because a fitted box zoomed it under that size (the Lab's formula on a
+  docs stage) has its lines as much further apart: the lines no longer overlap and the text's box holds them.
+- `ViewProblem::OwnColourOffPicture` and `ViewProblem::RampHue` look at what is drawn of a mark, cut by its clip: a
+  ray that runs out of a band holding its picture is no longer reported.
+- Posed text (`El::pose`) whose box is outside its clip draws the glyphs its pose puts inside the clip.
+
 ## One GPU for every off-screen renderer
 
 - Every `Offscreen` in a process shares one wgpu instance, adapter, device and queue, made on first use; each keeps its

@@ -442,7 +442,12 @@ impl Text {
     fn shape_inner(&mut self, s: &str, face: u8, size: f32, line: f32, max_width: Option<f32>, set: Setting<'_>) -> Layout<()> {
         let Setting { around, track } = set;
         if self.log_shapes { self.shape_log.push(s.to_owned()); }
+        let asked = size * self.real(face).1;
         let size = self.size_for(face, size);
+        // A pixel face asked for under its native size is drawn at it (or at what one device px a px
+        // draws): its lines are that much further apart, so wrapped lines never overlap.
+        let under = self.family(face).pixel.is_some_and(|native| asked > 0.0 && asked < native - 1e-4);
+        let line = if under && size > asked + 1e-4 { line * size / asked } else { line };
         let fi = self.real(face).0;
         let track = track * size;
         let mut l = self.build(s, fi, size, line, track, &[]);

@@ -101,3 +101,32 @@ fn a_label_wider_than_its_control_ends_in_an_ellipsis_and_is_read_whole() {
     assert!(u.clamped(&key), "`{key}` is not cut: {:?} in {:?}", n.rect, u.node("lab/p3").map(|c| c.rect));
     assert!(u.a11y().iter().any(|n| n.name.contains(long) || n.text.as_deref().is_some_and(|t| t.contains(long))), "the whole label is read");
 }
+
+/// The Lab's cell on a docs stage: scaled whole into a short box (`FitMode::Contain`), where the mono
+/// face cannot go under its native size and so is set larger than the scale makes it.
+fn staged(dpr: f32) -> Ui<(), ()> {
+    let view = |_: &()| -> El<()> {
+        let mut lab = Params::new(&LAB, &[0.3, 48.0, 2.0, 12.0, 0.5]);
+        lab.open = true;
+        let formula = "ω(r) = 1.20·r^−1.5 · δ″ = 9000·(m−p)/(|m−p|²+64)·0.00 − 26δ − 5.0δ′".to_owned();
+        col().key("box").fonts(amenui::style::LAB.roles()).fill_width().fill_height().center().pad(16.0, 16.0).fit(amenui::el::Fit { mode: amenui::el::FitMode::Contain, ..Default::default() })
+            .child(col().key("stage").width(688.0).child(frame("orbit", "orbit", "move to attract", col(), formula, &lab, |_, _| (), "Kepler speeds · sprung offsets")))
+    };
+    let mut u = Ui::new((), view, |_, _| {}, fonts(), (720.0 * dpr) as u32, (280.0 * dpr) as u32, dpr).on_look(|_| Look { material: Material::Plain, ..Look::default() });
+    u.tick(1.0);
+    u.settle();
+    u
+}
+
+#[test]
+fn a_formula_scaled_with_its_cell_is_as_tall_as_its_wrapped_lines() {
+    for dpr in [1.0f32, 2.0] {
+        let mut u = staged(dpr);
+        let f = u.node("orbit/formula").expect("the formula").rect;
+        // Each line's ink under the last line's, and every line inside the formula's box.
+        let lines = u.line_inks("orbit/formula");
+        assert!(dpr < 1.5 || lines.len() >= 2, "dpr {dpr}: the formula wraps ({} lines, {f:?})", lines.len());
+        for w in lines.windows(2) { assert!(w[1].ink.y >= w[0].ink.bottom() - 0.01, "dpr {dpr}: lines drawn over each other: {:?} then {:?}", w[0].ink, w[1].ink); }
+        for l in &lines { assert!(l.ink.y >= f.y - 0.5 && l.ink.bottom() <= f.bottom() + 0.5, "dpr {dpr}: a line's ink {:?} leaves the formula's box {f:?}", l.ink); }
+    }
+}

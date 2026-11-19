@@ -603,3 +603,24 @@ fn with_less_motion_the_title_fades_out_and_in_where_each_is() {
     assert!(frames[8] == direct, "at 150 ms, the new page drawn directly");
 }
 
+
+/// Text whose box is out of its clip and whose glyphs are posed into it is drawn there; the glyphs a
+/// pose leaves outside the clip are not made.
+#[test]
+fn posed_glyphs_inside_the_clip_are_drawn_wherever_the_text_box_is() {
+    fn view(up: &f32) -> El<()> {
+        let up = *up;
+        col().key("root").child(col().key("clip").width(300.0).height(100.0).clip()
+            .child(space(300.0, 160.0))
+            .child(text("posed", 24.0, Paint::INK).key("t").pose(move |g| amenui::el::Pose { dy: if g.i < 3 { -up } else { 0.0 }, ..Default::default() })))
+    }
+    for (up, want) in [(0.0f32, 0usize), (130.0, 3)] {
+        let mut u = Ui::new(up, view, |_, _| {}, fonts(), 400, 300, 1.0);
+        u.tick(1.0);
+        u.settle();
+        let t = u.nodes().iter().position(|n| n.key == "t").expect("the text");
+        assert!(u.nodes()[t].rect.y >= 100.0, "the text's box is out of the clip: {:?}", u.nodes()[t].rect);
+        let drawn = u.owners().iter().filter(|o| o.0 == t).count();
+        assert_eq!(drawn, want, "moved up {up}: {drawn} glyphs drawn");
+    }
+}
