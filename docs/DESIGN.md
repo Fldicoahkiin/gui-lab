@@ -1219,7 +1219,10 @@ read pixel by pixel from images: when a morph starts, the renderer runs the G-bu
 for the source's and the target's instances (looseness 1, already born), giving four images (source
 coverage, target coverage, source SDF, target SDF), once per morph. So a particle at progress 0 is exactly
 the cell it replaces and at progress 1 exactly the target's cell, whatever the material and the content
-(text, shapes, pictures, whole subtrees).
+(text, shapes, pictures, whole subtrees). What a stage (§1.35) drew of the source is taken as the frame before
+the morph drew it, element by element, even when the view that asks for the morph (`Cmd::Morph` from a
+changed state) poses its glyphs elsewhere or hides them: a stage's glyphs may be posed anew by every step,
+and the tiles start where they were seen.
 
 **Sampling (CPU, once per morph).** An element's instances, within their ink grown by `SPREAD` (the SDF's
 range), are cut into cells on the screen grid; each cell's coverage is the average of four points at the

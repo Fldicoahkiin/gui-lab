@@ -8,6 +8,12 @@ crate and the `amenui` npm package (`web/`) always carry the same version, becau
 match the module that `web_app!` generates. The minimum Rust is the one CI builds with (`rust-version`
 in Cargo.toml); raising it is a breaking change before 1.0 only in the second number.
 
+## Morphs from a stage
+
+- A morph from what a stage draws (`El::stage`; posed glyphs stepped every frame) starts its tiles where the frame
+  before it drew them, also when the morph is asked for by a command with a new view that poses them elsewhere or
+  hides them; it took them as the new view put them.
+
 ## Marks in the ink
 
 - `Fx::marks_accent` (1 by default, the accent as before): how much of the accent the hover and focus marks are

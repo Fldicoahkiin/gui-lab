@@ -3024,6 +3024,10 @@ impl<S, M: Clone> Ui<S, M> {
         // A morph from the last frame takes its source now, before the new view.
         if let Some(Cmd::Morph { to, spec, .. }) = cmds.iter().find(|c| matches!(c, Cmd::Morph { spec, .. } if spec.from_last.is_some())) { let (to, spec) = (to.clone(), spec.clone()); self.morph_from_last(&to, spec); }
         cmds.retain(|c| !matches!(c, Cmd::Morph { spec, .. } if spec.from_last.is_some()));
+        // A morph from a stage's content takes its glyphs as the last frame drew them (the new view may
+        // pose them elsewhere).
+        let drawn: Vec<Vec<(String, Instance)>> = cmds.iter().filter_map(|c| if let Cmd::Morph { from, .. } = c { Some(self.staged_drawn(from)) } else { None }).collect();
+        let mut drawn = drawn.into_iter();
         self.no_recompose = flow.is_some() || off.recompose;
         self.layout();
         if std::mem::take(&mut self.focus_moved) && let Some(f) = self.focused && f(&mut self.state, self.focus.as_deref()) { self.layout(); }
@@ -3032,7 +3036,7 @@ impl<S, M: Clone> Ui<S, M> {
         if let (Some(f), Some(old)) = (flow, old) { self.flow_from(old, f); }
         for c in cmds {
             match c {
-                Cmd::Morph { from, to, spec } => self.morph(&from, &to, spec),
+                Cmd::Morph { from, to, spec } => { let d = drawn.next().unwrap_or_default(); self.morph_drawn(&from, &to, spec, d) }
                 Cmd::Ripplr { x, y, strength } => { let s = self.scale; let t = self.beat_grid(); self.field.front(x * s, y * s, t, strength); }
                 // From an element's centre, reaching what that element's own press would reach.
                 Cmd::RipplrAt { key, strength } => if let Some(i) = self.nodes.iter().position(|n| n.key == key) {
@@ -5646,6 +5650,23 @@ impl<S, M: Clone> Ui<S, M> {
     /// the morph in progress turns it around: in flight, every tile goes back from where it is; while
     /// the source is still loosening, it tightens again. Any other morph in progress is cut short.
     pub fn morph(&mut self, from: &str, to: &str, spec: MorphSpec) {
+        let drawn = self.staged_drawn(from);
+        self.morph_drawn(from, to, spec, drawn);
+    }
+    /// What the last frame drew of `key`'s subtree inside stages (`El::stage`), in order, with each
+    /// instance's element: a stage's glyphs may be posed anew by every step (and the new view may hide
+    /// them), and a morph from them starts where they were seen.
+    fn staged_drawn(&self, key: &str) -> Vec<(String, Instance)> {
+        let Some(root) = self.nodes.iter().position(|n| n.key == key) else { return vec![] };
+        let staged = |mut j: usize| loop {
+            if self.nodes[j].stage.is_some() { return true; }
+            match self.nodes[j].parent { Some(p) => j = p, None => return false }
+        };
+        let n = self.page_len.min(self.owners.len()).min(self.scene.instances.len());
+        (0..n).filter(|&i| within(&self.nodes, self.owners[i].0, root) && staged(self.owners[i].0)).map(|i| (self.nodes[self.owners[i].0].key.clone(), self.scene.instances[i])).collect()
+    }
+    /// `morph`, with what stages drew of `from` in the last frame (`staged_drawn`).
+    fn morph_drawn(&mut self, from: &str, to: &str, spec: MorphSpec, drawn: Vec<(String, Instance)>) {
         if self.timing.off.morphs { return; }
         let now = self.clock;
         let tighten = spec.tighten_ms / 1000.0;
@@ -5689,7 +5710,7 @@ impl<S, M: Clone> Ui<S, M> {
         }
         self.run = None;
         self.paint();
-        let (src, dst) = (self.collect(from), self.collect(to));
+        let (src, dst) = (self.collect(from, &drawn), self.collect(to, &[]));
         self.morph_with(from, to, src, dst, spec, k0);
     }
 
@@ -5862,12 +5883,27 @@ impl<S, M: Clone> Ui<S, M> {
         if changed { r.upload = next_run(); }
     }
 
-    /// Everything a node and its descendants draw, drawn or hidden, at looseness 1 and fully born.
-    fn collect(&self, key: &str) -> Vec<Instance> {
+    /// Everything a node and its descendants draw, drawn or hidden, at looseness 1 and fully born. An
+    /// element `drawn` has (a stage's content as the last frame drew it) is taken as it was drawn, in
+    /// place of what this paint has of it.
+    fn collect(&self, key: &str, drawn: &[(String, Instance)]) -> Vec<Instance> {
         let Some(root) = self.nodes.iter().position(|n| n.key == key) else { return vec![] };
-        let page = (0..self.page_len).filter(|&i| within(&self.nodes, self.owners[i].0, root)).map(|i| self.base[i]);
-        let unseen = self.unseen.iter().filter(|(n, _)| within(&self.nodes, *n, root)).map(|(_, inst)| *inst);
-        page.chain(unseen).map(|mut i| { i.extra[2] = 1.0; i.extra[3] = -1e4; i }).collect()
+        let mut left: Vec<&str> = vec![];
+        for (k, _) in drawn { if !left.contains(&k.as_str()) { left.push(k); } }
+        let mut out = vec![];
+        // An element of `drawn`: all it drew, at its first instance here.
+        let mut take = |out: &mut Vec<Instance>, node: usize, inst: Instance| {
+            let k = self.nodes[node].key.as_str();
+            match left.iter().position(|l| *l == k) {
+                Some(at) => { left.remove(at); out.extend(drawn.iter().filter(|(d, _)| d == k).map(|(_, i)| *i)); }
+                None => if !drawn.iter().any(|(d, _)| d == k) { out.push(inst) },
+            }
+        };
+        for i in (0..self.page_len).filter(|&i| within(&self.nodes, self.owners[i].0, root)) { take(&mut out, self.owners[i].0, self.base[i]); }
+        for &(n, inst) in self.unseen.iter().filter(|(n, _)| within(&self.nodes, *n, root)) { take(&mut out, n, inst); }
+        // What is no longer here at all.
+        for k in left { out.extend(drawn.iter().filter(|(d, _)| d == k).map(|(_, i)| *i)); }
+        out.into_iter().map(|mut i| { i.extra[2] = 1.0; i.extra[3] = -1e4; i }).collect()
     }
 
     /// The page as it is drawn now, for a flow.
