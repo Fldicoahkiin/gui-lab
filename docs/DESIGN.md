@@ -1525,6 +1525,20 @@ recomputes only the dirty paths, using its cache for clean subtrees; if nothing 
 selection background or anything else that doesn't affect size) it doesn't run (`layouts_skipped`) and last
 time's boxes are used.
 
+**Flexbox only: stacks and layers** (`el::stack`, `el::layers`). taffy is built with flexbox and nothing
+else (no grid, block or calc), which keeps about 170 KB out of a web module. `layers` places each child
+absolutely at the top left of its box (unless the child is placed already), so the box is the parent's or
+its own size and does not grow with them. `stack` is a centred row whose children lie over one another by
+their margins: after a layout the width each child took (its margins included, without what the stack
+added) is kept by the stack's key (`stack_w`); the first child gets margins that centre it in the widest
+one's room and each after it is pulled back over that room, centred too, taking none of its own
+(`stack_extra`). The row's cross size is already its tallest child, so the stack is as wide as its widest
+child and as tall as its tallest, as a one-cell grid made it. The margins go into the styles before they are
+compared, so a stack whose children keep their widths costs nothing more; when a width changes the margins
+are set in the tree and the page is laid out again, up to three more times (a child that wrapped while the
+children sat side by side takes its full width once they lie over one another). A stack in a stage
+(`Ui::stage_view`) gets the same margins, so it is compared as laid out. `tests/overlay.rs`.
+
 **The pieces of text by words or lines** (`El::reveal_by`, `Text::reveal_pieces`) are found once for the same
 text, face, size, line height, width and setting and kept with the layouts, in two generations; every paint asks
 again and gets them from there (`Counters::reveals` counts the misses). A glyph's piece is found in its line's

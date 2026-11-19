@@ -712,6 +712,9 @@ pub struct Ui<S, M> {
     /// Virtual lists: each one's viewport height as last placed, and the rows it has built.
     virt_views: HashMap<String, f32>,
     virt_made: HashMap<String, (usize, usize)>,
+    /// The widths each stack's children (`el::stack`) took in the last layout, by the stack's key: what
+    /// their margins are set from so that they lie over one another (`stack_extra`).
+    stack_w: HashMap<String, Vec<f32>>,
     // ── Touch (DESIGN.md §1.8.2) ──
     /// How touch scrolling behaves.
     pub scrolling: Scrolling,
@@ -1091,7 +1094,7 @@ impl<S, M: Clone> Ui<S, M> {
             marks_moving: false, caret: None, caret_on: true, static_loose: false, mclock: 0.0, moving: false, gclock: 0.0, ground_moving: false,
             perf: crate::perf::Perf { quality: 1.0, ..Default::default() }, span: 0, painting: false, overlay: 0, overlay_at: 0.0, overlay_box: None, fade_s: REDUCED_FADE, came: vec![], arriving: HashMap::new(), sweeping: false, swept_nodes: vec![], remeasure: false, plate_slots: Default::default(), plate_clear: vec![], plate_over: vec![], pclock: 0.0, plate_frame: f32::NEG_INFINITY, assets: HashMap::new(), assets_asked: Default::default(), shape_seen: 0.0, hud_idle: false, rebuilt: 0,
             text_capture: None, sel: None, sel_drag: false, clicks: (f32::NEG_INFINITY, 0.0, 0.0, 0), a11y_sent: HashMap::new(), a11y_focus: None,
-            tree: TaffyTree::new(), tids: HashMap::new(), mkeys: HashMap::new(), virt_views: HashMap::new(), virt_made: HashMap::new(),
+            tree: TaffyTree::new(), tids: HashMap::new(), mkeys: HashMap::new(), virt_views: HashMap::new(), virt_made: HashMap::new(), stack_w: HashMap::new(),
             scrolling: Scrolling::default(), touch: None, touches: HashSet::new(), touching: false, fling: None, over: HashMap::new(), motion: HashMap::new(), scroll_paint: false, event_t: None, ev: 0.0,
             recs: HashMap::new(), recomps: HashMap::new(), slides: HashMap::new(), no_recompose: false,
             meshes: crate::mesh::Library::default(), mesh_hover: None, glyphs: Default::default(), prep: Default::default(), move_over: None, particle_gpu: false, motes: vec![], shed_at: HashMap::new(), shed_owed: HashMap::new(), field_marks: HashMap::new(), seen: HashMap::new(), outlines: HashMap::new(), decodes: HashMap::new(), decode_last: HashMap::new(), last_morph: None, left: Default::default(), queued: vec![], flushing: false, coalesce: false, defer: 0, stale_layout: false, stale_paint: false, motes_made: 0,
@@ -3059,6 +3062,7 @@ impl<S, M: Clone> Ui<S, M> {
         let mut built = Built::default();
         flatten(el, None, "root".into(), [0; 3], (false, false), None, Inherit { roles: self.timing.roles, ..Inherit::default() }, &mut vx, &mut built, &mut nodes);
         self.virt_made = vx.made;
+        self.stack_margins(&nodes, &mut built);
 
         // The taffy tree: a node whose key was there last time keeps its taffy node; its style, children
         // and measured content are compared and only what differs is set (which marks it and its
@@ -3132,6 +3136,17 @@ impl<S, M: Clone> Ui<S, M> {
             // Laid out by a function of the leaves alone, so taffy is built once and not for each `Ui` type.
             let leaves: Vec<(&Content, u16)> = nodes.iter().map(|n| (&n.content, n.clamp)).collect();
             if compute_layout(&mut self.tree, root, space, &mut self.text, &leaves).is_err() { return Some(nodes); }
+            // A stack's children lie over one another by their margins, which come from the widths they
+            // took: when those changed, they are set again and the page laid out again (a child's width
+            // can depend on the others' once they no longer sit side by side, so up to three times).
+            for _ in 0..3 {
+                if !self.restack(&nodes, &built) { break; }
+                if compute_layout(&mut self.tree, root, space, &mut self.text, &leaves).is_err() { return Some(nodes); }
+            }
+            if !built.stacks.is_empty() || !self.stack_w.is_empty() {
+                let keys: HashSet<&str> = built.stacks.iter().map(|&i| nodes[i].key.as_str()).collect();
+                self.stack_w.retain(|k, _| keys.contains(k.as_str()));
+            }
         } else {
             self.perf.counters.layouts_skipped += 1;
         }
@@ -4209,6 +4224,7 @@ impl<S, M: Clone> Ui<S, M> {
         let mut built = Built { base: i, ..Built::default() };
         let mut vx = VirtCtx { scroll: &self.scroll, views: &self.virt_views, window: self.size.1, made: HashMap::new() };
         flatten(el, ctx.parent, ctx.path, ctx.roles, ctx.off, ctx.flow, ctx.inh, &mut vx, &mut built, &mut nodes);
+        self.stack_margins(&nodes, &mut built);
         let virt = !vx.made.is_empty();
         let same = !virt && nodes.len() - i == len && (0..len).all(|j| {
             let (new, old) = (&nodes[i + j], &tail[j]);
@@ -4230,6 +4246,51 @@ impl<S, M: Clone> Ui<S, M> {
         nodes.append(&mut tail);
         self.nodes = nodes;
         true
+    }
+    /// A stack's children (`el::stack`) in the flow, as indices into `nodes`, by their styles.
+    fn stack_kids(built: &Built, s: usize, placed: impl Fn(usize) -> bool) -> Vec<usize> {
+        built.kids[s - built.base].iter().copied().filter(|&k| !placed(k)).collect()
+    }
+    /// Sets the margins of each stack's children from the widths they took in the last layout
+    /// (`stack_extra`), when the stack has as many children as then.
+    fn stack_margins(&self, nodes: &[Node<M>], built: &mut Built) {
+        for si in 0..built.stacks.len() {
+            let s = built.stacks[si];
+            let Some(o) = self.stack_w.get(&nodes[s].key) else { continue };
+            let kids = Self::stack_kids(built, s, |k| built.styles[k - built.base].position == taffy::Position::Absolute);
+            if kids.len() != o.len() { continue; }
+            for (j, k) in kids.into_iter().enumerate() {
+                let (l, r) = stack_extra(o, j);
+                let m = &mut built.styles[k - built.base].margin;
+                (m.left, m.right) = (add_margin(m.left, l), add_margin(m.right, r));
+            }
+        }
+    }
+    /// After a layout: the widths each stack's children took, without what `stack_extra` added; where
+    /// they changed the children's margins are set again in the tree. Whether any was.
+    fn restack(&mut self, nodes: &[Node<M>], built: &Built) -> bool {
+        let mut again = false;
+        for &s in &built.stacks {
+            let kids = Self::stack_kids(built, s, |k| self.tree.style(nodes[k].tid).map_or(true, |st| st.position == taffy::Position::Absolute));
+            let old = self.stack_w.get(&nodes[s].key).filter(|o| o.len() == kids.len());
+            let was = |j: usize| old.map_or((0.0, 0.0), |o| stack_extra(o, j));
+            let o: Vec<f32> = kids.iter().enumerate().map(|(j, &k)| {
+                let l = self.tree.layout(nodes[k].tid).map_or(Layout::new(), |l| *l);
+                let (a, b) = was(j);
+                l.size.width + l.margin.left + l.margin.right - a - b
+            }).collect();
+            let moved: Vec<(f32, f32)> = (0..kids.len()).map(|j| { let ((a, b), (c, d)) = (was(j), stack_extra(&o, j)); (c - a, d - b) }).collect();
+            if moved.iter().any(|&(a, b)| a.abs() > 0.01 || b.abs() > 0.01) {
+                for (&k, &(a, b)) in kids.iter().zip(&moved) {
+                    let Ok(mut st) = self.tree.style(nodes[k].tid).cloned() else { continue };
+                    (st.margin.left, st.margin.right) = (add_margin(st.margin.left, a), add_margin(st.margin.right, b));
+                    let _ = self.tree.set_style(nodes[k].tid, st);
+                }
+                again = true;
+            }
+            self.stack_w.insert(nodes[s].key.clone(), o);
+        }
+        again
     }
     /// For checks: every stage's draw takes `ms` longer (`El::stage`; Y.5's slow piece).
     pub fn slow_stage(&mut self, ms: f32) { self.stage_add_ms = ms.max(0.0); }
@@ -6873,12 +6934,24 @@ fn ramp_pack(p: Paint) -> f32 {
     let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round();
     q(p.tone) + 256.0 * q(p.accent) + 65536.0 * q(p.alpha)
 }
+/// What a stack's child `j` adds to its left and right margins, from the widths `o` its children take
+/// (margins included): the first takes the widest one's room, centred in it, and each after it is
+/// pulled back over that room, centred too, and takes none of its own.
+fn stack_extra(o: &[f32], j: usize) -> (f32, f32) {
+    let w = o.iter().fold(0.0f32, |a, &b| a.max(b));
+    let half = (w - o.get(j).copied().unwrap_or(0.0)) / 2.0;
+    if j == 0 { (half, half) } else { (half - w, half) }
+}
+/// A margin with `e` more (a margin that is not a length becomes `e`).
+fn add_margin(m: LengthPercentageAuto, e: f32) -> LengthPercentageAuto {
+    match m.expand() { taffy::style::ExpandedLengthPercentageAuto::Length(x) => length(x + e), _ => length(e) }
+}
 /// What `flatten` needs to build a virtual list's rows (scroll offsets, viewport heights from the last
 /// layout, the window's height) and the row ranges it built.
 struct VirtCtx<'a> { scroll: &'a HashMap<String, f32>, views: &'a HashMap<String, f32>, window: f32, made: HashMap<String, (usize, usize)> }
 /// Per node from node `base` on, what goes to the taffy tree: its style and its children.
 #[derive(Default)]
-struct Built { styles: Vec<Style>, kids: Vec<Vec<usize>>, base: usize }
+struct Built { styles: Vec<Style>, kids: Vec<Vec<usize>>, base: usize, stacks: Vec<usize> }
 /// A stage's subtree viewed alone, by its key (`Ui::stage_view`).
 type StageView<S, M> = fn(&S, &str) -> Option<El<M>>;
 /// What the last paint drew, kept for a paint that draws only some stages again (`Ui::kept`).
@@ -6938,7 +7011,7 @@ fn measure_key(c: &Content) -> u64 {
 #[allow(clippy::too_many_arguments)]
 fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], off: (bool, bool), flow: Option<(Rc<str>, usize)>, inh: Inherit, vx: &mut VirtCtx, built: &mut Built, nodes: &mut Vec<Node<M>>) -> usize {
     let stage_at = el.props.stage.then(|| Box::new(StageCtx { parent, path: path.clone(), roles, off, flow: flow.clone(), inh: inh.clone() }));
-    let El { props: crate::el::Props { key, mut style, mut content, fill, border, radius, mut focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, mut commit, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, map_life, multiline, selectable, cursor, ripple, guide, skeleton, rtl, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview, fit, clamp, plate, own_size, grain, show_clear, pen, view_scale, stage: _ }, mut on_press, mut on_key, mut on_drag, mut on_blur, modal, mut on_text, virt, access, mut on_pick, mut on_wheel, mut on_move, on_visible, on_outline, mut children } = el;
+    let El { props: crate::el::Props { key, mut style, mut content, fill, border, radius, mut focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, mut commit, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, map_life, multiline, selectable, cursor, ripple, guide, skeleton, rtl, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview, fit, clamp, plate, own_size, grain, show_clear, pen, view_scale, stage: _, stack }, mut on_press, mut on_key, mut on_drag, mut on_blur, modal, mut on_text, virt, access, mut on_pick, mut on_wheel, mut on_move, on_visible, on_outline, mut children } = el;
     // A view scale scales what it holds, not its pen (`El::view_scale`).
     if let Some(s) = view_scale { children = children.into_iter().map(|c| c.zoom_by(s, true)).collect(); }
     let mut inh = inh;
@@ -7022,6 +7095,7 @@ fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], of
     if style.position == taffy::Position::Static { style.position = taffy::Position::Relative; }
     built.styles.push(style);
     built.kids.push(vec![]);
+    if stack { built.stacks.push(nodes.len() - 1); }
     // In a preview what is shown only with focus is drawn over its siblings, as when it has focus (its
     // fill covers the ink beneath it): it is laid out and drawn after them, and keeps its written place
     // for Tab (`Node::written`).

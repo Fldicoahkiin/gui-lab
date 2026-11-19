@@ -8,6 +8,18 @@ crate and the `amenui` npm package (`web/`) always carry the same version, becau
 match the module that `web_app!` generates. The minimum Rust is the one CI builds with (`rust-version`
 in Cargo.toml); raising it is a breaking change before 1.0 only in the second number.
 
+## Flexbox only
+
+- taffy is built with flexbox alone (no grid, block layout or calc), about 170 KB less in a web module. A
+  `Style` with `Display::Grid` or `Display::Block` now lays out as flexbox; amenui itself used grid only for
+  `stack` and `layers`.
+- `stack` keeps its meaning: as wide as its widest child, as tall as its tallest, each child centred. It is a row
+  whose children lie over one another by their margins (set from the widths they took), so a margin you give a
+  child of a stack still counts, and a percentage margin there becomes a length.
+- `layers` places each child absolutely at the top left of its box unless the child is placed already; the box
+  does not grow with its children, as documented (a box with no height of its own grew with the grid before; give
+  it `fill_height` or a height).
+
 ## Fixes from the website, the way back
 
 - A ramp stroke (`Drawing::ramp`) fades as a whole: its far and middle stops follow the element's opacity as its start

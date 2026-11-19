@@ -590,7 +590,7 @@ pub struct El<M> {
 pub struct Props {
     /// Names the element across views: focus, scroll offsets, births, recomposition and the accessibility mirror follow it (`El::key`).
     pub key: String,
-    /// Its layout (taffy's flexbox and grid).
+    /// Its layout (taffy's flexbox).
     pub style: Style,
     /// What it shows.
     pub content: Content,
@@ -720,10 +720,12 @@ pub struct Props {
     pub view_scale: Option<f32>,
     /// It is a stage (`El::stage`): when it is slow to draw, it holds its last image while input comes.
     pub stage: bool,
+    /// It is a stack (`stack`): its children are laid over one another, centred.
+    pub stack: bool,
 }
 impl Props {
     #[inline(never)]
-    fn new(style: Style, content: Content) -> Self { Props { key: String::new(), style, content, fill: None, border: None, radius: 0.0, focusable: false, tab_order: 0, skip_to: None, focus_shown: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, shift: (0.0, 0.0), shed: None, flow_field: None, stirr: None, trace: None, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, clips: false, calm: false, map_life: None, multiline: false, selectable: false, cursor: None, ripple: Ripple::default(), guide: None, skeleton: false, rtl: None, decode: None, form: None, turn: 0.0, reveal_by: Reveal::Glyph, ongoing: false, pass: false, opacity: 1.0, commit_scope: false, preview: false, fit: None, clamp: 0, plate: None, own_size: None, grain: false, show_clear: None, pen: 1.0, view_scale: None, stage: false } }
+    fn new(style: Style, content: Content) -> Self { Props { key: String::new(), style, content, fill: None, border: None, radius: 0.0, focusable: false, tab_order: 0, skip_to: None, focus_shown: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, shift: (0.0, 0.0), shed: None, flow_field: None, stirr: None, trace: None, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, clips: false, calm: false, map_life: None, multiline: false, selectable: false, cursor: None, ripple: Ripple::default(), guide: None, skeleton: false, rtl: None, decode: None, form: None, turn: 0.0, reveal_by: Reveal::Glyph, ongoing: false, pass: false, opacity: 1.0, commit_scope: false, preview: false, fit: None, clamp: 0, plate: None, own_size: None, grain: false, show_clear: None, pen: 1.0, view_scale: None, stage: false, stack: false } }
 }
 impl<M> std::ops::Deref for El<M> { type Target = Props; fn deref(&self) -> &Props { &self.props } }
 impl<M> std::ops::DerefMut for El<M> { fn deref_mut(&mut self) -> &mut Props { &mut self.props } }
@@ -1374,31 +1376,27 @@ pub fn mesh<M>(id: crate::mesh::MeshId) -> El<M> { scene3d(crate::mesh::Scene3d:
 /// Every child over the one before, each starting at the top left of the same box: the box is the
 /// parent's (fill it with `fill_width` / `fill_height`, or size it) and does not grow with the children,
 /// so a panel taller than it hangs out of it (clip the box). For sheets and floating boxes over a page;
-/// a child sized `fill_width().fill_height()` covers the box.
+/// a child sized `fill_width().fill_height()` covers the box. Each child is placed absolutely in it, at
+/// the top left unless it is placed already.
 pub fn layers<M>(children: impl IntoIterator<Item = El<M>>) -> El<M> {
-    let track = || vec![minmax(length(0.0), fr(1.0))];
-    let mut s = El::new(Style {
-        display: Display::Grid, grid_template_columns: track(), grid_template_rows: track(),
-        justify_items: AlignItems::START, align_items: AlignItems::START, ..Default::default()
-    }, Content::None);
+    let mut s = El::new(Style::default(), Content::None);
     for mut c in children {
-        c.style.grid_row = Line { start: line(1), end: span(1) };
-        c.style.grid_column = Line { start: line(1), end: span(1) };
+        if c.style.position != taffy::Position::Absolute {
+            let st = &mut c.style;
+            st.position = taffy::Position::Absolute;
+            if st.inset.left.is_auto() && st.inset.right.is_auto() { st.inset.left = length(0.0); }
+            if st.inset.top.is_auto() && st.inset.bottom.is_auto() { st.inset.top = length(0.0); }
+        }
         s.children.push(c);
     }
     s
 }
-/// Every child in the same place, centred in the stack (a one-cell grid): for things that replace one
-/// another where they stand, like the candidates of a morph.
+/// Every child in the same place, centred in the stack: for things that replace one another where
+/// they stand, like the candidates of a morph. The stack is as wide as its widest child and as tall as
+/// its tallest (or its own size, when it is sized); a child placed absolutely is placed as anywhere else.
 pub fn stack<M>(children: impl IntoIterator<Item = El<M>>) -> El<M> {
-    let mut s = El::new(Style {
-        display: Display::Grid, grid_template_columns: vec![fr(1.0)], grid_template_rows: vec![fr(1.0)],
-        justify_items: AlignItems::CENTER, align_items: AlignItems::CENTER, ..Default::default()
-    }, Content::None);
-    for mut c in children {
-        c.style.grid_row = Line { start: line(1), end: span(1) };
-        c.style.grid_column = Line { start: line(1), end: span(1) };
-        s.children.push(c);
-    }
+    let mut s = El::new(Style { justify_content: JustifyContent::CENTER, align_items: AlignItems::CENTER, ..Default::default() }, Content::None);
+    s.props.stack = true;
+    s.children.extend(children);
     s
 }

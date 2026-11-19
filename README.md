@@ -22,7 +22,7 @@ need to read stays legible.
 ## Features
 
 - **Elm-style views.** A view is `fn(&State) -> El<Msg>`, an update is `fn(&mut State, Msg)`. Layout is
-  [taffy](https://github.com/DioxusLabs/taffy) (flexbox and grid), text is shaped by
+  [taffy](https://github.com/DioxusLabs/taffy) (flexbox), text is shaped by
   [parley](https://github.com/linebender/parley) at any size, and the layout is kept between updates so
   only what changed is laid out again.
 - **Materials.** `plain`, `dottr`, `halftonr`, `charr`, `smudgr`, `carvr`, `glitchr`, `scribblr` and a
