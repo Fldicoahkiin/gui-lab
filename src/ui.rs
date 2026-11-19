@@ -3944,8 +3944,8 @@ impl<S, M: Clone> Ui<S, M> {
             _ => (i, now, r),
         });
         if let Some((_, reset, _)) = self.caret { self.caret_on = ((now - reset).max(0.0) / BLINK).floor() as i64 % 2 == 0; }
-        self.scene.holds = self.holds();
-        self.scene.islands = self.islands();
+        self.scene.holds = self.holds(true);
+        self.scene.islands = self.islands(true);
         let bridges = self.bridges(&self.scene.holds);
         self.scene.islands.extend(bridges);
         self.dirty = true;
@@ -3962,7 +3962,8 @@ impl<S, M: Clone> Ui<S, M> {
     /// of something else (not legible) drawn before it within `r1` of it holds the looseness there to the
     /// legibility cap. `r0 = max(3, size / 4)` and `r1 = r0 + max(6, size / 2)` logical px, by the type
     /// size of the text, or for a control the label in it (a heading is a title: it holds nothing).
-    fn holds(&self) -> Vec<(u32, [f32; 2])> {
+    /// (`near`: by the grid; false tests every earlier box, the same answer slower, for checks.)
+    fn holds(&self, near: bool) -> Vec<(u32, [f32; 2])> {
         let s = self.scale;
         let insts = &self.scene.instances;
         let sp = crate::text::SPREAD as f32;
@@ -3970,6 +3971,19 @@ impl<S, M: Clone> Ui<S, M> {
         let mut under: Vec<(usize, [f32; 4])> = vec![];
         let mut out = vec![];
         let mut size_of: HashMap<usize, f32> = HashMap::new();
+        // The ink drawn before, by cell of a coarse grid (each box in every cell it touches), so a legible
+        // instance tests only what is near it. A box over more than `WIDE` cells (or not finite) is in a
+        // short list that is always tested.
+        const CELL: f32 = 64.0;
+        const WIDE: i64 = 4096;
+        let cells = |b: &[f32; 4]| -> Option<(i32, i32, i32, i32)> {
+            if !b.iter().all(|v| v.is_finite() && v.abs() < 1e9) { return None; }
+            let (x0, y0, x1, y1) = ((b[0] / CELL).floor() as i32, (b[1] / CELL).floor() as i32, (b[2] / CELL).floor() as i32, (b[3] / CELL).floor() as i32);
+            ((x1 as i64 - x0 as i64 + 1) * (y1 as i64 - y0 as i64 + 1) <= WIDE).then_some((x0, y0, x1, y1))
+        };
+        let mut grid: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
+        let mut wide: Vec<usize> = vec![];
+        let mut bucketed = 0usize;
         for (k, inst) in insts.iter().enumerate() {
             let Some(&(ni, _)) = self.owners.get(k) else { break };
             let n = &self.nodes[ni];
@@ -3991,7 +4005,20 @@ impl<S, M: Clone> Ui<S, M> {
             let r0 = r0.min(r1 - 1.0);
             let b = ink(inst);
             let g = [b[0] - r1, b[1] - r1, b[2] + r1, b[3] + r1];
-            if under.iter().any(|(_, u)| u[0] < g[2] && u[2] > g[0] && u[1] < g[3] && u[3] > g[1]) { out.push((k as u32, [r0, r1])); }
+            while bucketed < under.len() {
+                match cells(&under[bucketed].1) {
+                    Some((x0, y0, x1, y1)) => for cy in y0..=y1 { for cx in x0..=x1 { grid.entry((cx, cy)).or_default().push(bucketed); } },
+                    None => wide.push(bucketed),
+                }
+                bucketed += 1;
+            }
+            let hit = |u: &[f32; 4]| u[0] < g[2] && u[2] > g[0] && u[1] < g[3] && u[3] > g[1];
+            // Two boxes that overlap share a cell; a grown box over too many cells tests everything.
+            let found = match cells(&g).filter(|_| near) {
+                Some((x0, y0, x1, y1)) => wide.iter().any(|&q| hit(&under[q].1)) || (y0..=y1).any(|cy| (x0..=x1).any(|cx| grid.get(&(cx, cy)).is_some_and(|v| v.iter().any(|&q| hit(&under[q].1))))),
+                None => under.iter().any(|(_, u)| hit(u)),
+            };
+            if found { out.push((k as u32, [r0, r1])); }
         }
         out
     }
@@ -4022,15 +4049,29 @@ impl<S, M: Clone> Ui<S, M> {
     /// The islands of filled controls whose own fill is loosened (`El::loose` on the control itself,
     /// DESIGN.md §1.15): the ink box of all its content, grown by `max(5, 0.36 × its text's size)` with
     /// that radius, within its outline at rest. One a control.
-    fn islands(&self) -> Vec<Instance> {
+    /// (`walk`: up the parents, once a node; false searches every earlier node, the same answer slower,
+    /// for checks.)
+    fn islands(&self, walk: bool) -> Vec<Instance> {
         let s = self.scale;
         let sp = crate::text::SPREAD as f32;
         let mut boxes: HashMap<usize, [f32; 4]> = HashMap::new();
+        let mut memo: HashMap<usize, Option<usize>> = HashMap::new();
         for (k, inst) in self.scene.instances.iter().enumerate() {
             let Some(&(ni, _)) = self.owners.get(k) else { break };
             if inst.paint[2] <= 0.0 { continue; }
-            // The nearest filled, loosened, legible element above it (its own fill is not content).
-            let Some(c) = (0..ni).rev().find(|&j| within(&self.nodes, ni, j) && { let n = &self.nodes[j]; n.legible && n.fill.is_some() && n.loose > 0.0 }) else { continue };
+            // The nearest filled, loosened, legible element above it (its own fill is not content): its
+            // ancestors nearest first, once a node.
+            let island = |j: usize| { let n = &self.nodes[j]; n.legible && n.fill.is_some() && n.loose > 0.0 };
+            let c = match memo.get(&ni) { Some(c) => *c, None => {
+                let a = if walk {
+                    let mut a = self.nodes[ni].parent;
+                    while let Some(j) = a { if island(j) { break; } a = self.nodes[j].parent; }
+                    a
+                } else { (0..ni).rev().find(|&j| within(&self.nodes, ni, j) && island(j)) };
+                memo.insert(ni, a);
+                a
+            } };
+            let Some(c) = c else { continue };
             let b = if inst.paint[3] == GLYPH { [inst.rect[0] + sp, inst.rect[1] + sp, inst.rect[0] + inst.rect[2] - sp, inst.rect[1] + inst.rect[3] - sp] } else { [inst.rect[0], inst.rect[1], inst.rect[0] + inst.rect[2], inst.rect[1] + inst.rect[3]] };
             let e = boxes.entry(c).or_insert(b);
             *e = [e[0].min(b[0]), e[1].min(b[1]), e[2].max(b[2]), e[3].max(b[3])];
@@ -6684,3 +6725,48 @@ fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], of
 /// A thread's width in device px: at least half a pixel, and a whole number of pixels (at least one)
 /// when the frame is two colours only, so a threshold neither breaks nor thickens it unevenly.
 fn line_px(w: f32, binary: bool) -> f32 { if binary { w.round().max(1.0) } else { w.max(0.5) } }
+
+#[cfg(test)]
+mod tests {
+    use crate::el::{El, Paint, canvas, col, layers, row, text};
+    /// A crowded page: thousands of strokes and dots under rows of filled, loosened controls and lines
+    /// of text, some nested deep, one stroke over the whole page and one far off it.
+    fn crowded(_: &()) -> El<()> {
+        let (w, h) = (1200.0, 900.0);
+        let mut d = crate::draw::Drawing::new(w, h);
+        for k in 0..3000 {
+            let (x, y) = ((k * 37 % 1200) as f32, (k * 53 % 900) as f32);
+            if k % 3 == 0 { d.dot(x, y, 2.0, Paint::DIM); } else { d.line((x, y), (x + 9.0, y + 4.0), 1.0, Paint::FAINT); }
+        }
+        d.line((-50.0, -50.0), (w + 50.0, h + 50.0), 3.0, Paint::DIM);
+        d.line((1e7, 1e7), (1e7 + 5.0, 1e7), 1.0, Paint::DIM);
+        let mut over = col().gap(4.0).pad(8.0, 8.0);
+        for r in 0..24 {
+            let mut line = row().gap(6.0);
+            for c in 0..8 {
+                let label = text(format!("cell {r}·{c}"), 11.0 + (c % 3) as f32 * 3.0, Paint::TEXT);
+                let inner = if c % 2 == 0 { row().child(row().child(label)) } else { row().child(label) };
+                line = line.child(row().key(format!("b{r}/{c}")).fill(Paint::GROUND).loose(if (r + c) % 3 == 0 { 0.0 } else { 0.3 }).on_press(()).pad(4.0, 2.0).child(inner));
+            }
+            over = over.child(line).child(text("A line of text to read over the strokes, long enough to wrap twice across the page width there.", 12.0, Paint::TEXT));
+        }
+        col().key("page").width(w).height(h).child(layers([canvas(d).key("strokes").width(w), over]))
+    }
+    #[test]
+    fn holds_and_islands_by_the_grid_and_the_parents_are_the_quadratic_answers() {
+        for dpr in [1.0f32, 2.0] {
+            let fonts = crate::text::load_bundled(concat!(env!("CARGO_MANIFEST_DIR"), "/assets")).expect("fonts");
+            let mut u = super::Ui::new((), crowded, |_, _| {}, fonts, (1200.0 * dpr) as u32, (900.0 * dpr) as u32, dpr);
+            u.tick(1.0);
+            u.settle();
+            assert!(u.scene.instances.len() > 4000, "a crowded page: {}", u.scene.instances.len());
+            let (fast, slow) = (u.holds(true), u.holds(false));
+            assert!(fast.len() > 500, "dpr {dpr}: {} holds", fast.len());
+            assert_eq!(fast, slow, "dpr {dpr}: holds");
+            let (fast, slow) = (u.islands(true), u.islands(false));
+            assert!(fast.len() > 50, "dpr {dpr}: {} islands", fast.len());
+            let bits = |v: &[crate::scene::Instance]| v.iter().map(|i| bytemuck::bytes_of(i).to_vec()).collect::<Vec<_>>();
+            assert_eq!(bits(&fast), bits(&slow), "dpr {dpr}: islands");
+        }
+    }
+}

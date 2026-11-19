@@ -8,6 +8,13 @@ crate and the `amenui` npm package (`web/`) always carry the same version, becau
 match the module that `web_app!` generates. The minimum Rust is the one CI builds with (`rust-version`
 in Cargo.toml); raising it is a breaking change before 1.0 only in the second number.
 
+## Paint that does not grow with the square of the page
+
+- What text to read holds (`holds`) finds the ink drawn before it through a 64 px grid instead of testing every
+  earlier instance, and the islands of loosened controls (`islands`) walk up each node's parents once instead of
+  searching every earlier node. The scene is the same; on the website's Lab index (about 7,000 instances and 420
+  nodes, 1440 × 900 at 2×) a frame's paint goes from about 16 ms to about 4 ms natively.
+
 ## Widgets built once per message type
 
 - `widgets::number`, `caption` and `experiment::frame` build their controls once, with their own messages, and map
