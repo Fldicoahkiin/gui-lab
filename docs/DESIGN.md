@@ -3837,7 +3837,10 @@ Ripple rules, recomposition, the surface for models:
   pictures and the ground and is unchanged.
 - `Nudge` pushes as a whole: legible things measure the push from the centre of their outermost control (or their own run
   of text), and all their instances move together. Pushed by each instance's own centre, the text on a button would be split
-  in two from the middle (seen in the samples).
+  in two from the middle (seen in the samples). A surface is not a control here: an element that follows the pointer
+  (`on_point`, `on_move`) or one larger than a quarter of the window (a stage, a page that takes keys) leaves each control
+  in it its own piece. Taken as one piece, a whole page was shoved sideways when a commit's front crossed the window's
+  centre.
 - dot's row offset only acts where things are truly loose (`near.b` past 0.2); text held at the legibility cap isn't offset.
 - Recomposed tiles switch from the old piece to the new piece at their own switch point, without a crossfade: with a
   crossfade the whole number goes grey halfway through the flight. When it changes again midway, the new round lands when

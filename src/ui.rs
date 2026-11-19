@@ -225,6 +225,12 @@ impl<M> Node<M> {
     }
     /// Something the pointer can act on: hover marks frame it.
     fn active(&self) -> bool { self.focusable || self.on_press.is_some() || self.on_drag.is_some() }
+    /// A control that a front pushes as one piece with what is in it: active, and not a surface (an
+    /// element that follows the pointer, `El::on_point` / `El::on_move`, or one larger than a quarter of
+    /// the window: a stage or a page that takes keys holds many controls, each its own piece).
+    fn piece(&self, window: (f32, f32)) -> bool {
+        self.active() && self.on_move.is_none() && self.rect.w * self.rect.h <= 0.25 * window.0 * window.1
+    }
     /// A text field.
     pub fn editable(&self) -> bool { self.on_text.is_some() }
     /// How its text is laid out, when it is text: the same paragraph that is drawn.
@@ -3622,7 +3628,7 @@ impl<S, M: Clone> Ui<S, M> {
         // Whether a node is in the subtree of something that stirs the field map (it does not read the
         // map: a floating window would loosen itself by its own trail).
         let mut stirred = vec![false; self.nodes.len()];
-        // The outermost control each node is in: legible things are pushed as one piece with it.
+        // The outermost control each node is in (`Node::piece`): legible things are pushed as one piece with it.
         let mut unit: Vec<Option<usize>> = vec![None; self.nodes.len()];
         // Everything beneath an open modal layer is held partly loose.
         let beneath = self.modal_at.and_then(|m| self.nodes[m].modal.as_ref()).map_or(0.0, |m| m.beneath);
@@ -3724,7 +3730,7 @@ impl<S, M: Clone> Ui<S, M> {
             veiled[i] = n.parent.is_some_and(|p| veiled[p]) || n.focus_shown && !focus_at.is_some_and(|f| within(&self.nodes, f, i));
             held[i] = !self.timing.off.loosen && (self.pressed.as_deref() == Some(n.key.as_str()) || n.parent.is_some_and(|p| held[p]));
             stirred[i] = n.stirr.is_some() || n.parent.is_some_and(|p| stirred[p]);
-            unit[i] = n.parent.and_then(|p| unit[p]).or(n.active().then_some(i));
+            unit[i] = n.parent.and_then(|p| unit[p]).or(n.piece(self.size).then_some(i));
             // A see-through subtree (`El::opacity`) is drawn as one group: it ends where the subtree does.
             if let Some((root, start, op)) = group && !within(&self.nodes, i, root) {
                 let end = self.scene.instances.len() as u32;

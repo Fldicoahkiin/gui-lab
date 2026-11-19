@@ -8,6 +8,13 @@ crate and the `amenui` npm package (`web/`) always carry the same version, becau
 match the module that `web_app!` generates. The minimum Rust is the one CI builds with (`rust-version`
 in Cargo.toml); raising it is a breaking change before 1.0 only in the second number.
 
+## Fixes from the website: controls at rest
+
+- A front pushes text to read and controls about the centre of the control they are in, and a surface that holds
+  them is not that control: an element that follows the pointer (`on_point`, `on_move`) or one larger than a quarter
+  of the window. A full-window stage with `on_point` or `on_key` made its whole page one piece, so every commit's
+  front shoved everything on it sideways at once, when the front crossed the window's centre.
+
 ## A stage at its own scale
 
 - When frames are missed, the stages' device scale steps down (2 → 1.5 → 1 → 0.75) and back up after a wait that
