@@ -105,9 +105,11 @@ fn pixel_faces_snap_and_cut_at_half() {
     assert_eq!(t.size_for(MONO, 30.0), 33.0);
     assert_eq!(t.size_for(SANS, 15.5), 15.5);
     t.set_scale(2.0);
-    // At 2× the native size is reached with half the logical size.
-    assert_eq!(t.size_for(PIXEL, 6.0), 6.0);
+    // At 2× the native size is reached with half the logical size, but a size is never drawn smaller
+    // than at 1×: 6 px is one face size at 1× (12 device px), so two at 2× (24 device px, 12 logical).
+    assert_eq!(t.size_for(PIXEL, 6.0), 12.0);
     assert_eq!(t.size_for(PIXEL, 12.0), 12.0);
+    assert_eq!(t.size_for(PIXEL, 9.0), 12.0);
     for (face, px) in [(PIXEL, 12.0), (PIXEL, 24.0), (MONO, 11.0), (MONO, 22.0)] {
         let g = t.raster(face, '像', px).or_else(|| t.raster(face, 'A', px)).expect("glyph");
         assert!(g.data.iter().all(|&c| c == 0 || c == 255), "face {face} at {px}: grey coverage");

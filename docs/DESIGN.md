@@ -177,6 +177,16 @@ different scale.
 
 Within any fit, pixel text is not set smaller when the scale is 1.
 
+**Own-size elements** (`El::own_size(ax, ay)`): a label on a drawing that is zoomed (`El::zoom`, `El::fit`) or carried
+by a growing picture (`Cmd::Flow`) keeps its own size: its type, box, border and pose, and everything it holds, are
+not zoomed; where it is (insets, margins, `shift`) is. Placed absolutely, it goes where its point (`ax`, `ay`: 0–1
+across and down its box) would be in the zoomed box, then onto whole device pixels, so its type never sits on half a
+pixel and is drawn pixel for pixel as at 1. In a row or column it takes its own size's room where the layout puts
+it (its siblings and the gaps zoom; it does not), and one that then reaches out of its parent's content box is
+reported (`ViewProblem::OwnSizeOver`, P1 in the audit). `El::fit` measures a subtree that holds one at 1 and again
+at the scale found, and solves the scale from the two sizes (a fixed part and a part that scales), still two
+passes. On a growing picture it rides at its own point (§1.10). `tests/own_size.rs`.
+
 **Clamping text** (`El::clamp(lines)`): a text element shows at most `lines` lines; text that does not fit ends in
 the face's own ellipsis on the last line, in the text's colour and size, on the baseline, drawn by the material as
 the rest of the line is (no fade, no mask). It breaks after a word, or between characters when that would leave more
@@ -580,7 +590,10 @@ Both routes are needed:
   thresholded at 0.5), or it blurs. Implementation: `Text` can register several faces and each text
   element picks one; a face can be marked as a pixel font with its face size, its font size snaps to the
   nearest integer multiple in device pixels (at least 1×), layout and drawing use that size, and glyphs
-  land on whole device pixels with no subpixel offset.
+  land on whole device pixels with no subpixel offset. The multiple is never below the one at one device
+  pixel per logical pixel times the ratio, rounded down: `max(round(size · dpr / native), floor(m1 · dpr))`
+  with `m1 = max(1, round(size / native))`, so 7 px of a 12 px face is 12 device px at 1 and 24 at 2, not
+  12 (it is never smaller at a higher ratio; `tests/own_size.rs`).
 - **Any face can be printed as pixels.** The material samples the glyph through a coarse grid and fills each
   cell whose coverage is over half. The pitch is the size of a "pixel" and can be set as a number. Type from
   this route is less tidy than a real pixel font and suits transitions and large headings. Implementation:
@@ -1253,7 +1266,7 @@ window, and what rides on it is ink over a picture (its own colour and size). No
 paired, since the two pages lay out different things over the picture: the rest of the old subtree (notes,
 boxes, labels) rides with the picture at its own size and colour, by parts: an element's glyphs together (a
 word, a label) and strokes or shapes that touch together (a box of four lines), each part whole, its centre
-where the picture takes it, so only the parts' places close up or open out and no box comes apart. It stays inside
+(an own-size label's own point, `El::own_size`) where the picture takes it, so only the parts' places close up or open out and no box comes apart. It stays inside
 the part that shows, without loosening, whole until the picture lands; what of it lies along the edge
 of the part that showed (its centre within 3 px of it: a frame round the window) is the window's, and fades
 over `out_ms` where it was, under the picture. The rest of the new subtree is there at once when the picture

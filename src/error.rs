@@ -179,6 +179,14 @@ pub enum DriveError {
 /// layout; none of them stops the page from drawing.
 #[derive(Clone, Debug, Error, PartialEq)]
 pub enum ViewProblem {
+    #[error("`{key}` keeps its own size (`El::own_size`) in a row or column of `{parent}` and, with the rest zoomed down around it, reaches out of `{parent}`'s content box. Place it absolutely (a label on a drawing), give the parent room for it at the least zoom, or let it zoom with the rest.")]
+    /// An own-size element in a flow that overflows its parent's content box at the current zoom.
+    OwnSizeOver {
+        /// The element's key.
+        key: String,
+        /// Its parent's key.
+        parent: String,
+    },
     #[error("`{key}` draws a ramp from one accent hue to another that is not over a picture: there it keeps its first hue all the way and only its tone, accent and opacity ramp. Draw it over a picture (its colours are then mixed in OKLab), or ramp within one hue.")]
     /// A ramp stroke from one hue to another drawn off a picture (`Drawing::ramp`).
     RampHue {

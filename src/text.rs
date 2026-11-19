@@ -372,12 +372,18 @@ impl Text {
         if scale != self.scale { self.scale = scale; self.measured.clear(); self.cache = [HashMap::new(), HashMap::new()]; self.pieces = [HashMap::new(), HashMap::new()]; }
     }
 
-    /// The logical size a face is really drawn at: pixel faces go to the nearest whole multiple (at
-    /// least one) of their native size in device px, since anything between would smear their pixels.
+    /// The logical size a face is really drawn at: pixel faces go to the nearest whole multiple of their
+    /// native size in device px, since anything between would smear their pixels, and never below what
+    /// a screen of one device px per logical px draws (its nearest multiple, at least one, times the
+    /// device pixel ratio, rounded down): 7 px of an 11 px face is 11 device px at 1 and 22 at 2.
     pub fn size_for(&self, face: u8, size: f32) -> f32 {
         let size = size * self.real(face).1;
         match self.family(face).pixel {
-            Some(native) => ((size * self.scale / native).round().max(1.0) * native) / self.scale,
+            Some(native) => {
+                let at_one = (size / native).round().max(1.0);
+                let m = (size * self.scale / native).round().max((at_one * self.scale + 1e-4).floor()).max(1.0);
+                (m * native) / self.scale
+            }
             None => size,
         }
     }

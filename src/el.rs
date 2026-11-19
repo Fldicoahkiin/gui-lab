@@ -693,6 +693,9 @@ pub struct El<M> {
     pub clamp: u16,
     /// What its subtree draws stays (`El::plate`).
     pub plate: Option<Plate>,
+    /// It keeps its own size when zoomed (`El::own_size`): the point of its box (0–1 across, down) that
+    /// stays where the zoomed box would put it, and the zoom it was given (1: none).
+    pub own_size: Option<([f32; 2], f32)>,
     /// What it holds, in order.
     pub children: Vec<El<M>>,
 }
@@ -806,7 +809,7 @@ impl<M> El<M> {
     fn new(style: Style, content: Content) -> Self {
         // Nothing shrinks unless asked: fixed sizes stay fixed inside columns and scroll areas.
         let style = Style { flex_shrink: 0.0, ..style };
-        Self { key: String::new(), style, content, fill: None, border: None, radius: 0.0, on_press: None, on_key: None, on_drag: None, on_blur: None, focusable: false, tab_order: 0, skip_to: None, focus_shown: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, modal: None, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, shift: (0.0, 0.0), shed: None, flow_field: None, stirr: None, trace: None, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, clips: false, calm: false, map_life: None, on_text: None, multiline: false, selectable: false, cursor: None, virt: None, access: None, ripple: Ripple::default(), on_pick: None, on_wheel: None, on_move: None, guide: None, skeleton: false, rtl: None, on_visible: None, on_outline: None, decode: None, form: None, turn: 0.0, reveal_by: Reveal::Glyph, ongoing: false, pass: false, opacity: 1.0, commit_scope: false, preview: false, fit: None, clamp: 0, plate: None, children: vec![] }
+        Self { key: String::new(), style, content, fill: None, border: None, radius: 0.0, on_press: None, on_key: None, on_drag: None, on_blur: None, focusable: false, tab_order: 0, skip_to: None, focus_shown: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, modal: None, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, shift: (0.0, 0.0), shed: None, flow_field: None, stirr: None, trace: None, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, clips: false, calm: false, map_life: None, on_text: None, multiline: false, selectable: false, cursor: None, virt: None, access: None, ripple: Ripple::default(), on_pick: None, on_wheel: None, on_move: None, guide: None, skeleton: false, rtl: None, on_visible: None, on_outline: None, decode: None, form: None, turn: 0.0, reveal_by: Reveal::Glyph, ongoing: false, pass: false, opacity: 1.0, commit_scope: false, preview: false, fit: None, clamp: 0, plate: None, own_size: None, children: vec![] }
     }
     /// Its key: unique on the page, stable across views (focus, scroll, births and recomposition follow it).
     pub fn key(mut self, k: impl Into<String>) -> Self { self.key = k.into(); self }
@@ -962,6 +965,12 @@ impl<M> El<M> {
     pub fn hidden_until_morphed(mut self, h: bool) -> Self { self.hidden = h; self }
     /// Move this subtree by (dx, dy) logical px after layout (no layout when only this changes).
     pub fn shift(mut self, dx: f32, dy: f32) -> Self { self.shift = (dx, dy); self }
+    /// Keep this element's own size when it is zoomed (`El::zoom`) or carried by a picture that grows
+    /// (`Cmd::Flow`): a label on a scaled drawing, at its own size and sharp at any device pixel ratio.
+    /// Its type, box, border and pose stay as they are; where it is (insets, margins, `shift`) scales,
+    /// and it is placed so that its point (`ax`, `ay`: 0–1 across and down its box) is where the zoomed
+    /// box would have put that point. Within a row or column it takes its own size's room.
+    pub fn own_size(mut self, ax: f32, ay: f32) -> Self { self.own_size = Some(([ax.clamp(0.0, 1.0), ay.clamp(0.0, 1.0)], self.own_size.map_or(1.0, |o| o.1))); self }
     /// Shed marks while this element moves (`rate` 0: none).
     pub fn shed(mut self, s: crate::motes::Shed) -> Self { self.shed = Some(s); self }
     /// Leave a trail in the field map while this element moves (by a drag, a spring, a flow or
@@ -1148,7 +1157,7 @@ impl<M> El<M> {
 
     /// The same tree sending other messages: lets one application embed another's view.
     pub fn map<N: 'static>(self, f: Rc<dyn Fn(M) -> N>) -> El<N> where M: 'static {
-        let El { key, style, content, fill, border, radius, on_press, on_key, on_drag, on_blur, focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, commit, modal, fonts, loose, wipe, flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, map_life, on_text, multiline, selectable, cursor, virt, access, ripple, on_pick, on_wheel, on_move, guide, skeleton, rtl, on_visible, on_outline, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview, fit, clamp, plate, children } = self;
+        let El { key, style, content, fill, border, radius, on_press, on_key, on_drag, on_blur, focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, commit, modal, fonts, loose, wipe, flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, map_life, on_text, multiline, selectable, cursor, virt, access, ripple, on_pick, on_wheel, on_move, guide, skeleton, rtl, on_visible, on_outline, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview, fit, clamp, plate, own_size, children } = self;
         let virt = virt.map(|v| { let f = f.clone(); let b = v.build; Virtual { count: v.count, row_h: v.row_h, overscan: v.overscan, selected: v.selected, build: Rc::new(move |i: usize| b(i).map(f.clone())) as Rc<dyn Fn(usize) -> El<N>> } });
         let on_key = on_key.map(|k| { let f = f.clone(); Rc::new(move |key: Key, shift: bool| k(key, shift).map(|m| f(m))) as OnKey<N> });
         let on_text = on_text.map(|t| { let f = f.clone(); Rc::new(move |i: TextInput| t(i).map(|m| f(m))) as OnText<N> });
@@ -1161,7 +1170,7 @@ impl<M> El<M> {
         El {
             key, style, content, fill, border, radius, on_press: on_press.map(|m| f(m)), on_key, on_drag, on_blur: on_blur.map(|m| f(m)),
             focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, commit, modal: modal.map(|m| Modal { dismiss: f(m.dismiss), beneath: m.beneath }),
-            fonts, loose, wipe, flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, map_life, on_text, multiline, selectable, cursor, virt, access, ripple, on_pick, on_wheel, on_move, guide, skeleton, rtl, on_visible, on_outline, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview, fit, clamp, plate, children: children.into_iter().map(|c| c.map(f.clone())).collect(),
+            fonts, loose, wipe, flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, map_life, on_text, multiline, selectable, cursor, virt, access, ripple, on_pick, on_wheel, on_move, guide, skeleton, rtl, on_visible, on_outline, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview, fit, clamp, plate, own_size, children: children.into_iter().map(|c| c.map(f.clone())).collect(),
         }
     }
 }
@@ -1203,6 +1212,18 @@ impl<M> El<M> {
     /// (the film scales its controls with the stage, so a small window does not overflow).
     pub fn zoom(mut self, k: f32) -> Self {
         if (k - 1.0).abs() < 1e-4 || k <= 0.0 { return self; }
+        if let Some((a, z)) = self.own_size {
+            // Its own size: only where it is scales.
+            let mut st = self.style.clone();
+            zoom_style(&mut st, k);
+            (self.style.inset, self.style.margin) = (st.inset, st.margin);
+            self.shift = (self.shift.0 * k, self.shift.1 * k);
+            // What it holds is part of it, at its own size too. Placed absolutely, its anchor goes where
+            // the zoomed box would put it; in a row or column it takes its own room where the layout puts it.
+            let placed = self.style.position == taffy::Position::Absolute;
+            self.own_size = Some((a, if placed { z * k } else { z }));
+            return self;
+        }
         zoom_style(&mut self.style, k);
         self.radius *= k;
         if let Some((w, p)) = self.border { self.border = Some(((w * k).max(w.min(1.0)), p)); }

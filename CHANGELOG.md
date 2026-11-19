@@ -8,6 +8,16 @@ crate and the `amenui` npm package (`web/`) always carry the same version, becau
 match the module that `web_app!` generates. The minimum Rust is the one CI builds with (`rust-version`
 in Cargo.toml); raising it is a breaking change before 1.0 only in the second number.
 
+## Labels at their own size
+
+- `El::own_size(ax, ay)`: an element that keeps its own size when it is zoomed (`El::zoom`, `El::fit`) or rides a
+  growing picture (`Cmd::Flow`): its anchor point goes where the zoomed box would put it, on whole device pixels;
+  in a row or column it takes its own room, and one that then overflows its parent is reported
+  (`ViewProblem::OwnSizeOver`, P1 in the audit). `El::fit` measures subtrees with one in two passes (DESIGN.md §1.2).
+- Pixel faces are never drawn smaller at a higher device pixel ratio than at 1: at 2, 7 px of a 12 px face is two
+  device px a face pixel, as at 1, not one (DESIGN.md §1.6.3).
+- `El` has a new public field, `own_size`: code that builds one with every field named needs it.
+
 ## Strokes with a ramp
 
 - `Drawing::ramp(a, b, w, paint, mid, far)`: a stroke whose colour and opacity go from `paint` at `a` to `far` at `b`,

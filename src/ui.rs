@@ -98,6 +98,10 @@ pub struct Node<M> {
     pub hidden: bool,
     /// Moved after layout (`El::shift`).
     shift: (f32, f32),
+    /// Kept at its own size when zoomed (`El::own_size`): its anchor and the zoom.
+    own_size: Option<([f32; 2], f32)>,
+    /// At its own size and in its parent's flow (not placed absolutely), so it takes room there.
+    own_in_flow: bool,
     shed: Option<crate::motes::Shed>,
     flow_field: Option<crate::motes::FlowField>,
     stirr: Option<crate::el::Stirr>,
@@ -183,6 +187,8 @@ pub struct Node<M> {
     pub plate: Option<crate::el::Plate>,
     /// The box layout gave it, relative to its parent (scrolling does not change it).
     local: taffy::Layout,
+    /// Where taffy put it in its parent before rounding to whole px (for `El::own_size`).
+    exact: (f32, f32),
     tid: NodeId,
 }
 impl<M> Node<M> {
@@ -297,7 +303,9 @@ struct FlowRec {
 /// of a subtree whose picture grows (`ride`) rides with the picture at its own size instead.
 /// `anchor`: for one that rides on a growing picture, the box of the part of its element it moves with
 /// (a word, one box of lines), so that part keeps its own shape.
-struct Ghost { inst: Instance, start: f32, dur: f32, loosen: bool, ride: Option<usize>, anchor: [f32; 4] }
+/// `pin`: the point of that box (0–1 across, down) the picture carries: its centre, or a label's own
+/// anchor (`El::own_size`).
+struct Ghost { inst: Instance, start: f32, dur: f32, loosen: bool, ride: Option<usize>, anchor: [f32; 4], pin: [f32; 2] }
 /// A look's ground and second ground.
 type Grounds = ([f32; 3], [f32; 3]);
 /// A flow subtree's picture on its way (`Cmd::Flow`): its box (x, y, w, h) and the part of it that shows
@@ -326,7 +334,7 @@ impl Grow {
     }
 }
 /// A page instance as it was drawn, kept across a relayout for `Cmd::Flow`.
-struct Old { id: u64, node: usize, tag: Option<Tag>, inst: Instance }
+struct Old { id: u64, node: usize, pin: [f32; 2], tag: Option<Tag>, inst: Instance }
 
 /// A text's glyphs as last painted, kept to see what changed in the next view (DESIGN.md §1.16).
 /// `changed` is when its string last changed (seconds), to tell a readout that changes every frame.
@@ -1306,6 +1314,15 @@ impl<S, M: Clone> Ui<S, M> {
             if n.hidden || n.plate.is_some() || !(read || n.focusable || n.on_press.is_some()) { continue; }
             let mut at = n.parent;
             while let Some(k) = at { if self.nodes[k].plate.is_some() { out.push(P::OnPlate { key: n.key.clone(), plate: self.nodes[k].key.clone() }); break; } at = self.nodes[k].parent; }
+        }
+        // Own-size elements in a row or column do not shrink with the rest: one that reaches out of its
+        // parent's content box at this scale.
+        for n in self.nodes.iter().filter(|n| n.own_in_flow) {
+            let Some(p) = n.parent else { continue };
+            let c = self.nodes[p].inner;
+            if n.rect.x < c.x - 0.5 || n.rect.y < c.y - 0.5 || n.rect.right() > c.right() + 0.5 || n.rect.bottom() > c.bottom() + 0.5 {
+                out.push(P::OwnSizeOver { key: n.key.clone(), parent: self.nodes[p].key.clone() });
+            }
         }
         // A ramp from one hue to another that is not over a picture keeps its first hue all the way.
         let pictures: Vec<[f32; 4]> = self.base[..self.page_len].iter().filter(|q| q.paint[3] == PICTURE && q.extra[0] <= 0.5)
@@ -2880,9 +2897,10 @@ impl<S, M: Clone> Ui<S, M> {
             for pass in 0..4 {
                 if pass > 0 { self.perf.counters.views += 1; el = (self.view)(&self.state); }
                 let prev: Vec<f32> = ks.iter().map(|f| f.k).collect();
+                let nat: Vec<Option<(f32, f32)>> = ks.iter().map(|f| f.nat).collect();
                 fit_probe(&mut el, &prev, &mut 0);
                 let probe = self.lay_pass(el);
-                let again = self.fit_scales(&probe, &prev, &mut ks);
+                let again = self.fit_scales(&probe, &prev, &nat, &mut ks);
                 el = (self.view)(&self.state);
                 if !again { break; }
             }
@@ -3023,16 +3041,17 @@ impl<S, M: Clone> Ui<S, M> {
             self.perf.counters.layouts_skipped += 1;
         }
         self.rebuilt = touched;
-        for n in nodes.iter_mut() { if let Ok(l) = self.tree.layout(n.tid) { n.local = *l; } }
+        for n in nodes.iter_mut() { if let Ok(l) = self.tree.layout(n.tid) { n.local = *l; let u = self.tree.unrounded_layout(n.tid); n.exact = (u.location.x, u.location.y); } }
         nodes
     }
     /// How much each box marked `El::fit` zooms its subtree, in the order they come in the view, from
     /// the pass that laid the subtree out on its own: the scale, and where the zoomed subtree goes in
     /// the box (left and top insets, logical px). A box that cannot hold its subtree at the least scale
     /// is told in `Ui::problems`.
-    /// `prev` holds the scales a reflowing box was probed at (none on the first pass); `out` is
-    /// replaced. Returns whether a reflowing box wants another probe at its new scale.
-    fn fit_scales(&mut self, probe: &[Node<M>], prev: &[f32], out: &mut Vec<Fitted>) -> bool {
+    /// `prev` holds the scales a reflowing box was probed at (none on the first pass), `nat` the sizes
+    /// first measured of subtrees with own-size elements; `out` is replaced. Returns whether a box wants
+    /// another probe at its new scale.
+    fn fit_scales(&mut self, probe: &[Node<M>], prev: &[f32], nat: &[Option<(f32, f32)>], out: &mut Vec<Fitted>) -> bool {
         out.clear();
         let mut again = false;
         let mut at = 0usize;
@@ -3046,11 +3065,12 @@ impl<S, M: Clone> Ui<S, M> {
             let (cw, ch) = ((l.size.width - l.border.left - l.border.right - pl - l.padding.right).max(0.0), (l.size.height - l.border.top - l.border.bottom - pt - l.padding.bottom).max(0.0));
             // The subtree is in the holder `fit_probe` put it in.
             let kp = prev.get(at).copied().unwrap_or(1.0);
+            let nat0 = nat.get(at).copied().flatten();
             at += 1;
             if f.mode == crate::el::FitMode::Reflow {
                 // Laid out in place at `kp`: what reaches out of the content box (not what scrolls
                 // inside a scroller), from its centre, as the subtree is centred in it.
-                let Some(c) = probe.iter().position(|m| m.parent == Some(i)) else { out.push(Fitted { k: 1.0, at: (pl, pt), pixel: vec![], w: Some((cw, ch)) }); continue };
+                let Some(c) = probe.iter().position(|m| m.parent == Some(i)) else { out.push(Fitted { k: 1.0, at: (pl, pt), pixel: vec![], w: Some((cw, ch)), nat: None }); continue };
                 let mut pos = vec![(0.0f32, 0.0f32); probe.len()];
                 let (mut x0, mut y0, mut x1, mut y1) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
                 let (bx, by0) = (l.border.left + pl, l.border.top + pt);
@@ -3078,11 +3098,24 @@ impl<S, M: Clone> Ui<S, M> {
                 // Pixel text is zoomed with the rest: a reflow scales by a little, and a pixel face's
                 // next whole size down would halve it.
                 self.fit_k.insert(n.key.clone(), k);
-                out.push(Fitted { k, at: (pl, pt), pixel: vec![], w: Some((cw, ch)) });
+                out.push(Fitted { k, at: (pl, pt), pixel: vec![], w: Some((cw, ch)), nat: None });
                 continue;
             }
-            let Some(c) = probe.iter().position(|m| m.parent == Some(i)).and_then(|h| probe.iter().position(|m| m.parent == Some(h))) else { out.push(Fitted { k: 1.0, at: (pl, pt), pixel: vec![], w: None }); continue };
-            let (nw, nh) = (probe[c].local.size.width.max(1e-3), probe[c].local.size.height.max(1e-3));
+            let Some(c) = probe.iter().position(|m| m.parent == Some(i)).and_then(|h| probe.iter().position(|m| m.parent == Some(h))) else { out.push(Fitted { k: 1.0, at: (pl, pt), pixel: vec![], w: None, nat: None }); continue };
+            let (mut nw, mut nh) = (probe[c].local.size.width.max(1e-3), probe[c].local.size.height.max(1e-3));
+            // Own-size elements (`El::own_size`) do not scale with the rest, so the subtree's size is not
+            // its size at 1 times the scale: it is measured again zoomed by the first scale found, and the
+            // scale is solved from the two sizes (each a fixed part plus a part that scales).
+            let own = probe.iter().enumerate().skip(c).take_while(|(j, _)| within(probe, *j, c)).any(|(_, m)| m.own_size.is_some());
+            let mut nat = None;
+            let mut lin: Option<([f32; 2], [f32; 2])> = None;
+            if own {
+                nat = nat0.or(Some((nw, nh)));
+                if let Some((w1, h1)) = nat0 && (kp - 1.0).abs() > 1e-4 {
+                    let b = [((w1 - nw) / (1.0 - kp)).max(1e-3), ((h1 - nh) / (1.0 - kp)).max(1e-3)];
+                    lin = Some(([w1 - b[0], h1 - b[1]], b));
+                }
+            }
             // Text does not scale exactly with its size (advances and line heights snap): room of a
             // pixel at the scale is kept so the zoomed subtree is never larger than the box.
             let by = |w: f32, h: f32| match f.mode {
@@ -3091,8 +3124,17 @@ impl<S, M: Clone> Ui<S, M> {
                 crate::el::FitMode::Height | crate::el::FitMode::Reflow => h / nh,
             };
             let room = by(cw, ch).max(1.0);
-            let raw = by((cw - room).max(0.0), (ch - room).max(0.0));
+            let raw = match lin {
+                Some((a, b)) => {
+                    let (sx, sy) = (((cw - 1.0).max(0.0) - a[0]) / b[0], ((ch - 1.0).max(0.0) - a[1]) / b[1]);
+                    match f.mode { crate::el::FitMode::Contain => sx.min(sy), crate::el::FitMode::Width => sx, _ => sy }.max(0.0)
+                }
+                None => by((cw - room).max(0.0), (ch - room).max(0.0)),
+            };
             let k = raw.clamp(f.min, f.max.max(f.min));
+            if let Some((a, b)) = lin { (nw, nh) = ((a[0] + b[0] * k) / k, (a[1] + b[1] * k) / k); }
+            // Measured at 1 with own-size elements in it: once more at the scale found.
+            if own && nat0.is_none() && (k - 1.0).abs() > 1e-3 { again = true; }
             // What does not fit at the least scale, in the directions the mode fits (exactly the least
             // scale and in the box is not short).
             let (over_x, over_y) = (k * nw > cw + 0.5, k * nh > ch + 0.5);
@@ -3102,10 +3144,14 @@ impl<S, M: Clone> Ui<S, M> {
             // subtree goes down to the largest that is no larger than the scale makes it, so it never
             // overflows; the scale itself is not changed.
             let mut pixel = vec![];
-            for m in probe.iter().enumerate().skip(c).take_while(|(j, _)| within(probe, *j, c)).map(|(_, m)| m) {
+            // Own-size type is not zoomed, and a probe zoomed by `kp` holds sizes `kp` times their own.
+            let kz = if lin.is_some() { kp } else { 1.0 };
+            for (j, m) in probe.iter().enumerate().skip(c).take_while(|(j, _)| within(probe, *j, c)) {
                 let Some(p) = m.para() else { continue };
                 if self.text.native(p.face).is_none() || k >= 1.0 - 1e-4 { continue };
-                pixel.push((p.s.to_owned(), p.size, self.text.size_down(p.face, k * p.size)));
+                if own && probe.iter().enumerate().skip(c).take(j + 1 - c).any(|(q, o)| o.own_size.is_some() && within(probe, j, q)) { continue; }
+                let at1 = p.size / kz;
+                pixel.push((p.s.to_owned(), at1, self.text.size_down(p.face, k * at1)));
             }
             let (ax, ay) = f.align;
             self.fit_k.insert(n.key.clone(), k);
@@ -3113,7 +3159,7 @@ impl<S, M: Clone> Ui<S, M> {
             // its beginning is seen and its end is cut.
             let x = if over_x { pl } else { pl + ax.clamp(0.0, 1.0) * (cw - k * nw) };
             let y = if over_y { pt } else { pt + ay.clamp(0.0, 1.0) * (ch - k * nh) };
-            out.push(Fitted { k, at: (x.round(), y.round()), pixel, w: None });
+            out.push(Fitted { k, at: (x.round(), y.round()), pixel, w: None, nat });
         }
         again
     }
@@ -3196,23 +3242,33 @@ impl<S, M: Clone> Ui<S, M> {
         }
         let screen = Rect::new(0.0, 0.0, self.size.0, self.size.1);
         let mut inside = vec![screen; nodes.len()];
+        // Each node's top left before taffy rounded it, so an own-size element's anchor is placed exactly.
+        let mut exact = vec![(0.0f32, 0.0f32); nodes.len()];
         for i in 0..nodes.len() {
             let l = nodes[i].local;
-            let (origin, clip) = match nodes[i].parent {
+            let (origin, clip, up) = match nodes[i].parent {
                 Some(p) => {
                     // Content moves by whole device pixels, so a scroll never resamples it (DESIGN.md §1.8.3).
                     let off = if nodes[p].scroll { (self.scroll.get(&nodes[p].key).copied().unwrap_or(0.0) * self.scale).round() / self.scale } else { 0.0 };
                     let (ox, oy) = if nodes[p].horizontal { (off, 0.0) } else { (0.0, off) };
-                    ((nodes[p].rect.x - ox, nodes[p].rect.y - oy), inside[p])
+                    ((nodes[p].rect.x - ox, nodes[p].rect.y - oy), inside[p], (exact[p].0 - ox, exact[p].1 - oy))
                 }
-                None => ((0.0, 0.0), screen),
+                None => ((0.0, 0.0), screen, (0.0, 0.0)),
             };
+            exact[i] = (up.0 + nodes[i].exact.0 + nodes[i].shift.0, up.1 + nodes[i].exact.1 + nodes[i].shift.1);
             // An anchored element goes just below its anchor (laid out earlier in this pass), kept
             // inside the window.
             let at = nodes[i].anchor.as_ref().and_then(|k| nodes[..i].iter().find(|n| &n.key == k)).map(|a| a.rect);
             let up_xf = nodes[i].parent.and_then(|p| nodes[p].xf);
             let n = &mut nodes[i];
             n.rect = Rect::new(origin.0 + l.location.x + n.shift.0, origin.1 + l.location.y + n.shift.1, l.size.width, l.size.height);
+            // At its own size in a zoomed subtree: its anchor where the zoomed box would put it.
+            // Placed from where taffy put it before rounding, then on whole device pixels, so its type
+            // never sits on half a pixel.
+            if let Some((a, k)) = n.own_size {
+                n.rect.x = ((exact[i].0 + a[0] * l.size.width * (k - 1.0)) * self.scale).round() / self.scale;
+                n.rect.y = ((exact[i].1 + a[1] * l.size.height * (k - 1.0)) * self.scale).round() / self.scale;
+            }
             if let Some(a) = at {
                 n.rect.x = a.x.min(screen.w - l.size.width - 8.0).max(0.0);
                 n.rect.y = a.bottom() + 4.0;
@@ -4776,9 +4832,10 @@ impl<S, M: Clone> Ui<S, M> {
             // Riding with a growing picture, over it, inside the part of it that shows (drawn after it).
             if let Some(gr) = g.ride.and_then(|r| self.grows.get(r)) {
                 let e = gr.ease(now);
-                let a = gr.ride(g.anchor, e);
-                inst.rect[0] += a[0] - g.anchor[0];
-                inst.rect[1] += a[1] - g.anchor[1];
+                let p = [g.anchor[0] + g.pin[0] * g.anchor[2], g.anchor[1] + g.pin[1] * g.anchor[3]];
+                let a = gr.ride([p[0], p[1], 0.0, 0.0], e);
+                inst.rect[0] += a[0] - p[0];
+                inst.rect[1] += a[1] - p[1];
                 inst.clip = gr.shows(e);
                 if self.scene.layer.is_none() { riding.push(inst); continue; }
             }
@@ -4914,7 +4971,7 @@ impl<S, M: Clone> Ui<S, M> {
             self.base[i].extra[3] = sg[k].extra[3];
         }
         let (out, inn) = if reduced { (dur, [now, now + dur]) } else { (0.3 * dur, [now + 0.7 * dur, now + dur]) };
-        for inst in sg[n..].iter().chain(&so) { self.ghosts.push(Ghost { inst: *inst, start: now, dur: out, loosen: false, ride: None, anchor: inst.rect }); }
+        for inst in sg[n..].iter().chain(&so) { self.ghosts.push(Ghost { inst: *inst, start: now, dur: out, loosen: false, ride: None, anchor: inst.rect, pin: [0.5, 0.5] }); }
         for &i in dg[n..].iter().chain(&d_other) {
             let id = self.owners[i].1;
             self.flows.insert(id, FlowRec { from: self.base[i].rect, clip: self.base[i].clip, start: now, dur, loose: 0.0, src: None, fade_in: Some(inn), grow: None });
@@ -5034,7 +5091,7 @@ impl<S, M: Clone> Ui<S, M> {
 
     /// The page as it is drawn now, for a flow.
     fn record(&self) -> Vec<Old> {
-        (0..self.page_len).map(|i| Old { id: self.owners[i].1, node: self.owners[i].0, tag: self.tags[i].clone(), inst: self.scene.instances[i] }).collect()
+        (0..self.page_len).map(|i| Old { id: self.owners[i].1, node: self.owners[i].0, pin: self.nodes[self.owners[i].0].own_size.map_or([0.5, 0.5], |o| o.0), tag: self.tags[i].clone(), inst: self.scene.instances[i] }).collect()
     }
 
     /// After a relayout for a new page: instances of a flow subtree that left one place and appeared in
@@ -5126,7 +5183,7 @@ impl<S, M: Clone> Ui<S, M> {
                 if cx < r[0] + 3.0 || cy < r[1] + 3.0 || cx > r[2] - 3.0 || cy > r[3] - 3.0 { (ride, loosen) = (None, false); }
             }
             let (start, dur) = if on_it && ride.is_some() { (now + flight - 1e-4, 1e-4) } else { (now, out) };
-            going.push((k, Ghost { inst: o.inst, start, dur, loosen, ride, anchor: o.inst.rect }));
+            going.push((k, Ghost { inst: o.inst, start, dur, loosen, ride, anchor: o.inst.rect, pin: o.pin }));
         }
         // What rides moves by parts of its element, each part whole: an element's glyphs together (a
         // word or label), and lines or shapes that touch (one box of four lines) together, so a part
@@ -6114,6 +6171,8 @@ fn sweep_glyphs(text: &mut Text, para: Para<'_>, origin: (f32, f32), proto: Inst
     out
 }
 
+/// Whether a subtree has an element at its own size (`El::own_size`).
+fn has_own<M>(el: &El<M>) -> bool { el.own_size.is_some() || el.children.iter().any(has_own) }
 /// Whether a view has a box marked `El::fit`.
 fn has_fit<M>(el: &El<M>) -> bool { el.fit.is_some() || el.children.iter().any(has_fit) }
 /// For the pass that finds natural sizes: each fitted subtree out of the flow, at the box's top left,
@@ -6136,7 +6195,9 @@ fn fit_probe<M>(el: &mut El<M>, prev: &[f32], at: &mut usize) {
                 holder.style.align_items = AlignItems::START;
                 holder.style.inset = taffy::Rect { left: length(0.0), top: length(0.0), right: auto(), bottom: auto() };
                 holder.style.size.width = length(1.0e5);
-                let sub = std::mem::replace(c, crate::el::space(0.0, 0.0));
+                let mut sub = std::mem::replace(c, crate::el::space(0.0, 0.0));
+                // With own-size elements, measured again zoomed (`Ui::fit_scales`).
+                if (k - 1.0).abs() > 1e-4 && has_own(&sub) { sub = sub.zoom(k); }
                 *c = holder.child(sub);
             }
         }
@@ -6146,7 +6207,8 @@ fn fit_probe<M>(el: &mut El<M>, prev: &[f32], at: &mut usize) {
 /// How a box marked `El::fit` zooms its subtree: the scale, where it goes (logical px from the box), and
 /// each pixel text's own size there (its text, its size at 1, the size it is set at).
 /// A box that reflows keeps its subtree in the flow (`w`: its content box, set for those).
-struct Fitted { k: f32, at: (f32, f32), pixel: Vec<(String, f32, f32)>, w: Option<(f32, f32)> }
+/// `nat`: for a subtree that holds own-size elements (`El::own_size`), its size as first measured at 1.
+struct Fitted { k: f32, at: (f32, f32), pixel: Vec<(String, f32, f32)>, w: Option<(f32, f32)>, nat: Option<(f32, f32)> }
 /// Each fitted subtree zoomed by its scale and put where it goes in its box (`Ui::fit_scales`, in the
 /// same order).
 fn fit_apply<M>(el: &mut El<M>, ks: &[Fitted]) {
@@ -6251,7 +6313,7 @@ fn measure_key(c: &Content) -> u64 {
 /// A virtual list's rows are built here, for what its viewport shows.
 #[allow(clippy::too_many_arguments)]
 fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], off: (bool, bool), flow: Option<(Rc<str>, usize)>, inh: Inherit, vx: &mut VirtCtx, built: &mut Built, nodes: &mut Vec<Node<M>>) -> usize {
-    let El { key, mut style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, map_life, mut on_text, multiline, selectable, cursor, virt, access, ripple, mut on_pick, mut on_wheel, mut on_move, guide, skeleton, rtl, on_visible, on_outline, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview, fit, clamp, plate, mut children } = el;
+    let El { key, mut style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, map_life, mut on_text, multiline, selectable, cursor, virt, access, ripple, mut on_pick, mut on_wheel, mut on_move, guide, skeleton, rtl, on_visible, on_outline, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview, fit, clamp, plate, own_size, mut children } = el;
     let mut inh = inh;
     if let Some(r) = rtl { inh.rtl = r; }
     style.direction = if inh.rtl { taffy::Direction::Rtl } else { taffy::Direction::Ltr };
@@ -6324,7 +6386,7 @@ fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], of
         content, fill, border, radius, on_press, on_key, on_drag, on_blur, loose, wipe, bar, reveal, commit, modal, hidden, shift, shed, flow_field, stirr, trace, flow: flow.clone(),
         mat: inh.code(), loosen: inh.loosen, annotate, scope: gaze_scope, anchor, clips, calm, map_life, on_text, multiline, selectable: inh.select, cursor,
         virt: virt_info, access, respond, legible, ripple: inh.scope.clone(), ripple_scope: ripple.container || commit_scope, recompose, recompose_always: is_text && ripple.recompose == Some(true), unframed: ripple.unframed, keyed,
-        on_pick, on_wheel, on_move, guide, on_visible, on_outline, decode, skeleton: inh.skeleton, form, turn, xf: None, reveal_by, ongoing: ongoing || parent.is_some_and(|p| nodes[p].ongoing), pass, opacity, opacity_all: opacity * parent.map_or(1.0, |p| nodes[p].opacity_all), commit_scope, fit, clamp, shown: None, plate, local: taffy::Layout::new(), tid: placeholder,
+        on_pick, on_wheel, on_move, guide, on_visible, on_outline, decode, skeleton: inh.skeleton, form, turn, xf: None, reveal_by, ongoing: ongoing || parent.is_some_and(|p| nodes[p].ongoing), pass, opacity, opacity_all: opacity * parent.map_or(1.0, |p| nodes[p].opacity_all), commit_scope, fit, clamp, shown: None, plate, own_size, own_in_flow: own_size.is_some() && style.position != taffy::Position::Absolute, local: taffy::Layout::new(), exact: (0.0, 0.0), tid: placeholder,
     });
     crate::el::snap_style(&mut style);
     // Every element is the box its absolutely placed children are pinned in (all four insets against
