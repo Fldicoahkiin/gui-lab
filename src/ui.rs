@@ -528,6 +528,8 @@ pub struct Ui<S, M> {
     clear_many: Vec<(String, usize)>,
     /// The scale each box marked `El::fit` gave its subtree in the last layout.
     fit_k: HashMap<String, f32>,
+    /// The scales the fitted boxes were last given (`El::fit`), kept while nothing layout reads changes.
+    fit_last: Option<Vec<Fitted>>,
     pressed: Option<String>,
     /// The element being dragged, if its press started a drag.
     capture: Option<Capture<M>>,
@@ -1048,7 +1050,7 @@ impl<S, M: Clone> Ui<S, M> {
         let mut ui = Self {
             state, view, update, text: Text::new(faces), size: (0.0, 0.0), scale, clock: 0.0, wall: 0.0, bclock: crate::beat::Clock::default(), sent: vec![], sets: vec![], nodes: vec![], scene: Scene::default(),
             owners: vec![], page_len: 0, field: Field::default(), scroll: HashMap::new(), births: HashMap::new(), ramp: None, text_births: HashMap::new(),
-            hover: None, focus: None, after_focus: None, fit_short: vec![], grain_at: None, clears: HashMap::new(), clearing: false, clear_many: vec![], flow_own: vec![], fit_k: HashMap::new(), pressed: None, capture: None, modal_at: None, modal_key: None, return_focus: None, split: None, splits: 0,
+            hover: None, focus: None, after_focus: None, fit_short: vec![], grain_at: None, clears: HashMap::new(), clearing: false, clear_many: vec![], flow_own: vec![], fit_k: HashMap::new(), fit_last: None, pressed: None, capture: None, modal_at: None, modal_key: None, return_focus: None, split: None, splits: 0,
             keyboard: false, marks: Marks::default(), sized: None, commands: None, unseen: vec![], base: vec![], tags: vec![], roles: vec![],
             run: None, painted_phase: 0, flows: HashMap::new(), ghosts: vec![], grows: vec![], ground_seen: None, ground_hold: None, body_len: 0, animating: false, lifted: HashMap::new(),
             gaze_of: None, gaze_seen: HashMap::new(), annots: vec![], readout: gaze::Readout::default(), hovered: None, pointer_of: None, scripted: false, ticked: None, warm: None, warmed: None, owed: false, ambient: 60.0, input_t: -1e9, frame_t: -1e9, tick_gap: 1.0 / 60.0, unused_key: None, shortcut: None, scrolled_of: None, released: None, input: None,
@@ -2947,9 +2949,24 @@ impl<S, M: Clone> Ui<S, M> {
         let mut el = (self.view)(&self.state);
         // Boxes a subtree is fitted into (`El::fit`): the subtree is first laid out on its own at 1 to
         // find its natural size, then the view is made again and the subtree zoomed to fit.
-        self.fit_short.clear();
-        if !has_fit(&el) { self.fit_k.clear(); }
+        if !has_fit(&el) { self.fit_k.clear(); self.fit_short.clear(); self.fit_last = None; }
+        // The scales of last time, when nothing layout reads has changed since (the view zoomed by them is
+        // what was laid out last): one view, no probe and no layout. A piece that changes only what it
+        // draws pays nothing for being fitted.
+        else if let Some(ks) = self.fit_last.take() {
+            fit_apply(&mut el, &ks);
+            match self.lay_pass_if(el, true) {
+                Some(mut nodes) => {
+                    self.fit_last = Some(ks);
+                    self.remeasure = false;
+                    self.finish_layout(&mut nodes);
+                    return;
+                }
+                None => { self.perf.counters.views += 1; el = (self.view)(&self.state); }
+            }
+        }
         if has_fit(&el) {
+            self.fit_short.clear();
             // A box that reflows (`FitMode::Reflow`) is probed again at the scale found, until it holds
             // its subtree (a smaller scale wraps it into fewer lines) or it is at its least scale.
             let mut ks: Vec<Fitted> = vec![];
@@ -2965,6 +2982,7 @@ impl<S, M: Clone> Ui<S, M> {
             }
             self.perf.counters.views += 1;
             fit_apply(&mut el, &ks);
+            self.fit_last = Some(ks);
         }
         let mut nodes = self.lay_pass(el);
         self.remeasure = false;
@@ -2972,7 +2990,10 @@ impl<S, M: Clone> Ui<S, M> {
     }
     /// One layout pass of a view: lifted layers, the flattened nodes, the taffy tree brought up to date
     /// and laid out (when anything it depends on changed); each node's local box set.
-    fn lay_pass(&mut self, el: El<M>) -> Vec<Node<M>> {
+    fn lay_pass(&mut self, el: El<M>) -> Vec<Node<M>> { self.lay_pass_if(el, false).unwrap_or_default() }
+    /// `lay_pass`, or with `same` nothing when anything layout reads changed since the last pass (the
+    /// tree is then brought up to date but not laid out).
+    fn lay_pass_if(&mut self, el: El<M>, same: bool) -> Option<Vec<Node<M>>> {
         let mut nodes = Vec::new();
         // The root is the window, whatever its contents would like.
         let mut el = el;
@@ -3060,18 +3081,19 @@ impl<S, M: Clone> Ui<S, M> {
         let root = nodes[0].tid;
         // Nothing changed that layout depends on (taffy's own dirty flag is not kept for the root): the
         // boxes from last time stand.
+        if changed && same { return None; }
         if changed {
             let space = Size { width: AvailableSpace::Definite(self.size.0), height: AvailableSpace::Definite(self.size.1) };
             self.perf.counters.layouts += 1;
             // Laid out by a function of the leaves alone, so taffy is built once and not for each `Ui` type.
             let leaves: Vec<(&Content, u16)> = nodes.iter().map(|n| (&n.content, n.clamp)).collect();
-            if compute_layout(&mut self.tree, root, space, &mut self.text, &leaves).is_err() { return nodes; }
+            if compute_layout(&mut self.tree, root, space, &mut self.text, &leaves).is_err() { return Some(nodes); }
         } else {
             self.perf.counters.layouts_skipped += 1;
         }
         self.rebuilt = touched;
         for n in nodes.iter_mut() { if let Ok(l) = self.tree.layout(n.tid) { n.local = *l; let u = self.tree.unrounded_layout(n.tid); n.exact = (u.location.x, u.location.y); } }
-        nodes
+        Some(nodes)
     }
     /// How much each box marked `El::fit` zooms its subtree, in the order they come in the view, from
     /// the pass that laid the subtree out on its own: the scale, and where the zoomed subtree goes in
@@ -6520,6 +6542,7 @@ fn fit_probe<M>(el: &mut El<M>, prev: &[f32], at: &mut usize) {
 /// each pixel text's own size there (its text, its size at 1, the size it is set at).
 /// A box that reflows keeps its subtree in the flow (`w`: its content box, set for those).
 /// `nat`: for a subtree that holds own-size elements (`El::own_size`), its size as first measured at 1.
+#[derive(Clone)]
 struct Fitted { k: f32, at: (f32, f32), pixel: Vec<(String, f32, f32)>, w: Option<(f32, f32)>, nat: Option<(f32, f32)> }
 /// Each fitted subtree zoomed by its scale and put where it goes in its box (`Ui::fit_scales`, in the
 /// same order).

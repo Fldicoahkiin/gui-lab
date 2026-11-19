@@ -25,6 +25,8 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
 
 ## Paint that does not grow with the square of the page
 
+- A fitted box (`El::fit`) whose subtree changes only what it draws is one view and no layout a frame (it was three
+  views and two layouts): the scales found last time stand until something layout reads changes.
 - What text to read holds (`holds`) finds the ink drawn before it through a 64 px grid instead of testing every
   earlier instance, and the islands of loosened controls (`islands`) walk up each node's parents once instead of
   searching every earlier node. The scene is the same; on the website's Lab index (about 7,000 instances and 420

@@ -179,6 +179,10 @@ different scale.
 
 Within any fit, pixel text is not set smaller when the scale is 1.
 
+The scales found are kept. On the next layout the view is zoomed by them first, and if nothing layout reads has
+changed since the last layout (no style, no text and no box size: a piece that only draws differently), that is the
+layout, with no probe, one view and no taffy pass; anything else probes again as above. `tests/fit_once.rs`.
+
 **Own-size elements** (`El::own_size(ax, ay)`): a label on a drawing that is zoomed (`El::zoom`, `El::fit`) or carried
 by a growing picture (`Cmd::Flow`) keeps its own size: its type, box, border and pose, and everything it holds, are
 not zoomed; where it is (insets, margins, `shift`) is. Placed absolutely, it goes where its point (`ax`, `ay`: 0–1
