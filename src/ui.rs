@@ -4697,7 +4697,14 @@ impl<S, M: Clone> Ui<S, M> {
         for (i, n) in self.nodes.iter().enumerate() {
             let Some(st) = n.stirr.as_ref() else { continue };
             if n.hidden { continue; }
-            let c = n.rect.center();
+            // Where it is in the content it scrolls with: scrolling carries it, which is not its motion.
+            let mut c = n.rect.center();
+            let mut a = n.parent;
+            while let Some(k) = a {
+                let p = &self.nodes[k];
+                if p.scroll { let o = self.scroll.get(&p.key).copied().unwrap_or(0.0); if p.horizontal { c.0 += o; } else { c.1 += o; } }
+                a = p.parent;
+            }
             seen.push(n.key.clone());
             let Some(last) = self.stirr_at.insert(n.key.clone(), c) else { continue };
             let d = ((c.0 - last.0).powi(2) + (c.1 - last.1).powi(2)).sqrt();
@@ -4706,7 +4713,8 @@ impl<S, M: Clone> Ui<S, M> {
             let Some(scope) = self.stir_scope(Some(i), &st.scope) else { continue };
             let a = (d / 24.0).min(1.0);
             let radius = st.radius.unwrap_or(fx.stirr_radius + 0.5 * n.rect.w.min(n.rect.h));
-            stirs.push(([last.0, last.1], [c.0, c.1], energy * a, fx.flow * a, radius, scope));
+            let at = n.rect.center();
+            stirs.push(([last.0 - c.0 + at.0, last.1 - c.1 + at.1], [at.0, at.1], energy * a, fx.flow * a, radius, scope));
         }
         self.stirr_at.retain(|k, _| seen.contains(k));
         // A trace's head stirs the map where it goes (DESIGN.md §1.30).
