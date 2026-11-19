@@ -572,7 +572,8 @@ impl Text {
         if n == 0 { return None; }
         let w = p.width;
         let full = self.layout(p.s, p.face, p.size, p.line, Some(w), p.setting());
-        if full.len() <= n { return None; }
+        // Within its lines and its width: a word longer than the width is cut too.
+        if full.len() <= n && full.lines().all(|ln| { let m = ln.metrics(); m.advance - m.hanging_advance <= w + 0.01 }) { return None; }
         let dots = self.ellipsis(p.face, p.size);
         // Whether `s[..end]` with the ellipsis fits, and how full its last line is.
         let mut fits = |t: &mut Self, end: usize| -> Option<f32> {

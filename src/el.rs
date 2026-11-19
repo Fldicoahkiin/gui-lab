@@ -1048,8 +1048,8 @@ impl<M> El<M> {
     /// Show a text element in at most `lines` lines (0: all of it). Text that does not fit ends in this
     /// face's own ellipsis on the last line, in the text's colour and size, on the baseline, drawn by
     /// the material as the rest of the line is (no fade, no mask). It breaks after a word, or between
-    /// characters when that would leave more than a quarter of the last line empty, and leaves no
-    /// space or punctuation before the ellipsis. `Ui::clamped` says whether it was cut; assistive
+    /// characters when that would leave more than a quarter of the last line empty (a word wider than the
+    /// line is cut in it too), and leaves no space or punctuation before the ellipsis. `Ui::clamped` says whether it was cut; assistive
     /// technology reads the whole text. Taking the clamp away lets the rest come in as text that
     /// changes does. With `El::around` it does not clamp yet (`Ui::problems` says so).
     pub fn clamp(mut self, lines: u16) -> Self { self.clamp = lines; self }

@@ -13,6 +13,10 @@
 //! value can be typed (digits, `.`, `-`, Backspace; Enter commits, Esc cancels) or stepped with
 //! Up / Down (Shift for ×10). Dragging sideways on the value scrubs it, one step per `SCRUB` px; a
 //! press that does not move only focuses it, so typing stays the main way.
+//!
+//! It is never narrower than its steps and field: given a width that leaves its label no room beside
+//! them, the steps go on a line under the label, and a label wider than the control ends in an
+//! ellipsis (read whole by assistive technology).
 use super::{CONTROL_H, LABEL, LINE, RADIUS};
 use crate::el::{Drag, El, Font, Key, Paint, Phase, row, space, text};
 use std::rc::Rc;
@@ -31,6 +35,8 @@ impl Spec {
 
 /// Logical px of sideways drag per step.
 pub const SCRUB: f32 = 6.0;
+/// The steps and the field with their gaps: the least a number control is wide.
+const CONTROLS: f32 = 2.0 * CONTROL_H + 96.0 + 2.0 * 6.0;
 
 /// What the control asks the application to do with its value.
 #[derive(Clone, Debug, PartialEq)]
@@ -97,9 +103,19 @@ pub fn number<M: Clone + 'static>(key: &str, label: &str, value: f32, spec: Spec
         field = field.child(space(1.5, 16.0).fill(Paint::ACCENT)).on_blur(msg(Edit::Cancel));
     }
     field = field.child(space(0.0, 0.0).grow(1.0)).child(text(spec.unit, LABEL - 2.0, Paint::DIM));
-    row().key(key).gap(6.0).align(AlignItems::CENTER)
-        .child(text(label, LABEL, Paint::DIM).grow(1.0))
+    // The steps and the field never shrink, and the control is never narrower than they are: a width
+    // that does not leave the label room puts the steps on a line of their own under it, and a label
+    // wider than the whole control ends in an ellipsis (read whole).
+    let controls = row().gap(6.0).align(AlignItems::CENTER)
         .child(step(-1.0, "−", "less"))
         .child(field)
-        .child(step(1.0, "+", "more"))
+        .child(step(1.0, "+", "more"));
+    // As wide as it is (not grown from nothing), so a label too wide beside the steps wraps them under it;
+    // never wider than the control.
+    let mut label = text(label, LABEL, Paint::DIM).grow(1.0).min_width(0.0).clamp(1);
+    label.style.flex_basis = taffy::prelude::auto();
+    label.style.max_size.width = taffy::prelude::percent(1.0);
+    row().key(key).wrap().gap(6.0).align(AlignItems::CENTER).min_width(CONTROLS)
+        .child(label)
+        .child(controls)
 }

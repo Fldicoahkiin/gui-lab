@@ -8,6 +8,14 @@ crate and the `amenui` npm package (`web/`) always carry the same version, becau
 match the module that `web_app!` generates. The minimum Rust is the one CI builds with (`rust-version`
 in Cargo.toml); raising it is a breaking change before 1.0 only in the second number.
 
+## Number controls that keep their steps inside
+
+- `widgets::number`: never narrower than its steps and field; a width that leaves the label no room beside them puts
+  the steps on a line under it, and a label wider than the control ends in an ellipsis, read whole. A caption's and
+  the Lab's numbers no longer run into each other.
+- `experiment::frame`: the formula wraps to the cell instead of being cut.
+- `El::clamp`: a word wider than the line is cut too.
+
 ## A drawing's own colours
 
 - `Drawing::palette([...])`: a drawing's own colours, which its marks name as `Paint::hue(3 + k)`, so it looks the same
