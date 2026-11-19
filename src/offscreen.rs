@@ -5,6 +5,24 @@ use crate::style::Look;
 use crate::ui::Ui;
 use crate::error::SurfaceError;
 
+/// The one GPU every `Offscreen` in the process draws with: an instance, adapter and device made once
+/// and shared (each `Offscreen` keeps its own renderer and target). Making and dropping Vulkan
+/// instances from several threads at once crashes some drivers (lavapipe under parallel tests).
+struct Gpu { _instance: wgpu::Instance, device: wgpu::Device, queue: wgpu::Queue, tier: crate::render::ParticleTier }
+
+/// The shared GPU, made on first use; why it could not start (`None`: no adapter) is kept too.
+fn gpu() -> Result<&'static Gpu, SurfaceError> {
+    static GPU: std::sync::OnceLock<Result<Gpu, Option<String>>> = std::sync::OnceLock::new();
+    let made = GPU.get_or_init(|| {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions { force_fallback_adapter: true, ..Default::default() })).map_err(|_| None)?;
+        if std::env::var_os("AMENUI_QUIET").is_none() { eprintln!("adapter: {:?}", adapter.get_info().name); }
+        let (device, queue) = pollster::block_on(adapter.request_device(&Default::default())).map_err(|e| Some(e.to_string()))?;
+        Ok(Gpu { tier: crate::render::particle_tier(&adapter), _instance: instance, device, queue })
+    });
+    made.as_ref().map_err(|e| e.as_ref().map_or(SurfaceError::NoAdapter, |m| SurfaceError::Device(m.clone())))
+}
+
 pub struct Offscreen { pub r: Renderer, target: wgpu::Texture, buf: wgpu::Buffer, pub w: u32, pub h: u32, row: u32 }
 
 impl Offscreen {
@@ -18,10 +36,8 @@ impl Offscreen {
     pub fn try_warming(w: u32, h: u32) -> Result<Self, SurfaceError> { Self::make(w, h, true) }
     fn make(w: u32, h: u32, warming: bool) -> Result<Self, SurfaceError> {
         if w == 0 || h == 0 { return Err(SurfaceError::ZeroSize { w, h }); }
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions { force_fallback_adapter: true, ..Default::default() })).map_err(|_| SurfaceError::NoAdapter)?;
-        if std::env::var_os("AMENUI_QUIET").is_none() { eprintln!("adapter: {:?}", adapter.get_info().name); }
-        let (device, queue) = pollster::block_on(adapter.request_device(&Default::default())).map_err(|e| SurfaceError::Device(e.to_string()))?;
+        let Gpu { device, queue, tier, .. } = gpu()?;
+        let (device, queue) = (device.clone(), queue.clone());
         let format = wgpu::TextureFormat::Rgba8Unorm;
         let target = device.create_texture(&wgpu::TextureDescriptor {
             label: None, size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,
@@ -30,7 +46,7 @@ impl Offscreen {
         let row = (w * 4).div_ceil(256) * 256;
         let buf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (row * h) as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
         let mut r = if warming { Renderer::begin(device, queue, format, w, h).into_renderer() } else { Renderer::new(device, queue, format, w, h) };
-        r.set_particle_tier(crate::render::particle_tier(&adapter));
+        r.set_particle_tier(*tier);
         for (id, pw, ph, px) in crate::pictures::pictures() { r.set_picture(id, pw, ph, &px); }
         Ok(Self { r, target, buf, w, h, row })
     }

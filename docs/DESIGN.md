@@ -1851,7 +1851,9 @@ size mismatch), `DriveError` (the event JSON's format, a target not found with t
 position, key names) and `ViewProblem` (`Ui::problems()`: the same key used twice, giving both paths and the
 `.key(format!(..))` way to write it; the same flow id twice on a page; an anchor to an element that doesn't
 exist; a ripple container key that doesn't exist). There is no bare `unwrap` on any path user code can reach;
-`Offscreen::new` panics with `SurfaceError`'s message on failure, and `Offscreen::try_new` returns it. The
+`Offscreen::new` panics with `SurfaceError`'s message on failure, and `Offscreen::try_new` returns it. Every
+`Offscreen` in a process draws with one instance, adapter and device, made on first use (each keeps its own renderer
+and target), because making and dropping Vulkan instances on several threads at once crashes lavapipe. The
 `expect`s that remain are internal invariants (taffy creating nodes, the renderer's blank images).
 
 **Documentation**: `AGENTS.md` at the repository root (three sentences, the mental model, a compiling example

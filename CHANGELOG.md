@@ -8,6 +8,13 @@ crate and the `amenui` npm package (`web/`) always carry the same version, becau
 match the module that `web_app!` generates. The minimum Rust is the one CI builds with (`rust-version`
 in Cargo.toml); raising it is a breaking change before 1.0 only in the second number.
 
+## One GPU for every off-screen renderer
+
+- Every `Offscreen` in a process shares one wgpu instance, adapter, device and queue, made on first use; each keeps its
+  own renderer, target and read-back buffer. Tests that ran in parallel made and dropped Vulkan instances on several
+  threads at once, which crashed lavapipe (a segmentation fault in a different GPU test each run on CI). A failure to
+  start is kept and returned again to every later `Offscreen`.
+
 ## Paint that does not grow with the square of the page
 
 - What text to read holds (`holds`) finds the ink drawn before it through a 64 px grid instead of testing every
