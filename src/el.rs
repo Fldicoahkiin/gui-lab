@@ -708,6 +708,8 @@ pub struct Props {
     pub own_size: Option<([f32; 2], f32)>,
     /// The look's grain is drawn over it (`El::grain`).
     pub grain: bool,
+    /// Shown only while it is clear (`El::show_clear`): how far inside its view it must be, and its rank.
+    pub show_clear: Option<(f32, u8)>,
     /// How much a view scale above it (`El::view_scale`) scaled its geometry and not its pen: a drawing's
     /// strokes are drawn this much wider than its scale makes them (1: none).
     pub pen: f32,
@@ -716,7 +718,7 @@ pub struct Props {
 }
 impl Props {
     #[inline(never)]
-    fn new(style: Style, content: Content) -> Self { Props { key: String::new(), style, content, fill: None, border: None, radius: 0.0, focusable: false, tab_order: 0, skip_to: None, focus_shown: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, shift: (0.0, 0.0), shed: None, flow_field: None, stirr: None, trace: None, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, clips: false, calm: false, map_life: None, multiline: false, selectable: false, cursor: None, ripple: Ripple::default(), guide: None, skeleton: false, rtl: None, decode: None, form: None, turn: 0.0, reveal_by: Reveal::Glyph, ongoing: false, pass: false, opacity: 1.0, commit_scope: false, preview: false, fit: None, clamp: 0, plate: None, own_size: None, grain: false, pen: 1.0, view_scale: None } }
+    fn new(style: Style, content: Content) -> Self { Props { key: String::new(), style, content, fill: None, border: None, radius: 0.0, focusable: false, tab_order: 0, skip_to: None, focus_shown: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, shift: (0.0, 0.0), shed: None, flow_field: None, stirr: None, trace: None, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, clips: false, calm: false, map_life: None, multiline: false, selectable: false, cursor: None, ripple: Ripple::default(), guide: None, skeleton: false, rtl: None, decode: None, form: None, turn: 0.0, reveal_by: Reveal::Glyph, ongoing: false, pass: false, opacity: 1.0, commit_scope: false, preview: false, fit: None, clamp: 0, plate: None, own_size: None, grain: false, show_clear: None, pen: 1.0, view_scale: None } }
 }
 impl<M> std::ops::Deref for El<M> { type Target = Props; fn deref(&self) -> &Props { &self.props } }
 impl<M> std::ops::DerefMut for El<M> { fn deref_mut(&mut self) -> &mut Props { &mut self.props } }
@@ -1237,6 +1239,15 @@ impl<M> El<M> {
     /// outlines, gap and narrowest piece, a pose's moves and depth, a stirr's reach, a guide and a trace. A widget made for one size shown at another
     /// (the film scales its controls with the stage, so a small window does not overflow).
     pub fn zoom(self, k: f32) -> Self { self.zoom_by(k, false) }
+    /// Show this label only while it is clear, checked every frame (a label at its own size,
+    /// `El::own_size`, on a drawing whose scale changes): its whole box `inset` px (8 by default) inside
+    /// its view (its nearest `El::view_scale` container, or the window) and at least 2 px from every label
+    /// of that view already shown, taken by `rank` (the smaller first, then in the order of the view). One
+    /// that is hidden comes back only with 4 px more to spare (12 inside, 6 apart), so it does not flicker.
+    /// It goes and comes by opacity, linearly over 150 ms from where it is; hidden, it is at opacity 0 and
+    /// takes no pointer, keeps its place in the layout and is still read by a screen reader. At most 64
+    /// labels in one view (`ViewProblem::ShowClearMany`).
+    pub fn show_clear(mut self, inset: f32, rank: u8) -> Self { self.show_clear = Some((inset.max(0.0), rank)); self }
     /// A view of a drawing at scale `s` (a map that grows from a thumbnail to a window): everything this
     /// container holds is scaled as by `El::zoom` (positions, lengths, fills, corner radii, a drawing's
     /// dots) except the pen: the widths of lines (a drawing's strokes, a trace), of borders, and a trace's

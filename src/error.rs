@@ -179,6 +179,20 @@ pub enum DriveError {
 /// layout; none of them stops the page from drawing.
 #[derive(Clone, Debug, Error, PartialEq)]
 pub enum ViewProblem {
+    #[error("`{key}` keeps its own size (`El::own_size`) and is keyed the same on both pages of a flow that grows, at another type size on the new page: own-size type does not change size on the way, so it is two layouts, and the two cross-fade once the picture lands. Give it the same size on both pages.")]
+    /// Own-size type keyed the same on both pages of a growing flow, at another size.
+    FlowOwnSize {
+        /// The element's key.
+        key: String,
+    },
+    #[error("`{key}` holds {count} labels shown only while clear (`El::show_clear`); a view checks at most 64, and the rest are shown as they are. Rank fewer labels in one view, or split it into views (`El::view_scale`).")]
+    /// A view with more than 64 labels shown only while clear.
+    ShowClearMany {
+        /// The view's key.
+        key: String,
+        /// How many labels it holds.
+        count: usize,
+    },
     #[error("`{key}` keeps its own size (`El::own_size`) in a row or column of `{parent}` and, with the rest zoomed down around it, reaches out of `{parent}`'s content box. Place it absolutely (a label on a drawing), give the parent room for it at the least zoom, or let it zoom with the rest.")]
     /// An own-size element in a flow that overflows its parent's content box at the current zoom.
     OwnSizeOver {

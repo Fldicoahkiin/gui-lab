@@ -104,6 +104,12 @@ pub struct Node<M> {
     pen: f32,
     /// The look's grain is drawn over it (`El::grain`).
     grain: bool,
+    /// Shown only while clear (`El::show_clear`): inset and rank.
+    show_clear: Option<(f32, u8)>,
+    /// A view scale's container (`El::view_scale`).
+    view_scale: Option<f32>,
+    /// Its opacity and its whole opacity as the view gave them, before `El::show_clear`.
+    op0: (f32, f32),
     /// At its own size and in its parent's flow (not placed absolutely), so it takes room there.
     own_in_flow: bool,
     shed: Option<crate::motes::Shed>,
@@ -302,7 +308,15 @@ struct FlowRec {
     /// The picture of a flow subtree that grows (`Ui::grows`): drawn in the box the grow has then, and
     /// only inside the part of it that shows.
     grow: Option<usize>,
+    /// An instance with the same key on both pages, carried by a growing picture (`Keyed`).
+    keyed: Option<Keyed>,
 }
+/// An instance of an element keyed the same on both pages of a flow that grows (`Cmd::Flow`): it goes
+/// from where it was to where it is with the picture's transform, its point `pin` (its centre, or an
+/// own-size label's anchor) carried by the picture and brought onto its new place on the same cubic;
+/// its size goes from the old to the new on that cubic too (a stroke's width does not), its colour
+/// linearly. `grow`: the picture it goes with; `old`: the instance as it was drawn.
+struct Keyed { grow: usize, old: Instance, pin: [f32; 2], keep_h: bool }
 /// An instance of the old page that has no place on the new one: it loosens (`loosen`) and fades; one
 /// of a subtree whose picture grows (`ride`) rides with the picture at its own size instead.
 /// `anchor`: for one that rides on a growing picture, the box of the part of its element it moves with
@@ -338,7 +352,9 @@ impl Grow {
     }
 }
 /// A page instance as it was drawn, kept across a relayout for `Cmd::Flow`.
-struct Old { id: u64, node: usize, pin: [f32; 2], tag: Option<Tag>, inst: Instance }
+/// `key`: its element's key when the element is keyed, `slot` which of that element's instances it is
+/// (glyph or not, the count, the glyph), `own` whether the element keeps its own size.
+struct Old { id: u64, node: usize, pin: [f32; 2], tag: Option<Tag>, inst: Instance, key: Option<Rc<str>>, slot: (bool, u32, u32), own: bool }
 
 /// A text's glyphs as last painted, kept to see what changed in the next view (DESIGN.md §1.16).
 /// `changed` is when its string last changed (seconds), to tell a readout that changes every frame.
@@ -484,6 +500,15 @@ pub struct Ui<S, M> {
     fit_short: Vec<(String, f32, f32)>,
     /// Where the look's grain is drawn this frame (device px, `El::grain`): `None` over the whole frame.
     grain_at: Option<[f32; 4]>,
+    /// Each label shown only while clear (`El::show_clear`), by key: its opacity, whether it is to be
+    /// shown, and when that was worked out.
+    clears: HashMap<String, (f32, bool, f32)>,
+    /// A label of `El::show_clear` is on its way in or out.
+    clearing: bool,
+    /// Own-size type keyed the same on both pages of a growing flow at another size (`ViewProblem::FlowOwnSize`).
+    flow_own: Vec<String>,
+    /// Views with more labels shown while clear than are checked (`ViewProblem::ShowClearMany`).
+    clear_many: Vec<(String, usize)>,
     /// The scale each box marked `El::fit` gave its subtree in the last layout.
     fit_k: HashMap<String, f32>,
     pressed: Option<String>,
@@ -1006,7 +1031,7 @@ impl<S, M: Clone> Ui<S, M> {
         let mut ui = Self {
             state, view, update, text: Text::new(faces), size: (0.0, 0.0), scale, clock: 0.0, wall: 0.0, bclock: crate::beat::Clock::default(), sent: vec![], sets: vec![], nodes: vec![], scene: Scene::default(),
             owners: vec![], page_len: 0, field: Field::default(), scroll: HashMap::new(), births: HashMap::new(), ramp: None, text_births: HashMap::new(),
-            hover: None, focus: None, after_focus: None, fit_short: vec![], grain_at: None, fit_k: HashMap::new(), pressed: None, capture: None, modal_at: None, modal_key: None, return_focus: None, split: None, splits: 0,
+            hover: None, focus: None, after_focus: None, fit_short: vec![], grain_at: None, clears: HashMap::new(), clearing: false, clear_many: vec![], flow_own: vec![], fit_k: HashMap::new(), pressed: None, capture: None, modal_at: None, modal_key: None, return_focus: None, split: None, splits: 0,
             keyboard: false, marks: Marks::default(), sized: None, commands: None, unseen: vec![], base: vec![], tags: vec![], roles: vec![],
             run: None, painted_phase: 0, flows: HashMap::new(), ghosts: vec![], grows: vec![], ground_seen: None, ground_hold: None, body_len: 0, animating: false, lifted: HashMap::new(),
             gaze_of: None, gaze_seen: HashMap::new(), annots: vec![], readout: gaze::Readout::default(), hovered: None, pointer_of: None, scripted: false, ticked: None, warm: None, warmed: None, owed: false, ambient: 60.0, input_t: -1e9, frame_t: -1e9, tick_gap: 1.0 / 60.0, unused_key: None, shortcut: None, scrolled_of: None, released: None, input: None,
@@ -1316,6 +1341,8 @@ impl<S, M: Clone> Ui<S, M> {
         for n in self.nodes.iter().filter(|n| n.clamp > 0 && matches!(&n.content, Content::Text { around: Some(_), .. })) { out.push(P::ClampAround { key: n.key.clone() }); }
         for (key, need, min) in &self.fit_short { out.push(P::FitShort { key: key.clone(), need: *need, min: *min }); }
         for key in &self.plate_over { out.push(P::PlateOver { key: key.clone() }); }
+        for key in &self.flow_own { out.push(P::FlowOwnSize { key: key.clone() }); }
+        for (key, count) in &self.clear_many { out.push(P::ShowClearMany { key: key.clone(), count: *count }); }
         for n in &self.nodes {
             let read = n.legible && matches!(n.content, Content::Text { .. });
             if n.hidden || n.plate.is_some() || !(read || n.focusable || n.on_press.is_some()) { continue; }
@@ -1360,7 +1387,7 @@ impl<S, M: Clone> Ui<S, M> {
     pub fn needs_frame(&self, now: f32) -> bool {
         if self.paced_until(now).is_some() { return false; }
         let b = self.beat_of(now);
-        self.dirty || self.stale_layout || self.stale_paint || self.owed || self.prep.pending() || self.held(now) || self.moving_at(b) || self.wake_at(b).is_some_and(|w| w <= b) || (self.sweeping && !self.arriving.is_empty())
+        self.dirty || self.clearing || self.stale_layout || self.stale_paint || self.owed || self.prep.pending() || self.held(now) || self.moving_at(b) || self.wake_at(b).is_some_and(|w| w <= b) || (self.sweeping && !self.arriving.is_empty())
             || (self.plates_ageing() && self.clock - self.plate_frame >= PLATE_FRAME - 1e-4)
     }
     /// A `Cmd::Hold` is going on: frames go on (the same) until it ends.
@@ -1369,9 +1396,9 @@ impl<S, M: Clone> Ui<S, M> {
     /// when only input can change anything.
     pub fn next_wake(&self, now: f32) -> Option<f32> {
         let b = self.beat_of(now);
-        let wanted = self.dirty || self.owed || self.prep.pending() || self.held(now) || self.moving_at(b) || (self.sweeping && !self.arriving.is_empty());
+        let wanted = self.dirty || self.clearing || self.owed || self.prep.pending() || self.held(now) || self.moving_at(b) || (self.sweeping && !self.arriving.is_empty());
         if wanted && let Some(t) = self.paced_until(now) { return Some(t); }
-        if self.dirty || self.owed || self.prep.pending() || self.held(now) || self.moving_at(b) || (self.sweeping && !self.arriving.is_empty()) { return Some(now); }
+        if self.dirty || self.clearing || self.owed || self.prep.pending() || self.held(now) || self.moving_at(b) || (self.sweeping && !self.arriving.is_empty()) { return Some(now); }
         if self.plates_ageing() { return Some((self.plate_frame + PLATE_FRAME).max(now)); }
         // A wake on the beat clock is that much later on the runtime's.
         self.wake_at(b).map(|w| (w + now - b).max(now))
@@ -1757,7 +1784,7 @@ impl<S, M: Clone> Ui<S, M> {
         // The readout: switched on or off, or a second past the last frame (it then says idle, once).
         let hud = self.timing.overlay != self.overlay || (self.overlay > 0 && !self.hud_idle && t >= self.overlay_at + 1.05);
         let sweep = !self.arriving.is_empty() && self.sweeping;
-        if repaint || scrolled || hud || sweep { self.paint(); } else { self.finish(); }
+        if repaint || scrolled || hud || sweep || self.clearing { self.paint(); } else { self.finish(); }
         self.track_motion(dt);
         if self.marks_moving { self.dirty = true; }
         self.moving = self.field_moving_at(t);
@@ -3375,6 +3402,7 @@ impl<S, M: Clone> Ui<S, M> {
     fn paint(&mut self) {
         if self.defer > 0 { self.stale_paint = true; self.dirty = true; return; }
         self.stale_paint = false;
+        self.show_clear();
         self.sweeping = false;
         self.swept_nodes.clear();
         self.paint_once();
@@ -4556,6 +4584,66 @@ impl<S, M: Clone> Ui<S, M> {
         if !self.painting { self.perf.pending.scene += (crate::perf::now_ms() - t0) as f32; }
     }
 
+    /// Which labels marked `El::show_clear` show, and how much: by view, by rank, each shown that is inside
+    /// the view by its inset and clear of those shown before it, with 4 px more to spare to come back;
+    /// each opacity goes to its target linearly over 150 ms from where it is.
+    fn show_clear(&mut self) {
+        const FADE: f32 = 0.15;
+        const MOST: usize = 64;
+        let now = self.clock;
+        self.clearing = false;
+        self.clear_many.clear();
+        if self.nodes.iter().all(|n| n.show_clear.is_none()) { self.clears.clear(); return; }
+        // Each label's view: its nearest view scale above it, or the root.
+        let mut views: Vec<(usize, Vec<usize>)> = vec![];
+        for i in 0..self.nodes.len() {
+            if self.nodes[i].show_clear.is_none() { continue; }
+            let mut v = self.nodes[i].parent;
+            while let Some(p) = v { if self.nodes[p].view_scale.is_some() { break; } v = self.nodes[p].parent; }
+            let v = v.unwrap_or(0);
+            match views.iter_mut().find(|x| x.0 == v) { Some(x) => x.1.push(i), None => views.push((v, vec![i])) }
+        }
+        let mut seen = HashSet::new();
+        let mut ops: Vec<(usize, f32)> = vec![];
+        for (v, mut labels) in views {
+            if labels.len() > MOST { self.clear_many.push((self.nodes[v].key.clone(), labels.len())); }
+            labels.sort_by_key(|&i| (self.nodes[i].show_clear.map_or(0, |c| c.1), i));
+            let a = self.nodes[v].rect.intersect(&self.nodes[v].clip);
+            let mut shown: Vec<Rect> = vec![];
+            for &i in labels.iter().take(MOST) {
+                let (n, (inset, _)) = (&self.nodes[i], self.nodes[i].show_clear.expect("a label"));
+                let prev = self.clears.get(&n.key).copied();
+                let (ins, gap) = if prev.is_none_or(|p| p.1) { (inset, 2.0) } else { (inset + 4.0, 6.0) };
+                let r = n.rect;
+                let inside = !n.hidden && r.x >= a.x + ins && r.y >= a.y + ins && r.right() <= a.right() - ins && r.bottom() <= a.bottom() - ins;
+                let apart = |s: &Rect| r.x >= s.right() + gap || s.x >= r.right() + gap || r.y >= s.bottom() + gap || s.y >= r.bottom() + gap;
+                let show = inside && shown.iter().all(apart);
+                if show { shown.push(r); }
+                let to = if show { 1.0 } else { 0.0 };
+                let op = match prev {
+                    None => to,
+                    // From when it last moved towards this target (a target that just changed starts now).
+                    Some((op, was, t)) => { let step = if was == show { (now - t).max(0.0) / FADE } else { 0.0 }; if op < to { (op + step).min(to) } else { (op - step).max(to) } }
+                };
+                if op != to { self.clearing = true; }
+                self.clears.insert(n.key.clone(), (op, show, now));
+                seen.insert(n.key.clone());
+                ops.push((i, op));
+            }
+            // Past the most a view checks: shown as they are.
+            for &i in labels.iter().skip(MOST) { ops.push((i, 1.0)); }
+        }
+        self.clears.retain(|k, _| seen.contains(k));
+        for (i, op) in ops {
+            self.nodes[i].opacity = self.nodes[i].op0.0 * op;
+            let mut j = i;
+            while j < self.nodes.len() && (j == i || self.within(j, i)) { self.nodes[j].opacity_all = self.nodes[j].op0.1 * op; j += 1; }
+        }
+        if self.clearing { self.dirty = true; }
+    }
+    /// How much a label marked `El::show_clear` is shown now (0–1), or `None` for one that is not.
+    pub fn clear_opacity(&self, key: &str) -> Option<f32> { self.clears.get(key).map(|c| c.0) }
+
     /// The box round what the elements marked `El::grain` draw now (device px, each instance within its
     /// clip; a flowing picture where it is this frame), or `None` when none is marked.
     fn grain_region(&self) -> Option<[f32; 4]> {
@@ -4750,6 +4838,8 @@ impl<S, M: Clone> Ui<S, M> {
         let mut lifted = vec![];
         // Growing pictures (`Grow`): drawn as the page's last pictures, over what dissolves.
         let mut growing = vec![];
+        // What is keyed the same on both pages of a growing subtree, over the picture.
+        let mut keyed = vec![];
         let plain = self.flows.values().any(|f| f.src.is_some()) && self.look().material == crate::style::Material::Plain;
         if active || self.animating {
             for i in 0..self.page_len {
@@ -4762,7 +4852,22 @@ impl<S, M: Clone> Ui<S, M> {
                         _ => {}
                     }
                 }
-                if let Some(f) = self.flows.get(&id) && let Some(g) = f.grow.and_then(|g| self.grows.get(g)) {
+                if let Some(f) = self.flows.get(&id) && let Some(kd) = &f.keyed && let Some(g) = self.grows.get(kd.grow) {
+                    // Keyed the same on both pages: carried by the picture onto its new place.
+                    let t = ((now - f.start) / f.dur.max(1e-4)).clamp(0.0, 1.0);
+                    let e = g.ease(now);
+                    let (o, n, pin) = (kd.old.rect, inst.rect, kd.pin);
+                    let (po, pn) = ([o[0] + pin[0] * o[2], o[1] + pin[1] * o[3]], [n[0] + pin[0] * n[2], n[1] + pin[1] * n[3]]);
+                    let (c, c1) = (g.ride([po[0], po[1], 0.0, 0.0], e), g.ride([po[0], po[1], 0.0, 0.0], 1.0));
+                    let p = [c[0] + (pn[0] - c1[0]) * e, c[1] + (pn[1] - c1[1]) * e];
+                    let (w, h) = (o[2] + (n[2] - o[2]) * e, if kd.keep_h { n[3] } else { o[3] + (n[3] - o[3]) * e });
+                    inst.rect = [p[0] - pin[0] * w, p[1] - pin[1] * h, w, h];
+                    for k in 0..3 { inst.paint[k] = kd.old.paint[k] + (inst.paint[k] - kd.old.paint[k]) * t; }
+                    if t < 1.0 {
+                        inst.clip = g.shows(e);
+                        if self.scene.layer.is_none() { keyed.push((i, inst)); inst.rect = [0.0; 4]; }
+                    }
+                } else if let Some(f) = self.flows.get(&id) && let Some(g) = f.grow.and_then(|g| self.grows.get(g)) {
                     // A growing picture: in its box on whole pixels, only the part that shows.
                     let e = g.ease(now);
                     inst.rect = g.picture(e);
@@ -4852,6 +4957,7 @@ impl<S, M: Clone> Ui<S, M> {
         self.lifted.clear();
         for (i, inst) in growing { self.lifted.insert(i, self.scene.instances.len()); self.scene.push(inst); }
         for inst in riding { self.scene.push(inst); }
+        for (i, inst) in keyed { self.lifted.insert(i, self.scene.instances.len()); self.scene.push(inst); }
         for r in self.recomps.values() {
             for t in &r.tiles { for inst in tile_pieces(t, now - r.start, false) { self.scene.push(inst); } }
             if now < r.keep_until { for inst in &r.keep { self.scene.push(*inst); } }
@@ -4971,7 +5077,7 @@ impl<S, M: Clone> Ui<S, M> {
             let i = dg[k];
             let id = self.owners[i].1;
             let order = if front_first { n - 1 - k } else { k };
-            self.flows.insert(id, FlowRec { from: sg[k].rect, clip: sg[k].clip, start: now + per * order as f32, dur: travel, loose: 0.0, src: Some(sg[k]), fade_in: None, grow: None });
+            self.flows.insert(id, FlowRec { from: sg[k].rect, clip: sg[k].clip, start: now + per * order as f32, dur: travel, loose: 0.0, src: Some(sg[k]), fade_in: None, grow: None, keyed: None });
             // It is the old glyph come over: born when that was.
             self.births.insert(id, sg[k].extra[3]);
             self.base[i].extra[3] = sg[k].extra[3];
@@ -4980,7 +5086,7 @@ impl<S, M: Clone> Ui<S, M> {
         for inst in sg[n..].iter().chain(&so) { self.ghosts.push(Ghost { inst: *inst, start: now, dur: out, loosen: false, ride: None, anchor: inst.rect, pin: [0.5, 0.5] }); }
         for &i in dg[n..].iter().chain(&d_other) {
             let id = self.owners[i].1;
-            self.flows.insert(id, FlowRec { from: self.base[i].rect, clip: self.base[i].clip, start: now, dur, loose: 0.0, src: None, fade_in: Some(inn), grow: None });
+            self.flows.insert(id, FlowRec { from: self.base[i].rect, clip: self.base[i].clip, start: now, dur, loose: 0.0, src: None, fade_in: Some(inn), grow: None, keyed: None });
             // It fades in, and does not come in as a new element too.
             self.births.insert(id, -1e4);
             self.base[i].extra[3] = -1e4;
@@ -5097,7 +5203,22 @@ impl<S, M: Clone> Ui<S, M> {
 
     /// The page as it is drawn now, for a flow.
     fn record(&self) -> Vec<Old> {
-        (0..self.page_len).map(|i| Old { id: self.owners[i].1, node: self.owners[i].0, pin: self.nodes[self.owners[i].0].own_size.map_or([0.5, 0.5], |o| o.0), tag: self.tags[i].clone(), inst: self.scene.instances[i] }).collect()
+        let slots = self.slots();
+        (0..self.page_len).map(|i| {
+            let n = &self.nodes[self.owners[i].0];
+            Old { id: self.owners[i].1, node: self.owners[i].0, pin: n.own_size.map_or([0.5, 0.5], |o| o.0), tag: self.tags[i].clone(), inst: self.scene.instances[i], key: n.keyed.then(|| Rc::from(n.key.as_str())), slot: slots[i], own: n.own_size.is_some() }
+        }).collect()
+    }
+    /// Which of its element's instances each page instance is: glyph or not, how many of that kind came
+    /// before it in the element, and the glyph.
+    fn slots(&self) -> Vec<(bool, u32, u32)> {
+        let mut count: HashMap<(usize, bool), u32> = HashMap::new();
+        (0..self.page_len).map(|i| {
+            let glyph = self.base[i].paint[3] == GLYPH;
+            let c = count.entry((self.owners[i].0, glyph)).or_insert(0);
+            *c += 1;
+            (glyph, *c - 1, self.tags[i].as_ref().map_or(0, |t| t.gid))
+        }).collect()
     }
 
     /// After a relayout for a new page: instances of a flow subtree that left one place and appeared in
@@ -5119,24 +5240,61 @@ impl<S, M: Clone> Ui<S, M> {
             let mut first_old: HashMap<Rc<str>, usize> = HashMap::new();
             for (k, o) in old.iter().enumerate() {
                 // A picture, not the cells that read one (`el::cells`, a picture instance with its ramp in extra.x).
-                if let Some(t) = &o.tag && o.inst.paint[3] == PICTURE && o.inst.extra[0] <= 0.5 && !new_ids.contains(&o.id) { first_old.entry(t.flow.clone()).or_insert(k); }
+                // (One keyed the same on both pages is the same picture, and grows when its box changes.)
+                if let Some(t) = &o.tag && o.inst.paint[3] == PICTURE && o.inst.extra[0] <= 0.5 { first_old.entry(t.flow.clone()).or_insert(k); }
             }
             for i in 0..self.page_len {
                 let id = self.owners[i].1;
                 let Some(t) = self.tags[i].clone() else { continue };
-                if self.base[i].paint[3] != PICTURE || self.base[i].extra[0] > 0.5 || old_ids.contains(&id) || grow_of.contains_key(&t.flow) { continue; }
+                if self.base[i].paint[3] != PICTURE || self.base[i].extra[0] > 0.5 || grow_of.contains_key(&t.flow) { continue; }
                 let Some(&k) = first_old.get(&t.flow) else { continue };
+                if old[k].id == id && (0..4).all(|j| (old[k].inst.rect[j] - self.base[i].rect[j]).abs() < 0.5) { continue; }
                 let (o, n) = (old[k].inst, self.base[i]);
                 let g = self.grows.len();
                 self.grows.push(Grow { p0: o.rect, p1: n.rect, r0: shows(o.rect, o.clip), r1: shows(n.rect, n.clip), start: now, dur: flight });
                 grow_of.insert(t.flow.clone(), g);
                 used[k] = true;
-                self.flows.insert(id, FlowRec { from: o.rect, clip: o.clip, start: now, dur: flight, loose: 0.0, src: None, fade_in: None, grow: Some(g) });
+                self.flows.insert(id, FlowRec { from: o.rect, clip: o.clip, start: now, dur: flight, loose: 0.0, src: None, fade_in: None, grow: Some(g), keyed: None });
                 self.births.insert(id, o.extra[3]);
                 self.base[i].extra[3] = o.extra[3];
             }
         }
         let grows = |t: &Option<Tag>| t.as_ref().is_some_and(|t| grow_of.contains_key(&t.flow));
+        // Elements keyed the same on both pages of a subtree that grows: each instance goes from where it
+        // was to where it is with the picture (`Keyed`). Own-size type of another size on the new page is
+        // two layouts, not one moving: it is told (`ViewProblem::FlowOwnSize`) and the two cross-fade
+        // once the picture lands.
+        let out = if self.fmap.reduced { self.fade_s } else { spec.out_ms / 1000.0 };
+        let mut xfade: HashSet<usize> = HashSet::new();
+        self.flow_own.clear();
+        if !grow_of.is_empty() {
+            let by_key: HashMap<(&str, (bool, u32, u32)), usize> = old.iter().enumerate()
+                .filter(|(k, o)| !used[*k] && grows(&o.tag))
+                .filter_map(|(k, o)| o.key.as_deref().map(|key| ((key, o.slot), k))).collect();
+            let slots = self.slots();
+            for (i, &slot) in slots.iter().enumerate() {
+                let (node, id) = self.owners[i];
+                // (Kept on both pages, its identity is the same: it is found by its key all the same.)
+                if self.flows.contains_key(&id) || !self.nodes[node].keyed { continue; }
+                let Some(flow) = self.tags[i].as_ref().map(|t| t.flow.clone()) else { continue };
+                let Some(&g) = grow_of.get(&flow) else { continue };
+                let Some(&k) = by_key.get(&(self.nodes[node].key.as_str(), slot)) else { continue };
+                let (o, n) = (old[k].inst, self.base[i]);
+                let own = old[k].own || self.nodes[node].own_size.is_some();
+                if own && n.paint[3] == GLYPH && ((o.rect[2] - n.rect[2]).abs() > 0.5 || (o.rect[3] - n.rect[3]).abs() > 0.5) {
+                    if !self.flow_own.contains(&self.nodes[node].key) { self.flow_own.push(self.nodes[node].key.clone()); }
+                    xfade.insert(k);
+                    self.flows.insert(id, FlowRec { from: n.rect, clip: n.clip, start: now, dur: flight + out.max(1e-3), loose: 0.0, src: None, fade_in: Some([now + flight, now + flight + out.max(1e-3)]), grow: None, keyed: None });
+                    continue;
+                }
+                used[k] = true;
+                let pin = self.nodes[node].own_size.map_or(old[k].pin, |a| a.0);
+                let keep_h = n.paint[3] == SHAPE && n.rect[2] > n.rect[3] + 0.5 && (n.rect[3] - 2.0 * n.uv[0]).abs() < 0.01;
+                self.flows.insert(id, FlowRec { from: o.rect, clip: o.clip, start: now, dur: flight, loose: 0.0, src: None, fade_in: None, grow: None, keyed: Some(Keyed { grow: g, old: o, pin, keep_h }) });
+                self.births.insert(id, o.extra[3]);
+                self.base[i].extra[3] = o.extra[3];
+            }
+        }
         // With no flight (`flow_ms` 0) nothing is shared: the old page fades out and the new in.
         let by_tag: HashMap<&Tag, usize> = if flight <= 0.0 { HashMap::new() } else { old.iter().enumerate().filter(|(k, o)| !used[*k] && !new_ids.contains(&o.id) && !grows(&o.tag)).filter_map(|(k, o)| o.tag.as_ref().map(|t| (t, k))).collect() };
         for i in 0..self.page_len {
@@ -5146,7 +5304,7 @@ impl<S, M: Clone> Ui<S, M> {
             if used[k] { continue; }
             used[k] = true;
             let o = &old[k];
-            self.flows.insert(id, FlowRec { from: o.inst.rect, clip: o.inst.clip, start: now, dur: flight, loose: spec.flow_loose, src: None, fade_in: None, grow: None });
+            self.flows.insert(id, FlowRec { from: o.inst.rect, clip: o.inst.clip, start: now, dur: flight, loose: spec.flow_loose, src: None, fade_in: None, grow: None, keyed: None });
             self.births.insert(id, o.inst.extra[3]);
             self.base[i].extra[3] = o.inst.extra[3];
         }
@@ -5160,9 +5318,8 @@ impl<S, M: Clone> Ui<S, M> {
             let id = self.owners[i].1;
             if old_ids.contains(&id) || self.flows.contains_key(&id) { continue; }
             let fade = if grows(&self.tags[i]) { 0.0 } else { fade };
-            self.flows.insert(id, FlowRec { from: self.base[i].rect, clip: self.base[i].clip, start: now, dur: wait + fade.max(1e-3), loose: 0.0, src: None, fade_in: Some([now + wait, now + wait + fade]), grow: None });
+            self.flows.insert(id, FlowRec { from: self.base[i].rect, clip: self.base[i].clip, start: now, dur: wait + fade.max(1e-3), loose: 0.0, src: None, fade_in: Some([now + wait, now + wait + fade]), grow: None, keyed: None });
         }
-        let out = if self.fmap.reduced { self.fade_s } else { spec.out_ms / 1000.0 };
         // Around a picture that grows is the page it grows out of; one that shrinks takes the page it
         // leaves with it: what else of that page lies in the part that showed rides with it too, and
         // what lies outside goes at once, so around it is only the new page's ground.
@@ -5188,7 +5345,7 @@ impl<S, M: Clone> Ui<S, M> {
                 let (cx, cy) = (b[0] + b[2] * 0.5, b[1] + b[3] * 0.5);
                 if cx < r[0] + 3.0 || cy < r[1] + 3.0 || cx > r[2] - 3.0 || cy > r[3] - 3.0 { (ride, loosen) = (None, false); }
             }
-            let (start, dur) = if on_it && ride.is_some() { (now + flight - 1e-4, 1e-4) } else { (now, out) };
+            let (start, dur) = if on_it && ride.is_some() { if xfade.contains(&k) { (now + flight, out) } else { (now + flight - 1e-4, 1e-4) } } else { (now, out) };
             going.push((k, Ghost { inst: o.inst, start, dur, loosen, ride, anchor: o.inst.rect, pin: o.pin }));
         }
         // What rides moves by parts of its element, each part whole: an element's glyphs together (a
@@ -6355,7 +6512,7 @@ fn measure_key(c: &Content) -> u64 {
 /// A virtual list's rows are built here, for what its viewport shows.
 #[allow(clippy::too_many_arguments)]
 fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], off: (bool, bool), flow: Option<(Rc<str>, usize)>, inh: Inherit, vx: &mut VirtCtx, built: &mut Built, nodes: &mut Vec<Node<M>>) -> usize {
-    let El { props: crate::el::Props { key, mut style, mut content, fill, border, radius, mut focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, mut commit, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, map_life, multiline, selectable, cursor, ripple, guide, skeleton, rtl, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview, fit, clamp, plate, own_size, grain, pen, view_scale }, mut on_press, mut on_key, mut on_drag, mut on_blur, modal, mut on_text, virt, access, mut on_pick, mut on_wheel, mut on_move, on_visible, on_outline, mut children } = el;
+    let El { props: crate::el::Props { key, mut style, mut content, fill, border, radius, mut focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, mut commit, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, map_life, multiline, selectable, cursor, ripple, guide, skeleton, rtl, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview, fit, clamp, plate, own_size, grain, show_clear, pen, view_scale }, mut on_press, mut on_key, mut on_drag, mut on_blur, modal, mut on_text, virt, access, mut on_pick, mut on_wheel, mut on_move, on_visible, on_outline, mut children } = el;
     // A view scale scales what it holds, not its pen (`El::view_scale`).
     if let Some(s) = view_scale { children = children.into_iter().map(|c| c.zoom_by(s, true)).collect(); }
     let mut inh = inh;
@@ -6430,8 +6587,9 @@ fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], of
         content, fill, border, radius, on_press, on_key, on_drag, on_blur, loose, wipe, bar, reveal, commit, modal, hidden, shift, shed, flow_field, stirr, trace, flow: flow.clone(),
         mat: inh.code(), loosen: inh.loosen, annotate, scope: gaze_scope, anchor, clips, calm, map_life, on_text, multiline, selectable: inh.select, cursor,
         virt: virt_info, access, respond, legible, ripple: inh.scope.clone(), ripple_scope: ripple.container || commit_scope, recompose, recompose_always: is_text && ripple.recompose == Some(true), unframed: ripple.unframed, keyed,
-        on_pick, on_wheel, on_move, guide, on_visible, on_outline, decode, skeleton: inh.skeleton, form, turn, xf: None, reveal_by, ongoing: ongoing || parent.is_some_and(|p| nodes[p].ongoing), pass, opacity, opacity_all: opacity * parent.map_or(1.0, |p| nodes[p].opacity_all), commit_scope, fit, clamp, shown: None, plate, own_size, grain, pen, own_in_flow: own_size.is_some() && style.position != taffy::Position::Absolute, local: taffy::Layout::new(), exact: (0.0, 0.0), tid: placeholder,
+        on_pick, on_wheel, on_move, guide, on_visible, on_outline, decode, skeleton: inh.skeleton, form, turn, xf: None, reveal_by, ongoing: ongoing || parent.is_some_and(|p| nodes[p].ongoing), pass, opacity, opacity_all: opacity * parent.map_or(1.0, |p| nodes[p].opacity_all), commit_scope, fit, clamp, shown: None, plate, own_size, grain, show_clear, view_scale, op0: (0.0, 0.0), pen, own_in_flow: own_size.is_some() && style.position != taffy::Position::Absolute, local: taffy::Layout::new(), exact: (0.0, 0.0), tid: placeholder,
     });
+    { let n = nodes.last_mut().expect("pushed"); n.op0 = (n.opacity, n.opacity_all); }
     crate::el::snap_style(&mut style);
     // Every element is the box its absolutely placed children are pinned in (all four insets against
     // its padding box, as CSS does for a positioned parent), not the window.

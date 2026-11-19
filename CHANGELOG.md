@@ -8,6 +8,18 @@ crate and the `amenui` npm package (`web/`) always carry the same version, becau
 match the module that `web_app!` generates. The minimum Rust is the one CI builds with (`rust-version`
 in Cargo.toml); raising it is a breaking change before 1.0 only in the second number.
 
+## Labels shown while clear and elements keyed across a growing picture
+
+- `El::show_clear(inset, rank)`: a label shown only while it is clear, checked every frame against its view
+  (`El::view_scale`, or the window) and the labels of lower rank, coming back with 4 px more to spare and fading
+  linearly over 150 ms; hidden, it takes no pointer and is still read (DESIGN.md §1.2). A view of more than 64 is
+  reported (`ViewProblem::ShowClearMany`).
+- `Cmd::Flow`: an element keyed the same on both pages of a picture that grows goes from its old place to its new one
+  with the picture instead of fading out and in, its size on the picture's cubic (DESIGN.md §1.10). Own-size type at
+  another size on the new page is reported (`ViewProblem::FlowOwnSize`) and cross-fades once the picture lands. A
+  picture with the same flow id whose box changed now grows.
+- `ViewProblem` has two new variants, and `Props` a new field, `show_clear`.
+
 ## Grain in a region
 
 - `El::grain()`: once an element is marked, the look's grain is drawn only over what marked elements draw (their

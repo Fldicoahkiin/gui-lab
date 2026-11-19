@@ -197,6 +197,18 @@ is unchanged and scales the pen too. `tests/render.rs` (`a_view_scale_scales_geo
 and 0.4, line and border widths pixel for pixel as at 1, geometry `s` times within half a pixel, a 1.5 px dot one
 device pixel at 0.4, the label's type as at 1).
 
+**Labels shown while clear** (`El::show_clear(inset, rank)`): a label on a drawing whose scale changes (an own-size
+label on a view scale) is shown only while it is clear, checked every frame. Each view (the nearest `El::view_scale`
+container, or the window) takes its labels by rank, the smaller first and then in the order of the view, and shows
+each whose whole box is `inset` px inside the view and at least 2 px from every label already shown. One that is
+hidden comes back only with 4 px more to spare (`inset` + 4 inside, 6 apart), so a label at the edge of fitting does
+not flicker. It goes and comes by opacity, linearly over 150 ms from where it is; a label whose target has just
+changed starts from where it is, not from when it last moved. Hidden, it is at opacity 0 and takes no pointer, keeps
+its place in the layout and is still in the accessibility mirror. A label on its way keeps frames coming (§1.11). A
+view checks at most 64 labels; past that the rest are shown as they are and the view is reported
+(`ViewProblem::ShowClearMany`). `tests/clear.rs` (at 0.64 two that would overlap keep the lower rank; from 1 to 0.64
+and back each moves at most a ninth a frame and turns at most twice).
+
 **Clamping text** (`El::clamp(lines)`): a text element shows at most `lines` lines; text that does not fit ends in
 the face's own ellipsis on the last line, in the text's colour and size, on the baseline, drawn by the material as
 the rest of the line is (no fade, no mask). It breaks after a word, or between characters when that would leave more
@@ -1288,6 +1300,16 @@ page's at once, what else of the old page lies in the part that showed rides wit
 lies outside it goes at once, so around the picture is only the new page's ground. Text that flows with it
 (a title) is paired as above and drawn over the picture; neighbouring windows are old instances that dissolve
 under it.
+
+An element keyed the same (`El::key`) in the old and new subtree of a picture that grows is not two layouts: each of
+its instances (matched by which of the element's instances it is: glyph or not, how many of that kind before it, and
+the glyph) goes from where it was to where it is with the picture. Its point (its centre, or an own-size label's own
+point) is carried by the picture's transform, and what is left between that and its new place closes on the
+picture's cubic, as does its size (a line's width does not change); its colour goes linearly. It is drawn once every
+frame, over the picture after what rides on it, inside the part that shows, and lands on its new layout within half a
+pixel. Own-size type keyed the same at another type size on the new page cannot change size on the way: it is
+reported (`ViewProblem::FlowOwnSize`) and the two cross-fade once the picture lands. A picture with the same flow id
+on both pages whose box changed grows too. `tests/keyed.rs` (into the piece and back).
 
 On the website: on a page change, the page title (`page-title`) and the side rail's selection background
 (`rail-selection`) flow, the selection sliding from the old item to the new one; on the page-change page,
