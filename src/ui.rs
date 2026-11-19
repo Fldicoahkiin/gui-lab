@@ -517,9 +517,9 @@ pub struct Ui<S, M> {
     fit_short: Vec<(String, f32, f32)>,
     /// Where the look's grain is drawn this frame (device px, `El::grain`): `None` over the whole frame.
     grain_at: Option<[f32; 4]>,
-    /// Each label shown only while clear (`El::show_clear`), by key: its opacity, whether it is to be
-    /// shown, and when that was worked out.
-    clears: HashMap<String, (f32, bool, f32)>,
+    /// Each label shown only while clear (`El::show_clear`), by key: its opacity, and when that was
+    /// worked out if it is to be shown, or `−1 −` that time if it is to be hidden.
+    clears: HashMap<String, (f32, f32)>,
     /// A label of `El::show_clear` is on its way in or out.
     clearing: bool,
     /// Own-size type keyed the same on both pages of a growing flow at another size (`ViewProblem::FlowOwnSize`).
@@ -3817,11 +3817,7 @@ impl<S, M: Clone> Ui<S, M> {
                     let stride = d.marks.len().div_ceil(crate::budget::cap().max(1)).max(1);
                     // A hue of its own colours (`Drawing::palette`) is its place in the frame's table, after
                     // the theme's three; past the palette or the table it is hue 0.
-                    let mut hue = |p: Paint| -> f32 {
-                        let Some(c) = p.hue.checked_sub(3).and_then(|k| d.palette.get(k as usize)) else { return p.theme_hue() };
-                        let at = own_cols.iter().position(|o| o == c).or_else(|| (own_cols.len() < crate::draw::OWN_COLOURS).then(|| { own_cols.push(*c); own_cols.len() - 1 }));
-                        at.map_or(0.0, |k| 3.0 + k as f32)
-                    };
+                    let mut hue = |p: Paint| own_hue(p, &d.palette, &mut own_cols);
                     for (j, m) in d.marks.iter().enumerate().step_by(stride) {
                         if let crate::draw::Mark::Blade(b) = m {
                             // Its segments (6, or 2 when it is short) and its head, each worked out on the GPU
@@ -4640,12 +4636,14 @@ impl<S, M: Clone> Ui<S, M> {
         let mut ops: Vec<(usize, f32)> = vec![];
         for (v, mut labels) in views {
             if labels.len() > MOST { self.clear_many.push((self.nodes[v].key.clone(), labels.len())); }
-            labels.sort_by_key(|&i| (self.nodes[i].show_clear.map_or(0, |c| c.1), i));
+            // By rank, then in the order of the view (a few, so in place).
+            let rank = |i: usize| self.nodes[i].show_clear.map_or(0, |c| c.1);
+            for a in 1..labels.len() { let mut b = a; while b > 0 && rank(labels[b - 1]) > rank(labels[b]) { labels.swap(b - 1, b); b -= 1; } }
             let a = self.nodes[v].rect.intersect(&self.nodes[v].clip);
             let mut shown: Vec<Rect> = vec![];
             for &i in labels.iter().take(MOST) {
                 let (n, (inset, _)) = (&self.nodes[i], self.nodes[i].show_clear.expect("a label"));
-                let prev = self.clears.get(&n.key).copied();
+                let prev = self.clears.get(&n.key).map(|&(op, at)| if at >= 0.0 { (op, true, at) } else { (op, false, -1.0 - at) });
                 let (ins, gap) = if prev.is_none_or(|p| p.1) { (inset, 2.0) } else { (inset + 4.0, 6.0) };
                 let r = n.rect;
                 let inside = !n.hidden && r.x >= a.x + ins && r.y >= a.y + ins && r.right() <= a.right() - ins && r.bottom() <= a.bottom() - ins;
@@ -4659,7 +4657,7 @@ impl<S, M: Clone> Ui<S, M> {
                     Some((op, was, t)) => { let step = if was == show { (now - t).max(0.0) / FADE } else { 0.0 }; if op < to { (op + step).min(to) } else { (op - step).max(to) } }
                 };
                 if op != to { self.clearing = true; }
-                self.clears.insert(n.key.clone(), (op, show, now));
+                self.clears.insert(n.key.clone(), (op, if show { now } else { -1.0 - now }));
                 seen.insert(n.key.clone());
                 ops.push((i, op));
             }
@@ -5265,10 +5263,11 @@ impl<S, M: Clone> Ui<S, M> {
     /// Which of its element's instances each page instance is: glyph or not, how many of that kind came
     /// before it in the element, and the glyph.
     fn slots(&self) -> Vec<(bool, u32, u32)> {
-        let mut count: HashMap<(usize, bool), u32> = HashMap::new();
+        // By node: how many glyphs and how many other instances so far.
+        let mut count = vec![[0u32; 2]; self.nodes.len()];
         (0..self.page_len).map(|i| {
             let glyph = self.base[i].paint[3] == GLYPH;
-            let c = count.entry((self.owners[i].0, glyph)).or_insert(0);
+            let c = &mut count[self.owners[i].0][glyph as usize];
             *c += 1;
             (glyph, *c - 1, self.tags[i].as_ref().map_or(0, |t| t.gid))
         }).collect()
@@ -5318,12 +5317,14 @@ impl<S, M: Clone> Ui<S, M> {
         // two layouts, not one moving: it is told (`ViewProblem::FlowOwnSize`) and the two cross-fade
         // once the picture lands.
         let out = if self.fmap.reduced { self.fade_s } else { spec.out_ms / 1000.0 };
-        let mut xfade: HashSet<usize> = HashSet::new();
+        let mut xfade = vec![false; old.len()];
         self.flow_own.clear();
         if !grow_of.is_empty() {
-            let by_key: HashMap<(&str, (bool, u32, u32)), usize> = old.iter().enumerate()
-                .filter(|(k, o)| !used[*k] && grows(&o.tag))
-                .filter_map(|(k, o)| o.key.as_deref().map(|key| ((key, o.slot), k))).collect();
+            // The old page's keyed instances in growing subtrees, by key.
+            let mut by_key: HashMap<String, Vec<usize>> = HashMap::new();
+            for (k, o) in old.iter().enumerate() {
+                if let Some(key) = o.key.as_deref() && !used[k] && grows(&o.tag) { by_key.entry(key.to_owned()).or_default().push(k); }
+            }
             let slots = self.slots();
             for (i, &slot) in slots.iter().enumerate() {
                 let (node, id) = self.owners[i];
@@ -5331,12 +5332,12 @@ impl<S, M: Clone> Ui<S, M> {
                 if self.flows.contains_key(&id) || !self.nodes[node].keyed { continue; }
                 let Some(flow) = self.tags[i].as_ref().map(|t| t.flow.clone()) else { continue };
                 let Some(&g) = grow_of.get(&flow) else { continue };
-                let Some(&k) = by_key.get(&(self.nodes[node].key.as_str(), slot)) else { continue };
+                let Some(&k) = by_key.get(self.nodes[node].key.as_str()).and_then(|ks| ks.iter().find(|&&k| old[k].slot == slot)) else { continue };
                 let (o, n) = (old[k].inst, self.base[i]);
                 let own = old[k].own || self.nodes[node].own_size.is_some();
                 if own && n.paint[3] == GLYPH && ((o.rect[2] - n.rect[2]).abs() > 0.5 || (o.rect[3] - n.rect[3]).abs() > 0.5) {
                     if !self.flow_own.contains(&self.nodes[node].key) { self.flow_own.push(self.nodes[node].key.clone()); }
-                    xfade.insert(k);
+                    xfade[k] = true;
                     self.flows.insert(id, FlowRec { from: n.rect, clip: n.clip, start: now, dur: flight + out.max(1e-3), loose: 0.0, src: None, fade_in: Some([now + flight, now + flight + out.max(1e-3)]), grow: None, keyed: None });
                     continue;
                 }
@@ -5398,7 +5399,7 @@ impl<S, M: Clone> Ui<S, M> {
                 let (cx, cy) = (b[0] + b[2] * 0.5, b[1] + b[3] * 0.5);
                 if cx < r[0] + 3.0 || cy < r[1] + 3.0 || cx > r[2] - 3.0 || cy > r[3] - 3.0 { (ride, loosen) = (None, false); }
             }
-            let (start, dur) = if on_it && ride.is_some() { if xfade.contains(&k) { (now + flight, out) } else { (now + flight - 1e-4, 1e-4) } } else { (now, out) };
+            let (start, dur) = if on_it && ride.is_some() { if xfade[k] { (now + flight, out) } else { (now + flight - 1e-4, 1e-4) } } else { (now, out) };
             going.push((k, Ghost { inst: o.inst, start, dur, loosen, ride, anchor: o.inst.rect, pin: o.pin, scaled: o.scaled }));
         }
         // What rides moves by parts of its element, each part whole: an element's glyphs together (a
@@ -6521,6 +6522,14 @@ fn ramp_hues(q: &Instance) -> bool {
     if accent(q.uv[2]) { used.push(fh); }
     if q.uv[3] < -0.5 && accent(q.uv[3]) { used.push(mh); }
     used.windows(2).any(|w| w[0] != w[1])
+}
+/// A drawing's paint's hue as drawn (`Drawing::palette`): one of its own colours is its place in the
+/// frame's table `own` (added if new), after the theme's three; past the palette or the table it is hue 0.
+#[inline(never)]
+fn own_hue(p: Paint, palette: &[[f32; 3]], own: &mut Vec<[f32; 3]>) -> f32 {
+    let Some(c) = p.hue.checked_sub(3).and_then(|k| palette.get(k as usize)) else { return p.theme_hue() };
+    let at = own.iter().position(|o| o == c).or_else(|| (own.len() < crate::draw::OWN_COLOURS).then(|| { own.push(*c); own.len() - 1 }));
+    at.map_or(0.0, |k| 3.0 + k as f32)
 }
 /// A ramp's paint in one number (`Drawing::ramp`, the shader's `ramp_paint`): tone, accent and opacity
 /// in 255ths, 8 bits each, exact in an `f32`.

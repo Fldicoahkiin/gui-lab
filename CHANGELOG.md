@@ -15,6 +15,10 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
   (`ViewProblem::OwnColourOffPicture`, DESIGN.md §1.26). A frame's drawings have at most 32 between them.
 - `Drawing` has a new public field, `palette`: code that builds one with every field named needs it. Outside a drawing,
   a `Paint` hue of 3 or more is hue 0.
+- `El::map` maps an element's children in a plain loop rather than collecting them in place, which is built once for
+  every pair of message types: with grain in a region, labels shown while clear, keyed elements, drawings that ride
+  and their own colours, the website's full module is 4,605 bytes larger gzipped than before them (2,826,385 to
+  2,830,990).
 
 ## Labels shown while clear and elements keyed across a growing picture
 

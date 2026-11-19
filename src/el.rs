@@ -1199,9 +1199,12 @@ impl<M> El<M> {
         let on_move = on_move.map(|d| { let f = f.clone(); Rc::new(move |p: Option<Point>| d(p).map(|m| f(m))) as OnMove<N> });
         let on_visible = on_visible.map(|d| { let f = f.clone(); Rc::new(move |v: bool| d(v).map(|m| f(m))) as OnVisible<N> });
         let on_outline = on_outline.map(|o| { let f = f.clone(); let g = o.f; Outline { cols: o.cols, rows: o.rows, f: Rc::new(move |x: Rc<crate::field::Grid>| g(x).map(|m| f(m))) } });
+        // A plain loop, not a collect: mapping in place would be built again for every pair of message types.
+        let mut kids = Vec::with_capacity(children.len());
+        for c in children { kids.push(c.map(f.clone())); }
         El {
             props, on_press: on_press.map(|m| f(m)), on_key, on_drag, on_blur: on_blur.map(|m| f(m)), modal: modal.map(|m| Modal { dismiss: f(m.dismiss), beneath: m.beneath }),
-            on_text, virt, on_pick, on_wheel, on_move, on_visible, on_outline, access, children: children.into_iter().map(|c| c.map(f.clone())).collect(),
+            on_text, virt, on_pick, on_wheel, on_move, on_visible, on_outline, access, children: kids,
         }
     }
 }
