@@ -1284,11 +1284,11 @@ picture on each page are paired whatever their places in the subtrees (a picture
 box going from the old one to the new one and shown only inside the part of it that shows, which goes from
 the old one's (the window) to the new one's (the full view); both on whole pixels every frame. It is drawn
 in the page pass as the page's last picture, after everything that dissolves, so it is above every other
-window, and what rides on it is ink over a picture (its own colour and size). Nothing else of the subtree is
-paired, since the two pages lay out different things over the picture: the rest of the old subtree (notes,
-boxes, labels) rides with the picture at its own size and colour, by parts: an element's glyphs together (a
-word, a label) and strokes or shapes that touch together (a box of four lines), each part whole, its centre
-(an own-size label's own point, `El::own_size`) where the picture takes it, so only the parts' places close up or open out and no box comes apart. A drawing's marks are geometry, not notes: each goes with the picture's transform, its pen kept (a line's width across), with no setting, so a drawing over a window's picture (a curtain of rays) shrinks into the window with it and is never drawn at its page place over the index; under a view scale (`El::view_scale`) the whole old subtree is the layout's geometry and goes so too (a border keeps its width), and only own-size labels ride at their own point (`tests/ride_scaled.rs`, with no view scale). It stays inside
+window, and what rides on it is ink over a picture (its own colour). Nothing else of the subtree is
+paired, since the two pages lay out different things over the picture: the rest of the old subtree rides with
+the picture. Type keeps its size: an element's glyphs go together (a word, a label), whole, their centre (an
+own-size label's own point, `El::own_size`) where the picture takes it; shapes that touch go together the same
+way, each part whole, so no box of panels comes apart. A drawing's marks are geometry, not notes: each goes with the picture's transform, its pen kept (a line's width across), with no setting (as design's U rules: geometry scales, strokes stay as drawn, only type keeps its size), so a drawn box of four lines stays closed and a drawing over a window's picture (a curtain of rays) shrinks into the window with it and is never drawn at its page place over the index; under a view scale (`El::view_scale`) the whole old subtree is the layout's geometry and goes so too (a border keeps its width), and only own-size labels ride at their own point (`tests/ride_scaled.rs`, with no view scale). It stays inside
 the part that shows, without loosening, whole until the picture lands; what of it lies along the edge
 of the part that showed (its centre within 3 px of it: a frame round the window) is the window's, and fades
 over `out_ms` where it was, under the picture. The rest of the new subtree is there at once when the picture

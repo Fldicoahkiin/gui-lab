@@ -1,7 +1,8 @@
 //! A flow from an index of windows to a piece and back (`Cmd::Flow`, DESIGN.md §1.10): the window's
 //! picture grows into the piece's as one picture in one rect on whole pixels, the index's ground around
-//! it; the notes over the picture keep their own size and colour, the old ones riding with the picture
-//! as they fade and the new ones coming in once it has landed; the title is drawn once, over the picture;
+//! it; over the picture, type keeps its size and a drawing's lines go with the picture's transform, their
+//! pen kept, the old notes riding with the picture as they fade and the new ones coming in once it has
+//! landed; the title is drawn once, over the picture;
 //! the picture does not start over.
 use amenui::draw::Drawing;
 use amenui::el::{Cells, El, Font, Paint, canvas, cells, col, picture, text};
@@ -100,7 +101,8 @@ fn pictures(u: &Ui<Site, ()>, id: u32) -> Vec<Instance> { u.scene().instances.it
 
 /// The flow one way (`back`: from the piece to the index) at 40, 80, 200 and 350 ms: one picture, in
 /// one rect on whole pixels where the ease puts it, never starting over; the index's ground around it;
-/// the window's frame gone; everything else at a size and colour one of the pages draws, crisp over the
+/// the window's frame gone; everything else at a size and colour one of the pages draws (a drawing's line
+/// over the picture at its old length times the picture's scale, its width as drawn), crisp over the
 /// picture, the notes still in their colour; the title once, over the picture, whole and opaque.
 fn flight(back: bool) {
     let Ok(mut o) = Offscreen::try_new(W, H) else { eprintln!("no GPU adapter here: skipped"); return };
@@ -140,6 +142,9 @@ fn flight(back: bool) {
     }
     let (win, full) = (shows(&pictures(&index, PIC_A)[0]), shows(&pictures(&piece, PIC_A)[0]));
     let (from, to) = if back { (full, win) } else { (win, full) };
+    // The old page's picture box and its drawing's lines (thin, turned bars), which ride its transform.
+    let (old_page, old_pic) = if back { (&piece, pictures(&piece, PIC_A)[0].rect) } else { (&index, pictures(&index, PIC_A)[0].rect) };
+    let old_lines: Vec<Instance> = old_page.scene().instances.iter().filter(|i| i.paint[3] == 1.0 && i.rect[3] <= 2.0 && i.rect[2] > i.rect[3] + 0.5).copied().collect();
     let mut u = open();
     if back { go(&mut u, true); let t = u.now(); u.tick(t + 1.0); u.settle(); }
     let born = pictures(&u, PIC_A)[0].extra[3];
@@ -194,8 +199,13 @@ fn flight(back: bool) {
             let notes = (0..W * H).filter(|&k| { let (x, y) = (k % W, k / W); inside(x, y, -1.0) && orange(px(&f, x, y)) }).count();
             assert!(notes >= 4, "{way} {ms} ms: the notes over the picture are not in their colour ({notes} px)");
         }
+        let k = p[0].rect[2] / old_pic[2];
         for i in u.scene().instances.iter().filter(|i| visible(i) && i.paint[3] != PICTURE && !title.contains(i)) {
             let same = rest.iter().any(|q| (q.rect[2] - i.rect[2]).abs() < 0.01 && (q.rect[3] - i.rect[3]).abs() < 0.01 && q.paint[0] == i.paint[0] && q.paint[1] == i.paint[1]);
+            // A drawing's line riding over the picture: its old length times the picture's scale, its pen as drawn.
+            let rides = i.clip == [r[0], r[1], r[2], r[3]] && i.paint[3] == 1.0 && old_lines.iter().any(|q| (q.rect[3] - i.rect[3]).abs() < 0.01 && q.paint[0] == i.paint[0] && q.paint[1] == i.paint[1]
+                && ((q.rect[2] - q.rect[3]) * k - (i.rect[2] - i.rect[3])).abs() <= 1.0);
+            let same = same || rides;
             assert!(same, "{way} {ms} ms: an instance of a size or colour neither page draws: {:?} {:?}", i.rect, i.paint);
             if i.clip == [r[0], r[1], r[2], r[3]] { assert_eq!(i.extra[2], 0.0, "{way} {ms} ms: a note over the picture loosens"); }
         }
