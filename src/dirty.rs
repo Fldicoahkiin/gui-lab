@@ -79,7 +79,14 @@ pub const MAX_SHADE_BOXES: usize = 32;
 /// What a frame redraws, as several boxes: where stage 1's images can differ, and where the final frame
 /// can; at most `MAX_BOXES` and `MAX_SHADE_BOXES`, and they may overlap.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct Parts { pub stage1: Vec<Bx>, pub stage2: Vec<Bx>, pub moved: Option<Move> }
+pub struct Parts {
+    pub stage1: Vec<Bx>,
+    pub stage2: Vec<Bx>,
+    pub moved: Option<Move>,
+    /// Why a scroll node whose content moved was not moved as a frame (`scroll_move`), for the readout;
+    /// empty when one was or none moved.
+    pub refused: &'static str,
+}
 
 /// A scroll node's viewport (x0, y0, x1, y1, whole device px) whose content moved by `d` device px:
 /// inside it, this frame's images (ink, near) are the last frame's moved by `d`, and the final frame the
@@ -148,39 +155,49 @@ impl Move {
 /// the same way in both frames, not under glitchr (its rows slip on their own clock) or an added
 /// material, and under dottr or charr holding the rows the same way in both frames, alone in its
 /// viewport, with the lattice stepping by whole device px.
-fn scroll_move(prev: &Inputs, cur: &Inputs, mats: &[Material], s: f32) -> Option<(usize, Move)> {
-    if cur.look.theme.ground2 != cur.look.theme.ground { return None; }
+fn scroll_move(prev: &Inputs, cur: &Inputs, mats: &[Material], s: f32) -> (Option<(usize, Move)>, &'static str) {
+    let why = std::cell::Cell::new("");
+    let no = |w: &'static str| { if why.get().is_empty() { why.set(w); } None };
+    let moved = (0..8).any(|j| prev.field.scrollo[j] != cur.field.scrollo[j] || cur.field.scrollo[j][2] > 0.0);
+    if !moved { return (None, ""); }
+    if cur.look.theme.ground2 != cur.look.theme.ground { return (None, "ground gradient"); }
     let (w, h) = (cur.size.0 as f32, cur.size.1 as f32);
-    (0..8).find_map(|j| {
+    let found = (0..8).find_map(|j| {
         let (r, a, b) = (cur.field.scrolls[j], prev.field.scrollo[j], cur.field.scrollo[j]);
         // The content moves against the offset.
         let (dx, dy) = (a[0] - b[0], a[1] - b[1]);
         let v = [r[0].max(0.0).ceil(), r[1].max(0.0).ceil(), r[2].min(w).floor(), r[3].min(h).floor()];
         let trace = a[2].max(b[2]);
-        let ok = prev.field.scrolls[j] == r && ((dx, dy) != (0.0, 0.0) || trace > 0.0) && dx.abs() < v[2] - v[0] && dy.abs() < v[3] - v[1];
-        if !ok { return None; }
+        if (dx, dy) == (0.0, 0.0) && trace <= 0.0 { return None; }
+        if prev.field.scrolls[j] != r { return no("viewport changed"); }
+        if dx.abs() >= v[2] - v[0] || dy.abs() >= v[3] - v[1] { return no("jump past viewport"); }
         let (rect, d) = (v.map(|x| x as u32), [dx as i32, dy as i32]);
         if trace <= 0.0 { return Some((j, Move { rect, d, frame: d, trace: 0.0, way: [0.0, 1.0], latch: 0.0 })); }
-        if (a[2] > 0.0 && b[2] > 0.0 && a[3] != b[3]) || mats.iter().any(|m| matches!(m, Material::Glitchr | Material::Custom(_))) { return None; }
+        if a[2] > 0.0 && b[2] > 0.0 && a[3] != b[3] { return no("trace turned"); }
+        if mats.iter().any(|m| matches!(m, Material::Glitchr | Material::Custom(_))) { return no("trace: glitchr or custom"); }
         let w3 = if b[2] > 0.0 { b[3] } else { a[3] };
         let across = w3.abs() > 1.5;
         let way = if across { [w3.signum(), 0.0] } else { [0.0, w3.signum()] };
-        if (a[2] > LATCH) != (b[2] > LATCH) { return None; }
+        if (a[2] > LATCH) != (b[2] > LATCH) { return no("latch on/off"); }
         let pitches: Vec<f32> = mats.iter().filter_map(|m| latch_pitch(*m, &cur.look, s)).collect();
         if b[2] <= LATCH || pitches.is_empty() { return Some((j, Move { rect, d, frame: d, trace, way, latch: 0.0 })); }
         // The rows held to the lattice: the frame shows the content at its offset rounded to the pitch.
         let p = pitches[0];
         let alone = (0..8).all(|i| i == j || is_empty(meet(cur.field.scrolls[i], r)));
-        if pitches.len() != mats.len() || pitches.iter().any(|q| *q != p) || !alone { return None; }
+        if pitches.len() != mats.len() || pitches.iter().any(|q| *q != p) { return no("latch: mixed lattices"); }
+        if !alone { return no("latch: not alone"); }
         let (oa, ob) = if across { (a[0], b[0]) } else { (a[1], b[1]) };
         // An offset half way between two rows is rounded by the GPU's own division: not relied on.
         let held = |o: f32| { let x = o / p; ((x.fract().abs() - 0.5).abs() > 1e-3).then(|| x.round_ties_even() * p) };
-        let step = held(oa)? - held(ob)?;
-        if (step - step.round()).abs() > 1e-3 || step.abs() >= if across { v[2] - v[0] } else { v[3] - v[1] } { return None; }
+        let (Some(ha), Some(hb)) = (held(oa), held(ob)) else { return no("latch: half a row") };
+        let step = ha - hb;
+        if (step - step.round()).abs() > 1e-3 || step.abs() >= if across { v[2] - v[0] } else { v[3] - v[1] } { return no("latch: step"); }
         let step = step.round() as i32;
         let frame = if across { [step, 0] } else { [0, step] };
         Some((j, Move { rect, d, frame, trace, way, latch: p }))
-    })
+    });
+    let why = if found.is_some() { "" } else { why.get() };
+    (found, why)
 }
 /// The lattice pitch a material holds the rows to while the trace shows (device px), if it does.
 fn latch_pitch(m: Material, look: &Look, s: f32) -> Option<f32> {
@@ -319,20 +336,25 @@ fn fronts(f: &Field, look: &Look, now: f32, s: f32) -> Vec<Bx> {
 pub fn region(prev: &Inputs, cur: &Inputs, scale: f32) -> Region { parts(prev, cur, scale).map_or(Region::All, |p| p.region()) }
 
 /// What a frame redraws, as boxes, or `None` for everything.
-pub fn parts(prev: &Inputs, cur: &Inputs, scale: f32) -> Option<Parts> {
-    let all = None;
-    if prev.global || cur.global || prev.size != cur.size || prev.look != cur.look || prev.field.calm != cur.field.calm || prev.meshes.len() != cur.meshes.len() { return all; }
+pub fn parts(prev: &Inputs, cur: &Inputs, scale: f32) -> Option<Parts> { parts_why(prev, cur, scale).ok() }
+/// `parts`, or why the frame is drawn whole (for the readout, `perf::FramePath`).
+pub fn parts_why(prev: &Inputs, cur: &Inputs, scale: f32) -> Result<Parts, &'static str> {
+    if prev.global || cur.global { return Err("global"); }
+    if prev.size != cur.size { return Err("size"); }
+    if prev.look != cur.look { return Err("look"); }
+    if prev.field.calm != cur.field.calm { return Err("calm"); }
+    if prev.meshes.len() != cur.meshes.len() { return Err("meshes"); }
     let mats = materials(cur);
     // The dot ground drifts everywhere on the ground clock.
-    if prev.gclock != cur.gclock && mats.contains(&Material::Dottr) { return all; }
-    if mats != materials(prev) { return all; }
+    if prev.gclock != cur.gclock && mats.contains(&Material::Dottr) { return Err("dottr ground clock"); }
+    if mats != materials(prev) { return Err("materials"); }
     let clock_moved = prev.mclock != cur.mclock && mats.iter().any(|m| clocked(*m));
     let s = scale;
     let look = &cur.look;
     let pad = SPREAD as f32 + look.fx.push * s * 1.5 + 2.0;
     let mut st1: Vec<Bx> = vec![];
     let mut st2: Vec<Bx> = vec![];
-    let mv = scroll_move(prev, cur, &mats, s);
+    let (mv, refused) = scroll_move(prev, cur, &mats, s);
     // A box of the last final frame, and where the move took what was in it.
     let old = |b: Bx| [b, mv.map_or(EMPTY, |(_, m)| m.carry_frame(b))];
     // Instances whose records differ, matched in order within each part of the list (between the cuts
@@ -474,7 +496,7 @@ pub fn parts(prev: &Inputs, cur: &Inputs, scale: f32) -> Option<Parts> {
         let has: std::collections::HashSet<Vec<u32>> = cur.annot.iter().map(key).collect();
         for i in pa.iter().filter(|i| !has.contains(&key(i))).chain(cur.annot.iter().filter(|i| !had.contains(&key(i)))) { st2.push(grow(rect(i.rect), 2.0)); }
     }
-    Some(Parts { stage1: st1, stage2: merge(st2.into_iter().map(|x| meet(x, screen)).collect(), MAX_SHADE_BOXES), moved: mv.map(|(_, m)| m) })
+    Ok(Parts { stage1: st1, stage2: merge(st2.into_iter().map(|x| meet(x, screen)).collect(), MAX_SHADE_BOXES), moved: mv.map(|(_, m)| m), refused })
 }
 
 /// A box as whole device pixels inside the frame (for a scissor), or `None` when it is empty.

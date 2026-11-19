@@ -2110,6 +2110,17 @@ flings and overscroll, something loose under a time-varying material); hover bur
 annotations drawing in no longer advance it, since otherwise one hover would set dottr's ground drifting across the
 whole window and force a full redraw.
 
+**Why a frame cost what it did**: the renderer leaves in `Perf::path` how the last frame was drawn
+(`perf::FramePath`), and the overlay shows it as one line (`FramePath::line`): `move yes`, or `move no` with the
+first reason the frame did not move the last one or was drawn whole (`global` broken down as commit, morph,
+loose under a reduced pass, a stage rescaled, an opacity group, plates ageing or emptied, own colours; the look,
+the size, the materials or the dottr ground clock changing; soft scrolling; the trace with a reduced pass; a
+refusal of `scroll_move`, `dirty::Parts::refused`: the viewport changed, a jump past it, the trace turned, glitchr
+or a material from source, the latch switching, mixed lattices, not alone, half a row); `spec yes` with the
+material, or `no` with why (an override, a material from source, still counting, off); the share of the frame
+shaded at full resolution (the shade boxes); and the soft, stage and reduced scales. `tests/scroll_move.rs` checks it
+against what the renderer counted.
+
 **What pointer movement costs**: moving the pointer neither lays out nor shapes text. Parallax uses
 `El::shift(dx, dy)` (the whole subtree moves after layout, outside taffy's styles); the lens is counted in the
 boxes only where it can reach: beyond `dirty::LENS_REACH` (2.2) radii from the pointer its bell is below 0.01,

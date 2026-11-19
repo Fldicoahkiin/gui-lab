@@ -71,6 +71,34 @@ pub struct Perf {
     /// The stages' device scale (DESIGN.md §1.35) when it is below the device's own, device px a logical
     /// px; 0 at the device's scale.
     pub stage_scale: f32,
+    /// How the last frame was drawn (`FramePath::line`).
+    pub path: FramePath,
+}
+/// How a frame was drawn, for a readout that says why a frame cost what it did: whether it moved the
+/// last frame (a scroll, `dirty::Move`) and, when it did not, the first reason; whether the material
+/// pass was the one made for the material alone (`Renderer::specialise`) and, when not, why; the share of
+/// the frame shaded at full resolution (the shade boxes, or all of it); and the scales of the softened
+/// scroll, the stages and the reduced pass (1 at the device's own).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FramePath {
+    pub moved: bool,
+    /// Why the frame did not move the last one or was drawn whole: empty when neither was asked.
+    pub why: &'static str,
+    pub specialised: Option<u8>,
+    pub spec_why: &'static str,
+    pub shade: f32,
+    pub soft: f32,
+    pub stage: f32,
+    pub reduced: f32,
+}
+impl Default for FramePath { fn default() -> Self { Self { moved: false, why: "", specialised: None, spec_why: "", shade: 0.0, soft: 1.0, stage: 1.0, reduced: 1.0 } } }
+impl FramePath {
+    /// One line: `move no (trace with a reduced pass)  spec no (override)  shade 34%  soft 1  stage 0.75  lo 0.75`.
+    pub fn line(&self) -> String {
+        let or = |w: &str| if w.is_empty() { String::new() } else { format!(" ({w})") };
+        let spec = match self.specialised { Some(m) => format!("yes {}", crate::style::Material::from_id(m).name()), None => format!("no{}", or(self.spec_why)) };
+        format!("move {}  spec {spec}  shade {:.0}%  soft {}  stage {}  lo {}", if self.moved { "yes".to_string() } else { format!("no{}", or(self.why)) }, self.shade * 100.0, self.soft, self.stage, self.reduced)
+    }
 }
 /// The frame period the drop count measures against, ms.
 pub const PERIOD_MS: f64 = 1000.0 / 60.0;

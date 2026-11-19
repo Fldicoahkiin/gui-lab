@@ -5347,7 +5347,7 @@ impl<S, M: Clone> Ui<S, M> {
         let backend = if p.backend.is_empty() { "?" } else { &p.backend };
         let last = p.frames.back().map(|f| f.1).unwrap_or_default();
         let lines: Vec<String> = if self.overlay == 1 {
-            vec![format!("{fps}  {:>5.1} ms  dirty {:>3.0}%  {:>5} inst  budget {:>3.0}%  {mat:<8}  {backend}", sm.total[0], p.dirty * 100.0, self.scene.instances.len(), crate::budget::usage().scale * 100.0)]
+            vec![format!("{fps}  {:>5.1} ms  dirty {:>3.0}%  {:>5} inst  budget {:>3.0}%  {mat:<8}  {backend}", sm.total[0], p.dirty * 100.0, self.scene.instances.len(), crate::budget::usage().scale * 100.0), p.path.line()]
         } else {
             let row = |name: &str, v: [f32; 3]| format!("{name:<13}{:>7.2}{:>7.2}{:>7.2}", v[0], v[1], v[2]);
             vec![
@@ -5367,6 +5367,7 @@ impl<S, M: Clone> Ui<S, M> {
                 format!("text          {} cached  {} shaped  atlas {:.0}%", self.text.cached(), self.text.shaped(), self.text.atlas_use() * 100.0),
                 format!("textures      ~{:.0} MB  fronts {fronts}", p.tex_mb),
                 format!("field map     {} of {}x{} nodes not zero  level {:.3}", self.fmap.nonzero(), self.fmap.cols, self.fmap.rows, self.fmap.level()),
+                format!("path          {}", p.path.line()),
                 format!("look          {mat}  quality {}{}{}", p.quality, if p.auto { " auto" } else { "" }, p.stage_label().map_or(String::new(), |l| format!("  {l}"))),
                 format!("device        {backend}  {}", if p.adapter.is_empty() { "-" } else { &p.adapter }),
                 format!("surface       {:.0}x{:.0} @{}  {}", self.size.0, self.size.1, self.scale, crate::i18n::current().tag()),

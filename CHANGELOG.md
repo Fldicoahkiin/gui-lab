@@ -30,6 +30,10 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
   scene drawn twice with no paint between inks its plates once (`Scene::paint`).
 - An element moved by its offsets in a restage stays where it was moved through a view of the page that lays
   nothing out; it had gone back to where the last layout put it.
+- `Perf::path` (`perf::FramePath`): how the last frame was drawn, for a readout: whether it moved the last frame and
+  the first reason it did not or was drawn whole, whether the material pass was specialised and why not, the share
+  shaded at full resolution, and the soft, stage and reduced scales; `FramePath::line`, shown by the overlay.
+  `dirty::parts_why`, `Parts::refused`.
 
 ## For Kern
 

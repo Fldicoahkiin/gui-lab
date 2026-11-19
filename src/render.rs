@@ -186,6 +186,8 @@ pub struct Renderer {
     /// The glyph atlas has not been sent whole yet: a renderer made after the text system rasterised
     /// glyphs (offscreen, for a page already painted) sends all of it on its first frame.
     atlas_new: bool,
+    /// How the last frame was drawn, for the readout (`Perf::path`).
+    path: crate::perf::FramePath,
     /// How many plates the last frame laid on (two passes each: ink and nearness), for tests.
     pub plates_laid: std::cell::Cell<u32>,
     device: wgpu::Device,
@@ -530,7 +532,7 @@ impl Renderer {
         let (blank_view, blank_group) = (blank.clone(), material.clone());
         let mut r = Self {
             device, queue, out_format, layout, ubuf, sampler, atlas, atlas_view, marks, marks_view, palette_view, chars, chars_view,
-            before: blank.clone(), blank: blank.clone(), hold: blank.clone(), hold_pipe, holds, hold_cap: 64, hold_n: 0, fmap, fmap_view: fmap_view.clone(), fmap_seen: None, fmap_u: [0.0; 4], split_seen: 0, split: [0.0; 4], last_look: None, marks_ready: false, hide_glyphs: false, atlas_new: true, plates_laid: std::cell::Cell::new(0),
+            before: blank.clone(), blank: blank.clone(), hold: blank.clone(), hold_pipe, holds, hold_cap: 64, hold_n: 0, fmap, fmap_view: fmap_view.clone(), fmap_seen: None, fmap_u: [0.0; 4], split_seen: 0, split: [0.0; 4], last_look: None, marks_ready: false, hide_glyphs: false, atlas_new: true, path: Default::default(), plates_laid: std::cell::Cell::new(0),
             pictures: HashMap::new(), picture_views: HashMap::new(), hold_group: None, instances, capacity, pipes, annots, annot_capacity: 256, up_pipe: None, trace_pipe: None, specialise: Some(SPECIALISE_AFTER), spec: None, spec_run: (u8::MAX, 0), spec_used: None, shader, pl,
             ink: blank.clone(), lo: blank.clone(), lo_key: (0, 0, 0), material_up: material.clone(), auto: Default::default(), always_lo: false, stage_u: Box::new(([[0.0; 4]; STAGES], [[0.0; 4]; STAGES], [0.0; 4])), stage_q: 1.0, soft_q: 1.0, govern: true, no_map: false,
             near: blank, material_first: material.clone(), material, size: (0, 0), tiles, mesh, sim_rows: 0,
@@ -1309,16 +1311,28 @@ impl Renderer {
         let inputs = crate::dirty::Inputs {
             instances, annot, meshes: ui.scene().meshes.iter().map(|m| m.scene.fingerprint() ^ (m.rect[2].to_bits() as u64) << 32 ^ m.rect[3].to_bits() as u64).collect(),
             field: *ui.field(), look: *look, now, mclock: mt[0], gclock: mt[1], size: self.size, map: snap, cuts: ui.scene().cuts(),
-            global: split[3] > 0.0 || tiles.is_some() || lo_loose || rescaled || self.hide_glyphs || !ui.scene().groups.is_empty() || self.had_groups || ui.scene().plate_ageing || self.was_ageing || ui.scene().plate_serial != self.plate_serial || ui.scene().plates.len() != self.had_plates || own_changed,
+            global: false,
         };
+        // What draws the frame whole, the first that holds (named in the readout, `perf::FramePath`).
+        let whole = [
+            (split[3] > 0.0, "commit"), (tiles.is_some(), "morph"), (lo_loose, "loose, reduced"), (rescaled, "stage rescaled"), (self.hide_glyphs, "hidden glyphs"),
+            (!ui.scene().groups.is_empty() || self.had_groups, "opacity group"), (ui.scene().plate_ageing || self.was_ageing, "plate ageing"),
+            (ui.scene().plate_serial != self.plate_serial, "plate emptied"), (ui.scene().plates.len() != self.had_plates, "plates"), (own_changed, "own colours"),
+        ].into_iter().find_map(|(on, why)| on.then_some(why));
+        let inputs = crate::dirty::Inputs { global: whole.is_some(), ..inputs };
         self.had_groups = !ui.scene().groups.is_empty();
         self.had_plates = ui.scene().plates.len();
         self.was_ageing = ui.scene().plate_ageing;
-        let mut parts = match (&self.prev, self.partial) { (Some(p), true) => crate::dirty::parts(p, &inputs, scale), _ => None };
+        let prev_global = self.prev.as_ref().is_some_and(|p| p.global);
+        let (mut parts, mut why) = match (&self.prev, self.partial) {
+            (Some(p), true) => match crate::dirty::parts_why(p, &inputs, scale) { Ok(p) => { let r = p.refused; (Some(p), r) } Err(w) => (None, if w == "global" { whole.unwrap_or(if prev_global { "last frame whole" } else { w }) } else { w }) },
+            (None, _) => (None, "first frame"),
+            (_, false) => (None, "partial off"),
+        };
         if let Some(old) = self.prev.replace(inputs) { self.spare = (old.instances, old.annot); }
         let soft = soft_wanted && !parts.as_ref().is_some_and(|p| p.moved.is_some());
         // Softened, or the first frame after (drawn sharp), the frame is drawn whole.
-        if soft || self.soft_q < 1.0 { parts = None; }
+        if soft || self.soft_q < 1.0 { parts = None; why = if soft { "soft" } else { "sharp after soft" }; }
         let q = if soft { q.max(soft_floor(look.material)) } else { q };
         let lo_loose = lo_loose || soft && q < 1.0;
         let ql = if lo_loose && staged { q.min(qs) } else if staged { qs } else { q };
@@ -1331,8 +1345,9 @@ impl Renderer {
         let lo = (lo_loose || staged).then(|| { let (w, h) = self.lo_for(ql); [1.0 / ql, ql, w as f32, h as f32] });
         // A move with its trace showing shades the trace at full resolution only (`fs_trace`): with a
         // reduced pass the frame is drawn whole.
-        if lo.is_some() && parts.as_ref().and_then(|p| p.moved).is_some_and(|m| m.trace > 0.0) { parts = None; }
+        if lo.is_some() && parts.as_ref().and_then(|p| p.moved).is_some_and(|m| m.trace > 0.0) { parts = None; why = "trace with a reduced pass"; }
         self.region = parts.as_ref().map_or(crate::dirty::Region::All, |p| p.region());
+        self.path = crate::perf::FramePath { moved: parts.as_ref().is_some_and(|p| p.moved.is_some()), why, soft: if soft { q } else { 1.0 }, stage: if staged { qs } else { 1.0 }, reduced: lo.map_or(1.0, |l| l[1]), ..Default::default() };
         self.parts = parts;
         self.frame_q(target, Frame { scene: ui.scene(), field: ui.field(), look, lib: ui.meshes(), scale, t: now, mt, split, tiles, grid }, true, lo);
         let submit = (crate::perf::now_ms() - started) as f32;
@@ -1352,7 +1367,7 @@ impl Renderer {
         // Full-size targets: ink, near, before (8 bytes a pixel or less) and the glyph atlas.
         let tex_mb = (sw * sh * 4.0 * 6.0 + (crate::text::ATLAS * crate::text::ATLAS * 2) as f32) / 1_048_576.0;
         let p = ui.perf_mut();
-        p.dirty = dirty; p.passes = passes; p.tex_mb = tex_mb;
+        p.dirty = dirty; p.passes = passes; p.tex_mb = tex_mb; p.path = self.path;
         p.quality = q; p.auto = auto; p.particles = parts; p.particle_path = path;
         p.frame(submit);
         // The automatic level goes by the intervals between frames drawn while something moves.
@@ -1661,6 +1676,8 @@ impl Renderer {
         let (mat_pipe, up_pipe) = (spec.map_or(&self.pipes[3], |s| &s.1), spec.and_then(|s| s.2.as_ref()).or(self.up_pipe.as_ref()));
         let (mat_pipe, up_pipe, used) = (mat_pipe.clone(), up_pipe.cloned(), spec.map(|s| s.0));
         self.spec_used = used;
+        self.path.specialised = used;
+        self.path.spec_why = if used.is_some() { "" } else if self.specialise.is_none() { "off" } else if over { "override" } else if mat as usize >= crate::style::MATERIAL_COUNT { "custom material" } else { "warming" };
         let annots = scene.annot.len() as u32;
         if annots > 0 {
             if scene.annot.len() > self.annot_capacity {
@@ -1706,6 +1723,7 @@ impl Renderer {
             let (s1, s2) = boxes.as_ref().map_or((whole, whole), |(a, b)| (px(a), px(b)));
             self.cost.stage1 = s1;
             self.cost.material = s2 + lo.map_or(0, |q| (q[2] * q[3]) as u64);
+            self.path.shade = (s2 as f64 / whole.max(1) as f64).min(1.0) as f32;
         }
         match &boxes {
             None => self.stage1(&mut enc, scene, &ink, &near, tiles, None),

@@ -53,8 +53,11 @@ fn a_slow_scroll_shades_only_the_band_it_brings_in_and_draws_the_frame_drawn_who
                 let diff = a.iter().zip(&b).filter(|(p, q)| p != q).count();
                 assert_eq!(diff, 0, "{mat:?} at scale {scale}, frame {f}: {diff} bytes differ from the frame drawn whole");
                 let c = part.r.cost;
+                let path = u.perf().path;
+                assert_eq!(path.moved, c.moved > 0, "{mat:?} at scale {scale}, frame {f}: the readout says {}", path.line());
                 if c.moved == 0 { continue; }
                 moved += 1;
+                assert!((path.shade - c.material as f32 / (w * h) as f32).abs() < 1e-3, "{mat:?} frame {f}: the readout's shade share: {}", path.line());
                 // The band is 6 px of the list's height. The strips along the viewport's edges that the
                 // material reads across (up to 12 px a side for dottr), the bar's spill and the scroll bar
                 // are a fixed cost, large in a window this small: under half of it here, about a sixth of
@@ -112,4 +115,8 @@ fn a_fast_scroll_under_glitchr_is_drawn_whole_in_the_viewport() {
     for _ in 0..3 { t += 1.0 / 60.0; u.wheel(240.0, 200.0, 120.0); u.tick(t); let _ = o.render(&mut u, &look); }
     assert!(u.field().scrollo.iter().any(|o| o[2] > 0.0), "the trace shows");
     assert_eq!(o.r.cost.moved, 0, "under glitchr with the trace showing the frame is not the last one moved");
+    // The readout says so, and why.
+    let path = u.perf().path;
+    assert!(!path.moved && path.why == "trace: glitchr or custom", "{}", path.line());
+    assert!(path.line().starts_with("move no (trace: glitchr or custom)"), "{}", path.line());
 }
