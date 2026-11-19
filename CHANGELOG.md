@@ -8,6 +8,14 @@ crate and the `amenui` npm package (`web/`) always carry the same version, becau
 match the module that `web_app!` generates. The minimum Rust is the one CI builds with (`rust-version`
 in Cargo.toml); raising it is a breaking change before 1.0 only in the second number.
 
+## Fixes from the website, the way back
+
+- A ramp stroke (`Drawing::ramp`) fades as a whole: its far and middle stops follow the element's opacity as its start
+  does. Coming back to an index, a window waiting for the picture to land no longer drew its rays at full size.
+- A picture in a layer (after something that stirs, or a modal) is a picture for what is drawn over it, so a drawing's
+  own colours (`Drawing::palette`) stay its own while its picture fades in, not the accent; a picture under 0.01 of
+  its opacity no longer marks its area as a picture.
+
 ## A stage that steps alone is drawn alone
 
 - `Ui::on_step(f)` and `Ui::stage_view(f)`: a stage (`El::stage`) whose piece changes by itself is viewed and drawn

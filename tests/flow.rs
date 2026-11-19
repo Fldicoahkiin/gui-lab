@@ -3,9 +3,10 @@
 //! it; over the picture, type keeps its size and a drawing's lines go with the picture's transform, their
 //! pen kept, the old notes riding with the picture as they fade and the new ones coming in once it has
 //! landed; the title is drawn once, over the picture;
-//! the picture does not start over.
+//! the picture does not start over. Coming back, the other window waits for the picture to land: its
+//! ray, a ramp in a colour of its own, is not drawn before, and comes in in that colour.
 use amenui::draw::Drawing;
-use amenui::el::{Cells, El, Font, Paint, canvas, cells, col, picture, text};
+use amenui::el::{Cells, El, Font, Paint, Stirr, canvas, cells, col, picture, text};
 use amenui::morph::{Cmd, Ease, FlowSpec};
 use amenui::offscreen::Offscreen;
 use amenui::scene::{Instance, PICTURE};
@@ -24,8 +25,11 @@ const PIECE_GROUND: [f32; 3] = [0.92, 0.84, 0.30];
 const SPEC: FlowSpec = FlowSpec { flow_ms: 420.0, flow_loose: 0.0, out_ms: 180.0, fade_ms: 180.0 };
 
 #[derive(Default)]
-struct Site { piece: bool, cmds: Vec<Cmd>, birds: u32 }
+struct Site { piece: bool, cmds: Vec<Cmd>, birds: u32, stirr: bool }
 fn at<M: 'static>(e: El<M>, x: f32, y: f32) -> El<M> { e.absolute(Some(x), Some(y), None, None) }
+/// The other window's own colour (green, which nothing else here is) and its ray's ends in its layer.
+const RAY: [f32; 3] = [0.1, 0.85, 0.3];
+const RAY_AT: ((f32, f32), (f32, f32)) = ((150.0, 100.0), (330.0, 100.0));
 /// A faint shade, at a real alpha.
 const SHADE: Paint = Paint { tone: 1.0, accent: 0.0, alpha: 0.35, hue: 0 };
 /// A picture with notes over it, as the site's picture layer: `w × h`; a note's text placed where the
@@ -37,6 +41,13 @@ fn layer(key: &str, (w, h): (f32, f32), pic: u32, note: (f32, f32), bx: [f32; 4]
     d.line((x0, y0), (x1, y0), 1.0, Paint::INK); d.line((x1, y0), (x1, y1), 1.0, Paint::INK);
     d.line((x1, y1), (x0, y1), 1.0, Paint::INK); d.line((x0, y1), (x0, y0), 1.0, Paint::INK);
     d.line((0.0, y1 + 20.0), (w * 0.4, y1 + 20.0), 1.0, SHADE);
+    // The other window's ray, as the site's curtain: a ramp in a colour of its own through a middle stop,
+    // fading out along it.
+    if key == "w/1/layer" {
+        d.palette([RAY]);
+        let own = Paint { tone: 1.0, accent: 1.0, alpha: 0.97, hue: 3 };
+        d.ramp(RAY_AT.0, RAY_AT.1, 8.0, own, Some((Paint { alpha: 0.6, ..own }, 0.3)), Paint { alpha: 0.0, ..own });
+    }
     col().key(key).width(w).height(h)
         .child(at(picture(pic, 0.75).key(format!("{key}/picture")).width(w), 0.0, 0.0))
         .child(at(canvas(d).key(format!("{key}/marks")).width(w).pass(true), 0.0, 0.0))
@@ -60,6 +71,8 @@ fn view(s: &Site) -> El<()> {
             .child(at(col().key("w/0").width(240.0).height(300.0).clip().flow("work/a")
                 .child(at(layer("w/0/layer", (480.0, 360.0), PIC_A, (150.0, 40.0), [180.0, 120.0, 40.0, 30.0], s.birds), -120.0, 0.0))
                 .child(frame("w/0/frame", 240.0, 300.0)), 32.0, 120.0))
+            // A thing that stirs the field, as the site's index has: what is drawn after it is a layer.
+            .children(s.stirr.then(|| at(col().key("works/stirr").width(12.0).height(12.0).fill(Paint::DIM).stirr(Stirr { energy: 0.0, ..Stirr::default() }), 760.0, 20.0)))
             .child(at(col().key("w/1").width(240.0).height(300.0).clip().flow("work/b")
                 .child(at(layer("w/1/layer", (480.0, 360.0), PIC_B, (100.0, 60.0), [60.0, 80.0, 40.0, 30.0], 0), -120.0, 0.0)), 288.0, 120.0))
             .child(at(text("Alpha", 16.0, Paint::TEXT).key("w/0/title").flow("work/a/title"), 32.0, 440.0))
@@ -265,6 +278,41 @@ fn flight(back: bool) {
 
 #[test]
 fn a_window_grows_into_its_piece_as_one_picture_over_the_index_ground() { flight(false); }
+
+/// Back to an index whose other window is drawn in a layer (after something that stirs), as the site's:
+/// its ray is not drawn while the picture flies (a ramp's every stop waits with it), and comes in in its
+/// own colour, never the accent, while its picture fades in under it.
+#[test]
+fn coming_back_the_other_window_waits_and_keeps_its_own_colour() {
+    let Ok(mut o) = Offscreen::try_new(W, H) else { eprintln!("no GPU adapter here: skipped"); return };
+    o.r.set_picture(PIC_A, 96, 72, &pixels(96, 72, 200));
+    o.r.set_picture(PIC_B, 96, 72, &pixels(96, 72, 90));
+    let px = |f: &[u8], x: u32, y: u32| { let k = ((y * W + x) * 4) as usize; [f[k] as i32, f[k + 1] as i32, f[k + 2] as i32] };
+    let green = |c: [i32; 3]| c[1] > c[0] + 40 && c[1] > c[2] + 40;
+    let orange = |c: [i32; 3]| c[0] - c[1] / 2 > 20 && c[0] > c[2];
+    let mut u = open();
+    u.state.stirr = true;
+    go(&mut u, true);
+    let t = u.now();
+    u.tick(t + 1.0);
+    u.settle();
+    let t0 = u.now();
+    go(&mut u, false);
+    // The ray's first half on the screen: the window at (288, 120), its layer at -120.
+    let ray = |f: &[u8]| (0..90u32).map(|k| px(f, 288 + 30 + k, 120 + 100)).collect::<Vec<_>>();
+    let mut render = |u: &mut Ui<Site, ()>, ms: f32| { u.tick(t0 + ms / 1000.0); let l = u.look(); o.r.partial = false; o.render(u, &l) };
+    for ms in [0.0, 40.0, 80.0, 200.0, 350.0] {
+        let f = render(&mut u, ms);
+        let n = (0..W * H).filter(|&k| green(px(&f, k % W, k / W))).count();
+        assert_eq!(n, 0, "back {ms} ms: the other window's ray is drawn while the picture flies ({n} px)");
+    }
+    for ms in [SPEC.flow_ms + 40.0, SPEC.flow_ms + SPEC.fade_ms * 0.5, SPEC.flow_ms + SPEC.fade_ms + 40.0] {
+        let r = ray(&render(&mut u, ms));
+        assert!(r.iter().all(|&c| !orange(c)), "back {ms} ms: the ray is drawn in the accent: {:?}", &r[..4]);
+    }
+    let r = ray(&render(&mut u, 1000.0));
+    assert!(r.iter().filter(|&&c| green(c)).count() >= 30, "back, at rest: the ray is not in its own colour: {:?}", &r[..4]);
+}
 
 #[test]
 fn and_back_the_piece_shrinks_into_its_window_over_the_index_ground() { flight(true); }

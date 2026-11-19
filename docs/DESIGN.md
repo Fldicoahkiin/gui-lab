@@ -387,8 +387,11 @@ at rest. Their antialiased edges then blend with the picture by their coverage, 
 (`El::opacity`) by its opacity, whatever their siblings are doing; nothing of the ink's codes is read as the
 picture's red, green or blue. Text to read over a picture is shown as it is within its island, however loose
 the picture is beneath (§1.15). Ink over a picture that is not text to read loosens with the picture. In the
-modal layer this holds only where none of the layer's own shapes or pictures is: over those, its ink is the
-layer's, as before. A cut-out counts as its whole box: over its transparent parts the ink's edges are drawn
+modal layer (and any layer: what is drawn after something that stirs, parts in flight) the layer's own pictures
+are pictures like the page's, and what is drawn over one of them, or a faint shape (opacity under 0.5, a line
+riding a flight) over any picture, is ink over it; a panel of the layer over the page's picture covers it, and
+its ink is the layer's, as before. A picture marks where it is only while it shows (opacity 0.01 or more), so a
+window waiting to fade in leaves the colours under it as they are. A cut-out counts as its whole box: over its transparent parts the ink's edges are drawn
 whole, not blended with the page.
 
 #### Implementation
@@ -1342,7 +1345,9 @@ it, its birth time kept, the index's ground around it, the notes over it in thei
 over it, every other instance drawn at a size and colour one of the pages draws and not loosened over the
 picture, the frame and live line gone by their opacity within `out_ms` and never drawn over the picture,
 no other window over it, the title's glyphs once each, over the picture, opaque and inside their clips;
-landed, the new page as at rest on its own ground). `check`: the hand-off frame (source at looseness 1
+landed, the new page as at rest on its own ground; back to an index whose other window is in a layer, that
+window's ray, a ramp in a colour of its own through a middle stop, not drawn at 0, 40, 80, 200 and 350 ms and never
+in the accent while it fades in, in its own colour at rest). `check`: the hand-off frame (source at looseness 1
 against particles at t = 0) and the landing frame (particles at t = 1 against the target at looseness 1),
 under `plain` and `dottr`, differ by ≤ 2/255 per pixel within the elements' bounds (in fact 0); in the light
 theme mid-flight there are particles outside both elements (with a control). `film` gives samples for every
@@ -2299,7 +2304,9 @@ So the foundation changed in five places, with no special cases in the effect pa
 - **A stroke with a ramp** (`Drawing::ramp(a, b, w, paint, mid, far)`, `Mark::Line`'s `far` and `mid`): its
   colour and opacity go from `paint` at `a` to `far` at `b`, through `mid` (a paint and where it is, 0–1 of the way)
   if given, still one instance (the far and middle paints packed into its `uv.zw`, their hues and the middle's place
-  into `extra.x`, all negative; a line without a ramp is the instance it was). The ramp's parameter is the pixel's
+  into `extra.x`, all negative; a line without a ramp is the instance it was). The instance's opacity is its strongest
+  stop's and each stop's is a share of it (the start's in `extra.y`), so whatever scales an element's opacity later (a
+  fade, a flow's wait, a see-through group) scales every stop: a ramp waiting at opacity 0 draws nothing. The ramp's parameter is the pixel's
   projection on a→b, `clamp(dot(p − a, b − a) / |b − a|², 0, 1)`, so each round end is its end's colour, flat. Over a
   picture (where ink is written as its own colour) the stops' colours are mixed in OKLab, each piece linear with no
   smoothing at the middle stop, and the opacity, linear along the length, is applied after the mix. Off a picture ink

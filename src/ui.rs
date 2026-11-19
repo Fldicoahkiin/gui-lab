@@ -4040,15 +4040,20 @@ impl<S, M: Clone> Ui<S, M> {
                         };
                         // A ramp (`Drawing::ramp`): its far and middle paints in uv.zw, their hues (6 bits each, own
                         // colours included) and where the middle is in extra.x, all negative (a stroke has no
-                        // border; a blade's joints are positive).
-                        let (mut uv, mut ex, h0) = ([radius, 0.0, 0.0, 0.0], 0.0, hue(p));
+                        // border; a blade's joints are positive). Its opacity is its strongest stop's, and each
+                        // stop's (the start's in extra.y, −1 − it) is a share of that, so whatever later scales
+                        // the instance's opacity (a fade, a flow, a group) scales every stop.
+                        let (mut uv, mut ex, mut ey, mut alpha, h0) = ([radius, 0.0, 0.0, 0.0], 0.0, 0.0, p.alpha, hue(p));
                         if let Some((far, mid)) = ramp {
                             let (m, at) = mid.unwrap_or((far, 0.5));
-                            uv[2] = -(1.0 + ramp_pack(far));
-                            uv[3] = if mid.is_some() { -(1.0 + ramp_pack(m)) } else { 0.0 };
+                            alpha = p.alpha.max(far.alpha).max(m.alpha);
+                            let share = |q: Paint| Paint { alpha: if alpha > 0.0 { q.alpha / alpha } else { 0.0 }, ..q };
+                            uv[2] = -(1.0 + ramp_pack(share(far)));
+                            uv[3] = if mid.is_some() { -(1.0 + ramp_pack(share(m))) } else { 0.0 };
                             ex = -(1.0 + hue(far) + 64.0 * hue(m) + 4096.0 * (at.clamp(0.0, 1.0) * 255.0).round());
+                            ey = -(1.0 + share(p).alpha);
                         }
-                        let inst = Instance { rect, uv, paint: [p.tone, p.accent, p.alpha, SHAPE], clip, look: [mat, h0, rect[1], rect[3].max(1.0)], resp, xf, extra: [ex, 0.0, 0.0, 0.0] };
+                        let inst = Instance { rect, uv, paint: [p.tone, p.accent, alpha, SHAPE], clip, look: [mat, h0, rect[1], rect[3].max(1.0)], resp, xf, extra: [ex, ey, 0.0, 0.0] };
                         put(&mut sink, inst, ident(&n.key, j as u32 | 0x2000_0000, 0), None);
                     }
                 }

@@ -485,9 +485,11 @@ fn ramp_at(i: VOut) -> RampAt {
   let code = -i.extra.x - 1.0;
   let at = floor(code / 4096.0) / 255.0; let hues = code - floor(code / 4096.0) * 4096.0;
   let mh = floor(hues / 64.0); let fh = hues - mh * 64.0;
-  let start = i.paint.xyz; let far = ramp_paint(i.uvr.z);
+  // Each stop's opacity is a share of the instance's (`Ui::paint`), the start's in extra.y.
+  let k = vec3f(1.0, 1.0, i.paint.z);
+  let start = vec3f(i.paint.xy, (-i.extra.y - 1.0) * i.paint.z); let far = ramp_paint(i.uvr.z) * k;
   if (i.uvr.w < -0.5) {
-    let mid = ramp_paint(i.uvr.w);
+    let mid = ramp_paint(i.uvr.w) * k;
     if (t < at) { return RampAt(start, mid, i.look.y, mh, t / max(at, 1e-4)); }
     return RampAt(mid, far, mh, fh, (t - at) / max(1.0 - at, 1e-4));
   }
@@ -577,7 +579,8 @@ fn near_in(i: VOut, top: bool) -> vec4f {
   // as 0.5 + k / 2, in its halo as 0.49 k. Max-blended, any ink beats any halo, so one instance's
   // looseness never spills onto a neighbour's ink (a new marker beside a column of dots).
   let loose = enc_loose(min(own_loose(i), 1.0), s.x * i.paint.z > 0.5) * step(0.02, s.y) * step(0.01, i.paint.z);
-  var slot = select(0.0, (i.paint.y + 1.0) / 8.0 - select(0.0, 1.0 / 32.0, i.resp.y > 1.5), s.z > 0.5);
+  // A picture marks where it is only while it shows (as the hold image's flag, `Renderer::upload`).
+  var slot = select(0.0, (i.paint.y + 1.0) / 8.0 - select(0.0, 1.0 / 32.0, i.resp.y > 1.5), s.z > 0.5 && i.paint.z >= 0.01);
   // Ink written as a picture's colour keeps that picture's flag where it is drawn (`ink_of`).
   if (i.paint.w < 1.5 && s.x > 0.0) { slot = max(slot, over_pic(i, top)); }
   // A 3D element drawn through the material marks its pixels (within the nearness) with the projected

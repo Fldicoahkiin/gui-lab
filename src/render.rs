@@ -1209,16 +1209,26 @@ impl Renderer {
         let mut holds: Vec<Instance> = scene.holds.iter().filter_map(|&(k, r)| scene.instances.get(k as usize).map(|i| { let mut i = *i; i.paint[0] = r[0]; i.paint[1] = r[1]; i })).collect();
         holds.extend(scene.islands.iter().copied());
         // Where pictures are, so ink drawn over one is written in the picture's terms (its colour), and
-        // where the modal layer covers them with its own shapes and pictures (`fs_hold`).
+        // where the modal layer covers them with its own shapes (`fs_hold`).
         let layer = scene.layer.unwrap_or(u32::MAX) as usize;
+        // What the pictures show so far, and whether each is the layer's: a shape of the layer drawn within
+        // one of the layer's, or a faint one (a line riding a flight) within any, is ink over it; a panel of
+        // the layer over the page's picture covers it.
+        let mut on: Vec<([f32; 4], bool)> = vec![];
+        let shown = |i: &Instance| { let b = i.bounds(0.0); [b[0].max(i.clip[0]), b[1].max(i.clip[1]), b[2].min(i.clip[2]), b[3].min(i.clip[3])] };
         for (k, i) in scene.instances.iter().enumerate() {
             if i.paint[2] < 0.01 { continue; }
             let pic = i.paint[3] == crate::scene::PICTURE;
             // Character marks over a picture (`el::Cells`) are ink over it, not a picture of their own.
-            if k < layer && pic && i.extra[0] <= 0.5 {
+            // A picture of the modal layer (or of parts in flight, which are drawn as one) is a picture too:
+            // what is drawn over it, in the layer or under it, is written in its terms, as its nearness says.
+            if pic && i.extra[0] <= 0.5 {
                 let code = (i.paint[1] + 1.0) / 8.0 - if i.resp[1] > 1.5 { 1.0 / 32.0 } else { 0.0 };
                 holds.push(Instance { paint: [-1.0, code, 1.0, i.paint[3]], ..*i });
-            } else if k >= layer && ((pic && i.extra[0] <= 0.5) || i.paint[3] == crate::scene::SHAPE) {
+                on.push((shown(i), k >= layer));
+            } else if k >= layer && i.paint[3] == crate::scene::SHAPE {
+                let b = shown(i);
+                if on.iter().any(|(p, own)| (*own || i.paint[2] < 0.5) && p[0] <= b[0] && p[1] <= b[1] && p[2] >= b[2] && p[3] >= b[3]) { continue; }
                 holds.push(Instance { paint: [-2.0, 0.0, 1.0, i.paint[3]], ..*i });
             }
         }
