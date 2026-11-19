@@ -300,13 +300,21 @@ fn fronts_push(centre: vec2f) -> vec2f {
   }
   return push;
 }
+/// A glyph box (device px) at display size, 32 px or more each way, under an override (`look.x`) by a
+/// material that draws round the ink: carvr (5, its ridges) or near (7, its bands).
+fn display_override(size: vec2f, code: f32) -> bool {
+  let id = i32(round(code)) % 16;
+  return code >= 127.5 && (id == 5 || id == 7) && min(size.x, size.y) >= 32.0 * u.res.z;
+}
 fn vs_pad(iv: VIn, spad: f32) -> VOut {
   var i = iv;
   if (i.paint.w > 0.5 && i.paint.w < 1.5 && i.extra.y > 0.5) { i = blade_seg(iv); }
   else if (i.paint.w < 0.5 && i.extra.y < -0.5) { i = blade_head(iv); }
   let c = vec2f(f32(i.vi & 1u), f32((i.vi >> 1u) & 1u));
   // Glyph rects already include the spread; shapes and pictures are padded here so their nearness fits.
-  let pad = select(spad, 0.0, i.paint.w < 0.5);
+  // A glyph at display size in its own material is padded by the spread once more, for what its
+  // material draws round it (`near_in`); past its atlas slot it has no ink (`inst`).
+  let pad = select(spad, select(0.0, spad, display_override(i.rect.zw, i.look.x)), i.paint.w < 0.5);
   let r = vec4f(i.rect.xy - vec2f(pad), i.rect.zw + vec2f(pad * 2.0));
   var p = r.xy + c * r.zw;
   let mid = i.rect.xy + i.rect.zw * 0.5;
@@ -328,7 +336,7 @@ fn vs_pad(iv: VIn, spad: f32) -> VOut {
   o.pos = vec4f(p.x / u.res.x * 2.0 - 1.0, 1.0 - p.y / u.res.y * 2.0, 0.0, 1.0);
   o.local = c * r.zw - vec2f(pad);
   o.size = i.rect.zw;
-  o.uv = select(i.uv.xy + o.local / i.rect.zw * (i.uv.zw - i.uv.xy), mix(i.uv.xy, i.uv.zw, c), i.paint.w < 0.5);
+  o.uv = select(i.uv.xy + o.local / i.rect.zw * (i.uv.zw - i.uv.xy), mix(i.uv.xy, i.uv.zw, c), i.paint.w < 0.5 && pad == 0.0);
   o.paint = i.paint; o.clip = i.clip; o.extra = i.extra; o.radius = vec2f(i.uv.x, select(0.0, 1.0, i.paint.w > 1.5 && i.resp.y < 1.5 && i.resp.w > 0.5)); o.look = i.look;
   o.resp = vec4f(i.resp.x, i.resp.y, centre);
   o.org = i.rect.xy + push;
@@ -389,6 +397,7 @@ fn inst(i: VOut) -> vec4f {
     return vec4f(cov, near, 0.0, (0.5 - near) * 2.0 * u.fd.z);
   }
   if (kind < 0.5) {
+    if (any(i.uv < i.uvr.xy) || any(i.uv > i.uvr.zw)) { return vec4f(0.0, 0.0, 0.0, 2.0 * u.fd.z); }
     let g = textureSampleLevel(tex0, samp, i.uv, 0.0);
     // A weight (device px in extra.x) moves the outline: the coverage comes from the signed distance.
     if (i.extra.x != 0.0) {
@@ -620,8 +629,10 @@ fn near_in(i: VOut, top: bool) -> vec4f {
   if (i.paint.w > 2.5 && i.extra.x < 0.5 && s.y > 0.01) { slot = max(round(mesh_near(i).b * 255.0), 1.0) / 255.0; }
   var code = select(0.0, round(i.extra.y * 2.0) / 255.0, i.paint.w < 0.5 && s.y > 0.02);
   // A material override reaches through the nearness of shapes and pictures, but only just around
-  // glyphs, so text set in its own material does not change the shape it sits on.
-  if (i.look.x >= 127.5 && s.y > select(0.02, 0.42, i.paint.w < 0.5)) { code = i.look.x / 255.0; }
+  // glyphs, so text set in its own material does not change the shape it sits on. A glyph at display
+  // size in a material that draws round the ink takes all the ground its quad covers: near's bands and
+  // carvr's ridges are part of the letter.
+  if (i.look.x >= 127.5 && (s.y > select(0.02, 0.42, i.paint.w < 0.5) || i.paint.w < 0.5 && display_override(i.size, i.look.x))) { code = i.look.x / 255.0; }
   return vec4f(s.y * step(0.01, i.paint.z), slot, loose, code);
 }
 // Text to read over others' ink (scene.rs Scene::holds): 1 on its own ink and within paint.x device px of

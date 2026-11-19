@@ -1,12 +1,18 @@
 // @material near
 // @param 间距 1.5 12.0 0.5 1 px 3.0
 // @param 填充 0.0 1.0 0.05 2 - 0.25
+// @param 墨带 0.0 3.0 1.0 0 - 0.0
+// @param 带宽 0.0 12.0 1.0 0 px 0.0
 // near: the intermediate images made visible. The signed nearness in bands every `pitch` px, warm
 // inside the ink and cool outside, fading toward the edge of its reach; the outline in the ink colour;
 // the ink itself as a faint fill; the looseness of each instance as a tint over it.
+// With `墨带` (ink bands) set, 1 to 3: only that many bands outside the ink instead, in the ink at 0.5,
+// 0.3 and 0.15 (two: 0.5 and 0.25), each `带宽` wide with as much ground before it (half the band pitch
+// when 0), square round the ink's pixel corners: for pixel type on whole pixels and on the lattice.
 fn m_near(p: vec2f) -> vec3f {
   let s = u.res.z;
   let a0 = mp(SELF, 0);
+  if (a0.z >= 0.5) { return near_bands(p, a0); }
   let n = near_t(p);
   let g = gnd(p);
   let d = dec(p);
@@ -47,4 +53,45 @@ fn m_near(p: vec2f) -> vec3f {
   // colour by the first pass, `ink_of`.)
   if (d.txt) { col = mix(col, d.rgb, d.a); }
   return col;
+}
+
+/// Whether any ink is in the ring of cells `r` away (the Chebyshev ring) round `cell`, `c` px cells.
+fn near_ring(cell: vec2f, r: i32, c: f32) -> bool {
+  for (var i = -r; i <= r; i++) {
+    let a = vec2f(f32(i), f32(r)); let b = vec2f(f32(r), f32(i));
+    for (var q = 0; q < 4; q++) {
+      let o = select(select(a, -a, q == 1), select(b, -b, q == 3), q >= 2);
+      if (q >= 2 && abs(i) == r) { continue; }
+      if (dec((cell + o + 0.5) * c - anc).a > 0.5) { return true; }
+    }
+  }
+  return false;
+}
+/// `near` in ink bands. The ink's edges are on the lattice of the band pitch and the bands' on whole
+/// multiples of their width, so the distance is taken in cells of their common divisor: the first
+/// ring of cells with ink in it.
+fn near_bands(p: vec2f, a0: vec4f) -> vec3f {
+  let s = u.res.z;
+  let d = dec(p);
+  let base = mix(gnd(p), d.rgb, d.a);
+  if (d.a > 0.5) { return base; }
+  let nb = i32(round(min(a0.z, 3.0)));
+  let pitch = u32(max(round(a0.x * s), 1.0));
+  let w = u32(max(round(select(a0.x * 0.5, a0.w, a0.w > 0.0) * s), 1.0));
+  var x = pitch; var y = w;
+  loop { if (y == 0u) { break; } let t = x % y; x = y; y = t; }
+  let c = f32(x);
+  let cell = floor(lat(p) / c);
+  let reach = i32(ceil(f32(2 * nb) * f32(w) / c));
+  var m = 0;
+  for (var r = 1; r <= reach; r++) { if (near_ring(cell, r, c)) { m = r; break; } }
+  if (m == 0) { return base; }
+  // Slots of `w` from the edge: even ones ground, odd ones a band.
+  let slot = i32(floor(f32(m - 1) * c / f32(w)));
+  if (slot % 2 == 0 || slot / 2 >= nb) { return base; }
+  let i = slot / 2;
+  var al = array<f32, 3>(0.5, 0.3, 0.15);
+  if (nb == 2) { al = array<f32, 3>(0.5, 0.25, 0.0); }
+  if (nb == 1) { al = array<f32, 3>(0.5, 0.0, 0.0); }
+  return mix(base, u.fg.rgb, al[i]);
 }

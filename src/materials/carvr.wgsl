@@ -6,7 +6,8 @@
 // @param 抖动 0.0 1.0 0.05 2 - 0.4
 // carvr: ink or ground, nothing between. Loosened, the outline is cut by hand (displaced by noise) and
 // a band around it fills with gouge strokes that follow the outline: ridges of ink left standing
-// outside, white cuts inside; the band widens with the looseness until shapes break into strokes.
+// outside, white cuts inside; the band widens with the looseness until shapes break into strokes, and
+// nothing is cut deeper than the band.
 fn m_carvr(p: vec2f) -> vec3f {
   let s = u.res.z;
   let a0 = mp(SELF, 0); let a1 = mp(SELF, 1);
@@ -43,6 +44,9 @@ fn m_carvr(p: vec2f) -> vec3f {
       inked = max(inked, on_line * dash);
     }
   }
+  // Nothing is cut deeper than the band, the knife's wander included: a stem the band's width from both
+  // edges keeps its middle.
+  if (sd >= a0.y * s) { inked = 1.0; }
   let lino = mix(gnd(p), select(w.rgb, u.fg.rgb, w.a < 0.02), inked);
   return mix(exact(p), lino, smoothstep(0.0, 0.12, k));
 }

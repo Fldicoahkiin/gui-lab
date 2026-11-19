@@ -302,7 +302,9 @@ pub fn reach(m: Material, look: &Look, s: f32) -> f32 {
     // The dottr ground's cells read the nearness at their centre.
     let base = 2.0 + if m == Material::Dottr { 10.0 * s } else { 0.0 };
     base + match m {
-        Material::Plain | Material::Near | Material::Scribblr => 4.0 * s,
+        Material::Plain | Material::Scribblr => 4.0 * s,
+        // Its ink bands read as far as the outermost one ends (`2 × count × width`).
+        Material::Near => 4.0 * s + 2.0 * p(2) * if p(3) > 0.0 { p(3) } else { 0.5 * p(0) } * s,
         Material::Dottr => 2.0 * look.fx.pitch * s + 40.0 * look.fx.glitch * s,
         Material::Halftonr => 2.0 * p(0) * s + p(2) * s,
         Material::Charr => 2.0 * p(0) * s,

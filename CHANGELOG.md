@@ -8,6 +8,16 @@ crate and the `amenui` npm package (`web/`) always carry the same version, becau
 match the module that `web_app!` generates. The minimum Rust is the one CI builds with (`rust-version`
 in Cargo.toml); raising it is a breaking change before 1.0 only in the second number.
 
+## Display type in its own material
+
+- `near` has ink bands (`墨带`, 1 to 3, and `带宽`, px; 0 by default, the bands as before): only that many bands
+  outside the ink, in the ink at 0.5, 0.3 and 0.15 (two: 0.5 and 0.25), each the width with as much ground before
+  it, square round the ink's pixel corners, for pixel type on whole pixels and on the lattice.
+- `carvr` never cuts deeper than its band (`刻带`), the knife's wander included.
+- A glyph 32 px or more each way set in `near` or `carvr` takes all the ground its quad covers, padded by the
+  spread once more, so what the material draws round the letter is drawn; text at reading sizes keeps the
+  override just round its ink.
+
 ## Stage scale
 
 - The stages' scale steps up only when the frames' cost there, by the level up's pixels, would be under 85 % of the
