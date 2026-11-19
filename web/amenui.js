@@ -266,7 +266,13 @@ export async function mount(stage, opts) {
       w.drop_done(now()); after();
     });
     window.addEventListener('hashchange', kick);
-    new ResizeObserver(() => { fit(); w.resize(canvas.width, canvas.height, dpr); kick(); }).observe(stage);
+    // A new size clears the canvas, and the observer runs after this refresh's animation frame and before
+    // its paint: the frame is drawn again here, at the new size, so no refresh shows an empty canvas.
+    new ResizeObserver(() => {
+      fit(); w.resize(canvas.width, canvas.height, dpr);
+      if (raf) { cancelAnimationFrame(raf); raf = 0; }
+      loop();
+    }).observe(stage);
     kick();
     // What a host can change from outside: the page (or a look:v1: recipe), the theme and material by
     // name, the language by tag.
