@@ -12,6 +12,9 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
 
 - Scrolling under the automatic level is not softened on a frame that can move the last one (`dirty::Move`):
   that frame shades only the strip scrolled in, sharp.
+- After 30 frames with one built-in global material and no override, the material pass (and its upsample) is a
+  pipeline of its own for that material (the WGSL override constant `MAT`): `Renderer::specialise`,
+  `Renderer::specialised`, `render::SPECIALISE_AFTER`.
 
 ## For Kern
 

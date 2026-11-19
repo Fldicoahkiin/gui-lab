@@ -70,8 +70,11 @@ struct U {
 const PLAIN: i32 = 0; const DOTTR: i32 = 1; const HALFTONR: i32 = 2; const CHARR: i32 = 3; const SMUDGR: i32 = 4;
 const CARVR: i32 = 5; const GLITCHR: i32 = 6; const NEAR: i32 = 7; const SCRIBBLR: i32 = 8;
 fn mp(m: i32, i: i32) -> vec4f { return u.mats[m * 2 + i]; }
+/// The material every pixel is drawn with, in a material pass made for one (`Renderer::specialise`: the
+/// global material, nothing overriding it); −1 in the pass for any.
+override MAT: i32 = -1;
 /// The material an instance (or a pixel) is drawn with: its override, or the global one.
-fn eff_mat(code: f32) -> i32 { if (code >= 127.5) { return i32(round(code)) % 16; } return i32(u.fd.x); }
+fn eff_mat(code: f32) -> i32 { if (MAT >= 0) { return MAT; } if (code >= 127.5) { return i32(round(code)) % 16; } return i32(u.fd.x); }
 /// A hue's colour: the theme's three accents, then the drawings' own colours (`Drawing::palette`).
 fn hue_col(h: f32) -> vec3f { if (h > 2.5) { return u.own[clamp(i32(round(h)) - 3, 0, 31)].rgb; } if (h > 1.5) { return u.third.rgb; } if (h > 0.5) { return u.second.rgb; } return u.accent.rgb; }
 /// A hue as the coverage buffer codes it, off a picture: one of the theme's three (a drawing's own colour

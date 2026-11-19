@@ -49,6 +49,8 @@ impl Offscreen {
         r.set_particle_tier(*tier);
         // Frames drawn offscreen are checks and stills: the stages' scale stays where the look puts it.
         r.govern = false;
+        // On the CPU rasteriser offscreen draws with, compiling a material's own pass costs more than it saves.
+        r.specialise = None;
         for (id, pw, ph, px) in crate::pictures::pictures() { r.set_picture(id, pw, ph, &px); }
         Ok(Self { r, target, buf, w, h, row })
     }

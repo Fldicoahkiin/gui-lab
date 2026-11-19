@@ -1513,6 +1513,17 @@ The full-resolution pass takes one bilinear sample of `lo`: with alpha > 0 (a re
 recomputes with `shade(p)` here, otherwise it uses the sampled colour. So the edges of loose areas stay
 sharp, and the rest test runs once over `q²` of the pixels.
 
+**A material pass for one material** (`Renderer::specialise`): `shade` dispatches on each pixel's material
+(an override's, else the global one), so its pipeline holds every material's branch, which a GPU runs with
+fewer pixels at once. After `render::SPECIALISE_AFTER` (30) frames in a row with one built-in global
+material and no instance overriding it (in the scene or drawn into a plate since it was cleared), the
+material pass (`fs_material`, both the full and the reduced one) gets a pipeline of its own made with the
+WGSL override constant `MAT` set to that material, and `fs_material_up` one too once a reduced pass is used
+with it; `eff_mat` then returns `MAT`. They are made after the frame is sent, so that frame and any with an
+override, a material from source or a new global material draw with the pass for any material. The frames
+are the same pixel for pixel (`tests/specialise.rs`). Offscreen, on the CPU rasteriser, `specialise` is
+`None`: compiling another pass costs more there than it saves.
+
 `lo` is drawn only when the loose area is large enough: `Ui::loose_estimate(now, lens_radius)` estimates the
 share of the window that may be loose (1 with fronts, condensing, morphs or flows; otherwise the sum of the
 areas of instances with static looseness, bursts, the lens on pictures and compare wipes). Below
