@@ -2202,7 +2202,7 @@ impl<S, M: Clone> Ui<S, M> {
         if let (Some(i), Some((x, y))) = (now, at) && let Some(f) = self.nodes[i].on_move.clone() {
             let (lx, ly) = self.local_in(i, x, y);
             let (glyph, z) = self.glyph_in(i, x, y);
-            if let Some(m) = f(Some(crate::el::Point { x: lx, y: ly, down: false, glyph, z, t: self.ev })) { self.send(m); }
+            if let Some(m) = f(Some(crate::el::Point { x: lx, y: ly, down: false, glyph, z, t: self.ev })) { self.send_at(Some(i), m); }
         }
     }
     /// A window point (logical px) in element `i`'s own coordinates: from its top left, or in a
@@ -2247,7 +2247,7 @@ impl<S, M: Clone> Ui<S, M> {
             d = Drag { phase, x: (x - inner.x) * k, y: (y - inner.y) * k, w: dr.w, h: dr.h, dx: d.dx * k, dy: d.dy * k, t: d.t };
         }
         let Some(c) = &self.capture else { return };
-        if let Some(m) = (c.handler)(d) { self.send(m); }
+        if let Some(m) = (c.handler)(d) { self.send_at(at, m); }
     }
     /// The pointer left the window.
     pub fn pointer_leave(&mut self) {
@@ -2334,7 +2334,7 @@ impl<S, M: Clone> Ui<S, M> {
             self.burst(r, 1.0, self.timing.press);
             if self.up(i, |n| n.commit).is_some() { self.snapshot(x, y); }
             let m = self.nodes[i].on_press.clone();
-            if let Some(m) = m { self.send(m); } else { self.paint(); }
+            if let Some(m) = m { self.send_at(Some(i), m); } else { self.paint(); }
         }
     }
 
@@ -2369,7 +2369,7 @@ impl<S, M: Clone> Ui<S, M> {
         let mut at = self.hit(x, y);
         // An element that takes the wheel itself (a 3D view's dolly) gets it before any scroll node.
         if let Some(i) = at.and_then(|i| self.up(i, |n| n.on_wheel.is_some())) && let Some(f) = self.nodes[i].on_wheel.clone() {
-            if let Some(m) = f(dx, dy) { self.send(m); }
+            if let Some(m) = f(dx, dy) { self.send_at(Some(i), m); }
             return;
         }
         while let Some(i) = at.and_then(|i| self.up(i, |n| n.scroll)) {
@@ -2414,7 +2414,7 @@ impl<S, M: Clone> Ui<S, M> {
                 self.snapshot(cx, cy);
                 self.front_from(Some(fi), cx, cy, true, 1.0);
             }
-            self.send(m);
+            self.send_at(Some(fi), m);
             self.reveal_marked(&key);
             return true;
         }
@@ -2429,7 +2429,7 @@ impl<S, M: Clone> Ui<S, M> {
             if self.up(fi, |n| n.commit).is_some() { self.snapshot(cx, cy); }
             self.front_from(Some(fi), cx, cy, true, 1.0);
             let key = self.nodes[fi].key.clone();
-            self.send(m);
+            self.send_at(Some(fi), m);
             self.rebirth(&key);
             return true;
         }
@@ -2715,6 +2715,19 @@ impl<S, M: Clone> Ui<S, M> {
         let sp = self.span_begin();
         (self.update)(&mut self.state, m);
         self.relayout();
+        self.span_end(sp);
+    }
+    /// `send` for a message from a handler of node `at`: under an element whose messages are its own
+    /// (`El::local_messages`), only it and the elements that change with a stage (`El::steps`) are viewed
+    /// again, when they are laid out as they were (`Ui::restage`); otherwise the page is.
+    fn send_at(&mut self, at: Option<usize>, m: M) {
+        let local = at.and_then(|i| self.up(i, |n| n.stage.as_ref().is_some_and(|c| c.local))).filter(|_| self.stage_of.is_some());
+        let Some(l) = local else { return self.send(m) };
+        let sp = self.span_begin();
+        (self.update)(&mut self.state, m);
+        let mut keys = vec![self.nodes[l].key.clone()];
+        keys.extend(self.nodes.iter().filter(|n| n.stage.as_ref().is_some_and(|c| !c.held && !c.local)).map(|n| n.key.clone()));
+        self.restage(keys);
         self.span_end(sp);
     }
 
@@ -4354,7 +4367,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// content. Their boxes are kept; whether it was put.
     fn swap_stage(&mut self, i: usize, el: El<M>) -> bool {
         let key = self.nodes[i].key.clone();
-        if !(el.props.stage || el.props.steps) || (!el.props.key.is_empty() && el.props.key != key) { return false; }
+        if !(el.props.stage || el.props.steps || el.props.local_messages) || (!el.props.key.is_empty() && el.props.key != key) { return false; }
         let Some(ctx) = self.nodes[i].stage.as_deref().cloned() else { return false };
         let len = (i + 1..self.nodes.len()).take_while(|&j| within(&self.nodes, j, i)).count() + 1;
         let mut nodes = std::mem::take(&mut self.nodes);
@@ -7233,7 +7246,7 @@ fn runs_of(nodes: impl Iterator<Item = usize>, count: usize) -> Option<Vec<(usiz
 /// What a stage's root was flattened with (`El::stage`, `Ui::stage_view`): so its subtree alone can be
 /// flattened again in place.
 #[derive(Clone)]
-struct StageCtx { parent: Option<usize>, path: String, roles: [u8; 3], off: (bool, bool), flow: Option<(Rc<str>, usize)>, inh: Inherit, held: bool }
+struct StageCtx { parent: Option<usize>, path: String, roles: [u8; 3], off: (bool, bool), flow: Option<(Rc<str>, usize)>, inh: Inherit, held: bool, local: bool }
 
 /// The rows `first..last` a viewport `h` tall at offset `off` shows.
 fn visible_rows(off: f32, h: f32, count: usize, row_h: f32) -> (usize, usize) {
@@ -7266,8 +7279,8 @@ fn measure_key(c: &Content) -> u64 {
 /// A virtual list's rows are built here, for what its viewport shows.
 #[allow(clippy::too_many_arguments)]
 fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], off: (bool, bool), flow: Option<(Rc<str>, usize)>, inh: Inherit, vx: &mut VirtCtx, built: &mut Built, nodes: &mut Vec<Node<M>>) -> usize {
-    let stage_at = (el.props.stage || el.props.steps).then(|| Box::new(StageCtx { parent, path: path.clone(), roles, off, flow: flow.clone(), inh: inh.clone(), held: el.props.stage }));
-    let El { props: crate::el::Props { key, mut style, mut content, fill, border, radius, mut focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, mut commit, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, map_life, multiline, selectable, cursor, ripple, guide, skeleton, rtl, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview, fit, clamp, plate, cached, clip_radius, own_size, grain, show_clear, pen, view_scale, stage: _, stack, steps: _ }, mut on_press, mut on_key, mut on_drag, mut on_blur, modal, mut on_text, virt, access, mut on_pick, mut on_wheel, mut on_move, on_visible, on_outline, mut children } = el;
+    let stage_at = (el.props.stage || el.props.steps || el.props.local_messages).then(|| Box::new(StageCtx { parent, path: path.clone(), roles, off, flow: flow.clone(), inh: inh.clone(), held: el.props.stage, local: el.props.local_messages }));
+    let El { props: crate::el::Props { key, mut style, mut content, fill, border, radius, mut focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, mut commit, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, map_life, multiline, selectable, cursor, ripple, guide, skeleton, rtl, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview, fit, clamp, plate, cached, clip_radius, own_size, grain, show_clear, pen, view_scale, stage: _, stack, steps: _, local_messages: _ }, mut on_press, mut on_key, mut on_drag, mut on_blur, modal, mut on_text, virt, access, mut on_pick, mut on_wheel, mut on_move, on_visible, on_outline, mut children } = el;
     // A view scale scales what it holds, not its pen (`El::view_scale`).
     if let Some(s) = view_scale { children = children.into_iter().map(|c| c.zoom_by(s, true)).collect(); }
     let mut inh = inh;

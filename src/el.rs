@@ -745,10 +745,12 @@ pub struct Props {
     pub stack: bool,
     /// It can be viewed alone when it steps (`El::steps`).
     pub steps: bool,
+    /// What its handlers send changes only it and the elements that step (`El::local_messages`).
+    pub local_messages: bool,
 }
 impl Props {
     #[inline(never)]
-    fn new(style: Style, content: Content) -> Self { Props { key: String::new(), style, content, fill: None, border: None, radius: 0.0, focusable: false, tab_order: 0, skip_to: None, focus_shown: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, shift: (0.0, 0.0), shed: None, flow_field: None, stirr: None, trace: None, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, clips: false, calm: false, map_life: None, multiline: false, selectable: false, cursor: None, ripple: Ripple::default(), guide: None, skeleton: false, rtl: None, decode: None, form: None, turn: 0.0, reveal_by: Reveal::Glyph, ongoing: false, pass: false, opacity: 1.0, commit_scope: false, preview: false, fit: None, clamp: 0, plate: None, cached: false, clip_radius: 0.0, own_size: None, grain: false, show_clear: None, pen: 1.0, view_scale: None, stage: false, stack: false, steps: false } }
+    fn new(style: Style, content: Content) -> Self { Props { key: String::new(), style, content, fill: None, border: None, radius: 0.0, focusable: false, tab_order: 0, skip_to: None, focus_shown: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, shift: (0.0, 0.0), shed: None, flow_field: None, stirr: None, trace: None, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, clips: false, calm: false, map_life: None, multiline: false, selectable: false, cursor: None, ripple: Ripple::default(), guide: None, skeleton: false, rtl: None, decode: None, form: None, turn: 0.0, reveal_by: Reveal::Glyph, ongoing: false, pass: false, opacity: 1.0, commit_scope: false, preview: false, fit: None, clamp: 0, plate: None, cached: false, clip_radius: 0.0, own_size: None, grain: false, show_clear: None, pen: 1.0, view_scale: None, stage: false, stack: false, steps: false, local_messages: false } }
 }
 impl<M> std::ops::Deref for El<M> { type Target = Props; fn deref(&self) -> &Props { &self.props } }
 impl<M> std::ops::DerefMut for El<M> { fn deref_mut(&mut self) -> &mut Props { &mut self.props } }
@@ -1308,6 +1310,15 @@ impl<M> El<M> {
     /// stage is, without being one: a formula or a label beside the piece that follows it. It is drawn
     /// every frame like anything else, never held and never at a stage's scale.
     pub fn steps(mut self) -> Self { self.steps = true; self }
+    /// What the handlers in this subtree send (a press, a drag, a key, the pointer over it, the wheel)
+    /// changes only what is inside it and the elements that change with a stage (`El::steps`): after
+    /// such a message only this subtree and those are viewed again (`Ui::stage_view`, by this element's
+    /// key), in the boxes the last layout gave them, and drawn again, as a stage that steps is
+    /// (`Ui::on_step`); laid out otherwise (other elements, other styles, text that measures otherwise),
+    /// the whole page is viewed and laid out again. For a stage whose piece is moved by the hand (chips
+    /// dragged by their offsets). A message that changes anything outside them is not shown until the
+    /// page is next laid out.
+    pub fn local_messages(mut self) -> Self { self.local_messages = true; self }
     /// A view of a drawing at scale `s` (a map that grows from a thumbnail to a window): everything this
     /// container holds is scaled as by `El::zoom` (positions, lengths, fills, corner radii, a drawing's
     /// dots) except the pen: the widths of lines (a drawing's strokes, a trace), of borders, and a trace's

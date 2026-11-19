@@ -21,6 +21,8 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
 - A fast scroll with its trace showing moves the last frame too, and shades again only the pixels the trace can reach
   (`fs_trace`, `Cost::trace`); under dottr and charr the frame moves by the lattice's steps (`dirty::Move::frame`,
   `trace`, `way`, `latch`). Not under glitchr or a material from source.
+- `El::local_messages`: the messages a subtree's handlers send change only it and the `El::steps` elements, so it
+  is restaged after them (`Ui::stage_view`) instead of viewing and laying out the page; for a stage dragged by hand.
 
 ## For Kern
 

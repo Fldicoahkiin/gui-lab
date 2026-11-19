@@ -163,3 +163,57 @@ fn a_hover_with_nothing_changing_asks_for_no_frames() {
         assert_eq!(u.needs_frame(t), want, "lens {lens}");
     }
 }
+
+/// A stage whose chip the hand drags by its offsets (the Lab's Weld): its messages are its own
+/// (`El::local_messages`), so each drag frame is restaged with no view of the page and no layout, the
+/// chip where a whole layout puts it; a count beside it (`El::steps`) changes with it.
+mod dragged {
+    use super::*;
+    #[derive(Clone, Default)]
+    pub struct D { pub x: f32, pub y: f32, pub n: u32 }
+    pub fn stage(d: &D, local: bool) -> El<(f32, f32)> {
+        let st = col().key("weld").stage().width(300.0).height(200.0).on_drag_with(|g| Some((g.x, g.y)))
+            .child(col().key("chip").width(40.0).height(24.0).fill(Paint::FAINT).absolute(Some(d.x - 20.0), Some(d.y - 12.0), None, None)
+                .child(text("chip", 11.0, Paint::TEXT)));
+        if local { st.local_messages() } else { st }
+    }
+    pub fn count(d: &D) -> El<(f32, f32)> { text(format!("moves {:>3}", d.n), 11.0, Paint::DIM).font(Font::Mono).key("count").steps() }
+    pub fn view(d: &D, local: bool) -> El<(f32, f32)> { col().key("page").pad(10.0, 10.0).gap(8.0).child(text("Weld", 16.0, Paint::TEXT)).child(stage(d, local)).child(count(d)) }
+}
+
+#[test]
+fn a_stage_whose_messages_are_its_own_is_restaged_as_the_hand_drags_it() {
+    use amenui::ui::PointerKind;
+    let mk = |local: bool| {
+        let view: fn(&dragged::D) -> El<(f32, f32)> = if local { |d| dragged::view(d, true) } else { |d| dragged::view(d, false) };
+        let mut u = Ui::new(dragged::D { x: 60.0, y: 60.0, n: 0 }, view, |d, (x, y)| { (d.x, d.y) = (x, y); d.n += 1; }, fonts(), 400, 300, 1.0)
+            .on_look(|_| Look { material: Material::Plain, ..Look::default() })
+            .stage_view(|d, k| match k { "weld" => Some(dragged::stage(d, true)), "count" => Some(dragged::count(d)), _ => None });
+        u.tick(1.0);
+        u.settle();
+        u
+    };
+    let (mut a, mut b) = (mk(true), mk(false));
+    let mut t = 1.0;
+    let at = |u: &Ui<dragged::D, (f32, f32)>| { let r = u.node("weld").expect("stage").rect; (r.x, r.y) };
+    let (ox, oy) = at(&a);
+    for u in [&mut a, &mut b] { u.pointer_down(1, PointerKind::Mouse, ox + 60.0, oy + 60.0, false); u.settle(); }
+    let (c0, b0) = (a.perf().counters, b.perf().counters);
+    for f in 0..30 {
+        t += 1.0 / 60.0;
+        let (x, y) = (ox + 60.0 + f as f32 * 4.0, oy + 60.0 + f as f32 * 2.0);
+        for u in [&mut a, &mut b] { u.pointer_moved(1, PointerKind::Mouse, x, y); u.tick(t); u.settle(); }
+        for key in ["chip", "count"] {
+            let (ra, rb) = (a.node(key).unwrap().rect, b.node(key).unwrap().rect);
+            assert!((ra.x - rb.x).abs() < 0.51 && (ra.y - rb.y).abs() < 0.51 && ra.w == rb.w, "{key} at frame {f}: {ra:?} / {rb:?}");
+        }
+        assert_eq!(a.state.n, b.state.n);
+    }
+    let c1 = a.perf().counters;
+    assert!(c1.restages - c0.restages >= 29, "the drag frames are restaged: {}", c1.restages - c0.restages);
+    // At most once as the drag starts (the pointer's state), never per frame.
+    assert!(c1.views - c0.views <= 1 && c1.layouts - c0.layouts <= 1, "no view of the page and no layout while it is dragged: {} views, {} layouts", c1.views - c0.views, c1.layouts - c0.layouts);
+    // Without it, each drag frame views and lays out the page.
+    let b1 = b.perf().counters;
+    assert!(b1.layouts - b0.layouts >= 29, "without it each drag frame lays the page out: {}", b1.layouts - b0.layouts);
+}

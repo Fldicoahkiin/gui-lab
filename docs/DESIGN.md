@@ -3116,6 +3116,13 @@ element whose offsets alone changed (each side a length before and after, the op
 dragged about a stage) counts as laid out the same too: it is moved by the change on whole pixels, with its
 subtree, and the tree takes its new offsets for the next layout.
 
+**Messages that are a subtree's own** (`El::local_messages`): what the handlers in such a subtree send (a press,
+a drag, a key, the pointer over it, the wheel) is taken to change only it and the elements marked `El::steps`.
+After such a message the subtree (by its key, through `stage_view`) and those elements are put in place as a
+stage that stepped is, and drawn again; laid out otherwise, the page is viewed and laid out whole. A stage the
+hand drags its chips about (the Lab's Weld) is marked so: a drag frame then costs no view of the page and no
+layout.
+
 The hold reads the input of the frame that lays it out: with input coalesced (`Ui::coalesce`, as the hosts
 run), a tick leaves the frame's input to the paint that `Ui::settle` makes, and that paint spends it.
 
@@ -3155,7 +3162,8 @@ frame after the release; a stage that draws in time draws every frame of a drag;
 draws on the first frame without input); `tests/stage_step.rs` (a stage that steps alone for 150 frames is
 viewed alone with no layout, and every frame's instances, owners, held text and boxes are those of a page viewed,
 laid out and painted whole, with a count beside the stage marked `El::steps` viewed with it; a step that makes
-the stage taller lays the page out). `tests/stage_scale.rs` (a stage
+the stage taller lays the page out; a stage whose messages are its own, dragged for 30 frames, is restaged in
+each with at most one view and one layout in all, its chip where a whole layout puts it). `tests/stage_scale.rs` (a stage
 costing 24 ms at 2 and by its pixels below, on a 60 Hz display, settles at 1.5 within 4 s and changes at most
 3 more times in 60 s; one that fits at 1.5 under 60 % of the frame comes back after 5, 10 and 20 s and then
 stays at 1.5; no step up while a pointer is down; at 1.5 on a 2× device, every pixel outside the stage and
