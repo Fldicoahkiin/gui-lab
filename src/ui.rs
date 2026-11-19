@@ -6278,7 +6278,7 @@ impl<S, M: Clone> Ui<S, M> {
         // one, with the control's border running through).
         let look = self.look();
         let k = look.fx.marks_accent.clamp(0.0, 1.0);
-        let accent: [f32; 3] = std::array::from_fn(|i| look.theme.ink[i] + (look.theme.accent[i] - look.theme.ink[i]) * k);
+        let accent: [f32; 3] = std::array::from_fn(|i| look.theme.accent[i] * k + look.theme.ink[i] * (1.0 - k));
         let bar = |x: f32, y: f32, w: f32, h: f32| Instance {
             rect: [(x * s).round(), (y * s).round(), (w * s).round().max(1.0), (h * s).round().max(1.0)],
             paint: [0.0, 0.0, self.marks.alpha, SHAPE], clip, look: [accent[0], accent[1], accent[2], 0.0], extra: [0.0, 0.0, 0.0, -1e4], resp, ..Default::default()
