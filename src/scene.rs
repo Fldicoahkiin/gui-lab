@@ -54,7 +54,7 @@ impl Instance {
     }
     /// A blade's segment or head (draw.rs `Blade`): its shape is worked out on the GPU from the field map.
     pub fn blade(&self) -> bool { (self.paint[3] == SHAPE && self.extra[1] >= 0.5) || self.blade_head() }
-    fn blade_head(&self) -> bool { self.paint[3] == GLYPH && self.extra[1] < -0.5 }
+    pub(crate) fn blade_head(&self) -> bool { self.paint[3] == GLYPH && self.extra[1] < -0.5 }
     /// The axis-aligned box (x0, y0, x1, y1) its transformed `rect` covers, grown by `pad` (device px).
     pub fn bounds(&self, pad: f32) -> [f32; 4] {
         let r = self.rect;

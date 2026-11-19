@@ -11,6 +11,11 @@
 //! acts on the ground (a front, the lens, a burst, a wipe), and where the annotation layer changed.
 //! Whatever acts on every pixel (a new look, a commit's front, flying tiles, the reduced material pass,
 //! the material clock under a material that reads it) redraws everything.
+//!
+//! A scroll node whose content moved by whole device px with no trace showing is a `Move`: the renderer
+//! moves the last frame's images inside its viewport and draws only the band scrolled into view, a margin
+//! along the viewport's edges as wide as the material reads, and what changed besides. Instances are
+//! matched against the last frame's as the move carried them.
 use crate::scene::{Field, Instance, MESH, PICTURE};
 use crate::style::{Look, Material};
 use crate::text::SPREAD;
@@ -64,13 +69,75 @@ pub const MAX_BOXES: usize = 8;
 /// What a frame redraws, as several boxes: where stage 1's images can differ, and where the final frame
 /// can; each list is at most `MAX_BOXES`, and may overlap.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct Parts { pub stage1: Vec<Bx>, pub stage2: Vec<Bx> }
+pub struct Parts { pub stage1: Vec<Bx>, pub stage2: Vec<Bx>, pub moved: Option<Move> }
+
+/// A scroll node's viewport (x0, y0, x1, y1, whole device px) whose content moved by `d` device px with
+/// no trace showing: inside it, this frame's images are the last frame's moved by `d`, but for the band
+/// scrolled into view and the boxes of what changed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Move { pub rect: [u32; 4], pub d: [i32; 2] }
+impl Move {
+    fn bx(&self) -> Bx { self.rect.map(|v| v as f32) }
+    /// `b` moved with the content, where it stays inside the viewport.
+    pub fn carry(&self, b: Bx) -> Bx {
+        let v = self.bx();
+        meet([b[0] + self.d[0] as f32, b[1] + self.d[1] as f32, b[2] + self.d[0] as f32, b[3] + self.d[1] as f32], v)
+    }
+    /// Whether `i` is the content's: clipped by the viewport.
+    fn holds(&self, i: &Instance) -> bool {
+        let (v, c) = (self.bx(), i.clip);
+        !is_empty(c) && c[0] >= v[0] - 0.5 && c[1] >= v[1] - 0.5 && c[2] <= v[2] + 0.5 && c[3] <= v[3] + 0.5
+    }
+    /// `i` as the move carries it (unchanged when it is not the content's).
+    fn moved(&self, i: &Instance) -> Instance {
+        let mut i = *i;
+        if !self.holds(&i) { return i; }
+        let (dx, dy) = (self.d[0] as f32, self.d[1] as f32);
+        i.rect[0] += dx;
+        i.rect[1] += dy;
+        // The viewport's own edges stay where they are; a clip of the content's moves with it.
+        let v = self.bx();
+        let c = std::array::from_fn(|k| if (i.clip[k] - v[k]).abs() < 0.5 { i.clip[k] } else { i.clip[k] + self.d[k % 2] as f32 });
+        i.clip = meet(c, v);
+        if i.resp[1] > 1.5 { i.resp[2] += dx; i.resp[3] += dy; }
+        if i.blade_head() { i.xf[0] += dx; i.xf[1] += dy; }
+        i
+    }
+    /// The strips along the viewport's edges drawn again: the band scrolled into view grown by `r`, and
+    /// `r` along every other edge whose other side the material reads differently after the move (an edge
+    /// on the window's border along the motion reads the viewport's own pixels, clamped).
+    pub fn edges(&self, r: f32, size: (u32, u32)) -> [Bx; 4] {
+        let [x0, y0, x1, y1] = self.bx();
+        let (dx, dy) = (self.d[0] as f32, self.d[1] as f32);
+        let side = |border: bool, along: f32, toward: bool| if toward { along.abs() + r } else if border && along == 0.0 { 0.0 } else { r };
+        let (l, rt) = (side(x0 <= 0.0, dx, dx > 0.0), side(x1 >= size.0 as f32, dx, dx < 0.0));
+        let (t, b) = (side(y0 <= 0.0, dy, dy > 0.0), side(y1 >= size.1 as f32, dy, dy < 0.0));
+        [[x0, y0, x0 + l, y1], [x1 - rt, y0, x1, y1], [x0, y0, x1, y0 + t], [x0, y1 - b, x1, y1]]
+    }
+}
+
+/// The first scroll node whose content moved by whole device px with no trace showing in either frame,
+/// and less than its viewport, under a ground that is the same at every height.
+fn scroll_move(prev: &Inputs, cur: &Inputs) -> Option<(usize, Move)> {
+    if cur.look.theme.ground2 != cur.look.theme.ground { return None; }
+    let (w, h) = (cur.size.0 as f32, cur.size.1 as f32);
+    (0..8).find_map(|j| {
+        let (r, a, b) = (cur.field.scrolls[j], prev.field.scrollo[j], cur.field.scrollo[j]);
+        // The content moves against the offset.
+        let (dx, dy) = (a[0] - b[0], a[1] - b[1]);
+        let v = [r[0].max(0.0).ceil(), r[1].max(0.0).ceil(), r[2].min(w).floor(), r[3].min(h).floor()];
+        let ok = prev.field.scrolls[j] == r && a[2] <= 0.0 && b[2] <= 0.0 && (dx, dy) != (0.0, 0.0) && dx.abs() < v[2] - v[0] && dy.abs() < v[3] - v[1];
+        ok.then(|| (j, Move { rect: v.map(|x| x as u32), d: [dx as i32, dy as i32] }))
+    })
+}
 impl Parts {
     /// Both lists as one box each.
     pub fn region(&self) -> Region { Region::Boxes { stage1: self.stage1.iter().fold(EMPTY, |a, b| union(a, *b)), stage2: self.stage2.iter().fold(EMPTY, |a, b| union(a, *b)) } }
 }
 
-/// The boxes merged into at most `max`: those that overlap first, then the two whose union adds least.
+/// The boxes merged into at most `max`: those that overlap where their union adds nothing beyond them
+/// first (a long thin box crossing another is kept apart: drawing their overlap twice costs less), then
+/// the two whose union adds least.
 pub fn merge(mut v: Vec<Bx>, max: usize) -> Vec<Bx> {
     v.retain(|b| !is_empty(*b));
     let area = |b: Bx| (b[2] - b[0]).max(0.0) * (b[3] - b[1]).max(0.0);
@@ -86,7 +153,7 @@ pub fn merge(mut v: Vec<Bx>, max: usize) -> Vec<Bx> {
         while k < v.len() {
             let mut j = k + 1;
             while j < v.len() {
-                if !is_empty(meet(v[k], v[j])) { let b = v.swap_remove(j); v[k] = union(v[k], b); merged = true; } else { j += 1; }
+                if !is_empty(meet(v[k], v[j])) && area(union(v[k], v[j])) <= area(v[k]) + area(v[j]) { let b = v.swap_remove(j); v[k] = union(v[k], b); merged = true; } else { j += 1; }
             }
             k += 1;
         }
@@ -141,7 +208,8 @@ fn changed(a: &[Instance], b: &[Instance], pad: f32, out: &mut Vec<Bx>) {
 /// How far stage 2 reads around a pixel under material `m` (device px).
 pub fn reach(m: Material, look: &Look, s: f32) -> f32 {
     let p = |i: usize| look.numbers(m).0[i];
-    let base = 2.0 + 10.0 * s; // the dottr ground's cells read the nearness at their centre
+    // The dottr ground's cells read the nearness at their centre.
+    let base = 2.0 + if m == Material::Dottr { 10.0 * s } else { 0.0 };
     base + match m {
         Material::Plain | Material::Near | Material::Scribblr => 4.0 * s,
         Material::Dottr => 2.0 * look.fx.pitch * s + 40.0 * look.fx.glitch * s,
@@ -192,9 +260,23 @@ pub fn parts(prev: &Inputs, cur: &Inputs, scale: f32) -> Option<Parts> {
     let pad = SPREAD as f32 + look.fx.push * s * 1.5 + 2.0;
     let mut st1: Vec<Bx> = vec![];
     let mut st2: Vec<Bx> = vec![];
+    let mv = scroll_move(prev, cur);
+    // A box of the last frame, and where the move took what was in it.
+    let old = |b: Bx| [b, mv.map_or(EMPTY, |(_, m)| m.carry(b))];
     // Instances whose records differ, matched in order within each part of the list (between the cuts
     // where passes begin); with the cuts in another order, in place.
-    let (a, b) = (&prev.instances, &cur.instances);
+    // The last frame's instances as the move carried them: what is matched there the move draws.
+    let carried: Vec<Instance>;
+    let (a, b) = match mv {
+        Some((_, m)) => {
+            carried = prev.instances.iter().map(|i| m.moved(i)).collect();
+            // What is not the content's but lies over the viewport was moved with it: drawn again where
+            // it is and where it went.
+            for i in prev.instances.iter().filter(|i| !m.holds(i)) { let r = meet(i.bounds(pad), m.bx()); if !is_empty(r) { st1.extend([r, m.carry(r)]); } }
+            (&carried, &cur.instances)
+        }
+        None => (&prev.instances, &cur.instances),
+    };
     let what = |c: &[(u32, u32)]| c.iter().map(|x| x.1).collect::<Vec<_>>();
     if what(&prev.cuts) == what(&cur.cuts) {
         let bounds = |c: &[(u32, u32)], n: usize| { let mut v = vec![0]; v.extend(c.iter().map(|x| (x.0 as usize).min(n))); v.push(n); v };
@@ -214,16 +296,17 @@ pub fn parts(prev: &Inputs, cur: &Inputs, scale: f32) -> Option<Parts> {
     }
     // What changes because time passes: condensing, the fronts, the lens and the burst on 3D elements.
     let enter = look.fx.enter.max(1e-3);
-    let mut acting: Vec<Bx> = fronts(&prev.field, &prev.look, prev.now, s);
+    let mut acting: Vec<Bx> = fronts(&prev.field, &prev.look, prev.now, s).into_iter().flat_map(old).collect();
     acting.extend(fronts(&cur.field, look, cur.now, s));
-    let lens_moved = prev.field.pointer != cur.field.pointer;
+    // Content moving under the lens is changed by it as the lens moving over the content.
+    let lens_moved = prev.field.pointer != cur.field.pointer || mv.is_some();
     // The lens is a bell: past `LENS_REACH` radii it is too weak to change a cell's pitch or a dot.
     let reach_r = if mats.contains(&Material::Dottr) { LENS_REACH_DOT } else { LENS_REACH };
     let lens = |f: &Field| { let r = reach_r * look.fx.lens.max(0.0) * s; if f.pointer[2] > 0.0 && look.fx.lens >= 0.5 { [f.pointer[0] - r, f.pointer[1] - r, f.pointer[0] + r, f.pointer[1] + r] } else { EMPTY } };
-    let lenses = if lens_moved { union(lens(&prev.field), lens(&cur.field)) } else { EMPTY };
+    let lenses = if lens_moved { old(lens(&prev.field)).into_iter().fold(lens(&cur.field), union) } else { EMPTY };
     let burst = |f: &Field, t: f32| if f.burst_at(t) > 0.0 { f.burst } else { EMPTY };
     let bursts = if prev.field.burst != cur.field.burst || prev.field.burst_t != cur.field.burst_t || burst(&cur.field, cur.now) != EMPTY || burst(&prev.field, prev.now) != EMPTY {
-        union(burst(&prev.field, prev.now), burst(&cur.field, cur.now))
+        old(burst(&prev.field, prev.now)).into_iter().fold(burst(&cur.field, cur.now), union)
     } else { EMPTY };
     // Consecutive instances that change are one box.
     let mut acc = EMPTY;
@@ -243,7 +326,9 @@ pub fn parts(prev: &Inputs, cur: &Inputs, scale: f32) -> Option<Parts> {
     st1.push(acc);
     // The field map: where its bytes changed, every instance that reads it there (its looseness, and the
     // whole of it where its flow carries it), and the ground the materials draw from it.
-    let map_box = cur.map.changed(&prev.map).map(|b| meet([b[0] * s, b[1] * s, b[2] * s, b[3] * s], [0.0, 0.0, cur.size.0 as f32, cur.size.1 as f32]));
+    // With a move, everywhere the map is not at rest: the content moved through it.
+    let map_box = cur.map.changed(&prev.map).into_iter().chain(mv.and(prev.map.lit())).chain(mv.and(cur.map.lit())).map(|b| [b[0] * s, b[1] * s, b[2] * s, b[3] * s]).reduce(union)
+        .map(|b| { let b = old(b).into_iter().fold(b, union); meet(b, [0.0, 0.0, cur.size.0 as f32, cur.size.1 as f32]) });
     if let Some(mb) = map_box {
         let drift = look.map.drift * s + 1.0;
         for i in a.iter().chain(b) {
@@ -252,9 +337,16 @@ pub fn parts(prev: &Inputs, cur: &Inputs, scale: f32) -> Option<Parts> {
             if reads && !is_empty(meet(mb, i.bounds(pad + drift))) { st1.push(i.bounds(pad + drift)); }
         }
     }
+    let screen = [0.0, 0.0, cur.size.0 as f32, cur.size.1 as f32];
+    if let Some((_, m)) = mv {
+        // A loose picture with depth leans toward the pointer: those moved under it change.
+        let deep = |i: &Instance| i.paint[3] == PICTURE && look.pics.get(i.paint[1].max(0.0) as usize).is_some_and(|p| p.depth > 0.0) && m.holds(i);
+        if prev.field.pointer[2] > 0.0 || cur.field.pointer[2] > 0.0 { st1.extend(a.iter().chain(b).filter(|i| deep(i)).map(|i| i.bounds(pad))); }
+        // The band scrolled into view.
+        st1.extend(m.edges(0.0, cur.size));
+    }
     // Stage 2: what stage 1 changed, as far as the materials read around it, and the field on the ground.
     // Pictures' marks read their own cells (and the parallax its depth): only where a picture changed.
-    let screen = [0.0, 0.0, cur.size.0 as f32, cur.size.1 as f32];
     let st1: Vec<Bx> = merge(st1.into_iter().map(|x| meet(x, screen)).collect(), MAX_BOXES);
     let pic_changed = b.iter().chain(a.iter()).any(|i| i.paint[3] == PICTURE && st1.iter().any(|x| !is_empty(meet(i.bounds(pad), *x))));
     let rch = mats.iter().map(|m| reach(*m, look, s)).fold(0.0, f32::max)
@@ -267,26 +359,34 @@ pub fn parts(prev: &Inputs, cur: &Inputs, scale: f32) -> Option<Parts> {
     // The ground under the field map (dot's units lean up to half their pitch, glitch's rows slip).
     if let Some(mb) = map_box { st2.push(grow(mb, rch + 9.0 * s)); }
     // Scroll nodes whose content moved (the lattices follow it) or whose trace shows (DESIGN.md §1.8.3).
+    // A move draws its band and edges instead (above, and here as far as the material reads).
     for j in 0..8 {
-        for f in [&prev.field, &cur.field] {
+        if mv.is_some_and(|(k, _)| k == j) { continue; }
+        for (n, f) in [&prev.field, &cur.field].into_iter().enumerate() {
             if prev.field.scrolls[j] != cur.field.scrolls[j] || prev.field.scrollo[j] != cur.field.scrollo[j] || f.scrollo[j][2] > 0.0 {
-                let r = f.scrolls[j];
-                if r[2] > r[0] { st2.push(grow(r, rch + look.scroll.trail * s + look.scroll.slip * s)); }
+                let r = grow(f.scrolls[j], rch + look.scroll.trail * s + look.scroll.slip * s);
+                if f.scrolls[j][2] > f.scrolls[j][0] { st2.extend(if n == 0 { old(r) } else { [r, EMPTY] }); }
             }
         }
     }
-    if prev.field.wipe != cur.field.wipe || prev.field.wipe_rect != cur.field.wipe_rect {
-        for f in [&prev.field, &cur.field] { if f.wipe[1] > 0.0 { st2.push(grow(f.wipe_rect, rch)); } }
+    if let Some((_, m)) = mv { st2.extend(m.edges(rch, cur.size)); }
+    if prev.field.wipe != cur.field.wipe || prev.field.wipe_rect != cur.field.wipe_rect || (mv.is_some() && cur.field.wipe[1] > 0.0) {
+        if prev.field.wipe[1] > 0.0 { st2.extend(old(grow(prev.field.wipe_rect, rch))); }
+        if cur.field.wipe[1] > 0.0 { st2.push(grow(cur.field.wipe_rect, rch)); }
     }
     // The annotation layer is drawn over the material in the same pass: the marks that are new or gone
     // (as a set, so a label that grows by a glyph does not move every mark after it in the list).
-    if prev.annot != cur.annot {
+    // With a move, the last frame's marks as it carried them; those it moved that are not the content's
+    // are drawn again where they were and where they went.
+    let pa: Vec<Instance> = match mv { Some((_, m)) => prev.annot.iter().map(|i| m.moved(i)).collect(), None => prev.annot.clone() };
+    if let Some((_, m)) = mv { for i in prev.annot.iter().filter(|i| !m.holds(i)) { let r = meet(grow(rect(i.rect), 2.0), m.bx()); if !is_empty(r) { st2.extend([r, m.carry(r)]); } } }
+    if pa != cur.annot {
         let key = |i: &Instance| -> Vec<u32> { i.rect.iter().chain(&i.uv).chain(&i.paint).chain(&i.clip).chain(&i.extra).chain(&i.look).map(|v| v.to_bits()).collect() };
-        let had: std::collections::HashSet<Vec<u32>> = prev.annot.iter().map(key).collect();
+        let had: std::collections::HashSet<Vec<u32>> = pa.iter().map(key).collect();
         let has: std::collections::HashSet<Vec<u32>> = cur.annot.iter().map(key).collect();
-        for i in prev.annot.iter().filter(|i| !has.contains(&key(i))).chain(cur.annot.iter().filter(|i| !had.contains(&key(i)))) { st2.push(grow(rect(i.rect), 2.0)); }
+        for i in pa.iter().filter(|i| !has.contains(&key(i))).chain(cur.annot.iter().filter(|i| !had.contains(&key(i)))) { st2.push(grow(rect(i.rect), 2.0)); }
     }
-    Some(Parts { stage1: st1, stage2: merge(st2.into_iter().map(|x| meet(x, screen)).collect(), MAX_BOXES) })
+    Some(Parts { stage1: st1, stage2: merge(st2.into_iter().map(|x| meet(x, screen)).collect(), MAX_BOXES), moved: mv.map(|(_, m)| m) })
 }
 
 /// A box as whole device pixels inside the frame (for a scissor), or `None` when it is empty.

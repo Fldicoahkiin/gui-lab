@@ -187,11 +187,18 @@ impl Snapshot {
         if (self.cols, self.rows, self.cell) != (other.cols, other.rows, other.cell) || self.bytes.len() != other.bytes.len() {
             return Some(EVERYWHERE);
         }
+        self.nodes(|k| self.bytes[k * 4..k * 4 + 4] != other.bytes[k * 4..k * 4 + 4])
+    }
+    /// Where any node is not at rest (logical px, grown by a cell), or `None` when the map is at rest.
+    pub fn lit(&self) -> Option<[f32; 4]> {
+        if !self.nonzero { return None; }
+        self.nodes(|k| { let p = &self.bytes[k * 4..k * 4 + 3]; p != [0, 128, 128] })
+    }
+    /// The box (logical px, grown by a cell) of the nodes where `f` holds.
+    fn nodes(&self, f: impl Fn(usize) -> bool) -> Option<[f32; 4]> {
         let mut b = [usize::MAX, usize::MAX, 0, 0];
         let mut any = false;
-        for (k, (x, y)) in self.bytes.chunks_exact(4).zip(other.bytes.chunks_exact(4)).enumerate() {
-            if x != y { let (i, j) = (k % self.cols, k / self.cols); b = [b[0].min(i), b[1].min(j), b[2].max(i), b[3].max(j)]; any = true; }
-        }
+        for k in (0..self.bytes.len() / 4).filter(|&k| f(k)) { let (i, j) = (k % self.cols, k / self.cols); b = [b[0].min(i), b[1].min(j), b[2].max(i), b[3].max(j)]; any = true; }
         any.then(|| { let c = self.cell; [(b[0] as f32 - 1.0) * c, (b[1] as f32 - 1.0) * c, (b[2] as f32 + 1.0) * c, (b[3] as f32 + 1.0) * c] })
     }
 }

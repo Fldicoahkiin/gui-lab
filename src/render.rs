@@ -268,6 +268,11 @@ pub struct Renderer {
     /// target; what the last frame was drawn from; zeroing a box of an image; the copy.
     pub partial: bool,
     frame_view: wgpu::TextureView,
+    /// The second ink, near and kept frame: a frame whose scroll node moved copies the last ones into
+    /// these, moved, and the two sets change places (`dirty::Move`).
+    alt: [wgpu::TextureView; 3],
+    /// What the last frame cost (`Cost`).
+    pub cost: Cost,
     prev: Option<crate::dirty::Inputs>,
     /// The lists of the frame before `prev`, kept to be filled again (no allocation per frame).
     spare: (Vec<Instance>, Vec<Instance>),
@@ -320,6 +325,13 @@ pub struct Renderer {
     /// The beat clock off the grid this frame (`Ui::beat_time`): what condenses goes on between steps.
     t_cont: f32,
 }
+
+/// What the last frame asked of the GPU, counted from the passes it recorded (DESIGN.md §1.19): the
+/// pixels the material shaded (fragments of the material pass, the reduced pass's included), the pixels
+/// of stage 1's boxes, the pixels the images were moved by a scroll (`dirty::Move`, per image), and
+/// the bytes uploaded to textures.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Cost { pub material: u64, pub stage1: u64, pub moved: u64, pub upload: u64 }
 
 /// The mesh pass's uniforms (see `mesh.wgsl`).
 #[repr(C)]
@@ -489,7 +501,7 @@ impl Renderer {
             pictures: HashMap::new(), picture_views: HashMap::new(), hold_group: None, instances, capacity, pipes, annots, annot_capacity: 256, up_pipe: None, shader, pl,
             ink: blank.clone(), lo: blank.clone(), lo_key: (0, 0, 0), material_up: material.clone(), auto: Default::default(), always_lo: false, stage_u: Box::new(([[0.0; 4]; STAGES], [[0.0; 4]; STAGES], [0.0; 4])), stage_q: 1.0, soft_q: 1.0, govern: true, no_map: false,
             near: blank, material_first: material.clone(), material, size: (0, 0), tiles, mesh, sim_rows: 0,
-            region: crate::dirty::Region::All, parts: None, partial: true, frame_view: blank_view.clone(), prev: None, spare: (vec![], vec![]), zero, blit, group: None, group_pipe, had_groups: false, plates: Default::default(), plate_pipes, plate_now: 0.0, plate_fade: [[0.0; 4]; 4], had_plates: 0, plate_inked: [false; 4], was_ageing: false, plate_serial: 0, reduced: false, fade_s: 0.15, sbox: [0.0; 4], own: [[0.0; 4]; crate::draw::OWN_COLOURS], post: None, blit_group: blank_group, warm: None, condense: false, last_region: None, tr: [[0.0; 4]; 9], boxes: [[0.0; 4]; 16], tr_loose: 0.0, t_cont: 0.0,
+            region: crate::dirty::Region::All, parts: None, partial: true, frame_view: blank_view.clone(), alt: [blank_view.clone(), blank_view.clone(), blank_view.clone()], cost: Cost::default(), prev: None, spare: (vec![], vec![]), zero, blit, group: None, group_pipe, had_groups: false, plates: Default::default(), plate_pipes, plate_now: 0.0, plate_fade: [[0.0; 4]; 4], had_plates: 0, plate_inked: [false; 4], was_ageing: false, plate_serial: 0, reduced: false, fade_s: 0.15, sbox: [0.0; 4], own: [[0.0; 4]; crate::draw::OWN_COLOURS], post: None, blit_group: blank_group, warm: None, condense: false, last_region: None, tr: [[0.0; 4]; 9], boxes: [[0.0; 4]; 16], tr_loose: 0.0, t_cont: 0.0,
         };
         r.set_picture(u32::MAX, 1, 1, &[0, 0, 0, 255]);
         r.resize(w, h);
@@ -753,11 +765,12 @@ impl Renderer {
         let (w, h) = (w.max(1), h.max(1));
         if (w, h) == self.size { return; }
         self.size = (w, h);
-        self.ink = Self::target(&self.device, w, h, INK);
+        let moved = wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST;
+        self.ink = Self::target_with(&self.device, w, h, INK, moved);
         self.group = None;
         // A new window size empties every plate.
         self.plates = Default::default();
-        self.near = Self::target_with(&self.device, w, h, NEAR, wgpu::TextureUsages::COPY_SRC);
+        self.near = Self::target_with(&self.device, w, h, NEAR, moved);
         self.hold = Self::target(&self.device, w, h, HOLD);
         // Stage 1 reads the hold image (a shape scribblr fades keeps its fill where text holds it).
         for (id, view) in &self.picture_views {
@@ -771,9 +784,10 @@ impl Renderer {
         self.lo_key = (0, 0, 0);
         let frame = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("frame"), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,
-            dimension: wgpu::TextureDimension::D2, format: self.out_format, usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC, view_formats: &[],
+            dimension: wgpu::TextureDimension::D2, format: self.out_format, usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT | moved, view_formats: &[],
         });
         self.frame_view = frame.create_view(&Default::default());
+        self.alt = [Self::target_with(&self.device, w, h, INK, moved), Self::target_with(&self.device, w, h, NEAR, moved), Self::target_with(&self.device, w, h, self.out_format, moved)];
         self.blit_group = Self::bind(&self.device, &self.layout, &self.ubuf, &self.sampler, [&self.frame_view, &self.blank, &self.marks_view, &self.palette_view, &self.chars_view, &self.blank, &self.blank, &self.fmap_view, &self.blank]);
         self.prev = None;
         // The old frame is gone with the old size.
@@ -1073,14 +1087,17 @@ impl Renderer {
         if ui.morph_run().is_some() { self.ensure_tiles(); }
         if look.post.active() { self.ensure_post(); }
         let text = ui.text_mut();
-        if text.dirty {
+        // Only the box of the atlas that new glyphs went into.
+        self.cost = Cost::default();
+        let [x0, y0, x1, y1] = std::mem::take(&mut text.dirty);
+        if x1 > x0 && y1 > y0 {
             self.queue.write_texture(
-                wgpu::TexelCopyTextureInfo { texture: &self.atlas, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                wgpu::TexelCopyTextureInfo { texture: &self.atlas, mip_level: 0, origin: wgpu::Origin3d { x: x0, y: y0, z: 0 }, aspect: wgpu::TextureAspect::All },
                 &text.pixels,
-                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(ATLAS * 2), rows_per_image: Some(ATLAS) },
-                wgpu::Extent3d { width: ATLAS, height: ATLAS, depth_or_array_layers: 1 },
+                wgpu::TexelCopyBufferLayout { offset: ((y0 * ATLAS + x0) * 2) as u64, bytes_per_row: Some(ATLAS * 2), rows_per_image: None },
+                wgpu::Extent3d { width: x1 - x0, height: y1 - y0, depth_or_array_layers: 1 },
             );
-            text.dirty = false;
+            self.cost.upload += ((x1 - x0) * (y1 - y0) * 2) as u64;
         }
         // What falls on the beat is drawn at the start of its step; condensing goes on between (`t_cont`).
         let (scale, now, mt) = (ui.scale(), ui.beat_grid(), [ui.material_clock(), ui.ground_clock()]);
@@ -1225,6 +1242,7 @@ impl Renderer {
                 wgpu::Extent3d { width: snap.cols as u32, height: snap.rows as u32, depth_or_array_layers: 1 },
             );
             self.fmap_seen = Some(snap.bytes.clone());
+            self.cost.upload += snap.bytes.len() as u64;
         }
         self.fmap_u = if snap.nonzero && !self.no_map { [snap.cell * scale, look.map.drift * scale, snap.cols as f32, snap.rows as f32] } else { [0.0; 4] };
         // What changed since the last frame (DESIGN.md §1.19).
@@ -1323,6 +1341,34 @@ impl Renderer {
     }
     /// The hold image for this frame: cleared, then each instance of text to read that sits on others'
     /// ink drawn into it (always whole: it is small, and a partial frame reads it anywhere).
+    /// A scroll node's content moved (`dirty::Move`): ink, near and the kept frame are copied into the
+    /// second set, the viewport moved by `d` and the rest in place, and the sets change places. The band
+    /// scrolled into view is left for the frame's boxes to draw.
+    fn carry(&mut self, enc: &mut wgpu::CommandEncoder, m: crate::dirty::Move) {
+        let ((w, h), [x0, y0, x1, y1], [dx, dy]) = (self.size, m.rect, m.d);
+        // Around the viewport, in place; inside it, what stays in it, moved.
+        let (sx, sy) = ((x0 as i32 - dx.min(0)) as u32, (y0 as i32 - dy.min(0)) as u32);
+        let (mw, mh) = (x1 - x0 - dx.unsigned_abs(), y1 - y0 - dy.unsigned_abs());
+        let copies = [([0, 0], [0, 0], [w, y0]), ([0, y1], [0, y1], [w, h - y1]), ([0, y0], [0, y0], [x0, y1 - y0]), ([x1, y0], [x1, y0], [w - x1, y1 - y0]),
+            ([sx, sy], [(sx as i32 + dx) as u32, (sy as i32 + dy) as u32], [mw, mh])];
+        fn at(t: &wgpu::Texture, [x, y]: [u32; 2]) -> wgpu::TexelCopyTextureInfo<'_> { wgpu::TexelCopyTextureInfo { texture: t, mip_level: 0, origin: wgpu::Origin3d { x, y, z: 0 }, aspect: wgpu::TextureAspect::All } }
+        for (k, from) in [self.ink.clone(), self.near.clone(), self.frame_view.clone()].into_iter().enumerate() {
+            for (a, b, [cw, ch]) in copies.iter().copied().filter(|c| c.2[0] > 0 && c.2[1] > 0) {
+                enc.copy_texture_to_texture(at(from.texture(), a), at(self.alt[k].texture(), b), wgpu::Extent3d { width: cw, height: ch, depth_or_array_layers: 1 });
+            }
+        }
+        self.cost.moved = (mw * mh) as u64;
+        std::mem::swap(&mut self.ink, &mut self.alt[0]);
+        std::mem::swap(&mut self.near, &mut self.alt[1]);
+        std::mem::swap(&mut self.frame_view, &mut self.alt[2]);
+        let t = |v: &wgpu::TextureView| v.clone();
+        let (ink, near, fr) = (t(&self.ink), t(&self.near), t(&self.frame_view));
+        let b = |x: [&wgpu::TextureView; 9]| Self::bind(&self.device, &self.layout, &self.ubuf, &self.sampler, x);
+        self.material = b([&ink, &near, &self.marks_view, &self.palette_view, &self.chars_view, &self.before, &self.blank, &self.fmap_view, &self.hold]);
+        self.material_first = b([&ink, &near, &self.marks_view, &self.palette_view, &self.chars_view, &self.blank, &self.blank, &self.fmap_view, &self.hold]);
+        self.material_up = b([&ink, &near, &self.marks_view, &self.palette_view, &self.chars_view, &self.before, &self.lo, &self.fmap_view, &self.hold]);
+        self.blit_group = b([&fr, &self.blank, &self.marks_view, &self.palette_view, &self.chars_view, &self.blank, &self.blank, &self.fmap_view, &self.blank]);
+    }
     fn hold_pass(&self, enc: &mut wgpu::CommandEncoder) {
         let mut pass = clear(enc, &self.hold, wgpu::Color::TRANSPARENT);
         if self.hold_n == 0 { return; }
@@ -1533,6 +1579,8 @@ impl Renderer {
             let bind = Self::bind(&self.device, &self.layout, &self.ubuf, &self.sampler, [&view, &self.blank, &self.marks_view, &self.palette_view, &self.chars_view, &self.blank, &self.blank, &self.fmap_view, &self.blank]);
             self.group = Some((view, bind));
         }
+        // A scroll node's content moved: the last images, moved, are this frame's but for its boxes.
+        if let (true, Some(m)) = (with_before, self.parts.as_ref().and_then(|p| p.moved)) { self.carry(&mut enc, m); }
         let (ink, near) = (self.ink.clone(), self.near.clone());
         // The main frame is drawn into the kept frame, only within what changed, then copied out.
         let (w, h) = self.size;
@@ -1552,6 +1600,13 @@ impl Renderer {
         self.plates_ready(&mut enc, scene);
         self.plates_laid.set(0);
         self.hold_pass(&mut enc);
+        let px = |v: &[[u32; 4]]| v.iter().map(|b| (b[2] * b[3]) as u64).sum::<u64>();
+        let whole = (w * h) as u64;
+        if with_before {
+            let (s1, s2) = boxes.as_ref().map_or((whole, whole), |(a, b)| (px(a), px(b)));
+            self.cost.stage1 = s1;
+            self.cost.material = s2 + lo.map_or(0, |q| (q[2] * q[3]) as u64);
+        }
         match &boxes {
             None => self.stage1(&mut enc, scene, &ink, &near, tiles, None),
             Some((s1, _)) => for b in s1 { self.stage1(&mut enc, scene, &ink, &near, tiles, Some(*b)); },
