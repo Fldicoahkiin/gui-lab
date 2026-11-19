@@ -807,8 +807,9 @@ impl Text {
         self.emit_pens(p, origin, proto, scale, rows, |i, g, _| out(i, g))
     }
     /// The same, with where each glyph's pen is and its line (device px): `[x, baseline, line's start x,
-    /// line's width]` (a face arriving sweeps along its lines by them).
-    pub fn emit_pens(&mut self, p: Para<'_>, origin: (f32, f32), proto: Instance, scale: f32, rows: Option<(f32, f32)>, mut out: impl FnMut(Instance, u32, [f32; 4])) {
+    /// line's width, advance]` (a face arriving sweeps along its lines by them; a pose is told the pen).
+    /// The pen's x is as laid out, before the glyph's image is put on a quarter pixel.
+    pub fn emit_pens(&mut self, p: Para<'_>, origin: (f32, f32), proto: Instance, scale: f32, rows: Option<(f32, f32)>, mut out: impl FnMut(Instance, u32, [f32; 5])) {
         let l = self.layout(p.s, p.face, p.size, p.line, Some(p.width), p.setting());
         let para_pixel = self.is_pixel(p.face);
         // A pixel face starts on a whole device pixel so its pixels land on the screen's.
@@ -864,7 +865,7 @@ impl Text {
                     inst.uv = [sl.x as f32 / a, sl.y as f32 / a, (sl.x + sl.w) as f32 / a, (sl.y + sl.h) as f32 / a];
                     inst.paint[3] = GLYPH;
                     inst.extra[1] = p.print;
-                    out(inst, g.id, [gx, gy, lx, lw]);
+                    out(inst, g.id, [gx, gy, lx, lw, g.advance * scale]);
                 }
             }
         }

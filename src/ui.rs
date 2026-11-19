@@ -573,6 +573,8 @@ pub struct Ui<S, M> {
     stage_add_ms: f32,
     /// Where the page's faces for glyph outlines go when one comes (`Ui::on_faces`).
     faces_to: Option<fn(&mut S, crate::pair::Faces)>,
+    /// What the page's root resolves the roles to (its `El::fonts`), shared with the faces handed out.
+    root_roles: std::rc::Rc<std::cell::Cell<[u8; 3]>>,
     /// The stages' device scale and the frames it goes by (DESIGN.md §1.35), the scale pinned by the look's
     /// quality (`Ui::stage_scale`), and the last frame it was fed.
     scaler: crate::perf::StageScale,
@@ -1121,7 +1123,7 @@ impl<S, M: Clone> Ui<S, M> {
             state, view, update, text: Text::new(faces), size: (0.0, 0.0), scale, clock: 0.0, wall: 0.0, bclock: crate::beat::Clock::default(), sent: vec![], sets: vec![], nodes: vec![], scene: Scene::default(),
             owners: vec![], page_len: 0, field: Field::default(), scroll: HashMap::new(), births: HashMap::new(), ramp: None, text_births: HashMap::new(),
             hover: None, focus: None, after_focus: None, fit_short: vec![], grain_at: None, clears: HashMap::new(), clearing: false, clear_many: vec![], flow_own: vec![], fit_k: HashMap::new(), fit_last: None, pressed: None, capture: None, modal_at: None, modal_key: None, return_focus: None, split: None, splits: 0,
-            keyboard: false, marks: Marks::default(), sized: None, commands: None, unseen: vec![], stages: vec![], stage_input: (false, false), stage_add_ms: 0.0, faces_to: None, scaler: Default::default(), stage_pin: None, scaler_fed: f64::NEG_INFINITY, governed: false, stepped: None, stage_of: None, stale_stages: vec![], restaging: None, base: vec![], tags: vec![], roles: vec![],
+            keyboard: false, marks: Marks::default(), sized: None, commands: None, unseen: vec![], stages: vec![], stage_input: (false, false), stage_add_ms: 0.0, faces_to: None, root_roles: Default::default(), scaler: Default::default(), stage_pin: None, scaler_fed: f64::NEG_INFINITY, governed: false, stepped: None, stage_of: None, stale_stages: vec![], restaging: None, base: vec![], tags: vec![], roles: vec![],
             run: None, painted_phase: 0, flows: HashMap::new(), ghosts: vec![], grows: vec![], ground_seen: None, ground_hold: None, body_len: 0, animating: false, lifted: HashMap::new(),
             gaze_of: None, gaze_seen: HashMap::new(), annots: vec![], focused: None, focus_moved: false, readout: gaze::Readout::default(), hovered: None, pointer_of: None, scripted: false, ticked: None, warm: None, warmed: None, owed: false, soft_shown: false, ambient: 60.0, input_t: -1e9, frame_t: -1e9, tick_gap: 1.0 / 60.0, unused_key: None, shortcut: None, scrolled_of: None, released: None, input: None,
             dirty: true, look_of: None, locale_of: None, timing: Timing::default(), wake_of: None, latest_birth: f32::NEG_INFINITY, gaze_until: f32::NEG_INFINITY,
@@ -1216,7 +1218,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// The page's faces for glyph outlines (`pair::Faces`): what the state keeps to measure between
     /// letters (`pair::gap`, `pair::spaced`) without the text system. A face added later (`Ui::add_face`)
     /// is in the `Faces` asked for after it.
-    pub fn faces(&self) -> crate::pair::Faces { crate::pair::Faces::new(self.text.face_bytes()) }
+    pub fn faces(&self) -> crate::pair::Faces { crate::pair::Faces::new(self.text.face_bytes(), self.root_roles.clone()) }
     /// `f` gets the page's faces for glyph outlines (`Ui::faces`) now, and again each time a face comes
     /// (`Ui::add_face`): for a state that keeps them.
     pub fn on_faces(mut self, f: fn(&mut S, crate::pair::Faces)) -> Self { self.faces_to = Some(f); let fs = self.faces(); f(&mut self.state, fs); self }
@@ -3165,6 +3167,7 @@ impl<S, M: Clone> Ui<S, M> {
         // was last laid out; the window's height the first time).
         let mut vx = VirtCtx { scroll: &self.scroll, views: &self.virt_views, window: self.size.1, made: HashMap::new() };
         let mut built = Built::default();
+        self.root_roles.set(el.props.fonts.unwrap_or([0; 3]));
         flatten(el, None, "root".into(), [0; 3], (false, false), None, Inherit { roles: self.timing.roles, ..Inherit::default() }, &mut vx, &mut built, &mut nodes);
         self.virt_made = vx.made;
         self.stack_margins(&nodes, &mut built);
@@ -3947,8 +3950,10 @@ impl<S, M: Clone> Ui<S, M> {
                     let window = Rect::new(0.0, 0.0, self.size.0, self.size.1);
                     let arriving = self.arriving.get(&para.face).copied().filter(|_| { let r = n.rect.intersect(&n.clip).intersect(&window); r.w > 0.0 && r.h > 0.0 });
                     let mut swept: Vec<f32> = vec![];
+                    // Each glyph's pen as laid out (device px: x, baseline, advance), for a pose.
+                    let mut pens: Vec<[f32; 3]> = vec![];
                     match arriving {
-                        None => self.text.emit_in(para, n.origin(), proto, s, rows, |mut inst, glyph| { inst.extra[0] = wpx; glyphs.push((inst, glyph)); }),
+                        None => self.text.emit_pens(para, n.origin(), proto, s, rows, |mut inst, glyph, p| { inst.extra[0] = wpx; glyphs.push((inst, glyph)); pens.push([p[0], p[1], p[4]]); }),
                         Some((t0, d)) => {
                             self.sweeping = true;
                             self.swept_nodes.push(i);
@@ -3975,7 +3980,9 @@ impl<S, M: Clone> Ui<S, M> {
                         let count = posed.len();
                         for g in posed.iter_mut() {
                             let (x, y) = g.at;
-                            let p = f(crate::el::GlyphAt { i: g.seq, n: count, x, y, w: bw, h: bh, span });
+                            // While a face arrives (its glyphs swept from the stand-in's) the pen is the centre.
+                            let [px, py, adv] = pens.get(g.seq).copied().filter(|_| pens.len() == count).map_or([x, y, 0.0], |p| [p[0] / s - ox, p[1] / s - oy, p[2] / s]);
+                            let p = f(crate::el::GlyphAt { i: g.seq, n: count, x, y, w: bw, h: bh, span, pen: px, base: py, advance: adv });
                             let gi = &mut g.inst;
                             gi.rect[0] += p.dx * s;
                             gi.rect[1] += p.dy * s;
@@ -6955,10 +6962,10 @@ fn ident(key: &str, part: u32, glyph: u32) -> u64 {
 /// With less motion both are drawn where the new ones are, the new fading in over `REDUCED_FADE`.
 #[allow(clippy::too_many_arguments)]
 fn sweep_glyphs(text: &mut Text, para: Para<'_>, origin: (f32, f32), proto: Instance, s: f32, rows: Option<(f32, f32)>, (at, d): (f32, crate::text::FaceDecl), reduced: bool, cap: f32) -> Vec<(Instance, u32, f32)> {
-    let mut new: Vec<(Instance, u32, [f32; 4])> = vec![];
+    let mut new: Vec<(Instance, u32, [f32; 5])> = vec![];
     text.emit_pens(para, origin, proto, s, rows, |i, g, p| new.push((i, g, p)));
     let stand = Para { face: d.stand_in, size: para.size * d.scale, width: f32::INFINITY, around: None, ..para };
-    let mut old: Vec<(Instance, u32, [f32; 4])> = vec![];
+    let mut old: Vec<(Instance, u32, [f32; 5])> = vec![];
     text.emit_pens(stand, origin, proto, s, None, |i, g, p| old.push((i, g, p)));
     let pixel = text.is_pixel(d.stand_in);
     // The stand-in's glyph for the new glyph `k` (in text order), moved to where that one is.

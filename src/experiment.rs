@@ -19,6 +19,9 @@ pub trait Experiment: Default + Clone + 'static {
     fn step(&mut self, now: f32) -> bool;
     /// Whether it is still settling by itself (a spring, a coast): frames until it rests.
     fn moving(&self) -> bool;
+    /// The page's faces for glyph outlines (`Ui::faces`, `pair`), when the cell is made and each time a
+    /// face comes. Nothing by default.
+    fn faces(&mut self, _faces: crate::pair::Faces) {}
 }
 /// How long after the last input a cell's idle motion runs when motion is reduced (then the page comes
 /// to rest); with motion allowed, a seen cell runs on.
@@ -143,6 +146,7 @@ pub fn ui<E: Experiment>(faces: Vec<crate::text::Face>, w: u32, h: u32, scale: f
     fn update<E: Experiment>(s: &mut Solo<E>, m: E::Msg) { let now = s.now; s.until = now + IDLE_S; s.e.update(m, now); }
     crate::ui::Ui::new(Solo::<E> { e: E::default(), now: 0.0, until: IDLE_S, live: true }, view::<E>, update::<E>, faces, w, h, scale)
         .on_look(|_| crate::style::Look { theme: crate::style::LAB, material: crate::style::Material::Plain, ..crate::style::Look::default() })
+        .on_faces(|s, f| s.e.faces(f))
         .on_tick(|s, t| { s.now = t; (s.live || t < s.until || s.e.moving()) && s.e.step(t) })
         .on_wake(|s, t| (s.live || t < s.until || s.e.moving()).then_some(t))
 }

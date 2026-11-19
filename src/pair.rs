@@ -2,7 +2,7 @@
 //! between two letters needs, outside any layout. `Ui::faces` hands the state a `Faces` (the page's faces,
 //! nothing else of the text system); a `Glyph` is one character's ink at a size, row by row, and
 //! `gap`, `area`, `spaced` and `spaced_area` measure or place a pair.
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -15,7 +15,7 @@ use crate::el::Font;
 /// The page's faces, for glyph outlines (`Ui::faces`): cheap to clone, kept in the state.
 #[derive(Clone)]
 pub struct Faces(Rc<Inner>);
-struct Inner { faces: Vec<(Arc<Vec<u8>>, bool)>, scaler: RefCell<ScaleContext>, made: RefCell<Made> }
+struct Inner { faces: Vec<(Arc<Vec<u8>>, bool)>, roles: Rc<Cell<[u8; 3]>>, scaler: RefCell<ScaleContext>, made: RefCell<Made> }
 /// The glyphs made so far, by face, character and size bits.
 type Made = HashMap<(u8, char, u32), Option<Rc<Glyph>>>;
 impl std::fmt::Debug for Faces {
@@ -24,12 +24,15 @@ impl std::fmt::Debug for Faces {
 
 impl Faces {
     /// From each face's bytes, and whether it is a pixel face (cut at half coverage, as on the page).
-    pub(crate) fn new(faces: Vec<(Arc<Vec<u8>>, bool)>) -> Self { Self(Rc::new(Inner { faces, scaler: RefCell::new(ScaleContext::new()), made: RefCell::new(HashMap::new()) })) }
-    /// `ch` in `font` at `px` px (logical px for a page's text; a role resolves as at the root of a view
-    /// with no `El::fonts`, so name the face with `Font::Face` when the page sets its own). Made once for
-    /// each face, character and size. `None` for a face it does not have.
+    /// `roles`: what the page's root resolves the roles to (its `El::fonts`), shared with the `Ui`.
+    pub(crate) fn new(faces: Vec<(Arc<Vec<u8>>, bool)>, roles: Rc<Cell<[u8; 3]>>) -> Self { Self(Rc::new(Inner { faces, roles, scaler: RefCell::new(ScaleContext::new()), made: RefCell::new(HashMap::new()) })) }
+    /// The face `font` is drawn in here: a role as the page's root resolves it.
+    pub fn face_of(&self, font: Font) -> u8 { font.resolve(self.0.roles.get()) }
+    /// `ch` in `font` at `px` px (logical px for a page's text; a role resolves as the page's root
+    /// resolves it, by its `El::fonts`; inside a subtree with fonts of its own, name the face with
+    /// `Font::Face`). Made once for each face, character and size. `None` for a face it does not have.
     pub fn glyph(&self, font: Font, ch: char, px: f32) -> Option<Rc<Glyph>> {
-        let face = font.resolve([0; 3]);
+        let face = self.face_of(font);
         let key = (face, ch, px.to_bits());
         if let Some(g) = self.0.made.borrow().get(&key) { return g.clone(); }
         let g = self.make(face, ch, px).map(Rc::new);

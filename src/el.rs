@@ -262,8 +262,10 @@ impl Default for Cells {
 
 /// Where one laid-out glyph is, for a pose: its number in the text and how many there are, its centre
 /// in the element's content box (logical px), that box's size, and the box (x0, y0, x1, y1) all the
-/// glyphs' centres span (so a pose can map the text block onto a path or a sphere).
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// glyphs' centres span (so a pose can map the text block onto a path or a sphere), and its pen as laid
+/// out: where its origin is on the baseline and how far it advances, kerning and all (a pose that moves a
+/// glyph by `target − pen` puts its pen at `target` exactly).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct GlyphAt {
     /// Its number in the text, from 0.
     pub i: usize,
@@ -279,6 +281,12 @@ pub struct GlyphAt {
     pub h: f32,
     /// The box the glyphs' centres span: x0, y0, x1, y1.
     pub span: [f32; 4],
+    /// Its pen's x as laid out (not put on a pixel), in the content box.
+    pub pen: f32,
+    /// Its baseline's y, as drawn (on a whole device pixel), in the content box.
+    pub base: f32,
+    /// Its advance, logical px.
+    pub advance: f32,
 }
 /// How one glyph is drawn instead of where the layout put it: moved by (dx, dy) logical px, turned by
 /// `angle` (radians, clockwise), scaled by `sx`, `sy` about its centre; its tone and alpha multiplied,
@@ -1355,7 +1363,7 @@ impl Props {
             // told where that is at 1, and its moves and depth come back times `k`.
             if let Some(f) = pose.take() {
                 *pose = Some(Rc::new(move |g: GlyphAt| {
-                    let at = GlyphAt { x: g.x / k, y: g.y / k, w: g.w / k, h: g.h / k, span: g.span.map(|v| v / k), ..g };
+                    let at = GlyphAt { x: g.x / k, y: g.y / k, w: g.w / k, h: g.h / k, span: g.span.map(|v| v / k), pen: g.pen / k, base: g.base / k, advance: g.advance / k, ..g };
                     let p = f(at);
                     Pose { dx: p.dx * k, dy: p.dy * k, z: p.z * k, ..p }
                 }));

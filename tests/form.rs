@@ -53,7 +53,7 @@ fn a_turning_sphere_shows_only_its_front_and_thins_its_rim() {
         for g in &log {
             let (_, laid, _) = ui.glyphs().laid.iter().find(|(n, ..)| *n == node).expect("laid");
             let span = laid.iter().fold([f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY], |b, &(x, y)| [b[0].min(x), b[1].min(y), b[2].max(x), b[3].max(y)]);
-            let p = form.pose_of(GlyphAt { i: g.i, n: laid.len(), x: g.at.0, y: g.at.1, w: form3d::SIZE, h: form3d::SIZE, span });
+            let p = form.pose_of(GlyphAt { i: g.i, n: laid.len(), x: g.at.0, y: g.at.1, w: form3d::SIZE, h: form3d::SIZE, span, ..Default::default() });
             assert!(p.facing >= 0.0, "yaw {yaw}: glyph {} faces away ({}) and is drawn", g.i, p.facing);
         }
         // No two drawn glyphs cover more of each other than `overlap` (with a little room for the
@@ -133,7 +133,7 @@ fn form_hit_finds_the_text_drawn_under_the_pointer() {
         // The glyph laid at that place of a 1000 × 300 block is drawn at the middle of the box.
         let span = [0.0, 0.0, 1000.0, 300.0];
         let (x, y) = (h.uv[0].rem_euclid(1.0) * 1000.0, h.uv[1] * 300.0);
-        let p = f.pose_of(GlyphAt { i: 0, n: 1, x, y, w: 400.0, h: 400.0, span });
+        let p = f.pose_of(GlyphAt { i: 0, n: 1, x, y, w: 400.0, h: 400.0, span, ..Default::default() });
         assert!((x + p.dx - 200.0).abs() < 0.5 && (y + p.dy - 200.0).abs() < 0.5, "spin {spin:?}: drawn at {} {}", x + p.dx, y + p.dy);
         assert!(p.facing > 0.99, "straight on: {}", p.facing);
     }

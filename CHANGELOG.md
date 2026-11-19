@@ -8,6 +8,14 @@ crate and the `amenui` npm package (`web/`) always carry the same version, becau
 match the module that `web_app!` generates. The minimum Rust is the one CI builds with (`rust-version`
 in Cargo.toml); raising it is a breaking change before 1.0 only in the second number.
 
+## For Kern
+
+- `pair::Faces` resolves a role as the page's root does (its `El::fonts`), and the faces kept follow it; a Lab page
+  whose theme sets display to mono measured Noto Sans. `Faces::face_of`.
+- `Experiment::faces`: a cell made alone (`experiment::ui`, the contact sheet) is handed the faces.
+- `GlyphAt` tells a pose each glyph's pen as laid out (`pen`, `base`, `advance`), so a pose can put a kerned glyph's
+  pen exactly; `GlyphAt` is `Default`.
+
 ## Drawn once
 
 - `El::cached()`: a subtree drawn once onto a plate and laid on from it while it draws the same, so a large page

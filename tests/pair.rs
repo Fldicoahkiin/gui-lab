@@ -50,3 +50,82 @@ fn a_pair_set_by_its_gap_is_that_far_apart_in_its_coverage() {
     for k in 0..9 { sum += gap(&a, &b, dx + k as f32); }
     eprintln!("nine pair distances: {:.3} ms (debug build) {sum}", t0.elapsed().as_secs_f64() * 1000.0);
 }
+
+/// A role resolves in `Faces` as the page's root resolves it (its `El::fonts`), and follows it.
+#[test]
+fn faces_resolve_roles_as_the_page_root() {
+    use amenui::text::{MONO, SANS};
+    #[derive(Default)]
+    struct R { faces: Option<amenui::pair::Faces>, mono: bool }
+    let view = |s: &R| -> amenui::el::El<()> { let c = amenui::el::col().child(amenui::el::text("Kern", 20.0, amenui::el::Paint::TEXT)); if s.mono { c.fonts([MONO, MONO, MONO]) } else { c } };
+    let mut u: Ui<R, ()> = Ui::new(R { faces: None, mono: true }, view, |_, _| {}, fonts(), 200, 100, 1.0).on_faces(|s, f| s.faces = Some(f));
+    let f = u.state.faces.clone().expect("faces");
+    assert_eq!(f.face_of(Font::Display), MONO, "the page sets display to mono");
+    u.state.mono = false;
+    u.relayout();
+    assert_eq!(f.face_of(Font::Display), SANS, "the faces kept follow the root");
+}
+
+/// A pose is told each glyph's pen as laid out, kerning and all: moving each glyph by `target − pen`
+/// puts its pen at `target`. In Noto Sans SC, `AVATAR` is kerned.
+mod pens {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    pub struct P { pub shift: f32, pub posed: bool, pub seen: Rc<RefCell<Vec<amenui::el::GlyphAt>>> }
+    pub fn view(s: &P) -> amenui::el::El<()> {
+        let t = amenui::el::text("AVATAR", 48.0, amenui::el::Paint::TEXT).font(amenui::el::Font::Face(amenui::text::SANS)).key("w");
+        let (shift, rec) = (s.shift, s.seen.clone());
+        let t = if s.posed { t.pose(move |g| { rec.borrow_mut().push(g); amenui::el::Pose { dx: (g.pen + shift) - g.pen, ..Default::default() } }) } else { t };
+        amenui::el::col().pad(20.0, 20.0).child(t)
+    }
+}
+
+#[test]
+fn posing_by_the_pen_puts_each_glyph_where_its_pen_is_set() {
+    let faces = || { let u: Ui<S, ()> = Ui::new(S::default(), |_| amenui::el::col(), |_, _| {}, fonts(), 100, 100, 1.0); u.faces() };
+    for (shift, scale) in [(0.0f32, 1.0f32), (0.3, 1.0), (0.0, 2.0), (0.37, 2.0)] {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(vec![]));
+        let inst = |posed: bool| {
+            let mut u: Ui<pens::P, ()> = Ui::new(pens::P { shift, posed, seen: seen.clone() }, pens::view, |_, _| {}, fonts(), (300.0 * scale) as u32, (120.0 * scale) as u32, scale);
+            u.tick(1.0);
+            let i = u.nodes().iter().position(|n| n.key == "w").expect("text");
+            let mut v: Vec<[f32; 4]> = u.owners().iter().zip(&u.scene().instances).filter(|(o, _)| o.0 == i).map(|(_, r)| r.rect).collect();
+            v.sort_by(|a, b| a[0].total_cmp(&b[0]));
+            v
+        };
+        let (plain, posed) = (inst(false), inst(true));
+        assert_eq!(plain.len(), 6);
+        assert_eq!(posed.len(), 6);
+        for (a, b) in plain.iter().zip(&posed) {
+            assert!((b[0] - a[0] - shift * scale).abs() < 0.5 && (b[1] - a[1]).abs() < 0.5, "shift {shift} at {scale}x: {a:?} / {b:?}");
+        }
+        let g = seen.borrow();
+        let g: Vec<_> = g.iter().take(6).collect();
+        // The pens are as laid out: kerned (A V closer than A's advance), in order, on one baseline.
+        // The advance is the one laid out, kerning in it: A before V takes less than A's own.
+        let own = amenui::pair::Faces::clone(&faces()).glyph(Font::Face(amenui::text::SANS), 'A', 48.0).expect("A").advance;
+        assert!((g[1].pen - g[0].pen - g[0].advance).abs() < 1e-3, "pens advance by the advance");
+        assert!(g[0].advance < own - 0.5, "A V is kerned: {} / {own}", g[0].advance);
+        for w in g.windows(2) { assert!(w[1].pen > w[0].pen && w[1].base == w[0].base); }
+    }
+}
+
+/// A cell made alone (`experiment::ui`, as the Lab's contact sheet makes it) is handed the faces, and in
+/// them display is the Lab theme's mono.
+#[test]
+fn a_cell_made_alone_is_handed_the_faces() {
+    #[derive(Clone, Default)]
+    struct K { faces: Option<amenui::pair::Faces> }
+    impl amenui::experiment::Experiment for K {
+        type Msg = ();
+        fn view(&self, key: &str) -> amenui::el::El<()> { amenui::el::text("Kern", 20.0, amenui::el::Paint::TEXT).key(key) }
+        fn update(&mut self, _: (), _: f32) {}
+        fn step(&mut self, _: f32) -> bool { false }
+        fn moving(&self) -> bool { false }
+        fn faces(&mut self, f: amenui::pair::Faces) { self.faces = Some(f); }
+    }
+    let u = amenui::experiment::ui::<K>(fonts(), 300, 200, 1.0);
+    let f = u.state.e.faces.clone().expect("handed the faces");
+    assert_eq!(f.face_of(Font::Display), amenui::style::LAB.display);
+    assert!(f.glyph(Font::Display, 'K', 40.0).is_some());
+}

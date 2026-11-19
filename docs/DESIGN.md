@@ -720,8 +720,9 @@ Over that, for a pair with the second set `dx` px after the first (pen to pen):
 - `pair::spaced(a, b, target)` and `spaced_area(a, b, target)`: the `dx` that gives that gap or that white,
   to 1/64 px.
 
-A role resolves as at the root of a view with no `El::fonts`; a page that sets its own names the face with
-`Font::Face`. Nine pair distances take about 0.1 ms in a release build (176 px letters). `tests/pair.rs`:
+A role resolves as the page's root resolves it, by its `El::fonts` (the `Faces` a `Ui` hands out follow its root
+as it changes; `Faces::face_of`); inside a subtree with fonts of its own, name the face with `Font::Face`. A cell made
+alone (`experiment::ui`) is handed them by `Experiment::faces`. Nine pair distances take about 0.1 ms in a release build (176 px letters). `tests/pair.rs`:
 for every pair of `Voyage` at 176 px, set 0, 8 and 24 px apart by `spaced`, the nearest ink pixels of the
 two in the text system's own coverage are that far apart to within a pixel; `spaced_area` gives the white
 asked for.
@@ -2365,7 +2366,9 @@ So the foundation changed in five places, with no special cases in the effect pa
   loosens into particles from where it is drawn, and `on_outline` masks and decode blocks are there as well
   (`a_posed_glyph_loosens_from_where_it_is_drawn` in `tests/transform.rs`).
 - **Glyph poses** (`El::pose(|GlyphAt| Pose)`): asked once per laid-out glyph when the scene is built (index,
-  count, center, content box, the range of all glyph centers), giving a translation, an angle, two scales,
+  count, center, content box, the range of all glyph centers, and the pen as laid out: `pen`, the x of its origin
+  before the glyph's image is put on a quarter pixel, `base`, its baseline as drawn, and `advance`, kerning in
+  it; a pose that moves a glyph by `target − pen` puts its pen at `target`), giving a translation, an angle, two scales,
   multipliers for tone and opacity, and a minimum accent; glyphs with opacity 0 aren't drawn. No layout or
   shaping: pointer movement only rebuilds the scene. Posed text is culled by where its glyphs go, not by its box: a
   box outside its clip still draws the glyphs posed into it, and the glyphs posed outside the clip are not made.
