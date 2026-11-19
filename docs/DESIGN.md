@@ -2281,6 +2281,19 @@ So the foundation changed in five places, with no special cases in the effect pa
   is a theme mix with one accent hue a pixel, so there the paint's numbers (tone, accent, opacity) go in a line and it
   keeps `paint`'s hue all the way: a ramp within one hue, or to transparent, comes out as drawn there; one from one
   hue to another is reported (`ViewProblem::RampHue`, a P1 in the audit). 540 ramps are one draw.
+- **A drawing's own colours** (`Drawing::palette([...])`, sRGB 0–1): a mark's `Paint::hue(3 + k)` is the drawing's
+  colour `k` in place of a theme accent, its tone and accent mixing towards it as towards one, so a piece's marks are
+  the same wherever they are drawn (its page, a window onto it, a band) whatever the theme there. The runtime gathers
+  the drawings' colours each frame into one table of at most 32 (`draw::OWN_COLOURS`; the same colour in two drawings
+  counts once, in the order first drawn), renumbers each mark's hue into it (3 + its place) and hands it to the
+  shader with the theme's (`Scene::own`; a colour that changes under the same hue redraws everything). Over a picture,
+  where ink is written as its own colour, they are exact and a ramp between two is mixed in OKLab as between theme
+  hues (a ramp packs its stops' hues in 6 bits each). Off a picture, where ink is one of the theme's three accents a
+  pixel, a mark in one of them is drawn in hue 0 and reported (`ViewProblem::OwnColourOffPicture`, a P1 in the
+  audit), as a ramp across hues is there; so is a hue past the drawing's palette or the table, and outside a drawing
+  a hue of 3 or more is hue 0. `tests/own_colours.rs` (W-04's ray in its own three colours over its sky, by hand in
+  OKLab within 2 / 255 under a dark and a light theme and the same pixels under both; off a picture hue 0 and a P1;
+  two drawings sharing a colour count it once).
 - **Blades** (`Mark::Blade`, `Drawing::blade`): a rooted stroke that the field map (§1.29) bends, for a field of
   grass. `root`, `len`, `width` (at the root, 1.5 by default; the tip is half of it, 0.5 px at least), its own
   `lean` (0), `max_lean` (57°), `stiff` (0.5), `paint`, `lean_paint` and an optional `head` glyph. Its lean is

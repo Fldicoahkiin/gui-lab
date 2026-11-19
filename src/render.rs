@@ -60,6 +60,8 @@ struct Uniforms {
     sbox: [f32; 4],
     plate: [f32; 4],
     plates: [[f32; 4]; 4],
+    /// The drawings' own colours (`Drawing::palette`): hue 3 + k.
+    own: [[f32; 4]; crate::draw::OWN_COLOURS],
 }
 
 const INK: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -267,6 +269,8 @@ pub struct Renderer {
     fade_s: f32,
     /// The running commit's scope (`El::commit_scope`), device px; empty for the whole window.
     sbox: [f32; 4],
+    /// The drawings' own colours of the frame being drawn (`Scene::own`), as the uniforms take them.
+    own: [[f32; 4]; crate::draw::OWN_COLOURS],
     /// The finishing pass in place of the blit when the look has one (DESIGN.md §1.21).
     /// Made by the warm-up (or the first frame that needs it).
     post: Option<wgpu::RenderPipeline>,
@@ -454,7 +458,7 @@ impl Renderer {
             pictures: HashMap::new(), picture_views: HashMap::new(), hold_group: None, instances, capacity, pipes, annots, annot_capacity: 256, up_pipe: None, shader, pl,
             ink: blank.clone(), lo: blank.clone(), lo_key: (0, 0, 0), material_up: material.clone(), auto: Default::default(), always_lo: false, no_map: false,
             near: blank, material_first: material.clone(), material, size: (0, 0), tiles, mesh, sim_rows: 0,
-            region: crate::dirty::Region::All, partial: true, frame_view: blank_view.clone(), prev: None, spare: (vec![], vec![]), zero, blit, group: None, group_pipe, had_groups: false, plates: Default::default(), plate_pipes, plate_now: 0.0, plate_fade: [[0.0; 4]; 4], had_plates: 0, plate_inked: [false; 4], was_ageing: false, plate_serial: 0, reduced: false, fade_s: 0.15, sbox: [0.0; 4], post: None, blit_group: blank_group, warm: None, condense: false, last_region: None, tr: [[0.0; 4]; 9], boxes: [[0.0; 4]; 16], tr_loose: 0.0, t_cont: 0.0,
+            region: crate::dirty::Region::All, partial: true, frame_view: blank_view.clone(), prev: None, spare: (vec![], vec![]), zero, blit, group: None, group_pipe, had_groups: false, plates: Default::default(), plate_pipes, plate_now: 0.0, plate_fade: [[0.0; 4]; 4], had_plates: 0, plate_inked: [false; 4], was_ageing: false, plate_serial: 0, reduced: false, fade_s: 0.15, sbox: [0.0; 4], own: [[0.0; 4]; crate::draw::OWN_COLOURS], post: None, blit_group: blank_group, warm: None, condense: false, last_region: None, tr: [[0.0; 4]; 9], boxes: [[0.0; 4]; 16], tr_loose: 0.0, t_cont: 0.0,
         };
         r.set_picture(u32::MAX, 1, 1, &[0, 0, 0, 255]);
         r.resize(w, h);
@@ -988,6 +992,10 @@ impl Renderer {
         let started = crate::perf::now_ms();
         self.reduced = ui.reduced_motion();
         self.fade_s = ui.reduced_fade();
+        // The drawings' own colours: a colour that changed under the same hue redraws everything.
+        let own: [[f32; 4]; crate::draw::OWN_COLOURS] = std::array::from_fn(|k| ui.scene().own.get(k).map_or([0.0; 4], |o| [o[0], o[1], o[2], 1.0]));
+        let own_changed = own != self.own;
+        self.own = own;
         self.resize(ui.device_size().0, ui.device_size().1);
         // Still warming up (`Renderer::begin`): drawn as plain, which is the same page at rest (§1.23);
         // the frame after the last step condenses into the look.
@@ -1144,7 +1152,7 @@ impl Renderer {
         let inputs = crate::dirty::Inputs {
             instances, annot, meshes: ui.scene().meshes.iter().map(|m| m.scene.fingerprint() ^ (m.rect[2].to_bits() as u64) << 32 ^ m.rect[3].to_bits() as u64).collect(),
             field: *ui.field(), look: *look, now, mclock: mt[0], gclock: mt[1], size: self.size, map: snap,
-            global: split[3] > 0.0 || tiles.is_some() || lo.is_some() || self.hide_glyphs || !ui.scene().groups.is_empty() || self.had_groups || ui.scene().plate_ageing || self.was_ageing || ui.scene().plate_serial != self.plate_serial || ui.scene().plates.len() != self.had_plates,
+            global: split[3] > 0.0 || tiles.is_some() || lo.is_some() || self.hide_glyphs || !ui.scene().groups.is_empty() || self.had_groups || ui.scene().plate_ageing || self.was_ageing || ui.scene().plate_serial != self.plate_serial || ui.scene().plates.len() != self.had_plates || own_changed,
         };
         self.had_groups = !ui.scene().groups.is_empty();
         self.had_plates = ui.scene().plates.len();
@@ -1514,6 +1522,7 @@ impl Renderer {
             scrq: [look.scroll.slip_ms.max(16.0) / 1000.0, if look.beat.on() { self.t_cont } else { t }, th.press_keep(look.legible_cap), if self.reduced { self.fade_s } else { 0.0 }],
             post: post.0, pal: post.1, fmap: self.fmap_u, sbox: if split[3] > 0.0 { self.sbox } else { [0.0; 4] },
             plate: [self.plate_now, 0.0, 0.0, 0.0], plates: self.plate_fade,
+            own: self.own,
         };
         self.queue.write_buffer(&self.ubuf, 0, bytemuck::bytes_of(&u));
     }

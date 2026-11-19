@@ -15,7 +15,8 @@ pub struct Paint {
     pub accent: f32,
     /// Opacity, 0–1.
     pub alpha: f32,
-    /// Which accent: 0 `accent`, 1 `second`, 2 `third`.
+    /// Which accent: 0 `accent`, 1 `second`, 2 `third`; in a drawing, 3 and up its own colours
+    /// (`Drawing::palette`: 3 is its first), and hue 0 anywhere else.
     pub hue: u8,
 }
 impl Paint {
@@ -25,6 +26,8 @@ impl Paint {
     pub const fn hue(hue: u8) -> Self { Self { tone: 1.0, accent: 1.0, alpha: 1.0, hue } }
     /// The same paint at opacity `alpha`.
     pub const fn alpha(self, alpha: f32) -> Self { Self { alpha, ..self } }
+    /// Its hue as a theme accent (0, 1, 2): one of a drawing's own colours is hue 0 outside a drawing.
+    pub(crate) fn theme_hue(self) -> f32 { if self.hue > 2 { 0.0 } else { self.hue as f32 } }
     /// Full ink: headings and what must stand out.
     pub const INK: Self = Self::tone(1.0);
     /// Running text.

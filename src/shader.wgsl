@@ -50,6 +50,7 @@ struct U {
   sbox: vec4f,     // a commit's scope (El::commit_scope): x0, y0, x1, y1 device px; outside it the old frame stays (x1 <= x0: none)
   plate: vec4f,    // x: the plate clock in ticks (render.rs PLATE_TICK)
   plates: array<vec4f, 4>, // each plate slot: x its fade in ticks (0: kept for good)
+  own: array<vec4f, 32>,   // the drawings' own colours (Drawing::palette), sRGB 0–1: hue 3 + k
 };
 @group(0) @binding(0) var<uniform> u: U;
 @group(0) @binding(1) var samp: sampler;
@@ -68,7 +69,11 @@ const CARVR: i32 = 5; const GLITCHR: i32 = 6; const NEAR: i32 = 7; const SCRIBBL
 fn mp(m: i32, i: i32) -> vec4f { return u.mats[m * 2 + i]; }
 /// The material an instance (or a pixel) is drawn with: its override, or the global one.
 fn eff_mat(code: f32) -> i32 { if (code >= 127.5) { return i32(round(code)) % 16; } return i32(u.fd.x); }
-fn hue_col(h: f32) -> vec3f { if (h > 1.5) { return u.third.rgb; } if (h > 0.5) { return u.second.rgb; } return u.accent.rgb; }
+/// A hue's colour: the theme's three accents, then the drawings' own colours (`Drawing::palette`).
+fn hue_col(h: f32) -> vec3f { if (h > 2.5) { return u.own[clamp(i32(round(h)) - 3, 0, 31)].rgb; } if (h > 1.5) { return u.third.rgb; } if (h > 0.5) { return u.second.rgb; } return u.accent.rgb; }
+/// A hue as the coverage buffer codes it, off a picture: one of the theme's three (a drawing's own colour
+/// is hue 0 there).
+fn theme_hue(h: f32) -> f32 { return select(round(h), 0.0, h > 2.5); }
 fn loose_scale() -> f32 { return u.ground2.w; }
 /// The ground's own marks are drawn (`Off::ground` not set).
 fn ground_marks() -> bool { return u.wipe.z < 0.5; }
@@ -432,7 +437,7 @@ fn mesh_px(i: VOut) -> vec4f {
 }
 
 /// The ink code in b (see the top of this file).
-fn ink_code(i: VOut) -> f32 { return round(i.look.y) * 0.15 + select(0.0, 0.05, i.paint.w > 0.5); }
+fn ink_code(i: VOut) -> f32 { return theme_hue(i.look.y) * 0.15 + select(0.0, 0.05, i.paint.w > 0.5); }
 /// How loose an instance is here: its own looseness and the fronts passing.
 fn loose1(i: VOut) -> f32 { return clamp(own_loose(i) * loose_scale(), 0.0, u.rip.x); }
 /// An instance's own looseness here (held, born, set at rest) plus what the fronts that reach it add,
@@ -478,8 +483,8 @@ struct RampAt { p0: vec3f, p1: vec3f, h0: f32, h1: f32, f: f32 }
 fn ramp_at(i: VOut) -> RampAt {
   let t = ramp_t(i);
   let code = -i.extra.x - 1.0;
-  let at = floor(code / 16.0) / 255.0; let hues = code - floor(code / 16.0) * 16.0;
-  let mh = floor(hues / 4.0); let fh = hues - mh * 4.0;
+  let at = floor(code / 4096.0) / 255.0; let hues = code - floor(code / 4096.0) * 4096.0;
+  let mh = floor(hues / 64.0); let fh = hues - mh * 64.0;
   let start = i.paint.xyz; let far = ramp_paint(i.uvr.z);
   if (i.uvr.w < -0.5) {
     let mid = ramp_paint(i.uvr.w);

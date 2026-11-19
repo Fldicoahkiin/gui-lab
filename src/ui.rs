@@ -1379,12 +1379,17 @@ impl<S, M: Clone> Ui<S, M> {
         let pictures: Vec<[f32; 4]> = self.base[..self.page_len].iter().filter(|q| q.paint[3] == PICTURE && q.extra[0] <= 0.5)
             .map(|q| [q.rect[0].max(q.clip[0]), q.rect[1].max(q.clip[1]), (q.rect[0] + q.rect[2]).min(q.clip[2]), (q.rect[1] + q.rect[3]).min(q.clip[3])]).collect();
         let mut seen = HashSet::new();
+        // A drawing's own colours (`Drawing::palette`) off a picture are hue 0 there.
+        let mut own = HashSet::new();
         for (i, q) in self.base[..self.page_len].iter().enumerate() {
-            if q.paint[3] != SHAPE || q.uv[2] > -0.5 || !ramp_hues(q) { continue; }
+            let own_hue = q.paint[3] == SHAPE && q.paint[1] > 0.0 && q.look[1] > 2.5;
+            let ramp = q.paint[3] == SHAPE && q.uv[2] < -0.5 && ramp_hues(q);
+            if !own_hue && !ramp { continue; }
             let b = q.bounds(0.0);
             if pictures.iter().any(|p| b[0] >= p[0] && b[1] >= p[1] && b[2] <= p[2] && b[3] <= p[3]) { continue; }
             let key = &self.nodes[self.owners[i].0].key;
-            if seen.insert(key.clone()) { out.push(P::RampHue { key: key.clone() }); }
+            if own_hue && own.insert(key.clone()) { out.push(P::OwnColourOffPicture { key: key.clone() }); }
+            if ramp && seen.insert(key.clone()) { out.push(P::RampHue { key: key.clone() }); }
         }
         out
     }
@@ -3462,6 +3467,8 @@ impl<S, M: Clone> Ui<S, M> {
         self.field.calm = [[0.0; 4]; 4];
         let mut calms = 0;
         let mut held = vec![false; self.nodes.len()];
+        // The drawings' own colours (`Drawing::palette`), in the order first drawn.
+        let mut own_cols: Vec<[f32; 3]> = vec![];
         // `El::focus_shown` subtrees without focus inside are not drawn.
         let focus_at = self.focus.as_deref().and_then(|f| self.nodes.iter().position(|n| n.key == f));
         let mut veiled = vec![false; self.nodes.len()];
@@ -3624,7 +3631,7 @@ impl<S, M: Clone> Ui<S, M> {
                 sink.tags.push(tag);
                 true
             };
-            let shape = |p: Paint, bw: f32| Instance { rect: dev(n.rect), uv: [n.radius * s, 0.0, 0.0, 0.0], paint: [p.tone, p.accent, p.alpha, SHAPE], clip, extra: [bw * s, 0.0, 0.0, 0.0], look: [mat, p.hue as f32, (n.rect.y * s).round(), (n.rect.h * s).round().max(1.0)], resp, xf: [0.0; 4] };
+            let shape = |p: Paint, bw: f32| Instance { rect: dev(n.rect), uv: [n.radius * s, 0.0, 0.0, 0.0], paint: [p.tone, p.accent, p.alpha, SHAPE], clip, extra: [bw * s, 0.0, 0.0, 0.0], look: [mat, p.theme_hue(), (n.rect.y * s).round(), (n.rect.h * s).round().max(1.0)], resp, xf: [0.0; 4] };
             // A skeleton (DESIGN.md §1.23): faint fills and borders, a bar for every line of text, a block
             // for every picture; its own identities, so the content that replaces it condenses in.
             if n.skeleton {
@@ -3649,7 +3656,7 @@ impl<S, M: Clone> Ui<S, M> {
             if let Some((w, p)) = n.border { put(&mut sink, shape(p, w), ident(&n.key, u32::MAX - 1, 0), None); }
             match &n.content {
                 Content::Text { line, paint, caret, weight, select, mark, pose, .. } => {
-                    let proto = Instance { paint: [paint.tone, paint.accent, paint.alpha, 0.0], look: [mat, paint.hue as f32, (n.inner.y * s).round(), (line * s).round().max(1.0)], ..Default::default() };
+                    let proto = Instance { paint: [paint.tone, paint.accent, paint.alpha, 0.0], look: [mat, paint.theme_hue(), (n.inner.y * s).round(), (line * s).round().max(1.0)], ..Default::default() };
                     let Some(para) = n.para() else { continue };
                     let wpx = weight * s;
                     let focused = caret_at.is_some_and(|f| within(&self.nodes, i, f));
@@ -3808,6 +3815,13 @@ impl<S, M: Clone> Ui<S, M> {
                     let (ox, oy) = (n.inner.x * s, n.inner.y * s);
                     // A drawing shows at most the budget's count of marks, evenly thinned (DESIGN.md §1.27).
                     let stride = d.marks.len().div_ceil(crate::budget::cap().max(1)).max(1);
+                    // A hue of its own colours (`Drawing::palette`) is its place in the frame's table, after
+                    // the theme's three; past the palette or the table it is hue 0.
+                    let mut hue = |p: Paint| -> f32 {
+                        let Some(c) = p.hue.checked_sub(3).and_then(|k| d.palette.get(k as usize)) else { return p.theme_hue() };
+                        let at = own_cols.iter().position(|o| o == c).or_else(|| (own_cols.len() < crate::draw::OWN_COLOURS).then(|| { own_cols.push(*c); own_cols.len() - 1 }));
+                        at.map_or(0.0, |k| 3.0 + k as f32)
+                    };
                     for (j, m) in d.marks.iter().enumerate().step_by(stride) {
                         if let crate::draw::Mark::Blade(b) = m {
                             // Its segments (6, or 2 when it is short) and its head, each worked out on the GPU
@@ -3823,14 +3837,14 @@ impl<S, M: Clone> Ui<S, M> {
                             let wq = (w * 16.0).round().min(4095.0);
                             for g in 0..segs {
                                 let inst = Instance { rect: bounds, uv: [b.stiff.clamp(0.0, 1.0), b.max_lean.abs().min(1.5), b.lean, g as f32 + 16.0 * segs as f32 + 256.0 * wq], paint: [b.paint.tone, b.paint.accent, b.paint.alpha, SHAPE], clip,
-                                    extra: [0.0, 1.0 + q(lp.tone) + 256.0 * q(lp.accent), 0.0, 0.0], look: [mat, b.paint.hue as f32, 0.0, 0.0], resp: [resp[0], resp[1], mix.0, mix.1], xf: [0.0; 4] };
+                                    extra: [0.0, 1.0 + q(lp.tone) + 256.0 * q(lp.accent), 0.0, 0.0], look: [mat, hue(b.paint), 0.0, 0.0], resp: [resp[0], resp[1], mix.0, mix.1], xf: [0.0; 4] };
                                 put(&mut sink, inst, ident(&n.key, (j as u32 * 16 + g) | 0x2000_0000, 1), None);
                             }
                             if let Some(h) = b.head {
                                 let face = h.font.resolve([0; 3]);
                                 let mut chb = [0u8; 4];
                                 let para = crate::text::Para { s: h.ch.encode_utf8(&mut chb), face, size: h.size * k / s, line: h.size * k / s * 1.2, width: 1e4, print: 0.0, around: None, track: 0.0 };
-                                let proto = Instance { paint: [h.paint.tone, h.paint.accent, h.paint.alpha, 0.0], look: [mat, h.paint.hue as f32, 0.0, 0.0], ..Default::default() };
+                                let proto = Instance { paint: [h.paint.tone, h.paint.accent, h.paint.alpha, 0.0], look: [mat, hue(h.paint), 0.0, 0.0], ..Default::default() };
                                 let mut quads = vec![];
                                 self.text.emit(para, (0.0, 0.0), proto, s, |inst, _| quads.push(inst));
                                 let sp = crate::text::SPREAD as f32;
@@ -3870,16 +3884,17 @@ impl<S, M: Clone> Ui<S, M> {
                             }
                             crate::draw::Mark::Blade(_) => unreachable!("drawn above"),
                         };
-                        // A ramp (`Drawing::ramp`): its far and middle paints in uv.zw, their hues and where the
-                        // middle is in extra.x, all negative (a stroke has no border; a blade's joints are positive).
-                        let (mut uv, mut ex) = ([radius, 0.0, 0.0, 0.0], 0.0);
+                        // A ramp (`Drawing::ramp`): its far and middle paints in uv.zw, their hues (6 bits each, own
+                        // colours included) and where the middle is in extra.x, all negative (a stroke has no
+                        // border; a blade's joints are positive).
+                        let (mut uv, mut ex, h0) = ([radius, 0.0, 0.0, 0.0], 0.0, hue(p));
                         if let Some((far, mid)) = ramp {
                             let (m, at) = mid.unwrap_or((far, 0.5));
                             uv[2] = -(1.0 + ramp_pack(far));
                             uv[3] = if mid.is_some() { -(1.0 + ramp_pack(m)) } else { 0.0 };
-                            ex = -(1.0 + far.hue.min(2) as f32 + 4.0 * m.hue.min(2) as f32 + 16.0 * (at.clamp(0.0, 1.0) * 255.0).round());
+                            ex = -(1.0 + hue(far) + 64.0 * hue(m) + 4096.0 * (at.clamp(0.0, 1.0) * 255.0).round());
                         }
-                        let inst = Instance { rect, uv, paint: [p.tone, p.accent, p.alpha, SHAPE], clip, look: [mat, p.hue as f32, rect[1], rect[3].max(1.0)], resp, xf, extra: [ex, 0.0, 0.0, 0.0] };
+                        let inst = Instance { rect, uv, paint: [p.tone, p.accent, p.alpha, SHAPE], clip, look: [mat, h0, rect[1], rect[3].max(1.0)], resp, xf, extra: [ex, 0.0, 0.0, 0.0] };
                         put(&mut sink, inst, ident(&n.key, j as u32 | 0x2000_0000, 0), None);
                     }
                 }
@@ -3908,6 +3923,7 @@ impl<S, M: Clone> Ui<S, M> {
         }
         self.scene.plate_now = self.pclock;
         self.scene.plate_ageing = self.plates_ageing();
+        self.scene.own = own_cols;
         // Text whose string changed: the changed glyphs recompose, the others keep their birth and slide.
         if !jobs.is_empty() || !self.recs.is_empty() {
             self.recompose_jobs(jobs, &mut births);
@@ -4431,7 +4447,7 @@ impl<S, M: Clone> Ui<S, M> {
             for piece in pieces {
                 let mut keep: Vec<[f32; 2]> = piece.iter().step_by(every).copied().collect();
                 if keep.last() != piece.last() { keep.push(*piece.last().expect("a point")); }
-                for ab in keep.windows(2) { bar(ab[0], ab[1], w, [p.tone, p.accent, p.alpha, SHAPE], [0.0, p.hue as f32], IGNORE, clip, &mut out); }
+                for ab in keep.windows(2) { bar(ab[0], ab[1], w, [p.tone, p.accent, p.alpha, SHAPE], [0.0, p.theme_hue()], IGNORE, clip, &mut out); }
             }
         }
         if self.timing.material != crate::style::Material::Scribblr.id() {
@@ -4573,7 +4589,7 @@ impl<S, M: Clone> Ui<S, M> {
         let now = self.clock;
         let mote = |x: f32, y: f32, size: f32, p: crate::el::Paint, alpha: f32, clip: [f32; 4]| Instance {
             rect: [((x - size * 0.5) * s).round(), ((y - size * 0.5) * s).round(), (size * s).round().max(1.0), (size * s).round().max(1.0)],
-            uv: [size * s * 0.5, 0.0, 0.0, 0.0], paint: [p.tone, p.accent, alpha, SHAPE], clip, extra: [0.0, 0.0, 0.0, -1e4], look: [0.0, p.hue as f32, 0.0, 0.0], resp: IGNORE, xf: [0.0; 4],
+            uv: [size * s * 0.5, 0.0, 0.0, 0.0], paint: [p.tone, p.accent, alpha, SHAPE], clip, extra: [0.0, 0.0, 0.0, -1e4], look: [0.0, p.theme_hue(), 0.0, 0.0], resp: IGNORE, xf: [0.0; 4],
         };
         for n in self.nodes.iter().filter(|n| n.flow_field.is_some() && !n.hidden) {
             let (f, Some(marks)) = (n.flow_field.expect("filtered"), self.field_marks.get(&n.key)) else { continue };
@@ -6496,8 +6512,8 @@ fn in_preview<M>(el: &mut El<M>) {
 /// Whether a ramp stroke goes from one accent hue to another (a stop with no accent has no hue).
 fn ramp_hues(q: &Instance) -> bool {
     let code = -q.extra[0] - 1.0;
-    let hues = code - (code / 16.0).floor() * 16.0;
-    let (mh, fh) = ((hues / 4.0).floor(), hues - (hues / 4.0).floor() * 4.0);
+    let hues = code - (code / 4096.0).floor() * 4096.0;
+    let (mh, fh) = ((hues / 64.0).floor(), hues - (hues / 64.0).floor() * 64.0);
     let accent = |v: f32| { let n = -v - 1.0; ((n - (n / 65536.0).floor() * 65536.0) / 256.0).floor() > 0.0 };
     let mut used = vec![];
     if q.paint[1] > 0.0 { used.push(q.look[1]); }

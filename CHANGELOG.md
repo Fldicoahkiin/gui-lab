@@ -8,6 +8,14 @@ crate and the `amenui` npm package (`web/`) always carry the same version, becau
 match the module that `web_app!` generates. The minimum Rust is the one CI builds with (`rust-version`
 in Cargo.toml); raising it is a breaking change before 1.0 only in the second number.
 
+## A drawing's own colours
+
+- `Drawing::palette([...])`: a drawing's own colours, which its marks name as `Paint::hue(3 + k)`, so it looks the same
+  under any theme; exact over a picture (a ramp between two in OKLab), hue 0 and reported off one
+  (`ViewProblem::OwnColourOffPicture`, DESIGN.md §1.26). A frame's drawings have at most 32 between them.
+- `Drawing` has a new public field, `palette`: code that builds one with every field named needs it. Outside a drawing,
+  a `Paint` hue of 3 or more is hue 0.
+
 ## Labels shown while clear and elements keyed across a growing picture
 
 - `El::show_clear(inset, rank)`: a label shown only while it is clear, checked every frame against its view

@@ -201,6 +201,12 @@ pub enum ViewProblem {
         /// Its parent's key.
         parent: String,
     },
+    #[error("`{key}` draws marks in its own colours (`Drawing::palette`) that are not over a picture: there ink is one of the theme's accents a pixel, so they are drawn in hue 0. Draw the drawing over a picture (where its colours are exact), or use the theme's hues.")]
+    /// A drawing's own colours off a picture (`Drawing::palette`).
+    OwnColourOffPicture {
+        /// The drawing's key.
+        key: String,
+    },
     #[error("`{key}` draws a ramp from one accent hue to another that is not over a picture: there it keeps its first hue all the way and only its tone, accent and opacity ramp. Draw it over a picture (its colours are then mixed in OKLab), or ramp within one hue.")]
     /// A ramp stroke from one hue to another drawn off a picture (`Drawing::ramp`).
     RampHue {

@@ -115,6 +115,9 @@ pub struct Scene {
     pub plate_now: f32,
     /// Some plate's ink is ageing (`Plate::fade_s`): every plate is drawn again whole.
     pub plate_ageing: bool,
+    /// The drawings' own colours this frame (`Drawing::palette`, sRGB 0–1): an instance's hue 3 + k is
+    /// colour k (at most `draw::OWN_COLOURS`).
+    pub own: Vec<[f32; 3]>,
 }
 
 /// How many plates a window keeps at most.
@@ -124,7 +127,7 @@ pub const PLATES: usize = 4;
 pub struct PlateSpan { pub slot: u8, pub start: u32, pub end: u32, pub fade_s: f32 }
 
 impl Scene {
-    pub fn clear(&mut self) { self.instances.clear(); self.batches.clear(); self.layer = None; self.annot.clear(); self.meshes.clear(); self.groups.clear(); self.holds.clear(); self.islands.clear(); self.plates.clear(); }
+    pub fn clear(&mut self) { self.instances.clear(); self.batches.clear(); self.layer = None; self.annot.clear(); self.meshes.clear(); self.groups.clear(); self.holds.clear(); self.islands.clear(); self.plates.clear(); self.own.clear(); }
     /// Everything pushed from now on is in the modal layer.
     pub fn begin_layer(&mut self) { self.layer = Some(self.instances.len() as u32); }
     pub fn push(&mut self, i: Instance) {

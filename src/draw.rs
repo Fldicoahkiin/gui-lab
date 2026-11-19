@@ -125,11 +125,24 @@ pub struct Head {
     pub paint: Paint,
 }
 
+/// The most colours of their own the drawings of one frame have between them (`Drawing::palette`).
+pub const OWN_COLOURS: usize = 32;
+
 /// Marks in a `w × h` space; the element shows the space scaled to its width (its height follows).
+/// `palette`: its own colours (`Drawing::palette`), which its marks' `Paint::hue(3 + k)` name.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct Drawing { pub w: f32, pub h: f32, pub marks: Vec<Mark> }
+pub struct Drawing { pub w: f32, pub h: f32, pub marks: Vec<Mark>, pub palette: Vec<[f32; 3]> }
 impl Drawing {
-    pub fn new(w: f32, h: f32) -> Self { Self { w, h, marks: Vec::new() } }
+    pub fn new(w: f32, h: f32) -> Self { Self { w, h, marks: Vec::new(), palette: Vec::new() } }
+    /// Colours of the drawing's own (sRGB, 0–1), whatever the theme: a mark's `Paint::hue(3 + k)` is
+    /// colour `k` in place of a theme accent, its tone and accent mixing towards it as towards one, so a
+    /// drawing looks the same wherever it is drawn (its page, a window onto it, a band). Over a picture,
+    /// where ink is written as its own colour, it is exact and a ramp between two of them is mixed in
+    /// OKLab; off a picture, where ink is one of the theme's accents a pixel, it is drawn in hue 0 and
+    /// reported (`ViewProblem::OwnColourOffPicture`). The drawings of a frame have at most
+    /// `OWN_COLOURS` between them (the same colour in two counts once); past that, and for a `k` past the
+    /// palette, a mark is in hue 0 (DESIGN.md §1.26).
+    pub fn palette(&mut self, colours: impl IntoIterator<Item = [f32; 3]>) { self.palette = colours.into_iter().collect(); }
     pub fn dot(&mut self, x: f32, y: f32, r: f32, paint: Paint) { if r > 0.0 && paint.alpha > 0.0 { self.marks.push(Mark::Dot { x, y, r, paint }); } }
     pub fn line(&mut self, a: (f32, f32), b: (f32, f32), w: f32, paint: Paint) { if w > 0.0 && paint.alpha > 0.0 { self.marks.push(Mark::Line { a, b, w, paint, far: None, mid: None }); } }
     /// A stroke whose colour and opacity go from `paint` at `a` to `far` at `b`, through `mid` (a paint
