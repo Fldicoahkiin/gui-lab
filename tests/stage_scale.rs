@@ -175,3 +175,37 @@ fn a_scroll_area_softens_only_while_it_scrolls_under_the_automatic_level() {
     let (moved, ..) = shot_in(0.0, 2, 3.0, true);
     assert!(moved == sharp, "a frame that moves the last one is not softened");
 }
+
+/// The governor steps the stages' scale (down, and back up): the frame shades the stages again and
+/// nothing else, and it is the frame drawn whole at that scale, byte for byte.
+#[test]
+fn a_new_stage_scale_shades_only_the_stages_again() {
+    let (w, h) = (380u32, 180u32);
+    let (Ok(mut part), Ok(mut whole)) = (Offscreen::try_new(w * 2, h * 2), Offscreen::try_new(w * 2, h * 2)) else { eprintln!("no GPU adapter here: skipped"); return };
+    whole.r.partial = false;
+    for o in [&mut part, &mut whole] { o.r.govern = true; }
+    let mk = || { let mut ui = Ui::new(page::S { q: 1.0 }, page::view, |_, _| {}, fonts(), w * 2, h * 2, 2.0).on_look(page::look); ui.tick(3.0); ui };
+    let (mut u, mut v) = (mk(), mk());
+    let look = u.look();
+    let mut t = 3.0;
+    let mut frame = |u: &mut Ui<page::S, ()>, v: &mut Ui<page::S, ()>, part: &mut Offscreen, whole: &mut Offscreen| {
+        t += 1.0 / 60.0;
+        u.tick(t);
+        v.tick(t);
+        let (a, b) = (part.render(u, &look), whole.render(v, &look));
+        a.iter().zip(&b).filter(|(p, q)| p != q).count()
+    };
+    for _ in 0..3 { assert_eq!(frame(&mut u, &mut v, &mut part, &mut whole), 0); }
+    for level in [1usize, 2, 1, 0] {
+        for ui in [&mut u, &mut v] { ui.stage_governor().set_level(level); }
+        let diff = frame(&mut u, &mut v, &mut part, &mut whole);
+        let path = u.perf().path;
+        assert_eq!(diff, 0, "level {level}: {diff} bytes differ from the frame drawn whole ({})", path.line());
+        assert_eq!(path.stage < 1.0, level > 0, "level {level}: the stages' scale ({})", path.line());
+        let stage = u.node("stage").expect("stage").rect;
+        let share = (stage.w + 4.0) * (stage.h + 4.0) / (w * h) as f32;
+        assert!(path.shade > 0.0 && path.shade <= share + 0.02, "level {level}: the stage alone is shaded again: {} of the frame, the stage {share} ({})", path.shade, path.line());
+        assert_eq!(frame(&mut u, &mut v, &mut part, &mut whole), 0, "level {level}, the frame after");
+        assert_eq!(u.perf().path.shade, 0.0, "level {level}: the frame after shades nothing ({})", u.perf().path.line());
+    }
+}

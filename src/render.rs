@@ -1358,7 +1358,7 @@ impl Renderer {
         };
         // What draws the frame whole, the first that holds (named in the readout, `perf::FramePath`).
         let whole = [
-            (split[3] > 0.0, "commit"), (tiles.is_some(), "morph"), (lo_loose, "loose, reduced"), (rescaled, "stage rescaled"), (self.hide_glyphs, "hidden glyphs"),
+            (split[3] > 0.0, "commit"), (tiles.is_some(), "morph"), (lo_loose, "loose, reduced"), (self.hide_glyphs, "hidden glyphs"),
             (!ui.scene().groups.is_empty() || self.had_groups, "opacity group"), (ui.scene().plate_ageing || self.was_ageing, "plate ageing"),
             (ui.scene().plate_serial != self.plate_serial, "plate emptied"), (ui.scene().plates.len() != self.had_plates, "plates"), (own_changed, "own colours"),
         ].into_iter().find_map(|(on, why)| on.then_some(why));
@@ -1392,8 +1392,8 @@ impl Renderer {
         if lo_loose && parts.as_ref().and_then(|p| p.moved).is_some_and(|m| m.trace > 0.0) { parts = None; why = "trace with a reduced pass"; }
         // The reduced grid stays with the window, not the content: a stage shaded at its own scale in a
         // viewport that moved is shaded again where it is (the reduced pass and the filter up), not moved.
-        if staged && let Some(p) = parts.as_mut() && let Some(m) = p.moved {
-            let v = m.bx();
+        // A new stage scale (the governor stepped) shades the stages again, every one, and nothing else.
+        if let Some(p) = parts.as_mut() && let Some(v) = if rescaled { Some([0.0, 0.0, self.size.0 as f32, self.size.1 as f32]) } else { p.moved.filter(|_| staged).map(|m| m.bx()) } {
             let mut s2 = std::mem::take(&mut p.stage2);
             for st in &ui.scene().stages { let r = crate::dirty::meet(crate::dirty::grow(st.rect, 2.0), v); if !crate::dirty::is_empty(r) { s2.push(r); } }
             p.stage2 = crate::dirty::merge(s2, crate::dirty::MAX_SHADE_BOXES);

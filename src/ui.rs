@@ -4511,6 +4511,8 @@ impl<S, M: Clone> Ui<S, M> {
     /// The stages' scale steps from the device's own again (a new route; a new window size does this
     /// itself).
     pub fn reset_stage_scale(&mut self) { self.scaler.reset(); }
+    /// The stages' governor (`perf::StageScale`), for checks that set its level.
+    pub fn stage_governor(&mut self) -> &mut crate::perf::StageScale { &mut self.scaler }
     /// Whether a pointer is down (the stages' scale does not step up then).
     fn pointer_held(&self) -> bool { self.pressed.is_some() || self.capture.is_some() || self.touching }
     /// For checks: every stage's draw takes `ms` longer (`El::stage`; Y.5's slow piece).

@@ -272,6 +272,8 @@ impl StageScale {
         }
         false
     }
+    /// Go to `level` now, as a step does (for checks: the next step is no sooner than one would be).
+    pub fn set_level(&mut self, level: usize) { let t = self.last.unwrap_or(0.0); self.step(t, level.min(self.levels.len().saturating_sub(1))); }
     fn step(&mut self, t: f64, to: usize) -> bool {
         self.level = to;
         self.stepped = t;

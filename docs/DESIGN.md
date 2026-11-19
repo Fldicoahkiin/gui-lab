@@ -3194,7 +3194,10 @@ each with at most one view and one layout in all, its chip where a whole layout 
 costing 24 ms at 2 and by its pixels below, on a 60 Hz display, settles at 1.5 within 4 s and changes at most
 3 more times in 60 s; one that fits at 1.5 under 60 % of the frame comes back after 5, 10 and 20 s and then
 stays at 1.5; no step up while a pointer is down; at 1.5 on a 2× device, every pixel outside the stage and
-under a tip drawn over it is the one at the device's scale, and the stage's are not). On the website's Lab index at
+under a tip drawn over it is the one at the device's scale, and the stage's are not; the governor stepping down
+twice and back up shades only the stages again, each frame the frame drawn whole at that scale, and the frame
+after shades nothing). A step of the stages' scale is not a whole frame: the stages are shaded again where they
+are (their boxes among the shade boxes, in the reduced pass and the filter up), the rest is kept. On the website's Lab index at
 1440×900 2× with one cell running, a frame takes 2.9 ms median and 3.1 ms p95 on the CPU, from 6.9 ms.
 
 ### 1.36 Drawn once: cached subtrees and round clips

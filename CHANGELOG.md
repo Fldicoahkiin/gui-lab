@@ -46,6 +46,8 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
 - A page of several built-in materials (up to `render::GATED_MAX`) is drawn by a material pass for each, each drawing
   only its own pixels (the WGSL override `ONLY`), once the same materials have held for `specialise` frames; an
   override in the global material no longer keeps the page from the pass made for it. `FramePath::gated`.
+- A step of the stages' scale shades only the stages again, not the whole frame (and not the frame after either).
+  `Ui::stage_governor`, `StageScale::set_level`, for checks.
 
 ## For Kern
 
