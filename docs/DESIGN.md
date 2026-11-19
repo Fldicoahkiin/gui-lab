@@ -3246,7 +3246,7 @@ Written with the framework itself, it is an application and the web version's ma
   stream of boxed, measured pictures (filterable); Dotmatrix a departure board ticking every second; Lo-Fi Print a zine
   page; Glitch a title card that slips as you pass and a row of controls; Linocut a carved headline, a sun and a picture
   printed in strokes; Tech-Manual an exploded view and a parts list, where the pointer on a row marks the matching part in
-  the drawing and the other way round (the runtime tells the state about hover with `Ui::on_hover`); Normcore a settings
+  the drawing and the other way round (the runtime tells the state about hover with `Ui::on_hover`, and about keyboard focus with `Ui::on_focus`); Normcore a settings
   form; Cyberminimalism a command line and its filtered results; Bauhaus a geometric poster and a set of controls that
   change it. Every page has real interaction; a press sends a front, showing how the style loosens.
 

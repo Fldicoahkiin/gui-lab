@@ -8,6 +8,12 @@ crate and the `amenui` npm package (`web/`) always carry the same version, becau
 match the module that `web_app!` generates. The minimum Rust is the one CI builds with (`rust-version`
 in Cargo.toml); raising it is a breaking change before 1.0 only in the second number.
 
+## The state hears where the focus is
+
+- `Ui::on_focus(f)`: the state is told which element has the keyboard focus whenever it moves (Tab, a press,
+  `focus_key`, `clear_focus`, a modal layer opening or closing), as `on_hover` tells it where the pointer is; `f`
+  returns whether the view changed. A Lab cell can run while one of its controls has the focus.
+
 ## A stage that holds while the hand works
 
 - `El::stage()`: the live piece of a page. When its draws take more than 0.6 of a frame it holds its last image on

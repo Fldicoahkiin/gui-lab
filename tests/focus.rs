@@ -113,3 +113,25 @@ fn a_skip_link_written_first_is_the_first_tab_stop() {
     pv.tick(1.0);
     assert_eq!(tabs(&mut pv, 5, false), ["before", "skip", "a", "b", "d"]);
 }
+
+/// The state is told where the focus is (`Ui::on_focus`) as it moves, and what it changes is shown: a
+/// cell that runs while its control has the focus.
+#[test]
+fn the_state_hears_where_the_focus_goes_and_the_view_follows() {
+    #[derive(Default)]
+    struct S { at: Option<String>, told: usize }
+    fn view(s: &S) -> El<M> {
+        col().child(button("a", "A", M::Go)).child(button("b", "B", M::Go))
+            .child(text(if s.at.as_deref() == Some("b") { "running" } else { "at rest" }, 14.0, Paint::TEXT).key("cell"))
+    }
+    let mut ui = Ui::new(S::default(), view, |_: &mut S, _| {}, fonts(), 600, 400, 1.0)
+        .on_focus(|s, k| { s.told += 1; let c = s.at.as_deref() != k; s.at = k.map(str::to_owned); c });
+    let shown = |ui: &Ui<S, M>| ui.nodes().iter().find(|n| n.key == "cell").and_then(|n| n.text().map(str::to_owned)).unwrap_or_default();
+    ui.key(Key::Tab, false);
+    assert_eq!((ui.state.at.as_deref(), shown(&ui).as_str()), (Some("a"), "at rest"));
+    ui.key(Key::Tab, false);
+    assert_eq!((ui.state.at.as_deref(), shown(&ui).as_str()), (Some("b"), "running"));
+    ui.clear_focus();
+    assert_eq!((ui.state.at.as_deref(), shown(&ui).as_str()), (None, "at rest"));
+    assert_eq!(ui.state.told, 3);
+}

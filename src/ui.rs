@@ -586,6 +586,10 @@ pub struct Ui<S, M> {
     /// Tells the state which element the pointer is over (when it changes), and the time on every
     /// tick; either returns whether the view changed.
     hovered: Option<fn(&mut S, Option<&str>) -> bool>,
+    /// Told which element has the keyboard focus (`Ui::on_focus`).
+    focused: Option<fn(&mut S, Option<&str>) -> bool>,
+    /// A modal layer moved the focus during a layout: the state is told after it.
+    focus_moved: bool,
     pointer_of: Option<fn(&mut S, f32, f32) -> bool>,
     /// A scripted press (`Cmd::Press`) is going on: it is not a person's input.
     scripted: bool,
@@ -985,6 +989,10 @@ impl<S, M: Clone> Ui<S, M> {
     pub fn on_gaze(mut self, f: fn(&S) -> Gaze) -> Self { self.gaze_of = Some(f); self.finish(); self }
     /// Let the state know which element the pointer is over; `f` returns whether the view changed.
     pub fn on_hover(mut self, f: fn(&mut S, Option<&str>) -> bool) -> Self { self.hovered = Some(f); self }
+    /// Let the state know which element has the focus, as it moves (Tab, a press, `focus_key`, `clear_focus`,
+    /// a modal layer opening or closing); `f` returns whether the view changed. A Lab cell runs while its
+    /// `[ params ]` has the focus as it does while the pointer is over it.
+    pub fn on_focus(mut self, f: fn(&mut S, Option<&str>) -> bool) -> Self { self.focused = Some(f); self }
     /// Let the state know the time on every tick (for things that change by themselves, like a clock);
     /// `f` returns whether the view changed.
     pub fn on_tick(mut self, f: fn(&mut S, f32) -> bool) -> Self { self.ticked = Some(f); self }
@@ -1061,7 +1069,7 @@ impl<S, M: Clone> Ui<S, M> {
             hover: None, focus: None, after_focus: None, fit_short: vec![], grain_at: None, clears: HashMap::new(), clearing: false, clear_many: vec![], flow_own: vec![], fit_k: HashMap::new(), fit_last: None, pressed: None, capture: None, modal_at: None, modal_key: None, return_focus: None, split: None, splits: 0,
             keyboard: false, marks: Marks::default(), sized: None, commands: None, unseen: vec![], stages: HashMap::new(), stage_input: (false, false), stage_add_ms: 0.0, base: vec![], tags: vec![], roles: vec![],
             run: None, painted_phase: 0, flows: HashMap::new(), ghosts: vec![], grows: vec![], ground_seen: None, ground_hold: None, body_len: 0, animating: false, lifted: HashMap::new(),
-            gaze_of: None, gaze_seen: HashMap::new(), annots: vec![], readout: gaze::Readout::default(), hovered: None, pointer_of: None, scripted: false, ticked: None, warm: None, warmed: None, owed: false, ambient: 60.0, input_t: -1e9, frame_t: -1e9, tick_gap: 1.0 / 60.0, unused_key: None, shortcut: None, scrolled_of: None, released: None, input: None,
+            gaze_of: None, gaze_seen: HashMap::new(), annots: vec![], focused: None, focus_moved: false, readout: gaze::Readout::default(), hovered: None, pointer_of: None, scripted: false, ticked: None, warm: None, warmed: None, owed: false, ambient: 60.0, input_t: -1e9, frame_t: -1e9, tick_gap: 1.0 / 60.0, unused_key: None, shortcut: None, scrolled_of: None, released: None, input: None,
             dirty: true, look_of: None, locale_of: None, timing: Timing::default(), wake_of: None, latest_birth: f32::NEG_INFINITY, gaze_until: f32::NEG_INFINITY,
             marks_moving: false, caret: None, caret_on: true, static_loose: false, mclock: 0.0, moving: false, gclock: 0.0, ground_moving: false,
             perf: crate::perf::Perf { quality: 1.0, ..Default::default() }, span: 0, painting: false, overlay: 0, overlay_at: 0.0, overlay_box: None, fade_s: REDUCED_FADE, came: vec![], arriving: HashMap::new(), sweeping: false, swept_nodes: vec![], remeasure: false, plate_slots: Default::default(), plate_clear: vec![], plate_over: vec![], pclock: 0.0, plate_frame: f32::NEG_INFINITY, assets: HashMap::new(), assets_asked: Default::default(), shape_seen: 0.0, hud_idle: false, rebuilt: 0,
@@ -2673,6 +2681,7 @@ impl<S, M: Clone> Ui<S, M> {
         let old = std::mem::replace(&mut self.focus, to);
         let blur = old.and_then(|k| self.node(&k).and_then(|n| n.on_blur.clone()));
         if let Some(m) = blur { self.send(m); }
+        if let Some(f) = self.focused && f(&mut self.state, self.focus.as_deref()) { self.relayout(); }
         self.reveal();
         // The caret is drawn only where focus is.
         self.paint();
@@ -2862,6 +2871,7 @@ impl<S, M: Clone> Ui<S, M> {
         cmds.retain(|c| !matches!(c, Cmd::Morph { spec, .. } if spec.from_last.is_some()));
         self.no_recompose = flow.is_some() || off.recompose;
         self.layout();
+        if std::mem::take(&mut self.focus_moved) && let Some(f) = self.focused && f(&mut self.state, self.focus.as_deref()) { self.layout(); }
         self.morph_last();
         self.no_recompose = false;
         if let (Some(f), Some(old)) = (flow, old) { self.flow_from(old, f); }
@@ -3443,6 +3453,7 @@ impl<S, M: Clone> Ui<S, M> {
     fn layer_changed(&mut self) {
         let key = self.modal_at.map(|m| self.nodes[m].key.clone());
         if key == self.modal_key { return; }
+        let had = self.focus.clone();
         match self.modal_at {
             Some(m) => {
                 if self.modal_key.is_none() { self.return_focus = self.focus.clone(); }
@@ -3456,6 +3467,7 @@ impl<S, M: Clone> Ui<S, M> {
                 self.focus = back.filter(|k| self.nodes.iter().any(|n| &n.key == k && n.focusable));
             }
         }
+        if self.focus != had { self.focus_moved = true; }
         self.modal_key = key;
     }
 
