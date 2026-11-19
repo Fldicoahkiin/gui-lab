@@ -120,3 +120,40 @@ fn a_fast_scroll_under_glitchr_is_drawn_whole_in_the_viewport() {
     assert!(!path.moved && path.why == "trace: glitchr or custom", "{}", path.line());
     assert!(path.line().starts_with("move no (trace: glitchr or custom)"), "{}", path.line());
 }
+
+/// A list with stages in it, shaded at their own scale (the Lab): a fast scroll with its trace showing
+/// moves the last frame and shades the stages again where they are, and the frame is the frame drawn
+/// whole, byte for byte.
+#[test]
+fn a_fast_scroll_over_stages_at_their_own_scale_moves_the_last_frame() {
+    fn staged(_: &S) -> El<()> {
+        let rows = (0..40).fold(col().key("rows").gap(6.0).pad(12.0, 12.0), |c, i| {
+            let c = c.child(text(format!("Row {i}: a line of text to read as it scrolls past"), 14.0, Paint::TEXT));
+            if i % 8 == 3 { c.child(col().key(format!("cell{i}")).stage().width(220.0).height(90.0).fill(Paint::FAINT).child(text(format!("a stage {i}"), 20.0, Paint::INK))) } else { c }
+        });
+        col().key("page").fill_width().fill_height().child(col().key("list").fill_width().grow(1.0).scroll().child(rows))
+    }
+    let (Ok(mut part), Ok(mut whole)) = (Offscreen::try_new(W, H), Offscreen::try_new(W, H)) else { eprintln!("no GPU adapter here: skipped"); return };
+    whole.r.partial = false;
+    for mat in [Material::Plain, Material::Dottr, Material::Charr] {
+        let mk = || { let mut u = Ui::new(S { mat }, staged, |_, _| {}, fonts(), W, H, 1.0).on_look(|s| Look { material: s.mat, quality: 0.75, ..Look::default() }); u.pointer_leave(); u.tick(5.0); u };
+        let (mut u, mut v) = (mk(), mk());
+        let look = u.look();
+        let _ = part.render(&mut u, &look);
+        let _ = whole.render(&mut v, &look);
+        let mut t = 5.0;
+        let mut traced = 0;
+        for f in 0..30 {
+            t += 1.0 / 60.0;
+            let dy = if f < 10 { 40.0 } else if f < 20 { -40.0 } else { 0.0 };
+            for ui in [&mut u, &mut v] { if dy != 0.0 { ui.wheel(240.0, 200.0, dy); } ui.tick(t); }
+            let a = part.render(&mut u, &look);
+            let b = whole.render(&mut v, &look);
+            let diff = a.iter().zip(&b).filter(|(p, q)| p != q).count();
+            assert_eq!(diff, 0, "{mat:?} frame {f}: {diff} bytes differ from the frame drawn whole ({})", u.perf().path.line());
+            assert!(u.perf().path.stage < 1.0, "{mat:?} frame {f}: the stages are at their own scale ({})", u.perf().path.line());
+            if part.r.cost.trace > 0 { traced += 1; }
+        }
+        assert!(traced >= 8, "{mat:?}: only {traced} of 30 frames moved the last frame with the trace showing ({})", u.perf().path.line());
+    }
+}

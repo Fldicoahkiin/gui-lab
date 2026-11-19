@@ -39,6 +39,8 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
   the first reason it did not or was drawn whole, whether the material pass was specialised and why not, the share
   shaded at full resolution, and the soft, stage and reduced scales; `FramePath::line`, shown by the full overlay.
   `dirty::parts_why`, `Parts::refused`.
+- A scroll with its trace showing over stages shaded at their own scale moves the last frame (it was drawn whole
+  every frame); the stages in the viewport are shaded again where they are, slow or fast. `dirty::meet`, `Move::bx`.
 
 ## For Kern
 

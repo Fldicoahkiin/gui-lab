@@ -1344,8 +1344,17 @@ impl Renderer {
         ui.soft_drawn(soft);
         let lo = (lo_loose || staged).then(|| { let (w, h) = self.lo_for(ql); [1.0 / ql, ql, w as f32, h as f32] });
         // A move with its trace showing shades the trace at full resolution only (`fs_trace`): with a
-        // reduced pass the frame is drawn whole.
-        if lo.is_some() && parts.as_ref().and_then(|p| p.moved).is_some_and(|m| m.trace > 0.0) { parts = None; why = "trace with a reduced pass"; }
+        // reduced pass for what is loose the frame is drawn whole. One for the stages alone shades the
+        // rest at full resolution as the trace does, and the stages again below.
+        if lo_loose && parts.as_ref().and_then(|p| p.moved).is_some_and(|m| m.trace > 0.0) { parts = None; why = "trace with a reduced pass"; }
+        // The reduced grid stays with the window, not the content: a stage shaded at its own scale in a
+        // viewport that moved is shaded again where it is (the reduced pass and the filter up), not moved.
+        if staged && let Some(p) = parts.as_mut() && let Some(m) = p.moved {
+            let v = m.bx();
+            let mut s2 = std::mem::take(&mut p.stage2);
+            for st in &ui.scene().stages { let r = crate::dirty::meet(crate::dirty::grow(st.rect, 2.0), v); if !crate::dirty::is_empty(r) { s2.push(r); } }
+            p.stage2 = crate::dirty::merge(s2, crate::dirty::MAX_SHADE_BOXES);
+        }
         self.region = parts.as_ref().map_or(crate::dirty::Region::All, |p| p.region());
         self.path = crate::perf::FramePath { moved: parts.as_ref().is_some_and(|p| p.moved.is_some()), why, soft: if soft { q } else { 1.0 }, stage: if staged { qs } else { 1.0 }, reduced: lo.map_or(1.0, |l| l[1]), ..Default::default() };
         self.parts = parts;
@@ -1696,7 +1705,9 @@ impl Renderer {
         // A scroll node's content moved: the last images, moved, are this frame's but for its boxes.
         let moved = self.parts.as_ref().and_then(|p| p.moved).filter(|_| with_before);
         if let Some(m) = moved { self.carry(&mut enc, m); }
-        let traced = moved.filter(|m| m.trace > 0.0 && lo.is_none());
+        // With a reduced pass for the stages alone, the trace is shaded at full resolution; the stages are
+        // shaded again in their boxes after it.
+        let traced = moved.filter(|m| m.trace > 0.0 && (lo.is_none() || self.stage_u.2[2] > 0.5));
         if traced.is_some() && self.trace_pipe.is_none() { self.trace_pipe = Some(self.material_pipe("fs_trace", None)); }
         let (ink, near) = (self.ink.clone(), self.near.clone());
         // The main frame is drawn into the kept frame, only within what changed, then copied out.

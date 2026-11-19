@@ -2096,7 +2096,11 @@ copied whole to the target each frame (the web swap chain gives a new image ever
   rounded to the pitch, so it moves by how far that rounding stepped (`Move::frame`, maybe 0) while the
   G-buffer moves with the content; this needs the rows held in both frames, the scroll area alone in its
   viewport, a step of whole device px and neither offset half way between two rows, and the boxes grow by the
-  pitch. With a reduced pass the frame is drawn whole. Acceptance: `tests/scroll_move.rs` (a slow scroll down
+  pitch. With a reduced pass for what is loose the frame is drawn whole. With one for the stages alone (§1.35)
+  the frame moves and the trace is shaded at full resolution as without it; the reduced grid stays with the
+  window, so every stage in the viewport that moved is shaded again where it is (its box among the shade boxes,
+  in the reduced pass and the filter up), slow scroll or fast (a list with stages at 0.75 under plain, dottr and
+  charr, scrolled fast down and up, is byte for byte the frame drawn whole). Acceptance: `tests/scroll_move.rs` (a slow scroll down
   and back up under four materials at two scales is byte for byte the frame drawn whole at every step, with the
   material shading under half of a small window; a fast scroll down, up and settling under six materials at two
   scales is byte for byte the frame drawn whole, moved with its trace in at least 12 of 40 frames; under

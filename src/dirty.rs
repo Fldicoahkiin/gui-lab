@@ -31,7 +31,8 @@ pub const EMPTY: Bx = [f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG
 pub fn union(a: Bx, b: Bx) -> Bx { [a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])] }
 pub fn grow(a: Bx, d: f32) -> Bx { if is_empty(a) { a } else { [a[0] - d, a[1] - d, a[2] + d, a[3] + d] } }
 pub fn is_empty(a: Bx) -> bool { a[2] <= a[0] || a[3] <= a[1] }
-fn meet(a: Bx, b: Bx) -> Bx { [a[0].max(b[0]), a[1].max(b[1]), a[2].min(b[2]), a[3].min(b[3])] }
+/// Where two boxes meet (empty when they do not).
+pub fn meet(a: Bx, b: Bx) -> Bx { [a[0].max(b[0]), a[1].max(b[1]), a[2].min(b[2]), a[3].min(b[3])] }
 fn rect(r: [f32; 4]) -> Bx { [r[0], r[1], r[0] + r[2], r[1] + r[3]] }
 
 /// How many lens radii from the pointer the lens can still change a pixel: `exp(-r²)` there is under
@@ -108,7 +109,8 @@ pub struct Move {
 /// The trace strength from which dottr and charr hold the rows to their lattice (the shader's `latch`).
 const LATCH: f32 = 0.02;
 impl Move {
-    fn bx(&self) -> Bx { self.rect.map(|v| v as f32) }
+    /// The viewport, as a box.
+    pub fn bx(&self) -> Bx { self.rect.map(|v| v as f32) }
     /// `b` moved with the content, where it stays inside the viewport.
     pub fn carry(&self, b: Bx) -> Bx { self.carry_by(b, self.d) }
     /// `b` of the last final frame, where the move took it.
