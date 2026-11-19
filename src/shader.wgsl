@@ -691,7 +691,8 @@ fn wave_in(p: vec2f, c: vec2f, tail_gain: f32) -> f32 {
   let w = max(u.fb.z, 1e-3) * s;
   let tail = max(u.fb.w, 1e-3) * s;
   for (var j = 0; j < 8; j++) {
-    if (!in_scope(c, j)) { continue; }
+    // A slot with no front costs a test, not the front's two exponentials.
+    if (u.fronts[j].w <= 0.0 || !in_scope(c, j)) { continue; }
     let f = front_at(p, u.fronts[j]);
     let front = exp(-(f.y * f.y) / (w * w));
     let behind = select(0.0, exp(f.y / tail) * tail_gain, f.y < 0.0);
