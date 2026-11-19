@@ -48,3 +48,24 @@ fn a_material_pass_made_for_the_material_draws_what_the_pass_for_any_draws() {
     for _ in 0..3 { let _ = spec.render(&mut u, &look); }
     assert_eq!(spec.r.specialised(), None, "an override draws with the pass for any material");
 }
+
+/// The A/B switch for measuring (`Renderer::spec_force`): on, the pass for the global material is used
+/// from the second frame even over an override (and even where `specialise` is off); off, never.
+#[test]
+fn the_specialised_pass_can_be_forced_on_and_off_for_measuring() {
+    let Ok(mut o) = Offscreen::try_new(320, 200) else { eprintln!("no GPU adapter here: skipped"); return };
+    assert_eq!(o.r.specialise, None, "offscreen does not specialise by itself");
+    o.r.spec_force = Some(true);
+    let mut u = open(Material::Dottr, true);
+    let look = u.look();
+    let _ = o.render(&mut u, &look);
+    let _ = o.render(&mut u, &look);
+    assert_eq!(o.r.specialised(), Some(Material::Dottr.id()), "forced on: the global material's own pass, over an override");
+    assert!(u.perf().path.line().contains("spec yes dottr"), "{}", u.perf().path.line());
+    o.r.spec_force = Some(false);
+    let mut v = open(Material::Plain, false);
+    let look = v.look();
+    for _ in 0..3 { let _ = o.render(&mut v, &look); }
+    assert_eq!(o.r.specialised(), None, "forced off");
+    assert!(v.perf().path.line().contains("spec no (forced off)"), "{}", v.perf().path.line());
+}

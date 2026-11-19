@@ -123,7 +123,7 @@ fn a_fast_scroll_under_glitchr_is_drawn_whole_in_the_viewport() {
 
 /// A list with stages in it, shaded at their own scale (the Lab): a fast scroll with its trace showing
 /// moves the last frame and shades the stages again where they are, and the frame is the frame drawn
-/// whole, byte for byte.
+/// whole, byte for byte, the moved one with the passes made for its material (`Renderer::spec_force`).
 #[test]
 fn a_fast_scroll_over_stages_at_their_own_scale_moves_the_last_frame() {
     fn staged(_: &S) -> El<()> {
@@ -135,6 +135,9 @@ fn a_fast_scroll_over_stages_at_their_own_scale_moves_the_last_frame() {
     }
     let (Ok(mut part), Ok(mut whole)) = (Offscreen::try_new(W, H), Offscreen::try_new(W, H)) else { eprintln!("no GPU adapter here: skipped"); return };
     whole.r.partial = false;
+    // The moved frames with the passes made for the material (its trace pass too), the whole ones with
+    // the pass for any.
+    part.r.spec_force = Some(true);
     for mat in [Material::Plain, Material::Dottr, Material::Charr] {
         let mk = || { let mut u = Ui::new(S { mat }, staged, |_, _| {}, fonts(), W, H, 1.0).on_look(|s| Look { material: s.mat, quality: 0.75, ..Look::default() }); u.pointer_leave(); u.tick(5.0); u };
         let (mut u, mut v) = (mk(), mk());
@@ -154,6 +157,7 @@ fn a_fast_scroll_over_stages_at_their_own_scale_moves_the_last_frame() {
             assert!(u.perf().path.stage < 1.0, "{mat:?} frame {f}: the stages are at their own scale ({})", u.perf().path.line());
             if part.r.cost.trace > 0 { traced += 1; }
         }
+        assert_eq!(part.r.specialised(), Some(mat.id()), "{mat:?}: drawn with its own passes");
         assert!(traced >= 8, "{mat:?}: only {traced} of 30 frames moved the last frame with the trace showing ({})", u.perf().path.line());
     }
 }

@@ -41,6 +41,8 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
   `dirty::parts_why`, `Parts::refused`.
 - A scroll with its trace showing over stages shaded at their own scale moves the last frame (it was drawn whole
   every frame); the stages in the viewport are shaded again where they are, slow or fast. `dirty::meet`, `Move::bx`.
+- `Renderer::spec_force`: force the material pass made for the global material on (from the next frame, even over
+  overrides, for measuring) or off. The trace pass is made for the material too (`fs_trace` with `MAT`).
 
 ## For Kern
 

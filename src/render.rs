@@ -245,8 +245,14 @@ pub struct Renderer {
     /// where compiling it costs more than it saves). The shader then has one material's branch, not
     /// all of them, which a GPU runs with more pixels at once.
     pub specialise: Option<u32>,
-    /// The material pass made for one material (its id), and its upsample once a reduced pass needs it.
-    spec: Option<(u8, wgpu::RenderPipeline, Option<wgpu::RenderPipeline>)>,
+    /// For measuring which material pass costs what (an A/B on one page): `Some(true)` makes the pass for
+    /// the global material alone from the next frame and uses it even where elements have materials of
+    /// their own (they are then drawn in the global one: for measuring only); `Some(false)` never makes
+    /// it; `None` (the default) goes by `specialise`.
+    pub spec_force: Option<bool>,
+    /// The material pass made for one material (its id), its upsample once a reduced pass needs it, and
+    /// the trace pass once a scroll's trace needs it.
+    spec: Option<(u8, wgpu::RenderPipeline, Option<wgpu::RenderPipeline>, Option<wgpu::RenderPipeline>)>,
     /// The global material of the last frames with no override, and how many in a row.
     spec_run: (u8, u32),
     /// The material the last frame's material pass was made for (`specialised`).
@@ -533,7 +539,7 @@ impl Renderer {
         let mut r = Self {
             device, queue, out_format, layout, ubuf, sampler, atlas, atlas_view, marks, marks_view, palette_view, chars, chars_view,
             before: blank.clone(), blank: blank.clone(), hold: blank.clone(), hold_pipe, holds, hold_cap: 64, hold_n: 0, fmap, fmap_view: fmap_view.clone(), fmap_seen: None, fmap_u: [0.0; 4], split_seen: 0, split: [0.0; 4], last_look: None, marks_ready: false, hide_glyphs: false, atlas_new: true, path: Default::default(), plates_laid: std::cell::Cell::new(0),
-            pictures: HashMap::new(), picture_views: HashMap::new(), hold_group: None, instances, capacity, pipes, annots, annot_capacity: 256, up_pipe: None, trace_pipe: None, specialise: Some(SPECIALISE_AFTER), spec: None, spec_run: (u8::MAX, 0), spec_used: None, shader, pl,
+            pictures: HashMap::new(), picture_views: HashMap::new(), hold_group: None, instances, capacity, pipes, annots, annot_capacity: 256, up_pipe: None, trace_pipe: None, specialise: Some(SPECIALISE_AFTER), spec_force: None, spec: None, spec_run: (u8::MAX, 0), spec_used: None, shader, pl,
             ink: blank.clone(), lo: blank.clone(), lo_key: (0, 0, 0), material_up: material.clone(), auto: Default::default(), always_lo: false, stage_u: Box::new(([[0.0; 4]; STAGES], [[0.0; 4]; STAGES], [0.0; 4])), stage_q: 1.0, soft_q: 1.0, govern: true, no_map: false,
             near: blank, material_first: material.clone(), material, size: (0, 0), tiles, mesh, sim_rows: 0,
             region: crate::dirty::Region::All, parts: None, partial: true, frame_view: blank_view.clone(), alt: [blank_view.clone(), blank_view.clone(), blank_view.clone()], cost: Cost::default(), prev: None, spare: (vec![], vec![]), zero, blit, group: None, group_pipe, had_groups: false, plates: Default::default(), plate_pipes, plate_now: 0.0, plate_fade: [[0.0; 4]; 4], had_plates: 0, plate_inked: [false; 4], plate_over: [false; 4], plate_drew: [0; 4], plate_fresh: [false; 4], was_ageing: false, plate_serial: 0, reduced: false, fade_s: 0.15, sbox: [0.0; 4], own: [[0.0; 4]; crate::draw::OWN_COLOURS], post: None, blit_group: blank_group, warm: None, condense: false, last_region: None, tr: [[0.0; 4]; 9], boxes: [[0.0; 4]; 16], tr_loose: 0.0, t_cont: 0.0,
@@ -1043,16 +1049,20 @@ impl Renderer {
     /// are `specialise` of them make the material pass for that material (and its upsample once a
     /// reduced pass is used with it). Made after the frame is sent, so the frame it is made in is drawn
     /// with the pass for any material.
-    fn specialise_after(&mut self, mat: u8, over: bool, reduced: bool) {
-        let Some(after) = self.specialise else { return };
+    fn specialise_after(&mut self, mat: u8, over: bool, reduced: bool, traced: bool) {
+        let after = match (self.spec_force, self.specialise) { (Some(false), _) | (None, None) => return, (Some(true), _) => 0, (None, Some(a)) => a };
+        let over = over && self.spec_force != Some(true);
         if over || mat as usize >= crate::style::MATERIAL_COUNT { self.spec_run = (u8::MAX, 0); return; }
         self.spec_run = if self.spec_run.0 == mat { (mat, self.spec_run.1.saturating_add(1)) } else { (mat, 1) };
         if self.spec_run.1 < after { return; }
         if self.spec.as_ref().is_none_or(|s| s.0 != mat) {
-            self.spec = Some((mat, self.material_pipe("fs_material", Some(mat)), None));
+            self.spec = Some((mat, self.material_pipe("fs_material", Some(mat)), None, None));
         } else if reduced && self.spec.as_ref().is_some_and(|s| s.2.is_none()) {
             let up = self.material_pipe("fs_material_up", Some(mat));
             if let Some(s) = self.spec.as_mut() { s.2 = Some(up); }
+        } else if traced && self.spec.as_ref().is_some_and(|s| s.3.is_none()) {
+            let tr = self.material_pipe("fs_trace", Some(mat));
+            if let Some(s) = self.spec.as_mut() { s.3 = Some(tr); }
         }
     }
     /// The finishing pass.
@@ -1681,12 +1691,13 @@ impl Renderer {
         // The material pass made for this frame's material, when nothing overrides it (here or in a plate).
         let mat = f.look.material.id();
         let over = scene.instances.iter().any(overrides) || scene.plates.iter().any(|p| self.plate_over[p.slot as usize]);
-        let spec = self.spec.as_ref().filter(|s| !over && s.0 == mat);
+        let spec = self.spec.as_ref().filter(|s| (!over || self.spec_force == Some(true)) && s.0 == mat);
         let (mat_pipe, up_pipe) = (spec.map_or(&self.pipes[3], |s| &s.1), spec.and_then(|s| s.2.as_ref()).or(self.up_pipe.as_ref()));
+        let trace_spec = spec.and_then(|s| s.3.clone());
         let (mat_pipe, up_pipe, used) = (mat_pipe.clone(), up_pipe.cloned(), spec.map(|s| s.0));
         self.spec_used = used;
         self.path.specialised = used;
-        self.path.spec_why = if used.is_some() { "" } else if self.specialise.is_none() { "off" } else if over { "override" } else if mat as usize >= crate::style::MATERIAL_COUNT { "custom material" } else { "warming" };
+        self.path.spec_why = if used.is_some() { "" } else if self.spec_force == Some(false) { "forced off" } else if self.specialise.is_none() && self.spec_force.is_none() { "off" } else if over { "override" } else if mat as usize >= crate::style::MATERIAL_COUNT { "custom material" } else { "warming" };
         let annots = scene.annot.len() as u32;
         if annots > 0 {
             if scene.annot.len() > self.annot_capacity {
@@ -1747,7 +1758,7 @@ impl Renderer {
             self.cost.trace = ((x1 - x0) * (y1 - y0)) as u64;
             let mut pass = load(&mut enc, out);
             pass.set_scissor_rect(x0, y0, x1 - x0, y1 - y0);
-            pass.set_pipeline(self.trace_pipe.as_ref().expect("made above"));
+            pass.set_pipeline(trace_spec.as_ref().or(self.trace_pipe.as_ref()).expect("made above"));
             pass.set_bind_group(0, &self.material, &[]);
             pass.draw(0..3, 0..1);
         } else {
@@ -1802,7 +1813,7 @@ impl Renderer {
             pass.draw(0..3, 0..1);
         }
         self.queue.submit([enc.finish()]);
-        self.specialise_after(mat, over, lo.is_some());
+        self.specialise_after(mat, over, lo.is_some(), traced.is_some());
     }
 
     #[allow(clippy::too_many_arguments)]
