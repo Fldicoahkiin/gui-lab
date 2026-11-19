@@ -25,6 +25,9 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
   is restaged after them (`Ui::stage_view`) instead of viewing and laying out the page; for a stage dragged by hand.
 - Inside `El::cached`, a pixel face asked for under its native size is set and drawn at the size asked, by its
   outline's coverage (`text::FINE`, `Text::fine`).
+- A renderer made after the page was painted (`Offscreen::new` in a render tool) draws it: it sends the whole glyph
+  atlas on its first frame, and a cached subtree its plates do not hold is drawn again (`Ui::plates_lost`). A
+  scene drawn twice with no paint between inks a cached plate once.
 
 ## For Kern
 

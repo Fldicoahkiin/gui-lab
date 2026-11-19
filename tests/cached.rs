@@ -126,3 +126,20 @@ fn a_pixel_face_under_its_native_size_is_drawn_at_the_size_asked_in_a_cached_pag
     for y in r.y as u32..(r.y + hc) as u32 { for x in r.x as u32..(r.x + r.w).min(W as f32) as u32 { tones.insert(px[((y * W + x) * 4) as usize]); } }
     assert!(tones.len() > 4, "the small page is drawn by coverage: {} tones", tones.len());
 }
+
+#[test]
+fn a_page_painted_before_a_renderer_is_made_is_drawn_by_it() {
+    let Ok(mut a) = Offscreen::try_new(W, H) else { eprintln!("no GPU adapter here: skipped"); return };
+    for cached in [false, true] {
+        let mut ui = mk(S { cached, n: 0, words: "alpha", glass: false });
+        // Its glyphs are rasterised, and a cached page kept in its plate, for one renderer; then a renderer
+        // of its own (the render tool's) draws it, twice with nothing between.
+        let mut first = frame(&mut a, &mut ui);
+        for _ in 0..3 { set(&mut ui, |s| s.n += 0); first = frame(&mut a, &mut ui); }
+        let mut b = Offscreen::new(W, H);
+        for k in 0..2 {
+            let other = frame(&mut b, &mut ui);
+            assert!(diff(&first, &other) < 1e-3, "cached {cached}, frame {k} of a new renderer: {:.1}% differs", diff(&first, &other) * 100.0);
+        }
+    }
+}

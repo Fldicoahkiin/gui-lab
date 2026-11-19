@@ -1683,6 +1683,15 @@ impl<S, M: Clone> Ui<S, M> {
         if end > start && let Some(p) = &mut self.plate_slots[slot as usize] { p.1 = self.pclock; }
         self.scene.plates.push(crate::scene::PlateSpan { slot, start, end, fade_s: fade });
     }
+    /// The renderer has not got what the cached subtrees in `slots` drew into their plates (a renderer
+    /// made after they were painted, a new size): they are drawn again in the next paint, now. Whether
+    /// any was.
+    pub fn plates_lost(&mut self, slots: &[u8]) -> bool {
+        let mut any = false;
+        for &s in slots { if let Some(sig) = self.plate_sig.get_mut(s as usize) && sig.take().is_some() { any = true; } }
+        if any { self.paint(); }
+        any
+    }
     /// A plate's ink is ageing (`Plate::fade_s`): frames at 30 a second at most until the last has gone.
     fn plates_ageing(&self) -> bool { self.plate_slots.iter().flatten().any(|(_, last, fade)| *fade > 0.0 && self.pclock < last + fade + PLATE_FRAME) }
     /// Frame times and work counters (the renderer closes each frame with `perf_mut().frame(..)`).

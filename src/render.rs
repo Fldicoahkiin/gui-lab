@@ -183,6 +183,9 @@ struct Tiles {
 pub struct Renderer {
     /// Draw every glyph transparent (for acceptance checks that need to know which pixels are text).
     pub hide_glyphs: bool,
+    /// The glyph atlas has not been sent whole yet: a renderer made after the text system rasterised
+    /// glyphs (offscreen, for a page already painted) sends all of it on its first frame.
+    atlas_new: bool,
     /// How many plates the last frame laid on (two passes each: ink and nearness), for tests.
     pub plates_laid: std::cell::Cell<u32>,
     device: wgpu::Device,
@@ -317,6 +320,12 @@ pub struct Renderer {
     /// Some ink with a material override has been drawn into each plate slot since it was made or
     /// cleared (its material pass then needs the pipeline for any material).
     plate_over: [bool; 4],
+    /// The plate serial (`Scene::plate_serial`) of the paint that emptied each slot and whose ink was
+    /// then drawn into it: that scene drawn again (no paint between, a frame drawn whole) lays the plate
+    /// on and does not ink it twice.
+    plate_drew: [u64; 4],
+    /// This frame draws each slot's ink into it (the first frame of its serial).
+    plate_fresh: [bool; 4],
     /// The last frame had ink ageing on a plate (the frame after it shows where the ageing ended).
     was_ageing: bool,
     /// The last plate clearing applied (`Scene::plate_serial`).
@@ -522,11 +531,11 @@ impl Renderer {
         let (blank_view, blank_group) = (blank.clone(), material.clone());
         let mut r = Self {
             device, queue, out_format, layout, ubuf, sampler, atlas, atlas_view, marks, marks_view, palette_view, chars, chars_view,
-            before: blank.clone(), blank: blank.clone(), hold: blank.clone(), hold_pipe, holds, hold_cap: 64, hold_n: 0, fmap, fmap_view: fmap_view.clone(), fmap_seen: None, fmap_u: [0.0; 4], split_seen: 0, split: [0.0; 4], last_look: None, marks_ready: false, hide_glyphs: false, plates_laid: std::cell::Cell::new(0),
+            before: blank.clone(), blank: blank.clone(), hold: blank.clone(), hold_pipe, holds, hold_cap: 64, hold_n: 0, fmap, fmap_view: fmap_view.clone(), fmap_seen: None, fmap_u: [0.0; 4], split_seen: 0, split: [0.0; 4], last_look: None, marks_ready: false, hide_glyphs: false, atlas_new: true, plates_laid: std::cell::Cell::new(0),
             pictures: HashMap::new(), picture_views: HashMap::new(), hold_group: None, instances, capacity, pipes, annots, annot_capacity: 256, up_pipe: None, trace_pipe: None, specialise: Some(SPECIALISE_AFTER), spec: None, spec_run: (u8::MAX, 0), spec_used: None, shader, pl,
             ink: blank.clone(), lo: blank.clone(), lo_key: (0, 0, 0), material_up: material.clone(), auto: Default::default(), always_lo: false, stage_u: Box::new(([[0.0; 4]; STAGES], [[0.0; 4]; STAGES], [0.0; 4])), stage_q: 1.0, soft_q: 1.0, govern: true, no_map: false,
             near: blank, material_first: material.clone(), material, size: (0, 0), tiles, mesh, sim_rows: 0,
-            region: crate::dirty::Region::All, parts: None, partial: true, frame_view: blank_view.clone(), alt: [blank_view.clone(), blank_view.clone(), blank_view.clone()], cost: Cost::default(), prev: None, spare: (vec![], vec![]), zero, blit, group: None, group_pipe, had_groups: false, plates: Default::default(), plate_pipes, plate_now: 0.0, plate_fade: [[0.0; 4]; 4], had_plates: 0, plate_inked: [false; 4], plate_over: [false; 4], was_ageing: false, plate_serial: 0, reduced: false, fade_s: 0.15, sbox: [0.0; 4], own: [[0.0; 4]; crate::draw::OWN_COLOURS], post: None, blit_group: blank_group, warm: None, condense: false, last_region: None, tr: [[0.0; 4]; 9], boxes: [[0.0; 4]; 16], tr_loose: 0.0, t_cont: 0.0,
+            region: crate::dirty::Region::All, parts: None, partial: true, frame_view: blank_view.clone(), alt: [blank_view.clone(), blank_view.clone(), blank_view.clone()], cost: Cost::default(), prev: None, spare: (vec![], vec![]), zero, blit, group: None, group_pipe, had_groups: false, plates: Default::default(), plate_pipes, plate_now: 0.0, plate_fade: [[0.0; 4]; 4], had_plates: 0, plate_inked: [false; 4], plate_over: [false; 4], plate_drew: [0; 4], plate_fresh: [false; 4], was_ageing: false, plate_serial: 0, reduced: false, fade_s: 0.15, sbox: [0.0; 4], own: [[0.0; 4]; crate::draw::OWN_COLOURS], post: None, blit_group: blank_group, warm: None, condense: false, last_region: None, tr: [[0.0; 4]; 9], boxes: [[0.0; 4]; 16], tr_loose: 0.0, t_cont: 0.0,
         };
         r.set_picture(u32::MAX, 1, 1, &[0, 0, 0, 255]);
         r.resize(w, h);
@@ -1121,6 +1130,10 @@ impl Renderer {
         let own_changed = own != self.own;
         self.own = own;
         self.resize(ui.device_size().0, ui.device_size().1);
+        // A cached subtree that draws nothing (its plate holds it) into a plate this renderer has not
+        // inked (a renderer made after the page was painted, offscreen; a new size): it is drawn again.
+        let lost: Vec<u8> = ui.scene().plates.iter().filter(|p| p.end == p.start && !self.plate_inked[p.slot as usize]).map(|p| p.slot).collect();
+        if !lost.is_empty() { ui.plates_lost(&lost); }
         // Still warming up (`Renderer::begin`): drawn as plain, which is the same page at rest (§1.23);
         // the frame after the last step condenses into the look.
         let cold = self.warming();
@@ -1139,6 +1152,7 @@ impl Renderer {
         let text = ui.text_mut();
         // Only the box of the atlas that new glyphs went into.
         self.cost = Cost::default();
+        if std::mem::take(&mut self.atlas_new) { text.dirty = crate::text::WHOLE; }
         let [x0, y0, x1, y1] = std::mem::take(&mut text.dirty);
         if x1 > x0 && y1 > y0 {
             self.queue.write_texture(
@@ -1475,6 +1489,7 @@ impl Renderer {
                 self.plates[slot] = Some(PlateTex { ink, near, age, near_age, bind, view });
                 self.plate_inked[slot] = false;
                 self.plate_over[slot] = false;
+                self.plate_drew[slot] = 0;
             }
         }
         if scene.plate_serial != self.plate_serial {
@@ -1485,7 +1500,14 @@ impl Renderer {
                 self.plate_over[slot as usize] = false;
             }
         }
+        self.plate_fresh = [false; 4];
         for p in scene.plates.iter().filter(|p| p.end > p.start) {
+            let slot = p.slot as usize;
+            // A plate emptied by this scene's paint (a cached subtree drawn again) is inked by its first
+            // frame only; one that gathers ink (`El::plate`) takes each frame's.
+            let emptied = scene.plate_clear.contains(&p.slot);
+            self.plate_fresh[slot] = !emptied || self.plate_drew[slot] != scene.plate_serial;
+            if emptied { self.plate_drew[slot] = scene.plate_serial; }
             self.plate_inked[p.slot as usize] = true;
             self.plate_over[p.slot as usize] |= scene.instances[p.start as usize..p.end as usize].iter().any(overrides);
         }
@@ -1544,14 +1566,15 @@ impl Renderer {
                     // was drawn, into its age), then what they hold is laid on, aged, in its place.
                     let pt = self.plates[p.slot as usize].as_ref().expect("checked");
                     drop(pass);
-                    {
+                    // Inked once: a scene drawn again lays on what its plate holds.
+                    if self.plate_fresh[p.slot as usize] {
                         let mut pp = load(enc, if k == 0 { &pt.ink } else { &pt.near });
                         if let Some([x, y, w, h]) = scissor { pp.set_scissor_rect(x, y, w, h); }
                         pp.set_vertex_buffer(0, self.instances.slice(..));
                         draw(&mut pp, p.start, p.end);
                     }
                     // When each pixel was drawn: where the ink is, and where its nearness reaches.
-                    for (target, pipe) in [(&pt.age, &self.plate_pipes[0]), (&pt.near_age, &self.plate_pipes[3])].into_iter().take(if k == 0 { 2 } else { 0 }) {
+                    for (target, pipe) in [(&pt.age, &self.plate_pipes[0]), (&pt.near_age, &self.plate_pipes[3])].into_iter().take(if k == 0 && self.plate_fresh[p.slot as usize] { 2 } else { 0 }) {
                         let mut ap = load(enc, target);
                         if let Some([x, y, w, h]) = scissor { ap.set_scissor_rect(x, y, w, h); }
                         ap.set_vertex_buffer(0, self.instances.slice(..));

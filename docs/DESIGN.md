@@ -3188,6 +3188,10 @@ instances every frame it is drawn. `El::cached()` draws such a subtree once and 
   set and drawn at the size asked, as its outline's coverage at that size (a box filter of the native raster),
   not at its native size as anywhere else (§1.6), so the small page is laid out as asked and does not overlap
   itself: its faces carry `text::FINE`. At its native size and above it is a pixel face as anywhere.
+- A plate is the renderer's. A renderer that meets a cached element drawing nothing into a plate it has not
+  inked (one made after the page was painted, offscreen) has it drawn again (`Ui::plates_lost`), and sends the
+  whole glyph atlas on its first frame. A plate emptied by a paint is inked by that scene's first frame only, so
+  the scene drawn again (no paint between) lays on what it holds.
 - `el::cached_view(over, from, ink)` shows the part `from` (logical px on the page: x, y, w, h) of what the
   cached element `over` drew, scaled to its own box. Each pixel of the plate's ink is read as its coverage
   (alpha), nearest, and drawn as a glyph's coverage in `ink`: at a whole zoom each source pixel is a square of
