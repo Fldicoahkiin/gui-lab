@@ -8,6 +8,18 @@ crate and the `amenui` npm package (`web/`) always carry the same version, becau
 match the module that `web_app!` generates. The minimum Rust is the one CI builds with (`rust-version`
 in Cargo.toml); raising it is a breaking change before 1.0 only in the second number.
 
+## A stage at its own scale
+
+- When frames are missed, the stages' device scale steps down (2 → 1.5 → 1 → 0.75) and back up after a wait that
+  doubles each time; text, panels, the chrome and whatever is drawn over a stage stay at the device's scale
+  (`perf::StageScale`, `Ui::reset_stage_scale`, `Perf::stage_label`). `Look::quality` below 1 pins it. A slow
+  stage is held under input only once its scale is as low as it goes.
+- Automatic quality goes by the intervals between frames drawn while something moves, not their CPU time, so a
+  machine slow on the GPU steps down too (`perf::AutoQuality::feed(t, cost, moving)`).
+- Under the automatic level, scroll areas are shaded at it while they scroll (no lower than the material's
+  floor, `render::soft_floor`); the ink's edges, overlays and the rest of the page stay sharp, and 100 ms after
+  the last delta one frame is drawn sharp (`Ui::scroll_soft`, `render::SOFT_SCROLL`).
+
 ## Between letters
 
 - `pair`: the distance between two glyph outlines and the white between them, and where to set a pair for a gap

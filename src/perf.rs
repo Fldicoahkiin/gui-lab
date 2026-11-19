@@ -68,6 +68,9 @@ pub struct Perf {
     /// Frames that came more than 1.5 frame periods (at 60 Hz) after the one before while frames were
     /// coming one after another (a gap over 250 ms is a pause, not a drop).
     pub dropped: u64,
+    /// The stages' device scale (DESIGN.md §1.35) when it is below the device's own, device px a logical
+    /// px; 0 at the device's scale.
+    pub stage_scale: f32,
 }
 /// The frame period the drop count measures against, ms.
 pub const PERIOD_MS: f64 = 1000.0 / 60.0;
@@ -83,6 +86,9 @@ impl Perf {
         while self.frames.len() > 240 || self.frames.front().is_some_and(|(t, _)| now - t > 4000.0) { self.frames.pop_front(); }
         self.drawn += 1;
     }
+    /// What a status line shows of the stages' scale (dim): `stage 1.5x` while it is below the device's
+    /// own scale, nothing at it.
+    pub fn stage_label(&self) -> Option<String> { (self.stage_scale > 0.0).then(|| format!("stage {}x", self.stage_scale)) }
     /// The interval between the last two frames, ms (the instant frame rate is 1000 over it).
     pub fn interval(&self) -> Option<f64> { let n = self.frames.len(); (n >= 2).then(|| self.frames[n - 1].0 - self.frames[n - 2].0) }
     /// Frames drawn in the last second (to `now` ms), and the last, mean and largest cost of each part.
@@ -105,22 +111,148 @@ pub struct Summary { pub fps: u32, pub update_layout: [f32; 3], pub scene: [f32;
 /// The quality levels of the material pass: its resolution as a fraction of the device's.
 pub const LEVELS: [f32; 3] = [1.0, 0.75, 0.5];
 
-/// Automatic quality: one level down when the mean frame time has been over `BAD_MS` for `BAD_RUN`
-/// frames in a row, one level up after `GOOD_RUN` frames in a row under it.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct AutoQuality { pub level: usize, bad: u32, good: u32, mean: f32 }
-pub const BAD_MS: f32 = 12.0;
-pub const BAD_RUN: u32 = 30;
-pub const GOOD_RUN: u32 = 120;
+/// Automatic quality (DESIGN.md §1.12): the material's resolution while something moves (scrolling, or a
+/// large loose area), by the intervals between frames, since a GPU's time is not measured on the web. It
+/// goes by the frames drawn while something moves: one level down when the 95th percentile of the last 30
+/// such intervals is above 1.5 display frames or 20 ms, whichever is less; one level up after 2 s of them
+/// with no missed frame and every frame's cost under 60 % of the display frame. The level is kept for the
+/// session. The display frame is the 10th percentile of the intervals of the last second, never under 4 ms.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AutoQuality {
+    pub level: usize,
+    /// The last frame (ms); the last second's intervals; the moving frames since the last step (interval,
+    /// cost); and since when the moving frames have all been in time and cheap (ms of moving frames).
+    last: Option<f64>,
+    second: VecDeque<(f64, f32)>,
+    moving: VecDeque<f32>,
+    calm_ms: f64,
+    /// The display frame as last measured, ms.
+    pub frame_ms: f32,
+}
+/// Moving frames looked at for a step down.
+pub const MOVING_FRAMES: usize = 30;
+/// Moving time in time and cheap before a step up, ms.
+pub const CALM_MS: f64 = 2000.0;
 impl AutoQuality {
     pub fn quality(&self) -> f32 { LEVELS[self.level.min(LEVELS.len() - 1)] }
-    /// One more drawn frame that cost `ms`; returns the quality for the next one.
-    pub fn feed(&mut self, ms: f32) -> f32 {
-        // A short running mean, so one slow frame (a new glyph, a morph's first picture) does not count.
-        self.mean = if self.mean == 0.0 { ms } else { self.mean * 0.8 + ms * 0.2 };
-        if self.mean > BAD_MS { self.bad += 1; self.good = 0; } else { self.good += 1; self.bad = 0; }
-        if self.bad >= BAD_RUN && self.level + 1 < LEVELS.len() { self.level += 1; self.bad = 0; }
-        if self.good >= GOOD_RUN && self.level > 0 { self.level -= 1; self.good = 0; }
-        self.quality()
+    /// A frame drawn at `t` ms that cost `cost` ms, while something moved or not; whether the level
+    /// stepped.
+    pub fn feed(&mut self, t: f64, cost: f32, moving: bool) -> bool {
+        let Some(prev) = self.last.replace(t) else { return false };
+        let d = t - prev;
+        if !(0.0..PAUSE_MS).contains(&d) { return false; }
+        self.second.push_back((t, d as f32));
+        while self.second.front().is_some_and(|f| t - f.0 > 1000.0) { self.second.pop_front(); }
+        if self.second.len() >= 10 { self.frame_ms = pct(self.second.iter().map(|f| f.1).collect(), 0.1).max(LEAST_FRAME_MS); }
+        if !moving || self.frame_ms <= 0.0 { return false; }
+        let miss = (self.frame_ms * 1.5).min(SLOWEST_MS);
+        self.moving.push_back(d as f32);
+        if self.moving.len() > MOVING_FRAMES { self.moving.pop_front(); }
+        self.calm_ms = if d as f32 > miss || cost > self.frame_ms * 0.6 { 0.0 } else { self.calm_ms + d };
+        if self.moving.len() >= MOVING_FRAMES && self.level + 1 < LEVELS.len() && pct(self.moving.iter().copied().collect(), 0.95) > miss {
+            self.level += 1;
+            self.moving.clear();
+            self.calm_ms = 0.0;
+            return true;
+        }
+        if self.level > 0 && self.calm_ms >= CALM_MS {
+            self.level -= 1;
+            self.moving.clear();
+            self.calm_ms = 0.0;
+            return true;
+        }
+        false
     }
+}
+
+/// The device scales a stage steps through when the machine cannot draw it in time (DESIGN.md §1.35),
+/// below the device's own.
+pub const STAGE_SCALES: [f32; 4] = [2.0, 1.5, 1.0, 0.75];
+/// A frame interval longer than this is a pause, not a frame, ms.
+const PAUSE_MS: f64 = 250.0;
+/// The display frame is never taken as shorter than this, ms.
+const LEAST_FRAME_MS: f32 = 4.0;
+/// The interval a piece must not run under for long while a lower scale is available (50 fps), ms.
+const SLOWEST_MS: f32 = 20.0;
+
+/// The stage's device scale (DESIGN.md §1.35): one step down when the 95th percentile frame interval
+/// over 3 s is above 1.5 display frames (or 50 fps); one step up after a wait with no missed frame and
+/// the frames' cost under 60 % of the display frame, never while a pointer is down. The wait is 5 s,
+/// doubling each time the stage comes back to a level it left; after the third return it stays below
+/// until `reset` (a new route, a new window size). Every step is a cut.
+#[derive(Clone, Debug, Default)]
+pub struct StageScale {
+    /// The device's scale and the scales for it: its own, then each of `STAGE_SCALES` below it.
+    device: f32,
+    levels: Vec<f32>,
+    /// The index into `levels`.
+    pub level: usize,
+    /// How many times the stage came back up to each level.
+    returns: Vec<u8>,
+    /// The last frame (ms), and the frames since the last step: when, the interval before it, its cost.
+    last: Option<f64>,
+    frames: VecDeque<(f64, f32, f32)>,
+    /// The display frame as last measured, ms.
+    pub frame_ms: f32,
+    /// When it last stepped, and when a frame last missed or cost over 60 % of the display frame.
+    stepped: f64,
+    over: f64,
+    /// It has had frames to go by (with none it never holds a stage back from being held).
+    pub fed: bool,
+    /// How many steps it has taken.
+    pub steps: u32,
+}
+impl StageScale {
+    /// The scales for a device of scale `device`.
+    pub fn levels(device: f32) -> Vec<f32> { std::iter::once(device).chain(STAGE_SCALES.iter().copied().filter(|&s| s < device - 0.01)).collect() }
+    /// From the device's own scale again, forgetting the returns.
+    pub fn reset(&mut self) { let d = self.device; *self = Self::default(); self.device = d; self.levels = Self::levels(d); self.returns = vec![0; self.levels.len()]; }
+    /// The stage's scale now, device px a logical px.
+    pub fn scale(&self) -> f32 { self.levels.get(self.level).copied().unwrap_or(self.device.max(1.0)) }
+    /// Whether it is as low as it goes.
+    pub fn lowest(&self) -> bool { self.level + 1 >= self.levels.len() }
+    /// A frame drawn at `t` ms that cost `cost` ms on a device of scale `device`, with a pointer down or
+    /// not. Whether the scale stepped.
+    pub fn feed(&mut self, t: f64, cost: f32, device: f32, pointer_down: bool) -> bool {
+        if (device - self.device).abs() > 1e-3 || self.levels.is_empty() { self.device = device; self.reset(); }
+        self.fed = true;
+        let Some(prev) = self.last.replace(t) else { self.stepped = t; self.over = t; return false };
+        let d = t - prev;
+        if !(0.0..PAUSE_MS).contains(&d) { return false; }
+        self.frames.push_back((t, d as f32, cost));
+        while self.frames.front().is_some_and(|f| t - f.0 > 20_000.0) { self.frames.pop_front(); }
+        // The display frame: the 10th percentile of the last second's intervals.
+        let second: Vec<f32> = self.frames.iter().filter(|f| t - f.0 <= 1000.0).map(|f| f.1).collect();
+        if second.len() >= 10 { self.frame_ms = pct(second, 0.1).max(LEAST_FRAME_MS); }
+        if self.frame_ms <= 0.0 { return false; }
+        let miss = (self.frame_ms * 1.5).min(SLOWEST_MS);
+        if d as f32 > miss || cost > self.frame_ms * 0.6 { self.over = t; }
+        if t - self.stepped >= 3000.0 && !self.lowest() {
+            let three: Vec<f32> = self.frames.iter().filter(|f| t - f.0 <= 3000.0).map(|f| f.1).collect();
+            if pct(three, 0.95) > miss { return self.step(t, self.level + 1); }
+        }
+        if self.level > 0 && !pointer_down {
+            let back = self.returns[self.level - 1];
+            let wait = 5000.0 * f64::from(1u32 << back);
+            if back < 3 && t - self.stepped.max(self.over) >= wait {
+                self.returns[self.level - 1] += 1;
+                return self.step(t, self.level - 1);
+            }
+        }
+        false
+    }
+    fn step(&mut self, t: f64, to: usize) -> bool {
+        self.level = to;
+        self.stepped = t;
+        self.over = t;
+        self.frames.clear();
+        self.steps += 1;
+        true
+    }
+}
+/// The `q` quantile of `v` (by rank).
+fn pct(mut v: Vec<f32>, q: f32) -> f32 {
+    if v.is_empty() { return 0.0; }
+    v.sort_by(f32::total_cmp);
+    v[((v.len() - 1) as f32 * q).round() as usize]
 }

@@ -1,0 +1,171 @@
+//! A stage's own device scale (DESIGN.md §1.35, the design's Y.5 row 12): the governor steps it down
+//! when frames are missed and up after a wait that doubles at each return, and the renderer shades only
+//! the stage at that scale; text, the panel and what is drawn over the stage stay at the device's.
+use amenui::el::{El, Paint, canvas, col, row, text};
+use amenui::offscreen::Offscreen;
+use amenui::perf::StageScale;
+use amenui::style::{Look, Material};
+use amenui::ui::Ui;
+
+fn fonts() -> Vec<amenui::text::Face> { amenui::text::load_bundled(concat!(env!("CARGO_MANIFEST_DIR"), "/assets")).expect("fonts") }
+const VSYNC: f64 = 1000.0 / 60.0;
+
+/// Frames on a 60 Hz display for `secs` s on a 2× device, a stage costing `at2` ms at scale 2 and by its
+/// pixels below; `down` says when a pointer is down. The scale after each frame, with its time.
+fn run(g: &mut StageScale, at2: f32, secs: f64, down: impl Fn(f64) -> bool) -> Vec<(f64, f32)> {
+    let (mut t, mut out) = (0.0, vec![]);
+    while t < secs * 1000.0 {
+        let k = g.scale() / 2.0;
+        let cost = at2 * k * k;
+        g.feed(t, cost, 2.0, down(t));
+        out.push((t, g.scale()));
+        t += (f64::from(cost) / VSYNC).ceil().max(1.0) * VSYNC;
+    }
+    out
+}
+fn changes(v: &[(f64, f32)]) -> Vec<(f64, f32)> { v.windows(2).filter(|w| w[0].1 != w[1].1).map(|w| (w[1].0, w[1].1)).collect() }
+
+#[test]
+fn a_stage_that_misses_at_2_and_fits_at_1_5_settles_at_1_5() {
+    // 24 ms at 2 misses every frame; 13.5 ms at 1.5 fits (81 % of the frame, so it does not step back up).
+    let mut g = StageScale::default();
+    let v = run(&mut g, 24.0, 64.0, |_| false);
+    let c = changes(&v);
+    assert!(!c.is_empty() && c[0].1 == 1.5 && c[0].0 <= 4000.0, "settles at 1.5 within 4 s: {c:?}");
+    let after: Vec<_> = c.iter().skip(1).filter(|(t, _)| *t <= c[0].0 + 60_000.0).collect();
+    assert!(after.len() <= 3, "at most 3 more changes in 60 s: {after:?}");
+    assert_eq!(v.last().map(|x| x.1), Some(1.5));
+    assert!((g.frame_ms - VSYNC as f32).abs() < 0.5, "the display frame is measured: {}", g.frame_ms);
+}
+
+#[test]
+fn coming_back_waits_5_10_20_s_and_then_stays_below() {
+    // 17.5 ms at 2 misses; 9.8 ms at 1.5 is under 60 % of the frame, so it tries 2 again.
+    let mut g = StageScale::default();
+    let c = changes(&run(&mut g, 17.5, 120.0, |_| false));
+    let ups: Vec<f64> = c.windows(2).filter(|w| w[1].1 > w[0].1).map(|w| w[1].0 - w[0].0).collect();
+    assert_eq!(ups.len(), 3, "three returns, then it stays at 1.5: {c:?}");
+    for (k, w) in ups.iter().enumerate() {
+        let want = 5000.0 * f64::from(1u32 << k);
+        assert!((w - want).abs() < 100.0, "return {k} after {w} ms, not {want}: {c:?}");
+    }
+    assert_eq!(c.last().map(|x| x.1), Some(1.5));
+    // A new route or window size starts from the device's scale again.
+    g.reset();
+    assert_eq!(g.scale(), 2.0);
+}
+
+#[test]
+fn it_never_steps_up_while_a_pointer_is_down_and_a_1x_device_has_one_step() {
+    let mut g = StageScale::default();
+    let c = changes(&run(&mut g, 17.5, 30.0, |t| t > 2000.0));
+    assert_eq!(c.iter().map(|x| x.1).collect::<Vec<_>>(), vec![1.5], "down while held, never up: {c:?}");
+    assert_eq!(StageScale::levels(1.0), vec![1.0, 0.75]);
+    assert_eq!(StageScale::levels(2.0), vec![2.0, 1.5, 1.0, 0.75]);
+}
+
+mod page {
+    use super::*;
+    #[derive(Default)]
+    pub struct S { pub q: f32 }
+    pub fn view(_: &S) -> El<()> {
+        let mut d = amenui::draw::Drawing::new(200.0, 150.0);
+        for j in 0..14 { let y = 8.0 + j as f32 * 10.0; d.line((10.0, y), (190.0, y + 6.0 - (j % 3) as f32 * 4.0), 1.25, Paint::TEXT); }
+        row().key("page").pad(10.0, 10.0).gap(16.0)
+            .child(col().key("panel").width(120.0).gap(6.0).pad(8.0, 8.0).fill(Paint::FAINT)
+                .child(text("Damping 0.25", 12.0, Paint::TEXT)).child(text("ω = 1.20", 12.0, Paint::DIM)))
+            .child(col().key("stage").stage().width(200.0).height(150.0).child(canvas(d).key("d")))
+            // Drawn over the stage, after it: a tip, which stays at the device's scale.
+            .child(col().key("tip").absolute(Some(200.0), Some(30.0), None, None).pad(6.0, 4.0).fill(Paint::GROUND).border(1.0, Paint::DIM)
+                .child(text("tip over the stage", 11.0, Paint::TEXT)))
+    }
+    pub fn look(s: &S) -> Look { Look { material: Material::Dottr, quality: s.q, ..Look::default() } }
+}
+
+#[test]
+fn only_the_stage_is_shaded_at_its_scale() {
+    let (w, h) = (380u32, 180u32);
+    let Ok(mut o) = Offscreen::try_new(w * 2, h * 2) else { eprintln!("no GPU adapter here: skipped"); return };
+    let shot = |o: &mut Offscreen, q: f32| {
+        let mut ui = Ui::new(page::S { q }, page::view, |_, _| {}, fonts(), w * 2, h * 2, 2.0).on_look(page::look);
+        ui.tick(3.0);
+        let look = ui.look();
+        let px = o.render(&mut ui, &look);
+        let r = |k: &str| { let r = ui.node(k).expect(k).rect; [(r.x * 2.0) as u32, (r.y * 2.0) as u32, (r.right() * 2.0).ceil() as u32, (r.bottom() * 2.0).ceil() as u32] };
+        (px, r("stage"), r("tip"), ui.perf().stage_label())
+    };
+    let (full, stage, tip, l1) = shot(&mut o, 1.0);
+    let (low, _, _, l2) = shot(&mut o, 0.75);
+    assert_eq!(l1, None, "at the device's scale the status line shows nothing");
+    assert_eq!(l2.as_deref(), Some("stage 1.5x"));
+    let inside = |b: [u32; 4], x: u32, y: u32| x >= b[0] && x < b[2] && y >= b[1] && y < b[3];
+    let (mut outside_diff, mut tip_diff, mut stage_diff) = (0, 0, 0);
+    for y in 0..h * 2 {
+        for x in 0..w * 2 {
+            let i = ((y * w * 2 + x) * 4) as usize;
+            if full[i..i + 4] == low[i..i + 4] { continue; }
+            if inside(tip, x, y) { tip_diff += 1; } else if inside(stage, x, y) { stage_diff += 1; } else { outside_diff += 1; }
+        }
+    }
+    assert_eq!(outside_diff, 0, "text, the panel and the page outside the stage are as at the device's scale");
+    assert_eq!(tip_diff, 0, "what is drawn over the stage is at the device's scale");
+    assert!(stage_diff > 200, "the stage is shaded at 1.5: {stage_diff} pixels differ");
+}
+
+mod scrolling {
+    use super::*;
+    #[derive(Default)]
+    pub struct S { pub q: f32 }
+    pub fn view(_: &S) -> El<()> {
+        let mut body = col().key("body").gap(8.0).pad(10.0, 10.0);
+        for k in 0..30 { body = body.child(text(format!("Line {k} of the scrolled list"), 13.0, Paint::TEXT)); }
+        col().key("page").pad(8.0, 8.0).gap(8.0)
+            .child(text("Header outside the scroll area", 13.0, Paint::TEXT))
+            .child(col().key("list").scroll().height(150.0).child(body))
+    }
+    pub fn look(s: &S) -> Look { Look { material: Material::Dottr, quality: s.q, ..Look::default() } }
+}
+
+/// Fable's ruling on scrolling under the automatic level (DESIGN.md §1.12): the scroll area is shaded
+/// softened while it scrolls, the rest of the page and a fixed level never are, and 100 ms after the
+/// last delta a frame is due and drawn sharp.
+#[test]
+fn a_scroll_area_softens_only_while_it_scrolls_under_the_automatic_level() {
+    let (w, h) = (300u32, 220u32);
+    if Offscreen::try_new(w, h).is_err() { eprintln!("no GPU adapter here: skipped"); return; }
+    // A frame of the page, `wheel` scrolled at 3 s, drawn at `t`, with the automatic level at `level`.
+    let shot = |q: f32, level: usize, t: f32| {
+        let mut o = Offscreen::new(w, h);
+        o.r.auto.level = level;
+        let mut ui = Ui::new(scrolling::S { q }, scrolling::view, |_, _| {}, fonts(), w, h, 1.0).on_look(scrolling::look);
+        ui.tick(2.9);
+        let look = ui.look();
+        o.render(&mut ui, &look);
+        ui.wheel(150.0, 150.0, 40.0);
+        ui.tick(3.0);
+        let soft_now = ui.scroll_soft();
+        if t > 3.0 { o.render(&mut ui, &look); assert!(ui.needs_frame(t), "a sharp frame is due once it stops"); ui.tick(t); }
+        let px = o.render(&mut ui, &look);
+        let r = ui.node("list").expect("list").rect;
+        (px, [r.x as u32, r.y as u32, r.right().ceil() as u32, r.bottom().ceil() as u32], soft_now, ui.scroll_soft())
+    };
+    let (sharp, list, moving, _) = shot(0.0, 0, 3.0);
+    assert!(moving, "the wheel moved the list");
+    let (soft, ..) = shot(0.0, 2, 3.0);
+    let (fixed, ..) = shot(0.5, 0, 3.0);
+    let (stopped, _, _, still) = shot(0.0, 2, 3.2);
+    let (stopped_sharp, ..) = shot(0.0, 0, 3.2);
+    assert!(!still);
+    let inside = |x: u32, y: u32| x >= list[0] && x < list[2] && y >= list[1] && y < list[3];
+    let (mut in_diff, mut out_diff) = (0, 0);
+    for y in 0..h {
+        for x in 0..w {
+            let i = ((y * w + x) * 4) as usize;
+            if sharp[i..i + 4] != soft[i..i + 4] { if inside(x, y) { in_diff += 1; } else { out_diff += 1; } }
+        }
+    }
+    assert_eq!(out_diff, 0, "outside the scroll area nothing softens");
+    assert!(in_diff > 50, "the scroll area is shaded softened (the dottr ground between the lines): {in_diff} pixels differ");
+    assert!(sharp == fixed, "a level the look fixes never softens scrolling");
+    assert!(stopped == stopped_sharp, "the frame after it stops is sharp");
+}

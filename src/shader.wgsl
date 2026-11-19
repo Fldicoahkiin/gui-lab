@@ -51,6 +51,9 @@ struct U {
   plate: vec4f,    // x: the plate clock in ticks (render.rs PLATE_TICK)
   plates: array<vec4f, 4>, // each plate slot: x its fade in ticks (0: kept for good)
   own: array<vec4f, 32>,   // the drawings' own colours (Drawing::palette), sRGB 0–1: hue 3 + k
+  stages: array<vec4f, 16>, // the stages shaded at their own scale in the reduced pass (x0, y0, x1, y1 device px)
+  sharp: array<vec4f, 16>,  // what is drawn over them, kept at the device's scale (the same)
+  stagen: vec4f,   // how many stages, how many boxes over them; z 1: the reduced pass is for the stages alone
 };
 @group(0) @binding(0) var<uniform> u: U;
 @group(0) @binding(1) var samp: sampler;
@@ -1658,12 +1661,53 @@ fn dither_t(kind: f32, p: vec2f) -> f32 {
 @fragment fn fs_material(@builtin(position) frag: vec4f) -> @location(0) vec4f {
   let p = frag.xy * u.qual.x;
   if (u.qual.x > 1.0) {
-    if (rest_at(p)) { return vec4f(0.0, 0.0, 0.0, 1.0); }
+    // A stage at its own scale is shaded here; elsewhere, when the pass is for the stages alone, nothing is.
+    if (!in_stage(p) && !soft_at(p) && (u.stagen.z > 0.5 || rest_at(p))) { return vec4f(0.0, 0.0, 0.0, 1.0); }
     return vec4f(shade(p), 0.0);
   }
   return vec4f(shade(p), 1.0);
 }
 
+/// Whether `p` is in a stage shaded at its own scale (DESIGN.md §1.35) and not under what is drawn over it.
+fn in_stage(p: vec2f) -> bool {
+  let n = i32(u.stagen.x);
+  var hit = false;
+  for (var k = 0; k < 16; k++) {
+    if (k >= n) { break; }
+    let r = u.stages[k];
+    if (all(p >= r.xy) && all(p < r.zw)) { hit = true; break; }
+  }
+  if (!hit) { return false; }
+  let m = i32(u.stagen.y);
+  for (var k = 0; k < 16; k++) {
+    if (k >= m) { break; }
+    let r = u.sharp[k];
+    if (all(p >= r.xy) && all(p < r.zw)) { return false; }
+  }
+  return true;
+}
+/// Whether `p` is shaded softened while it scrolls (DESIGN.md §1.12): inside a scroll area, and not at
+/// an edge of the ink (a glyph, a thin stroke, a focus corner, a panel's edge stay sharp), which is where
+/// the ink around it is not the same (its coverage, or a glyph's tone over a shape).
+fn soft_at(p: vec2f) -> bool {
+  if (u.stagen.w < 0.5) { return false; }
+  var hit = false;
+  for (var j = 0; j < 8; j++) {
+    let b = u.scrolls[j];
+    if (b.z <= b.x) { break; }
+    if (all(p >= b.xy) && all(p < b.zw)) { hit = true; break; }
+  }
+  if (!hit) { return false; }
+  let e = 0.75 * u.qual.x + 0.5;
+  let c = ink_t(p);
+  var most = 0.0;
+  for (var k = 0; k < 4; k++) {
+    let d = vec2f(select(-e, e, (k & 1) == 1), select(-e, e, (k & 2) == 2));
+    let v = abs(ink_t(p + d) - c);
+    most = max(most, max(max(v.r, v.g), max(v.b, v.a)));
+  }
+  return most < 0.02;
+}
 /// Whether nothing is really loose at `p` (it is shaded at full resolution): nothing past the
 /// legibility cap from fronts, the half-plane or its own looseness (what is held there, a pressed
 /// control, keeps the material's resting look, sharp), no lens, no burst over a 3D element, a

@@ -1514,13 +1514,35 @@ areas of instances with static looseness, bursts, the lens on pictures and compa
 costs more than it saves. Particles in flight always count as large. `Renderer::always_lo` lets acceptance
 force `lo`.
 
-**Automatic** (`perf::AutoQuality`): each frame drawn feeds that frame's CPU time (the sum of the three);
-with a short moving average (the new value weighted 0.2), 30 consecutive frames above 12 ms drop one level
-(1 → 0.75 → 0.5) and 120 consecutive frames not above raise one. The readout says "quality 0.75 auto".
+**Automatic** (`perf::AutoQuality`): the level goes by the intervals between frames, since what is slow is
+often the GPU, whose time is not measured on the web (on an M1 the CPU's share of a 67 ms scroll frame was
+about 10 %, so a CPU-time rule never stepped). The display frame is the 10th percentile of the last second's
+intervals, never under 4 ms; an interval over 250 ms is a pause, not a frame. Only frames drawn while something
+moves count (scrolling, or a loose area of at least `LO_MIN_AREA`): one level down (1 → 0.75 → 0.5) when the
+95th percentile of the last 30 of them is above 1.5 display frames or 20 ms, whichever is less; one level up
+after 2 s of them with no missed frame and every frame's CPU cost under 60 % of the display frame. The level is
+kept for the session. Offscreen it does not move (`Renderer::govern`). The readout says "quality 0.75 auto".
 
-**Acceptance**: `tests/perf.rs` (automatic dropping and raising, a single slow frame doesn't count, last-second
-statistics, F2 and the menu open the readout and its text is in the annotation layer, it wakes every 0.5 s
-while open); `check` item 12: under every material at rest, `q = 0.5` (with `lo` forced) and `q = 1` are
+**Scrolling under the automatic level** (Fable's ruling; `render::SOFT_SCROLL`): only with `Look::quality` at
+0 (automatic) and the level below 1, the scroll areas (`Field::scrolls`) are shaded in `lo` while a scroll
+offset has changed within `ui::SOFT_STOP = 0.1` s, from the first frame that scrolls; no fixed level ever
+softens scrolling. The level is no lower than the material's floor (`render::soft_floor`): 0.75 for charr,
+halftonr, carvr, glitchr, scribblr, smudgr (its grain is shaded with the rest, not in the full-resolution pass)
+and a material from source; 0.5 for plain, near and dottr. Marks keep their pitch and place in screen pixels
+(the reduced pass samples the full frame's coordinates): only edges soften, and the upscale is the bilinear
+read, with no sharpening. The ink stays at full resolution: a reduced texel whose ink around it (±0.75 / q +
+0.5 px, centre and four diagonals) is not all the same, in coverage or a glyph's tone over a shape, is marked
+at rest, so glyphs, strokes of 2 px or less, focus corners and the edges of panels and the chrome are shaded
+in the full-resolution pass; the annotation layer and overlays are drawn after the material and never
+reduced. Once it stops, `Ui::needs_frame` asks for one more frame (`Ui::soft_drawn` says the last one was
+softened) and that frame is drawn sharp everywhere. The real costs of scrolling are elsewhere (shading only the
+strip that scrolled in, the per-pixel cost of `shade`); 0.5 is the fallback.
+
+**Acceptance**: `tests/perf.rs` (the level steps down on slow intervals while something moves and never at rest,
+a missed frame restarts the wait up, costly frames do not raise it, last-second statistics, F2 and the menu
+open the readout and its text is in the annotation layer, it wakes every 0.5 s while open);
+`tests/stage_scale.rs` (a scroll area softens while it scrolls and nothing outside it does, a fixed level never
+softens, the frame due after it stops is sharp); `check` item 12: under every material at rest, `q = 0.5` (with `lo` forced) and `q = 1` are
 identical pixel for pixel and body text equals `plain` (with item 5's tolerance), with a control: once
 loosened, the two resolutions can be told apart. Frame times on llvmpipe (relative comparison only) are in
 §9.
@@ -3018,8 +3040,7 @@ input, on the first frame after a release, and during a long stream of input at 
 `max(100 ms, 6 × its average draw)`, at most 500 ms (`stage::HOLD_MIN_S`, `HOLD_DRAWS`, `HOLD_MAX_S`). A draw
 replaces the image whole, at once (a cut), and nothing marks a stage that holds. A stage whose box, clip or
 number of elements changed draws whatever the input. When a stage's own device scale steps down under load
-(the governor, which comes with the stage's own render target), that acts first; a stage is held only when the
-lowest scale is still slow. Not for controls: what is inside a stage that holds does not change while it
+(the governor, below), that acts first; a stage is held only when the lowest scale is still slow. Not for controls: what is inside a stage that holds does not change while it
 holds.
 
 A stage that changes by itself (a Lab cell that runs, a demo that moves) need not rebuild the page it is on.
@@ -3042,7 +3063,33 @@ narrowest and at its width (figures of one width: the mono face, or a fixed box)
 The hold reads the input of the frame that lays it out: with input coalesced (`Ui::coalesce`, as the hosts
 run), a tick leaves the frame's input to the paint that `Ui::settle` makes, and that paint spends it.
 
-`Ui::slow_stage(ms)` adds `ms` to every stage's draw, for checks; `Ui::stage_state(key)` says whether a stage is
+**A stage's own scale.** When the machine cannot draw a page in time, the stages are what give: their
+device scale steps down 2 → 1.5 → 1 → 0.75 (from the device's own; on a 1× display the only step is 0.75),
+while text, panels and the chrome stay at the device's. The governor (`perf::StageScale`, fed by each drawn
+frame while stages are on the page) goes by the intervals between frames, since a GPU's time is not
+measured on the web: the display frame is the 10th percentile of the intervals of the last second that had
+no step, never under 4 ms. It steps down when the 95th percentile interval over 3 s is above 1.5 display
+frames or 20 ms (50 fps), whichever is less (intervals come in whole frames, so 1.5 is the first value that
+means frames were missed; the 20 ms catches a piece that misses from its first frame, which would otherwise
+measure a display frame of two). It steps up after 5 s with no missed frame and every frame's cost under
+60 % of the display frame, never while a pointer is down; the wait doubles each time the stage comes back to
+a level it left (5, 10, 20 s), and after the third return it stays below until `Ui::reset_stage_scale` (a
+new route) or a new window size. Every step is a cut. The look's quality below 1 pins the scale at that
+share of the device's (the nearest step), and the governor rests. `perf().stage_scale` and
+`Perf::stage_label` (`stage 1.5x`, shown dim by a status line; nothing at the device's scale) say where it
+is; the readout's look line shows it too.
+
+The renderer draws a stage's ink and nearness at the device's scale as everything else, and shades its
+pixels in the reduced material pass at the stage's scale, filtered up into the frame; a pixel whose reduced
+neighbours are not all the stage's is shaded at the device's scale, so the stage's edge is sharp. What is
+drawn after a stage within its box (the modal layer, menus, popovers, tooltips, the readout, a caption laid
+over it) is shaded at the device's scale: the renderer keeps up to 16 boxes over the stages for it, each
+what it touches merged. Up to 16 stages are shaded at their scale; more are at the device's. A stage held
+under input (above) is not shaded again, since it does not change. The scale steps first: a stage is held
+only when its scale is as low as it goes (or pinned, or no renderer measures it).
+
+`Ui::slow_stage(ms)` adds `ms` to every stage's draw, for checks (by the stage's pixels: at 1.5 on a 2×
+device, 0.5625 of it); `Ui::stage_state(key)` says whether a stage is
 slow and how many times it has drawn.
 
 Acceptance: `tests/stage.rs` (with 40 ms added to a stage's draw, a 2 s drag of a slider beside it at 60 Hz, with input coalesced or not, moves
@@ -3052,7 +3099,11 @@ frame after the release; a stage that draws in time draws every frame of a drag;
 draws on the first frame without input); `tests/stage_step.rs` (a stage that steps alone for 150 frames is
 viewed alone with no layout, and every frame's instances, owners, held text and boxes are those of a page viewed,
 laid out and painted whole, with a count beside the stage marked `El::steps` viewed with it; a step that makes
-the stage taller lays the page out). On the website's Lab index at
+the stage taller lays the page out). `tests/stage_scale.rs` (a stage
+costing 24 ms at 2 and by its pixels below, on a 60 Hz display, settles at 1.5 within 4 s and changes at most
+3 more times in 60 s; one that fits at 1.5 under 60 % of the frame comes back after 5, 10 and 20 s and then
+stays at 1.5; no step up while a pointer is down; at 1.5 on a 2× device, every pixel outside the stage and
+under a tip drawn over it is the one at the device's scale, and the stage's are not). On the website's Lab index at
 1440×900 2× with one cell running, a frame takes 2.9 ms median and 3.1 ms p95 on the CPU, from 6.9 ms.
 
 ## 2. Parameters must be exact

@@ -118,7 +118,12 @@ pub struct Scene {
     /// The drawings' own colours this frame (`Drawing::palette`, sRGB 0–1): an instance's hue 3 + k is
     /// colour k (at most `draw::OWN_COLOURS`).
     pub own: Vec<[f32; 3]>,
+    /// The stages on the page (`El::stage`, DESIGN.md §1.35): their instances and where they show.
+    pub stages: Vec<StageBox>,
 }
+/// A stage's instances this frame (`start..end`) and its box as shown (within its clip, device px).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct StageBox { pub start: u32, pub end: u32, pub rect: [f32; 4] }
 
 /// How many plates a window keeps at most.
 pub const PLATES: usize = 4;
@@ -137,7 +142,7 @@ impl Scene {
         for k in 1..v.len() { let mut j = k; while j > 0 && v[j - 1] > v[j] { v.swap(j - 1, j); j -= 1; } }
         v
     }
-    pub fn clear(&mut self) { self.instances.clear(); self.batches.clear(); self.layer = None; self.annot.clear(); self.meshes.clear(); self.groups.clear(); self.holds.clear(); self.islands.clear(); self.plates.clear(); self.own.clear(); }
+    pub fn clear(&mut self) { self.instances.clear(); self.batches.clear(); self.layer = None; self.annot.clear(); self.meshes.clear(); self.groups.clear(); self.holds.clear(); self.islands.clear(); self.plates.clear(); self.own.clear(); self.stages.clear(); }
     /// Everything pushed from now on is in the modal layer.
     pub fn begin_layer(&mut self) { self.layer = Some(self.instances.len() as u32); }
     pub fn push(&mut self, i: Instance) {

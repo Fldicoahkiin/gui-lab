@@ -610,7 +610,9 @@ pub struct Look {
     /// Scales all looseness of text and shapes.
     pub loose_scale: f32,
     /// The material pass's resolution as a fraction of the device's (`perf::LEVELS`: 1, 0.75, 0.5), or
-    /// 0 for automatic (DESIGN.md §1.12). Pixels at rest are always drawn at full resolution.
+    /// 0 for automatic (DESIGN.md §1.12). Pixels at rest are always drawn at full resolution. Below 1 it
+    /// also pins the stages' device scale at that share of the device's, the nearest step (§1.35); at 1 or
+    /// 0 the governor moves it.
     pub quality: f32,
     /// The performance readout (drawn by the annotation layer): 0 off, 1 one line, 2 every number (F2 steps through them).
     pub overlay: u8,

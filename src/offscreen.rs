@@ -47,6 +47,8 @@ impl Offscreen {
         let buf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (row * h) as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
         let mut r = if warming { Renderer::begin(device, queue, format, w, h).into_renderer() } else { Renderer::new(device, queue, format, w, h) };
         r.set_particle_tier(*tier);
+        // Frames drawn offscreen are checks and stills: the stages' scale stays where the look puts it.
+        r.govern = false;
         for (id, pw, ph, px) in crate::pictures::pictures() { r.set_picture(id, pw, ph, &px); }
         Ok(Self { r, target, buf, w, h, row })
     }

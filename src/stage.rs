@@ -64,8 +64,9 @@ impl Stage {
     pub fn average(&self) -> f32 { if self.draws.is_empty() { 0.0 } else { self.draws.iter().sum::<f32>() / self.draws.len() as f32 } }
     /// The longest it holds during a stream of input, s.
     pub fn hold_s(&self) -> f32 { (HOLD_DRAWS * self.average() / 1000.0).clamp(HOLD_MIN_S, HOLD_MAX_S) }
-    /// A draw of `ms` at `now`, with frames of `frame_ms`.
-    pub fn drew(&mut self, ms: f32, now: f32, frame_ms: f32) {
+    /// A draw of `ms` at `now`, with frames of `frame_ms`; `may_hold`: its scale is as low as it goes, so
+    /// it may become slow (the scale steps down first).
+    pub fn drew(&mut self, ms: f32, now: f32, frame_ms: f32, may_hold: bool) {
         self.draws.push(ms);
         if self.draws.len() > DRAWS { self.draws.remove(0); }
         self.drawn_at = now;
@@ -74,7 +75,7 @@ impl Stage {
         self.count += 1;
         let avg = self.average();
         if !self.slow {
-            self.slow = avg > SLOW * frame_ms;
+            self.slow = may_hold && avg > SLOW * frame_ms;
             self.calm_since = None;
         } else if avg < FAST * frame_ms {
             let since = *self.calm_since.get_or_insert(now);
@@ -95,15 +96,15 @@ mod tests {
     #[test]
     fn slow_after_eight_long_draws_and_fast_after_a_calm_second() {
         let mut s = Stage::default();
-        for k in 0..8 { s.drew(40.0, k as f32 * 0.1, 16.7); }
+        for k in 0..8 { s.drew(40.0, k as f32 * 0.1, 16.7, true); }
         assert!(s.slow);
         assert!((s.hold_s() - 0.24).abs() < 1e-4, "6 × 40 ms: {}", s.hold_s());
-        for k in 0..8 { s.drew(2.0, 1.0 + k as f32 * 0.1, 16.7); }
+        for k in 0..8 { s.drew(2.0, 1.0 + k as f32 * 0.1, 16.7, true); }
         assert!(s.slow, "not yet a calm second");
-        for k in 0..12 { s.drew(2.0, 2.0 + k as f32 * 0.1, 16.7); }
+        for k in 0..12 { s.drew(2.0, 2.0 + k as f32 * 0.1, 16.7, true); }
         assert!(!s.slow);
         let mut q = Stage::default();
-        for k in 0..8 { q.drew(200.0, k as f32, 16.7); }
+        for k in 0..8 { q.drew(200.0, k as f32, 16.7, true); }
         assert_eq!(q.hold_s(), HOLD_MAX_S);
         q.draws = vec![5.0; 8];
         assert_eq!(q.hold_s(), HOLD_MIN_S);

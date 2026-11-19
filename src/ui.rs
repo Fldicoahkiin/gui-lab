@@ -480,6 +480,9 @@ pub struct Ui<S, M> {
     /// The last frame drawn was taken while something moved: one more frame is owed, so the screen
     /// ends on the settled page even when the motion ends between two frames.
     owed: bool,
+    /// The last frame drawn shaded the scroll areas softened (`Ui::soft_drawn`): a sharp one is owed
+    /// once scrolling stops.
+    soft_shown: bool,
     /// Frames a second for what moves by itself (`Ui::ambient_fps`), when the last input came and when
     /// the last frame was drawn (the runtime's own clock, s).
     ambient: f32,
@@ -558,6 +561,12 @@ pub struct Ui<S, M> {
     stage_add_ms: f32,
     /// Where the page's faces for glyph outlines go when one comes (`Ui::on_faces`).
     faces_to: Option<fn(&mut S, crate::pair::Faces)>,
+    /// The stages' device scale and the frames it goes by (DESIGN.md §1.35), the scale pinned by the look's
+    /// quality (`Ui::stage_scale`), and the last frame it was fed.
+    scaler: crate::perf::StageScale,
+    stage_pin: Option<f32>,
+    scaler_fed: f64,
+    governed: bool,
     /// What the stages' pieces do by themselves (`Ui::on_step`), and each stage's subtree by its key
     /// (`Ui::stage_view`).
     stepped: Option<fn(&mut S, f32) -> Vec<String>>,
@@ -907,6 +916,9 @@ pub fn rubber_band(over: f32, d: f32, rubber: f32, max: f32) -> f32 {
 /// second, smoothed, signed: positive is the offset growing) while it moves, and when it last moved.
 #[derive(Clone, Copy, Debug, Default)]
 struct Motion { off: f32, v: f32, last: f32 }
+/// A scroll area is still scrolling this long after its offset last changed (s); then one frame is
+/// drawn sharp (DESIGN.md §1.12).
+pub const SOFT_STOP: f32 = 0.1;
 /// Tells the state where a scroll node is: (state, key, offset, where an element is in it).
 pub type ScrollHook<S> = fn(&mut S, &str, f32, &dyn Fn(&str) -> Option<f32>) -> bool;
 /// How quickly the measured scroll speed follows the motion (s): long enough that one wheel notch in one
@@ -1092,9 +1104,9 @@ impl<S, M: Clone> Ui<S, M> {
             state, view, update, text: Text::new(faces), size: (0.0, 0.0), scale, clock: 0.0, wall: 0.0, bclock: crate::beat::Clock::default(), sent: vec![], sets: vec![], nodes: vec![], scene: Scene::default(),
             owners: vec![], page_len: 0, field: Field::default(), scroll: HashMap::new(), births: HashMap::new(), ramp: None, text_births: HashMap::new(),
             hover: None, focus: None, after_focus: None, fit_short: vec![], grain_at: None, clears: HashMap::new(), clearing: false, clear_many: vec![], flow_own: vec![], fit_k: HashMap::new(), fit_last: None, pressed: None, capture: None, modal_at: None, modal_key: None, return_focus: None, split: None, splits: 0,
-            keyboard: false, marks: Marks::default(), sized: None, commands: None, unseen: vec![], stages: vec![], stage_input: (false, false), stage_add_ms: 0.0, faces_to: None, stepped: None, stage_of: None, stale_stages: vec![], restaging: None, base: vec![], tags: vec![], roles: vec![],
+            keyboard: false, marks: Marks::default(), sized: None, commands: None, unseen: vec![], stages: vec![], stage_input: (false, false), stage_add_ms: 0.0, faces_to: None, scaler: Default::default(), stage_pin: None, scaler_fed: f64::NEG_INFINITY, governed: false, stepped: None, stage_of: None, stale_stages: vec![], restaging: None, base: vec![], tags: vec![], roles: vec![],
             run: None, painted_phase: 0, flows: HashMap::new(), ghosts: vec![], grows: vec![], ground_seen: None, ground_hold: None, body_len: 0, animating: false, lifted: HashMap::new(),
-            gaze_of: None, gaze_seen: HashMap::new(), annots: vec![], focused: None, focus_moved: false, readout: gaze::Readout::default(), hovered: None, pointer_of: None, scripted: false, ticked: None, warm: None, warmed: None, owed: false, ambient: 60.0, input_t: -1e9, frame_t: -1e9, tick_gap: 1.0 / 60.0, unused_key: None, shortcut: None, scrolled_of: None, released: None, input: None,
+            gaze_of: None, gaze_seen: HashMap::new(), annots: vec![], focused: None, focus_moved: false, readout: gaze::Readout::default(), hovered: None, pointer_of: None, scripted: false, ticked: None, warm: None, warmed: None, owed: false, soft_shown: false, ambient: 60.0, input_t: -1e9, frame_t: -1e9, tick_gap: 1.0 / 60.0, unused_key: None, shortcut: None, scrolled_of: None, released: None, input: None,
             dirty: true, look_of: None, locale_of: None, timing: Timing::default(), wake_of: None, latest_birth: f32::NEG_INFINITY, gaze_until: f32::NEG_INFINITY,
             marks_moving: false, caret: None, caret_on: true, static_loose: false, mclock: 0.0, moving: false, gclock: 0.0, ground_moving: false,
             perf: crate::perf::Perf { quality: 1.0, ..Default::default() }, span: 0, painting: false, overlay: 0, overlay_at: 0.0, overlay_box: None, fade_s: REDUCED_FADE, came: vec![], arriving: HashMap::new(), sweeping: false, swept_nodes: vec![], remeasure: false, plate_slots: Default::default(), plate_clear: vec![], plate_over: vec![], pclock: 0.0, plate_frame: f32::NEG_INFINITY, assets: HashMap::new(), assets_asked: Default::default(), shape_seen: 0.0, hud_idle: false, rebuilt: 0,
@@ -1465,6 +1477,16 @@ impl<S, M: Clone> Ui<S, M> {
         let b = self.beat_of(now);
         self.dirty || self.clearing || self.stale_layout || self.stale_paint || self.owed || self.stage_behind() || self.prep.pending() || self.held(now) || self.moving_at(b) || self.wake_at(b).is_some_and(|w| w <= b) || (self.sweeping && !self.arriving.is_empty())
             || (self.plates_ageing() && self.clock - self.plate_frame >= PLATE_FRAME - 1e-4)
+            || self.soft_wake().is_some_and(|w| w <= now)
+    }
+    /// Whether a scroll area's offset changed within `SOFT_STOP`: the renderer may shade the scroll
+    /// areas softened (DESIGN.md §1.12).
+    pub fn scroll_soft(&self) -> bool { self.motion.values().any(|m| self.clock - m.last < SOFT_STOP) }
+    /// The renderer drew a frame with the scroll areas softened or not.
+    pub fn soft_drawn(&mut self, soft: bool) { self.soft_shown = soft; }
+    /// When the sharp frame after softened ones is due.
+    fn soft_wake(&self) -> Option<f32> {
+        self.soft_shown.then(|| self.motion.values().map(|m| m.last).fold(-1e9, f32::max) + SOFT_STOP + 1e-3)
     }
     /// A `Cmd::Hold` is going on: frames go on (the same) until it ends.
     fn held(&self, now: f32) -> bool { self.timing.beat.on() && self.bclock.hold.is_some_and(|(_, until)| now < until) }
@@ -1475,9 +1497,10 @@ impl<S, M: Clone> Ui<S, M> {
         let wanted = self.dirty || self.clearing || self.owed || self.prep.pending() || self.held(now) || self.moving_at(b) || (self.sweeping && !self.arriving.is_empty());
         if wanted && let Some(t) = self.paced_until(now) { return Some(t); }
         if self.dirty || self.clearing || self.owed || self.stage_behind() || self.prep.pending() || self.held(now) || self.moving_at(b) || (self.sweeping && !self.arriving.is_empty()) { return Some(now); }
-        if self.plates_ageing() { return Some((self.plate_frame + PLATE_FRAME).max(now)); }
+        let soft = self.soft_wake().map(|w| w.max(now));
+        if self.plates_ageing() { return Some((self.plate_frame + PLATE_FRAME).max(now).min(soft.unwrap_or(f32::MAX))); }
         // A wake on the beat clock is that much later on the runtime's.
-        self.wake_at(b).map(|w| (w + now - b).max(now))
+        [self.wake_at(b).map(|w| (w + now - b).max(now)), soft].into_iter().flatten().reduce(f32::min)
     }
     /// Prepare something over the next frames (DESIGN.md §1.23): `job` is called with the state in the
     /// time the frames leave (at least once a frame) until it says 1; each call does a small piece and
@@ -1554,6 +1577,12 @@ impl<S, M: Clone> Ui<S, M> {
     /// The host drew a frame of the current scene.
     pub fn frame_drawn(&mut self) {
         self.dirty = false;
+        // The stages' scale goes by the frames drawn while stages are on the page.
+        if let Some(&(t, c)) = self.perf.frames.back() && t != self.scaler_fed && self.governed && !self.scene.stages.is_empty() && self.stage_pin.is_none() {
+            self.scaler_fed = t;
+            let held = self.pointer_held();
+            if self.scaler.feed(t, c.total(), self.scale, held) { self.dirty = true; }
+        }
         self.owed = self.moving_at(self.beat_of(self.clock));
         self.plate_frame = self.clock;
         self.frame_t = self.wall;
@@ -1776,6 +1805,7 @@ impl<S, M: Clone> Ui<S, M> {
         // A morph's tiles are in device px of the old size.
         if size != self.size {
             self.run = None;
+            self.scaler.reset();
             // A new window size empties every plate.
             self.plate_clear.extend(self.plate_slots.iter().enumerate().filter(|(_, p)| p.is_some()).map(|(k, _)| k as u8));
         }
@@ -3658,7 +3688,9 @@ impl<S, M: Clone> Ui<S, M> {
                 if st.draws_now(rect, clip, size, now, input, released) {
                     let t0 = crate::perf::now_ms();
                     // For checks: a stage made slower than it is (`Ui::slow_stage`).
-                    while crate::perf::now_ms() - t0 < self.stage_add_ms as f64 {}
+                    // It costs by its pixels: at a lower scale, less.
+                    let k = if self.perf.stage_scale > 0.0 { self.perf.stage_scale / self.scale.max(0.01) } else { 1.0 };
+                    while crate::perf::now_ms() - t0 < (self.stage_add_ms * k * k) as f64 {}
                     stage_open = Some((i, self.scene.instances.len(), t0));
                 } else {
                     st.behind = true;
@@ -4181,7 +4213,9 @@ impl<S, M: Clone> Ui<S, M> {
         st.texts = keys.iter().filter_map(|(h, _)| text_births.get(h).map(|b| (*h, *b))).collect();
         st.recs = keys.iter().filter(|(_, k)| recs.contains(*k)).map(|(_, k)| (*k).to_owned()).collect();
         (st.rect, st.clip, st.nodes, st.span) = (rect, clip, size, (start, end));
-        st.drew(ms, now, frame_ms);
+        // A stage is held only when its scale is as low as it goes (or pinned, or nothing measures it).
+        let may_hold = !self.scaler.fed || self.stage_pin.is_some() || self.scaler.lowest();
+        st.drew(ms, now, frame_ms, may_hold);
     }
     /// The stages `keys` stepped (`Ui::on_step`) and nothing else changed: each is viewed alone
     /// (`Ui::stage_view`) and, when it lays out as before, put in place of its subtree, keeping the
@@ -4316,6 +4350,44 @@ impl<S, M: Clone> Ui<S, M> {
         }
         again
     }
+    /// Where each stage's instances are in the scene and where it shows (`Scene::stages`), for the
+    /// renderer to draw it at its own scale.
+    fn stage_boxes(&mut self) {
+        self.scene.stages.clear();
+        if self.stages.is_empty() { return; }
+        let mut of = vec![u32::MAX; self.nodes.len()];
+        for i in 0..self.nodes.len() {
+            if self.nodes[i].stage.is_none() || of[i] != u32::MAX { continue; }
+            let k = self.scene.stages.len() as u32;
+            for (j, o) in of.iter_mut().enumerate().skip(i) { if j > i && !within(&self.nodes, j, i) { break; } *o = k; }
+            let r = self.nodes[i].rect.intersect(&self.nodes[i].clip);
+            let s = self.scale;
+            self.scene.stages.push(crate::scene::StageBox { start: u32::MAX, end: 0, rect: [r.x * s, r.y * s, r.right() * s, r.bottom() * s] });
+        }
+        for (k, &(n, _)) in self.owners.iter().enumerate() {
+            let Some(&st) = of.get(n) else { continue };
+            if let Some(b) = self.scene.stages.get_mut(st as usize) { b.start = b.start.min(k as u32); b.end = b.end.max(k as u32 + 1); }
+        }
+        self.scene.stages.retain(|b| b.end > b.start && b.rect[2] > b.rect[0] && b.rect[3] > b.rect[1]);
+    }
+    /// The stages' device scale for the next frame, as a share of the device's (1 at the device's own),
+    /// and in `perf().stage_scale` (DESIGN.md §1.35). `pin`: the look's quality, when it is set (a
+    /// stage at that share of the device's scale, the nearest step), and the governor rests; `govern`:
+    /// the governor goes by the frames drawn (not for frames that are checks or stills).
+    pub fn stage_scale(&mut self, pin: Option<f32>, govern: bool) -> f32 {
+        self.governed = govern;
+        let device = self.scale.max(0.01);
+        let levels = crate::perf::StageScale::levels(device);
+        self.stage_pin = pin.map(|q| levels.iter().copied().min_by(|a, b| (a - q * device).abs().total_cmp(&(b - q * device).abs())).unwrap_or(device));
+        let s = self.stage_pin.unwrap_or_else(|| if govern && self.scaler.fed { self.scaler.scale() } else { device });
+        self.perf.stage_scale = if s < device - 0.01 { s } else { 0.0 };
+        s / device
+    }
+    /// The stages' scale steps from the device's own again (a new route; a new window size does this
+    /// itself).
+    pub fn reset_stage_scale(&mut self) { self.scaler.reset(); }
+    /// Whether a pointer is down (the stages' scale does not step up then).
+    fn pointer_held(&self) -> bool { self.pressed.is_some() || self.capture.is_some() || self.touching }
     /// For checks: every stage's draw takes `ms` longer (`El::stage`; Y.5's slow piece).
     pub fn slow_stage(&mut self, ms: f32) { self.stage_add_ms = ms.max(0.0); }
     /// Whether the stage under `key` is slow, and how many times it has drawn (`El::stage`).
@@ -5015,6 +5087,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// Apply what moves without a new layout (morph ramps, flows, the old page dissolving), then the marks.
     fn finish(&mut self) {
         let t0 = crate::perf::now_ms();
+        self.stage_boxes();
         self.animate();
         self.paint_decodes();
         self.paint_strands();
@@ -5158,7 +5231,7 @@ impl<S, M: Clone> Ui<S, M> {
                 format!("text          {} cached  {} shaped  atlas {:.0}%", self.text.cached(), self.text.shaped(), self.text.atlas_use() * 100.0),
                 format!("textures      ~{:.0} MB  fronts {fronts}", p.tex_mb),
                 format!("field map     {} of {}x{} nodes not zero  level {:.3}", self.fmap.nonzero(), self.fmap.cols, self.fmap.rows, self.fmap.level()),
-                format!("look          {mat}  quality {}{}", p.quality, if p.auto { " auto" } else { "" }),
+                format!("look          {mat}  quality {}{}{}", p.quality, if p.auto { " auto" } else { "" }, p.stage_label().map_or(String::new(), |l| format!("  {l}"))),
                 format!("device        {backend}  {}", if p.adapter.is_empty() { "-" } else { &p.adapter }),
                 format!("surface       {:.0}x{:.0} @{}  {}", self.size.0, self.size.1, self.scale, crate::i18n::current().tag()),
             ]

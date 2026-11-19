@@ -62,7 +62,17 @@ struct Uniforms {
     plates: [[f32; 4]; 4],
     /// The drawings' own colours (`Drawing::palette`): hue 3 + k.
     own: [[f32; 4]; crate::draw::OWN_COLOURS],
+    /// The stages shaded at their own scale (x0, y0, x1, y1 device px), what is drawn over them at the
+    /// device's (the same), and how many of each, with whether the reduced pass is for the stages alone.
+    stages: [[f32; 4]; STAGES],
+    sharp: [[f32; 4]; STAGES],
+    stagen: [f32; 4],
 }
+/// How many stages are drawn at their own scale at most (the others at the device's), and how many boxes
+/// over them are kept at the device's.
+const STAGES: usize = 16;
+/// `Uniforms::stages`, `sharp` and `stagen`, as the renderer keeps them.
+type StageU = ([[f32; 4]; STAGES], [[f32; 4]; STAGES], [f32; 4]);
 
 const INK: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const NEAR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -82,6 +92,16 @@ const ATLAS_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg8Unorm;
 const MARKS_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg8Unorm;
 /// The reduced material pass runs only when at least this fraction of the window can be loose.
 pub const LO_MIN_AREA: f32 = 0.15;
+/// Scrolling shades the scroll areas at the automatic level (DESIGN.md §1.12): off, the level applies
+/// only to loose areas, as before.
+pub const SOFT_SCROLL: bool = true;
+/// The lowest level each material is shaded at while it scrolls: where its marks are finer than half a
+/// pixel's softening shows (charr's characters, halftonr's screen, carvr's gouges, glitchr's rows,
+/// scribblr's line, smudgr's grain, a material from source), 0.75; elsewhere 0.5.
+pub fn soft_floor(m: crate::style::Material) -> f32 {
+    use crate::style::Material as M;
+    match m { M::Plain | M::Near | M::Dottr => 0.5, _ => 0.75 }
+}
 
 /// The particle pass's own uniforms (see `particles.wgsl`).
 #[repr(C)]
@@ -223,6 +243,15 @@ pub struct Renderer {
     pub auto: crate::perf::AutoQuality,
     /// Draw the reduced pass even when nothing is loose (for checks that compare rest pixels).
     pub always_lo: bool,
+    /// The stages' boxes for the uniforms (`Uniforms::stages`, `sharp`, `stagen`), and the stages' scale
+    /// of the last frame (a share of the device's).
+    stage_u: Box<StageU>,
+    stage_q: f32,
+    /// The last frame softened the scroll areas (the next one that does not is drawn sharp everywhere).
+    soft_q: f32,
+    /// The stages' scale moves with the machine's frames (`perf::StageScale`; off offscreen, where frames
+    /// are checks: only the look's quality sets it then).
+    pub govern: bool,
     /// Never read the field map (the check's control for DESIGN.md §1.29: with the map all zero, a
     /// frame is the same with or without it).
     pub no_map: bool,
@@ -458,7 +487,7 @@ impl Renderer {
             device, queue, out_format, layout, ubuf, sampler, atlas, atlas_view, marks, marks_view, palette_view, chars, chars_view,
             before: blank.clone(), blank: blank.clone(), hold: blank.clone(), hold_pipe, holds, hold_cap: 64, hold_n: 0, fmap, fmap_view: fmap_view.clone(), fmap_seen: None, fmap_u: [0.0; 4], split_seen: 0, split: [0.0; 4], last_look: None, marks_ready: false, hide_glyphs: false, plates_laid: std::cell::Cell::new(0),
             pictures: HashMap::new(), picture_views: HashMap::new(), hold_group: None, instances, capacity, pipes, annots, annot_capacity: 256, up_pipe: None, shader, pl,
-            ink: blank.clone(), lo: blank.clone(), lo_key: (0, 0, 0), material_up: material.clone(), auto: Default::default(), always_lo: false, no_map: false,
+            ink: blank.clone(), lo: blank.clone(), lo_key: (0, 0, 0), material_up: material.clone(), auto: Default::default(), always_lo: false, stage_u: Box::new(([[0.0; 4]; STAGES], [[0.0; 4]; STAGES], [0.0; 4])), stage_q: 1.0, soft_q: 1.0, govern: true, no_map: false,
             near: blank, material_first: material.clone(), material, size: (0, 0), tiles, mesh, sim_rows: 0,
             region: crate::dirty::Region::All, parts: None, partial: true, frame_view: blank_view.clone(), prev: None, spare: (vec![], vec![]), zero, blit, group: None, group_pipe, had_groups: false, plates: Default::default(), plate_pipes, plate_now: 0.0, plate_fade: [[0.0; 4]; 4], had_plates: 0, plate_inked: [false; 4], was_ageing: false, plate_serial: 0, reduced: false, fade_s: 0.15, sbox: [0.0; 4], own: [[0.0; 4]; crate::draw::OWN_COLOURS], post: None, blit_group: blank_group, warm: None, condense: false, last_region: None, tr: [[0.0; 4]; 9], boxes: [[0.0; 4]; 16], tr_loose: 0.0, t_cont: 0.0,
         };
@@ -975,6 +1004,35 @@ impl Renderer {
         if self.mesh.pipes.is_none() { self.mesh.pipes = Some(Self::mesh_pipes(&self.device, &self.mesh.pl)); }
     }
 
+    /// The stages' boxes for the uniforms, and over each what is drawn after it in its box (kept at the
+    /// device's scale: the modal layer, menus, the readout); whether any stage is to be shaded at its
+    /// own scale.
+    fn stage_boxes(&mut self, scene: &Scene) -> bool {
+        let u = &mut self.stage_u;
+        let (mut n, mut m) = (0usize, 0usize);
+        for st in scene.stages.iter().take(STAGES) {
+            u.0[n] = st.rect;
+            n += 1;
+            for i in &scene.instances[(st.end as usize).min(scene.instances.len())..] {
+                if i.paint[2] < 0.01 { continue; }
+                let b = i.bounds(3.0);
+                let r = [b[0].max(i.clip[0]).max(st.rect[0]), b[1].max(i.clip[1]).max(st.rect[1]), b[2].min(i.clip[2]).min(st.rect[2]), b[3].min(i.clip[3]).min(st.rect[3])];
+                if r[2] <= r[0] || r[3] <= r[1] { continue; }
+                // Into a box it touches, or a new one; the last takes what does not fit.
+                let near = |a: &[f32; 4]| a[0] <= r[2] + 4.0 && r[0] <= a[2] + 4.0 && a[1] <= r[3] + 4.0 && r[1] <= a[3] + 4.0;
+                let k = match (0..m).find(|&k| near(&u.1[k])) {
+                    Some(k) => k,
+                    None if m < STAGES => { u.1[m] = r; m += 1; continue; }
+                    None => STAGES - 1,
+                };
+                let a = &mut u.1[k];
+                *a = [a[0].min(r[0]), a[1].min(r[1]), a[2].max(r[2]), a[3].max(r[3])];
+            }
+        }
+        u.2[0] = n as f32;
+        u.2[1] = m as f32;
+        n > 0
+    }
     /// The reduced target for quality `q` (its size), made when the size or quality changes.
     fn lo_for(&mut self, q: f32) -> (u32, u32) {
         let (w, h) = ((self.size.0 as f32 * q).ceil() as u32, (self.size.1 as f32 * q).ceil() as u32);
@@ -1132,7 +1190,25 @@ impl Renderer {
         let q = if auto { self.auto.quality() } else { crate::perf::LEVELS.iter().copied().min_by(|a, b| (a - look.quality).abs().total_cmp(&(b - look.quality).abs())).unwrap_or(1.0) };
         // A small loose area (a lens, one held control) costs less at full resolution than a second pass.
         let loose = tiles.is_some() || ui.loose_estimate(now, look.fx.lens) >= LO_MIN_AREA;
-        let lo = (q < 1.0 && (loose || self.always_lo)).then(|| { let (w, h) = self.lo_for(q); [1.0 / q, q, w as f32, h as f32] });
+        // The stages at their own scale (DESIGN.md §1.35): the look's quality below 1 pins it, else the
+        // governor moves it. Their pixels are shaded in the reduced pass at that scale, and filtered up.
+        let qs = ui.stage_scale((look.quality > 0.0 && look.quality < 1.0).then_some(look.quality), self.govern);
+        let staged = qs < 0.99 && self.stage_boxes(ui.scene());
+        // Scrolling under the automatic level (Fable's ruling, DESIGN.md §1.12): the scroll areas are shaded
+        // at the level, no lower than the material's floor, from the first frame that scrolls; 100 ms after
+        // the last delta one frame is drawn sharp everywhere.
+        let soft = SOFT_SCROLL && auto && q < 1.0 && ui.scroll_soft();
+        let q = if soft { q.max(soft_floor(look.material)) } else { q };
+        let lo_loose = q < 1.0 && (loose || soft || self.always_lo);
+        let ql = if lo_loose && staged { q.min(qs) } else if staged { qs } else { q };
+        self.stage_u.2[2] = if staged && !lo_loose { 1.0 } else { 0.0 };
+        self.stage_u.2[3] = if soft { 1.0 } else { 0.0 };
+        if !staged { self.stage_u.2[0] = 0.0; self.stage_u.2[1] = 0.0; }
+        let rescaled = (qs - self.stage_q).abs() > 1e-3 || (self.soft_q < 1.0 && !soft);
+        self.stage_q = qs;
+        self.soft_q = if soft { q } else { 1.0 };
+        ui.soft_drawn(soft);
+        let lo = (lo_loose || staged).then(|| { let (w, h) = self.lo_for(ql); [1.0 / ql, ql, w as f32, h as f32] });
         let pending = ui.perf().pending;
         // The field map (DESIGN.md §1.29): its bytes when they changed (a few KB), and the numbers.
         let snap = ui.fieldmap().snapshot().clone();
@@ -1155,7 +1231,7 @@ impl Renderer {
         let inputs = crate::dirty::Inputs {
             instances, annot, meshes: ui.scene().meshes.iter().map(|m| m.scene.fingerprint() ^ (m.rect[2].to_bits() as u64) << 32 ^ m.rect[3].to_bits() as u64).collect(),
             field: *ui.field(), look: *look, now, mclock: mt[0], gclock: mt[1], size: self.size, map: snap, cuts: ui.scene().cuts(),
-            global: split[3] > 0.0 || tiles.is_some() || lo.is_some() || self.hide_glyphs || !ui.scene().groups.is_empty() || self.had_groups || ui.scene().plate_ageing || self.was_ageing || ui.scene().plate_serial != self.plate_serial || ui.scene().plates.len() != self.had_plates || own_changed,
+            global: split[3] > 0.0 || tiles.is_some() || lo_loose || rescaled || self.hide_glyphs || !ui.scene().groups.is_empty() || self.had_groups || ui.scene().plate_ageing || self.was_ageing || ui.scene().plate_serial != self.plate_serial || ui.scene().plates.len() != self.had_plates || own_changed,
         };
         self.had_groups = !ui.scene().groups.is_empty();
         self.had_plates = ui.scene().plates.len();
@@ -1185,7 +1261,8 @@ impl Renderer {
         p.dirty = dirty; p.passes = passes; p.tex_mb = tex_mb;
         p.quality = q; p.auto = auto; p.particles = parts; p.particle_path = path;
         p.frame(submit);
-        if auto { self.auto.feed(pending.update_layout + pending.scene + submit); }
+        // The automatic level goes by the intervals between frames drawn while something moves.
+        if auto && self.govern { self.auto.feed(crate::perf::now_ms(), pending.update_layout + pending.scene + submit, loose || ui.scroll_soft()); }
         ui.frame_drawn();
     }
 
@@ -1474,12 +1551,25 @@ impl Renderer {
             None => self.stage1(&mut enc, scene, &ink, &near, tiles, None),
             Some((s1, _)) => for b in s1 { self.stage1(&mut enc, scene, &ink, &near, tiles, Some(*b)); },
         }
-        if lo.is_some() {
+        if let Some([_, q, lw, lh]) = lo {
             let lo_view = self.lo.clone();
-            let mut pass = clear(&mut enc, &lo_view, wgpu::Color::BLACK);
+            // Within what changed (the stages alone are shaded at their scale; elsewhere it is marked), the
+            // boxes at the reduced scale with a texel more on each side for the filter.
+            let scs: Vec<Option<[u32; 4]>> = match &boxes {
+                Some((_, s2)) => s2.iter().filter_map(|&[x, y, sw, sh]| {
+                    let (x0, y0) = (((x as f32 * q).floor() - 2.0).max(0.0), ((y as f32 * q).floor() - 2.0).max(0.0));
+                    let (x1, y1) = ((((x + sw) as f32 * q).ceil() + 2.0).min(lw), (((y + sh) as f32 * q).ceil() + 2.0).min(lh));
+                    (x1 > x0 && y1 > y0).then_some(Some([x0 as u32, y0 as u32, (x1 - x0) as u32, (y1 - y0) as u32]))
+                }).collect(),
+                None => vec![None],
+            };
+            let mut pass = if boxes.is_some() { load(&mut enc, &lo_view) } else { clear(&mut enc, &lo_view, wgpu::Color::BLACK) };
             pass.set_pipeline(&self.pipes[3]);
             pass.set_bind_group(0, if with_before { &self.material } else { &self.material_first }, &[]);
-            pass.draw(0..3, 0..1);
+            for sc in scs {
+                if let Some([x, y, sw, sh]) = sc { pass.set_scissor_rect(x, y, sw, sh); }
+                pass.draw(0..3, 0..1);
+            }
         }
         let stage2: Option<Vec<Option<[u32; 4]>>> = match boxes { None => Some(vec![None]), Some((_, s2)) if s2.is_empty() => None, Some((_, s2)) => Some(s2.into_iter().map(Some).collect()) };
         if let Some(scs) = stage2 {
@@ -1544,6 +1634,7 @@ impl Renderer {
             post: post.0, pal: post.1, fmap: self.fmap_u, sbox: if split[3] > 0.0 { self.sbox } else { [0.0; 4] },
             plate: [self.plate_now, 0.0, 0.0, 0.0], plates: self.plate_fade,
             own: self.own,
+            stages: self.stage_u.0, sharp: self.stage_u.1, stagen: self.stage_u.2,
         };
         self.queue.write_buffer(&self.ubuf, 0, bytemuck::bytes_of(&u));
     }
