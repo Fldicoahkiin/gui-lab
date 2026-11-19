@@ -35,19 +35,19 @@ fn a_fitted_piece_that_only_draws_differently_is_one_view_and_no_layout_a_frame(
     let mut t = 1.0;
     for f in 0..20 {
         t += 1.0 / 60.0;
-        let c0 = u.perf().counters.clone();
+        let c0 = u.perf().counters;
         u.tick(t);
-        let c1 = u.perf().counters.clone();
+        let c1 = u.perf().counters;
         assert_eq!(c1.views - c0.views, 1, "frame {f}: views");
         assert_eq!(c1.layouts - c0.layouts, 0, "frame {f}: layouts");
         assert_eq!(boxes(&u), boxes(&open(t)), "frame {f}: the boxes are not a fresh layout's");
     }
     // A longer label: laid out again, and the boxes are a fresh layout's.
-    let c0 = u.perf().counters.clone();
+    let c0 = u.perf().counters;
     u.tick(3.1);
     assert!(u.perf().counters.layouts > c0.layouts, "a label that wraps lays out again");
     assert_eq!(boxes(&u), boxes(&open(3.1)));
-    let c0 = u.perf().counters.clone();
+    let c0 = u.perf().counters;
     u.tick(3.2);
     assert_eq!((u.perf().counters.views - c0.views, u.perf().counters.layouts - c0.layouts), (1, 0), "settled again after the change");
 }
