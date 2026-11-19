@@ -548,6 +548,43 @@ pub struct Modal<M> {
 /// An element: a box with its layout, what it shows, how it answers input and the field, and its
 /// children. Built with `row`, `col`, `text` and the other constructors and the builder methods below.
 pub struct El<M> {
+    /// What it is apart from what it sends (`Props`): an `El` reads and writes these as its own fields
+    /// (`el.style`, `el.key`).
+    pub props: Props,
+    /// Sent on a press, Enter or Space (`El::on_press`).
+    pub on_press: Option<M>,
+    /// Keys while it has focus (`El::on_key`).
+    pub on_key: Option<OnKey<M>>,
+    /// A press and the drag that follows (`El::on_drag_with`).
+    pub on_drag: Option<OnDrag<M>>,
+    /// Sent when focus leaves this element.
+    pub on_blur: Option<M>,
+    /// Opens a layer over everything else (`El::modal`).
+    pub modal: Option<Modal<M>>,
+    /// A text field: takes text input while focused (see `TextInput`); `multiline` lets the runtime move
+    /// the caret by lines and Enter insert a line break.
+    pub on_text: Option<OnText<M>>,
+    /// A virtual list (DESIGN.md §1.13): the runtime builds only the rows it can see (and a few around).
+    pub virt: Option<Virtual<M>>,
+    /// What this element is to assistive technology (DESIGN.md §1.14): role, name, state.
+    pub access: Option<Access>,
+    /// A `scene3d` element: what the pointer is over, and presses, by the copy under it.
+    pub on_pick: Option<OnPick<M>>,
+    /// The wheel over this element (taken before scrolling).
+    pub on_wheel: Option<OnWheel<M>>,
+    /// The pointer moving over this element, in its own coordinates, and leaving it (`El::on_move`).
+    pub on_move: Option<OnMove<M>>,
+    /// Told when it comes into view and leaves it (`El::on_visible`).
+    pub on_visible: Option<OnVisible<M>>,
+    /// Told its subtree's true outline as coverage on a grid, whenever it changes (`El::on_outline`).
+    pub on_outline: Option<Outline<M>>,
+    /// What it holds, in order.
+    pub children: Vec<El<M>>,
+}
+/// What an element is apart from the messages it sends: its layout, what it shows and how, and how it
+/// answers input. Every `El<M>` has one (`El::props`) and reads it as its own fields, so code that
+/// changes an element's style or key is the same for every message type.
+pub struct Props {
     /// Names the element across views: focus, scroll offsets, births, recomposition and the accessibility mirror follow it (`El::key`).
     pub key: String,
     /// Its layout (taffy's flexbox and grid).
@@ -560,14 +597,6 @@ pub struct El<M> {
     pub border: Option<(f32, Paint)>,
     /// Corner radius of the fill and border, logical px.
     pub radius: f32,
-    /// Sent on a press, Enter or Space (`El::on_press`).
-    pub on_press: Option<M>,
-    /// Keys while it has focus (`El::on_key`).
-    pub on_key: Option<OnKey<M>>,
-    /// A press and the drag that follows (`El::on_drag_with`).
-    pub on_drag: Option<OnDrag<M>>,
-    /// Sent when focus leaves this element.
-    pub on_blur: Option<M>,
     /// Tab, presses and `Ui::focus_key` can give it focus.
     pub focusable: bool,
     /// Where Tab puts it: positive numbers first, lowest first; 0 (the default) in document order after
@@ -591,8 +620,6 @@ pub struct El<M> {
     /// Pressing this commits a new state (theme, material): the renderer keeps the old frame and shows
     /// it beyond a front that travels out from the press.
     pub commit: bool,
-    /// Opens a layer over everything else (`El::modal`).
-    pub modal: Option<Modal<M>>,
     /// Face for each font role in this subtree (display, body, mono).
     pub fonts: Option<[u8; 3]>,
     /// How loose this element is at rest, 0..1 (a picture at 1 shows its marks).
@@ -635,37 +662,20 @@ pub struct El<M> {
     /// What is put in the field map inside this subtree's box is back at rest after lives of its own
     /// (energy, flow; s, 0.1–30): `El::map_life`.
     pub map_life: Option<(f32, f32)>,
-    /// A text field: takes text input while focused (see `TextInput`); `multiline` lets the runtime move
-    /// the caret by lines and Enter insert a line break.
-    pub on_text: Option<OnText<M>>,
     /// A text field of several lines (Enter inserts a line break).
     pub multiline: bool,
     /// The text in this subtree can be selected with the pointer and copied (read-only).
     pub selectable: bool,
     /// The pointer's shape over this element (else derived: text, pointer, grab).
     pub cursor: Option<Cursor>,
-    /// A virtual list (DESIGN.md §1.13): the runtime builds only the rows it can see (and a few around).
-    pub virt: Option<Virtual<M>>,
-    /// What this element is to assistive technology (DESIGN.md §1.14): role, name, state.
-    pub access: Option<Access>,
     /// Ripple scope, response, legibility and recomposition (DESIGN.md §1.15, §1.16).
     pub ripple: Ripple,
-    /// A `scene3d` element: what the pointer is over, and presses, by the copy under it.
-    pub on_pick: Option<OnPick<M>>,
-    /// The wheel over this element (taken before scrolling).
-    pub on_wheel: Option<OnWheel<M>>,
-    /// The pointer moving over this element, in its own coordinates, and leaving it (`El::on_move`).
-    pub on_move: Option<OnMove<M>>,
     /// A closed outline (local logical px) the annotation layer draws over this element (`El::guide`).
     pub guide: Option<Rc<Vec<(f32, f32)>>>,
     /// This subtree is drawn as its own loading skeleton (`El::skeleton`), inherited.
     pub skeleton: bool,
     /// Lines and rows run right to left in this subtree (inherited; `None` follows the parent).
     pub rtl: Option<bool>,
-    /// Told when it comes into view and leaves it (`El::on_visible`).
-    pub on_visible: Option<OnVisible<M>>,
-    /// Told its subtree's true outline as coverage on a grid, whenever it changes (`El::on_outline`).
-    pub on_outline: Option<Outline<M>>,
     /// Appears and disappears by decoding (`El::decode`, DESIGN.md §1.28).
     pub decode: Option<crate::decode::Decode>,
     /// Posed glyphs on a form: how the ones turned away, edge on, hidden behind nearer ones and far
@@ -701,9 +711,13 @@ pub struct El<M> {
     pub pen: f32,
     /// It is a view scale's container (`El::view_scale`): the scale.
     pub view_scale: Option<f32>,
-    /// What it holds, in order.
-    pub children: Vec<El<M>>,
 }
+impl Props {
+    #[inline(never)]
+    fn new(style: Style, content: Content) -> Self { Props { key: String::new(), style, content, fill: None, border: None, radius: 0.0, focusable: false, tab_order: 0, skip_to: None, focus_shown: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, shift: (0.0, 0.0), shed: None, flow_field: None, stirr: None, trace: None, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, clips: false, calm: false, map_life: None, multiline: false, selectable: false, cursor: None, ripple: Ripple::default(), guide: None, skeleton: false, rtl: None, decode: None, form: None, turn: 0.0, reveal_by: Reveal::Glyph, ongoing: false, pass: false, opacity: 1.0, commit_scope: false, preview: false, fit: None, clamp: 0, plate: None, own_size: None, pen: 1.0, view_scale: None } }
+}
+impl<M> std::ops::Deref for El<M> { type Target = Props; fn deref(&self) -> &Props { &self.props } }
+impl<M> std::ops::DerefMut for El<M> { fn deref_mut(&mut self) -> &mut Props { &mut self.props } }
 
 /// Rows of a virtual list: how many, how tall each (logical px), how many beyond the visible ones to
 /// build on each side, what row `i` is, and which row is selected (it is scrolled into view after a key).
@@ -814,7 +828,7 @@ impl<M> El<M> {
     fn new(style: Style, content: Content) -> Self {
         // Nothing shrinks unless asked: fixed sizes stay fixed inside columns and scroll areas.
         let style = Style { flex_shrink: 0.0, ..style };
-        Self { key: String::new(), style, content, fill: None, border: None, radius: 0.0, on_press: None, on_key: None, on_drag: None, on_blur: None, focusable: false, tab_order: 0, skip_to: None, focus_shown: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, modal: None, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, shift: (0.0, 0.0), shed: None, flow_field: None, stirr: None, trace: None, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, clips: false, calm: false, map_life: None, on_text: None, multiline: false, selectable: false, cursor: None, virt: None, access: None, ripple: Ripple::default(), on_pick: None, on_wheel: None, on_move: None, guide: None, skeleton: false, rtl: None, on_visible: None, on_outline: None, decode: None, form: None, turn: 0.0, reveal_by: Reveal::Glyph, ongoing: false, pass: false, opacity: 1.0, commit_scope: false, preview: false, fit: None, clamp: 0, plate: None, own_size: None, pen: 1.0, view_scale: None, children: vec![] }
+        Self { props: Props::new(style, content), on_press: None, on_key: None, on_drag: None, on_blur: None, modal: None, on_text: None, virt: None, access: None, on_pick: None, on_wheel: None, on_move: None, on_visible: None, on_outline: None, children: vec![] }
     }
     /// Its key: unique on the page, stable across views (focus, scroll, births and recomposition follow it).
     pub fn key(mut self, k: impl Into<String>) -> Self { self.key = k.into(); self }
@@ -1162,7 +1176,7 @@ impl<M> El<M> {
 
     /// The same tree sending other messages: lets one application embed another's view.
     pub fn map<N: 'static>(self, f: Rc<dyn Fn(M) -> N>) -> El<N> where M: 'static {
-        let El { key, style, content, fill, border, radius, on_press, on_key, on_drag, on_blur, focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, commit, modal, fonts, loose, wipe, flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, map_life, on_text, multiline, selectable, cursor, virt, access, ripple, on_pick, on_wheel, on_move, guide, skeleton, rtl, on_visible, on_outline, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview, fit, clamp, plate, own_size, pen, view_scale, children } = self;
+        let El { props, on_press, on_key, on_drag, on_blur, modal, on_text, virt, on_pick, on_wheel, on_move, on_visible, on_outline, access, children } = self;
         let virt = virt.map(|v| { let f = f.clone(); let b = v.build; Virtual { count: v.count, row_h: v.row_h, overscan: v.overscan, selected: v.selected, build: Rc::new(move |i: usize| b(i).map(f.clone())) as Rc<dyn Fn(usize) -> El<N>> } });
         let on_key = on_key.map(|k| { let f = f.clone(); Rc::new(move |key: Key, shift: bool| k(key, shift).map(|m| f(m))) as OnKey<N> });
         let on_text = on_text.map(|t| { let f = f.clone(); Rc::new(move |i: TextInput| t(i).map(|m| f(m))) as OnText<N> });
@@ -1173,9 +1187,8 @@ impl<M> El<M> {
         let on_visible = on_visible.map(|d| { let f = f.clone(); Rc::new(move |v: bool| d(v).map(|m| f(m))) as OnVisible<N> });
         let on_outline = on_outline.map(|o| { let f = f.clone(); let g = o.f; Outline { cols: o.cols, rows: o.rows, f: Rc::new(move |x: Rc<crate::field::Grid>| g(x).map(|m| f(m))) } });
         El {
-            key, style, content, fill, border, radius, on_press: on_press.map(|m| f(m)), on_key, on_drag, on_blur: on_blur.map(|m| f(m)),
-            focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, commit, modal: modal.map(|m| Modal { dismiss: f(m.dismiss), beneath: m.beneath }),
-            fonts, loose, wipe, flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, map_life, on_text, multiline, selectable, cursor, virt, access, ripple, on_pick, on_wheel, on_move, guide, skeleton, rtl, on_visible, on_outline, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview, fit, clamp, plate, own_size, pen, view_scale, children: children.into_iter().map(|c| c.map(f.clone())).collect(),
+            props, on_press: on_press.map(|m| f(m)), on_key, on_drag, on_blur: on_blur.map(|m| f(m)), modal: modal.map(|m| Modal { dismiss: f(m.dismiss), beneath: m.beneath }),
+            on_text, virt, on_pick, on_wheel, on_move, on_visible, on_outline, access, children: children.into_iter().map(|c| c.map(f.clone())).collect(),
         }
     }
 }
@@ -1229,7 +1242,17 @@ impl<M> El<M> {
     /// `El::zoom`, the pen too unless `keep_pen` (`El::view_scale`, applied to its children as the view
     /// is laid out, so children added after it are scaled too).
     pub(crate) fn zoom_by(mut self, k: f32, keep_pen: bool) -> Self {
-        if (k - 1.0).abs() < 1e-4 || k <= 0.0 { return self; }
+        if !self.props.zoom(k, keep_pen) { return self; }
+        self.children = std::mem::take(&mut self.children).into_iter().map(|c| c.zoom_by(k, keep_pen)).collect();
+        self
+    }
+}
+
+impl Props {
+    /// `El::zoom_by` of this element itself; whether what it holds is zoomed too (not at 1, nor for an
+    /// own-size element).
+    fn zoom(&mut self, k: f32, keep_pen: bool) -> bool {
+        if (k - 1.0).abs() < 1e-4 || k <= 0.0 { return false; }
         if let Some((a, z)) = self.own_size {
             // Its own size: only where it is scales.
             let mut st = self.style.clone();
@@ -1240,7 +1263,7 @@ impl<M> El<M> {
             // the zoomed box would put it; in a row or column it takes its own room where the layout puts it.
             let placed = self.style.position == taffy::Position::Absolute;
             self.own_size = Some((a, if placed { z * k } else { z }));
-            return self;
+            return false;
         }
         zoom_style(&mut self.style, k);
         self.radius *= k;
@@ -1273,8 +1296,7 @@ impl<M> El<M> {
             t.points = Rc::new(t.points.iter().map(|&[x, y]| [x * k, y * k]).collect());
             if !keep_pen { t.weight *= k; t.dash *= k; t.gap *= k; }
         }
-        self.children = std::mem::take(&mut self.children).into_iter().map(|c| c.zoom_by(k, keep_pen)).collect();
-        self
+        true
     }
 }
 

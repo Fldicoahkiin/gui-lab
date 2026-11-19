@@ -3004,41 +3004,11 @@ impl<S, M: Clone> Ui<S, M> {
         // Nothing changed that layout depends on (taffy's own dirty flag is not kept for the root): the
         // boxes from last time stand.
         if changed {
-            let text = &mut self.text;
-            let measure = |input: taffy::LayoutInput, _: NodeId, ctx: Option<&mut usize>, style: &Style| {
-                let none = |_: *const (), _: f32| 0.0;
-                let ctx_i = ctx.as_ref().map(|i| **i);
-                let mut out = match ctx.map(|i| &nodes[*i].content) {
-                    Some(Content::Text { s, size, line, font, around, nowrap, track, .. }) => taffy::compute_leaf_layout(input, style, none, |known, avail| {
-                        let limit = known.width.or(match avail.width { AvailableSpace::Definite(w) => Some(w), AvailableSpace::MinContent => Some(0.0), AvailableSpace::MaxContent => None });
-                        // Text flowing around obstacles fills whatever width it is given; text kept on one
-                        // line is as wide as it is.
-                        let limit = if around.is_some() { limit.filter(|w| *w > 0.0).or(Some(600.0)) } else if *nowrap { None } else { limit };
-                        // Clamped to lines: measured as it is shown (the width it is drawn at is one more).
-                        let clamp = ctx_i.map_or(0, |i| nodes[i].clamp);
-                        let cut = (clamp > 0 && around.is_none() && !*nowrap).then_some(()).and(limit).and_then(|w| text.clamp_lines(Para { s, face: font.resolve([0; 3]), size: *size, line: *line, width: w + 1.0, print: 0.0, around: None, track: *track }, clamp));
-                        let s = cut.as_deref().unwrap_or(s);
-                        let (w, h) = text.measure_around(s, font.resolve([0; 3]), *size, *line, limit, crate::text::Setting { around: around.as_deref(), track: *track });
-                        Size { width: known.width.unwrap_or(w), height: known.height.unwrap_or(h) }
-                    }),
-                    Some(Content::Picture { ratio, .. }) => taffy::compute_leaf_layout(input, style, none, |known, avail| {
-                        let w = known.width.or(avail.width.into_option()).unwrap_or(0.0);
-                        Size { width: w, height: known.height.unwrap_or((w * ratio).round()) }
-                    }),
-                    Some(Content::Canvas(d)) => taffy::compute_leaf_layout(input, style, none, |known, avail| {
-                        let w = known.width.or(avail.width.into_option()).unwrap_or(d.w);
-                        Size { width: w, height: known.height.unwrap_or((w * d.h / d.w.max(1e-3)).round()) }
-                    }),
-                    _ => taffy::compute_leaf_layout(input, style, none, |_, _| Size::ZERO),
-                };
-                // A box whose children all went is laid out here as a leaf: a positioning area makes
-                // taffy drop the absolute children it held, which would otherwise outlive their nodes.
-                out.oof_positioning_area = Some(taffy::OofPositioningArea { size: Size::ZERO, offset: taffy::Point::ZERO });
-                out
-            };
             let space = Size { width: AvailableSpace::Definite(self.size.0), height: AvailableSpace::Definite(self.size.1) };
             self.perf.counters.layouts += 1;
-            if self.tree.compute_layout_with_measure(root, space, measure).is_err() { return nodes; }
+            // Laid out by a function of the leaves alone, so taffy is built once and not for each `Ui` type.
+            let leaves: Vec<(&Content, u16)> = nodes.iter().map(|n| (&n.content, n.clamp)).collect();
+            if compute_layout(&mut self.tree, root, space, &mut self.text, &leaves).is_err() { return nodes; }
         } else {
             self.perf.counters.layouts_skipped += 1;
         }
@@ -6180,6 +6150,42 @@ fn sweep_glyphs(text: &mut Text, para: Para<'_>, origin: (f32, f32), proto: Inst
     out
 }
 
+/// Lay out the taffy tree from `root` in `space`, each leaf measured by what it shows (`leaves`, by the
+/// node index each taffy leaf carries: its content and line clamp).
+fn compute_layout(tree: &mut taffy::TaffyTree<usize>, root: NodeId, space: Size<AvailableSpace>, text: &mut Text, leaves: &[(&Content, u16)]) -> Result<(), taffy::TaffyError> {
+    let measure = |input: taffy::LayoutInput, _: NodeId, ctx: Option<&mut usize>, style: &Style| {
+        let none = |_: *const (), _: f32| 0.0;
+        let ctx_i = ctx.as_ref().map(|i| **i);
+        let mut out = match ctx.map(|i| leaves[*i].0) {
+            Some(Content::Text { s, size, line, font, around, nowrap, track, .. }) => taffy::compute_leaf_layout(input, style, none, |known, avail| {
+                let limit = known.width.or(match avail.width { AvailableSpace::Definite(w) => Some(w), AvailableSpace::MinContent => Some(0.0), AvailableSpace::MaxContent => None });
+                // Text flowing around obstacles fills whatever width it is given; text kept on one
+                // line is as wide as it is.
+                let limit = if around.is_some() { limit.filter(|w| *w > 0.0).or(Some(600.0)) } else if *nowrap { None } else { limit };
+                // Clamped to lines: measured as it is shown (the width it is drawn at is one more).
+                let clamp = ctx_i.map_or(0, |i| leaves[i].1);
+                let cut = (clamp > 0 && around.is_none() && !*nowrap).then_some(()).and(limit).and_then(|w| text.clamp_lines(Para { s, face: font.resolve([0; 3]), size: *size, line: *line, width: w + 1.0, print: 0.0, around: None, track: *track }, clamp));
+                let s = cut.as_deref().unwrap_or(s);
+                let (w, h) = text.measure_around(s, font.resolve([0; 3]), *size, *line, limit, crate::text::Setting { around: around.as_deref(), track: *track });
+                Size { width: known.width.unwrap_or(w), height: known.height.unwrap_or(h) }
+            }),
+            Some(Content::Picture { ratio, .. }) => taffy::compute_leaf_layout(input, style, none, |known, avail| {
+                let w = known.width.or(avail.width.into_option()).unwrap_or(0.0);
+                Size { width: w, height: known.height.unwrap_or((w * ratio).round()) }
+            }),
+            Some(Content::Canvas(d)) => taffy::compute_leaf_layout(input, style, none, |known, avail| {
+                let w = known.width.or(avail.width.into_option()).unwrap_or(d.w);
+                Size { width: w, height: known.height.unwrap_or((w * d.h / d.w.max(1e-3)).round()) }
+            }),
+            _ => taffy::compute_leaf_layout(input, style, none, |_, _| Size::ZERO),
+        };
+        // A box whose children all went is laid out here as a leaf: a positioning area makes
+        // taffy drop the absolute children it held, which would otherwise outlive their nodes.
+        out.oof_positioning_area = Some(taffy::OofPositioningArea { size: Size::ZERO, offset: taffy::Point::ZERO });
+        out
+    };
+    tree.compute_layout_with_measure(root, space, measure)
+}
 /// Whether a subtree has an element at its own size (`El::own_size`).
 fn has_own<M>(el: &El<M>) -> bool { el.own_size.is_some() || el.children.iter().any(has_own) }
 /// Whether a view has a box marked `El::fit`.
@@ -6322,7 +6328,7 @@ fn measure_key(c: &Content) -> u64 {
 /// A virtual list's rows are built here, for what its viewport shows.
 #[allow(clippy::too_many_arguments)]
 fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], off: (bool, bool), flow: Option<(Rc<str>, usize)>, inh: Inherit, vx: &mut VirtCtx, built: &mut Built, nodes: &mut Vec<Node<M>>) -> usize {
-    let El { key, mut style, mut content, fill, border, radius, mut on_press, mut on_key, mut on_drag, mut on_blur, mut focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, mut commit, modal, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, map_life, mut on_text, multiline, selectable, cursor, virt, access, ripple, mut on_pick, mut on_wheel, mut on_move, guide, skeleton, rtl, on_visible, on_outline, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview, fit, clamp, plate, own_size, pen, view_scale, mut children } = el;
+    let El { props: crate::el::Props { key, mut style, mut content, fill, border, radius, mut focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, mut commit, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, map_life, multiline, selectable, cursor, ripple, guide, skeleton, rtl, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview, fit, clamp, plate, own_size, pen, view_scale }, mut on_press, mut on_key, mut on_drag, mut on_blur, modal, mut on_text, virt, access, mut on_pick, mut on_wheel, mut on_move, on_visible, on_outline, mut children } = el;
     // A view scale scales what it holds, not its pen (`El::view_scale`).
     if let Some(s) = view_scale { children = children.into_iter().map(|c| c.zoom_by(s, true)).collect(); }
     let mut inh = inh;

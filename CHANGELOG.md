@@ -8,6 +8,16 @@ crate and the `amenui` npm package (`web/`) always carry the same version, becau
 match the module that `web_app!` generates. The minimum Rust is the one CI builds with (`rust-version`
 in Cargo.toml); raising it is a breaking change before 1.0 only in the second number.
 
+## Smaller web module
+
+- `El`'s fields that do not depend on its message type are in `El::props` (`Props`), which an `El` reads and writes
+  as its own fields (`el.style`, `el.key`, `e.children` are as before). `El::map`, `El::zoom` and `El::new` move them
+  as one, and each leaf is measured outside the generic code, so an application that embeds others' views builds less
+  per message type: the website's full module is 13,937 bytes smaller gzipped (2,840,450 to 2,826,513). Code that
+  builds or takes apart an `El` by naming all its fields names `props` instead.
+- Web: a canvas resized by its stage is drawn again at its new size in the same refresh, so a route that changes the
+  stage's size shows no empty refresh (`web/amenui.js`).
+
 ## A view scale
 
 - `El::view_scale(s)`: what a container holds is scaled by `s` except the pen: line, border and trace widths and a
