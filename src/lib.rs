@@ -24,6 +24,7 @@ pub mod materials;
 pub mod marks;
 pub mod mesh;
 pub mod morph;
+pub mod pair;
 pub mod motes;
 pub mod perf;
 pub mod pictures;

@@ -8,6 +8,11 @@ crate and the `amenui` npm package (`web/`) always carry the same version, becau
 match the module that `web_app!` generates. The minimum Rust is the one CI builds with (`rust-version`
 in Cargo.toml); raising it is a breaking change before 1.0 only in the second number.
 
+## Between letters
+
+- `pair`: the distance between two glyph outlines and the white between them, and where to set a pair for a gap
+  or an area, from the page's faces handed to the state (`Ui::faces`, `Ui::on_faces`), not the text system.
+
 ## Stages, from the site
 
 - A slow stage holds with input coalesced (`Ui::coalesce`, as the web and desktop hosts run): the input of a frame

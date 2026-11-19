@@ -747,6 +747,11 @@ impl Text {
         s.focus().index().min(p.s.len())
     }
 
+    /// Every face's bytes by its number (a face declared and not come: its stand-in's), and whether it is a
+    /// pixel face: for glyph outlines outside the text system (`pair::Faces`).
+    pub(crate) fn face_bytes(&self) -> Vec<(Arc<Vec<u8>>, bool)> {
+        (0..self.families.len()).map(|f| { let fam = &self.families[self.real(f as u8).0]; (fam.data.clone(), fam.pixel.is_some()) }).collect()
+    }
     /// Rasterise one character of a face at `px` device px, outside any layout (for the mark atlas).
     /// Pixel faces are cut at half coverage as they are on the page.
     pub fn raster(&mut self, face: u8, ch: char, px: f32) -> Option<Raster> {

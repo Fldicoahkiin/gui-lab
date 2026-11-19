@@ -702,6 +702,28 @@ added before the first frame never seen standing in; an arrival in one layout, t
 frames 2 s later; two faces in one frame in one layout; bytes that are not a font changing nothing and not asked for
 again; the same arrival three times the same frames; resources kept by name and asked for until they come).
 
+### 1.6.6 Glyph outlines, between letters
+
+Spacing letters by the true gap between them, or by the white area between them, needs their outlines, not
+their boxes, and it happens in the state (a piece that pulls letters on springs), which has no text system.
+`Ui::faces()` hands it the page's faces and nothing else (`pair::Faces`, cheap to clone; `Ui::on_faces(f)`
+gives them to the state at once and again when a face comes). `Faces::glyph(font, ch, px)` is one
+character's ink at a size, made once: its advance and, for each pixel row, where its ink starts and ends from
+the pen, each edge placed within its pixel by its coverage (a pixel face is cut at half, as on the page).
+Over that, for a pair with the second set `dx` px after the first (pen to pen):
+
+- `pair::gap(a, b, dx)`: the smallest distance between their ink, px, each row a segment a pixel tall
+  (rows next to each other touch); less than 0 when they overlap along a row, by how much.
+- `pair::area(a, b, dx)`: the white between them, px², over the rows where both have ink.
+- `pair::spaced(a, b, target)` and `spaced_area(a, b, target)`: the `dx` that gives that gap or that white,
+  to 1/64 px.
+
+A role resolves as at the root of a view with no `El::fonts`; a page that sets its own names the face with
+`Font::Face`. Nine pair distances take about 0.1 ms in a release build (176 px letters). `tests/pair.rs`:
+for every pair of `Voyage` at 176 px, set 0, 8 and 24 px apart by `spaced`, the nearest ink pixels of the
+two in the text system's own coverage are that far apart to within a pixel; `spaced_area` gives the white
+asked for.
+
 ### 1.7 The annotation layer
 
 A third pass, drawn after the material, pixel exact, never loosened, in integer multiples of Departure

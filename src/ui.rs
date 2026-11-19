@@ -556,6 +556,8 @@ pub struct Ui<S, M> {
     stage_input: (bool, bool),
     /// Added to every stage's draw, ms (`Ui::slow_stage`).
     stage_add_ms: f32,
+    /// Where the page's faces for glyph outlines go when one comes (`Ui::on_faces`).
+    faces_to: Option<fn(&mut S, crate::pair::Faces)>,
     /// What the stages' pieces do by themselves (`Ui::on_step`), and each stage's subtree by its key
     /// (`Ui::stage_view`).
     stepped: Option<fn(&mut S, f32) -> Vec<String>>,
@@ -1090,7 +1092,7 @@ impl<S, M: Clone> Ui<S, M> {
             state, view, update, text: Text::new(faces), size: (0.0, 0.0), scale, clock: 0.0, wall: 0.0, bclock: crate::beat::Clock::default(), sent: vec![], sets: vec![], nodes: vec![], scene: Scene::default(),
             owners: vec![], page_len: 0, field: Field::default(), scroll: HashMap::new(), births: HashMap::new(), ramp: None, text_births: HashMap::new(),
             hover: None, focus: None, after_focus: None, fit_short: vec![], grain_at: None, clears: HashMap::new(), clearing: false, clear_many: vec![], flow_own: vec![], fit_k: HashMap::new(), fit_last: None, pressed: None, capture: None, modal_at: None, modal_key: None, return_focus: None, split: None, splits: 0,
-            keyboard: false, marks: Marks::default(), sized: None, commands: None, unseen: vec![], stages: vec![], stage_input: (false, false), stage_add_ms: 0.0, stepped: None, stage_of: None, stale_stages: vec![], restaging: None, base: vec![], tags: vec![], roles: vec![],
+            keyboard: false, marks: Marks::default(), sized: None, commands: None, unseen: vec![], stages: vec![], stage_input: (false, false), stage_add_ms: 0.0, faces_to: None, stepped: None, stage_of: None, stale_stages: vec![], restaging: None, base: vec![], tags: vec![], roles: vec![],
             run: None, painted_phase: 0, flows: HashMap::new(), ghosts: vec![], grows: vec![], ground_seen: None, ground_hold: None, body_len: 0, animating: false, lifted: HashMap::new(),
             gaze_of: None, gaze_seen: HashMap::new(), annots: vec![], focused: None, focus_moved: false, readout: gaze::Readout::default(), hovered: None, pointer_of: None, scripted: false, ticked: None, warm: None, warmed: None, owed: false, ambient: 60.0, input_t: -1e9, frame_t: -1e9, tick_gap: 1.0 / 60.0, unused_key: None, shortcut: None, scrolled_of: None, released: None, input: None,
             dirty: true, look_of: None, locale_of: None, timing: Timing::default(), wake_of: None, latest_birth: f32::NEG_INFINITY, gaze_until: f32::NEG_INFINITY,
@@ -1182,6 +1184,13 @@ impl<S, M: Clone> Ui<S, M> {
     /// Declare a face that comes later (DESIGN.md §1.6.5): its number now, for themes and `El::fonts`.
     /// Until its bytes come (`add_face`) text in it is set, read and laid out in `stand_in` at `scale`
     /// times its size, at rest, in its final colour, size and line height. A name already there keeps
+    /// The page's faces for glyph outlines (`pair::Faces`): what the state keeps to measure between
+    /// letters (`pair::gap`, `pair::spaced`) without the text system. A face added later (`Ui::add_face`)
+    /// is in the `Faces` asked for after it.
+    pub fn faces(&self) -> crate::pair::Faces { crate::pair::Faces::new(self.text.face_bytes()) }
+    /// `f` gets the page's faces for glyph outlines (`Ui::faces`) now, and again each time a face comes
+    /// (`Ui::add_face`): for a state that keeps them.
+    pub fn on_faces(mut self, f: fn(&mut S, crate::pair::Faces)) -> Self { self.faces_to = Some(f); let fs = self.faces(); f(&mut self.state, fs); self }
     /// its number.
     pub fn declare_face(&mut self, name: &str, decl: crate::text::FaceDecl) -> u8 {
         let known = self.text.face_named(name).is_some();
@@ -1197,6 +1206,7 @@ impl<S, M: Clone> Ui<S, M> {
     pub fn add_face(&mut self, name: &str, bytes: Vec<u8>) -> Result<u8, crate::error::FontError> {
         let before = self.text.face_named(name).and_then(|i| self.text.stand_in(i));
         let id = self.text.add(name, bytes)?;
+        if let Some(f) = self.faces_to { let fs = self.faces(); f(&mut self.state, fs); }
         match before {
             Some(d) => { self.came.push((id, d)); self.dirty = true; }
             None => { self.remeasure = true; self.relayout(); }
