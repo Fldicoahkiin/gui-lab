@@ -4262,6 +4262,8 @@ impl<S, M: Clone> Ui<S, M> {
             self.scene.plate_clear = std::mem::take(&mut self.plate_clear);
             self.scene.plate_serial = SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
+        static PAINTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        self.scene.paint = PAINTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.scene.plate_now = self.pclock;
         self.scene.plate_ageing = self.plates_ageing();
         self.scene.own = own_cols;

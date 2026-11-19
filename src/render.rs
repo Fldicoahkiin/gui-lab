@@ -320,11 +320,10 @@ pub struct Renderer {
     /// Some ink with a material override has been drawn into each plate slot since it was made or
     /// cleared (its material pass then needs the pipeline for any material).
     plate_over: [bool; 4],
-    /// The plate serial (`Scene::plate_serial`) of the paint that emptied each slot and whose ink was
-    /// then drawn into it: that scene drawn again (no paint between, a frame drawn whole) lays the plate
-    /// on and does not ink it twice.
+    /// The paint (`Scene::paint`) whose ink was last drawn into each slot: that scene drawn again (no
+    /// paint between, a frame drawn whole) lays the plate on and does not ink it twice.
     plate_drew: [u64; 4],
-    /// This frame draws each slot's ink into it (the first frame of its serial).
+    /// This frame draws each slot's ink into it (the first frame of its paint).
     plate_fresh: [bool; 4],
     /// The last frame had ink ageing on a plate (the frame after it shows where the ageing ended).
     was_ageing: bool,
@@ -1503,11 +1502,9 @@ impl Renderer {
         self.plate_fresh = [false; 4];
         for p in scene.plates.iter().filter(|p| p.end > p.start) {
             let slot = p.slot as usize;
-            // A plate emptied by this scene's paint (a cached subtree drawn again) is inked by its first
-            // frame only; one that gathers ink (`El::plate`) takes each frame's.
-            let emptied = scene.plate_clear.contains(&p.slot);
-            self.plate_fresh[slot] = !emptied || self.plate_drew[slot] != scene.plate_serial;
-            if emptied { self.plate_drew[slot] = scene.plate_serial; }
+            // Each paint's ink goes in once: the same scene drawn again lays on what the plate holds.
+            self.plate_fresh[slot] = self.plate_drew[slot] != scene.paint;
+            self.plate_drew[slot] = scene.paint;
             self.plate_inked[p.slot as usize] = true;
             self.plate_over[p.slot as usize] |= scene.instances[p.start as usize..p.end as usize].iter().any(overrides);
         }

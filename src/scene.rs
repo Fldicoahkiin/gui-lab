@@ -118,6 +118,9 @@ pub struct Scene {
     pub plate_clear: Vec<u8>,
     /// The serial of `plate_clear`: a renderer empties the slots once for each serial it sees.
     pub plate_serial: u64,
+    /// The paint that made this scene, unique across every `Ui`: a renderer that draws one scene twice
+    /// (no paint between) puts its ink into the plates once.
+    pub paint: u64,
     /// The plate clock, s: it stops while a `Hold` lasts and never runs back.
     pub plate_now: f32,
     /// Some plate's ink is ageing (`Plate::fade_s`): every plate is drawn again whole.
