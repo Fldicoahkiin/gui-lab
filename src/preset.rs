@@ -222,7 +222,8 @@ impl Preset {
                 *at = x.clone();
             }
         }
-        serde_json::from_value(v).map_err(|e| bad(&e.to_string()))
+        // Read back as text: one way of reading a preset (`from_json`'s) is built, not a second from a value.
+        serde_json::from_str(&v.to_string()).map_err(|e| bad(&e.to_string()))
     }
     pub fn from_json(s: &str) -> Result<Self, crate::error::PresetError> { serde_json::from_str(s).map_err(|e| crate::error::PresetError::Json(e.to_string())) }
     /// Every number in the preset, by its path in the JSON (`transition.steps.0.a`), for number controls
@@ -244,7 +245,7 @@ impl Preset {
         if !at.is_number() { return Err(crate::error::PresetError::NoSuchNumber(path.to_owned())); }
         // Whole numbers as integers, so integer fields (a dither's levels) take them too.
         *at = if x.fract() == 0.0 && x.abs() < 1e9 { serde_json::json!(x as i64) } else { serde_json::json!(x) };
-        *self = serde_json::from_value(v).map_err(|e| crate::error::PresetError::Json(e.to_string()))?;
+        *self = serde_json::from_str(&v.to_string()).map_err(|e| crate::error::PresetError::Json(e.to_string()))?;
         Ok(())
     }
 }
