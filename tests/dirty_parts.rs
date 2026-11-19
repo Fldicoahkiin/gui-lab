@@ -125,3 +125,37 @@ fn motes_drifting_all_over_are_shaded_where_they_are_and_drawn_as_the_frame_draw
         }
     }
 }
+
+/// A picture given after its page is drawn (the site makes them as they come into view): the next frame
+/// draws again only where it is, not the whole frame, and is the frame of a renderer that had it from the
+/// start, byte for byte.
+mod late_picture {
+    use super::*;
+    pub const PIC: u32 = 7;
+    pub fn view(_: &()) -> El<()> {
+        col().key("page").pad(10.0, 10.0).gap(10.0)
+            .child(amenui::el::picture(PIC, 0.75).key("pic").width(200.0))
+            .child(text("A caption beside the picture, and a paragraph after it to read.", 14.0, Paint::TEXT).key("after").width(600.0))
+    }
+    pub fn pixels() -> Vec<u8> { (0..48 * 36).flat_map(|k| { let v = (40 + (k * 7 % 160)) as u8; [v, v / 2, 200 - v / 2, 255] }).collect() }
+}
+
+#[test]
+fn a_picture_given_late_draws_again_only_where_it_is() {
+    let (Ok(mut late), Ok(mut early)) = (Offscreen::try_new(W, H), Offscreen::try_new(W, H)) else { eprintln!("no GPU adapter here: skipped"); return };
+    early.r.set_picture(late_picture::PIC, 48, 36, &late_picture::pixels());
+    let mk = || { let mut u = Ui::new((), late_picture::view, |_, _| {}, fonts(), W, H, 1.0).on_look(|_| Look { material: Material::Plain, ..Look::default() }); u.pointer_leave(); u.tick(5.0); u.settle(); u };
+    let (mut u, mut v) = (mk(), mk());
+    let look = u.look();
+    for _ in 0..3 { let _ = late.render(&mut u, &look); let _ = early.render(&mut v, &look); }
+    late.r.set_picture(late_picture::PIC, 48, 36, &late_picture::pixels());
+    u.invalidate();
+    v.invalidate();
+    let a = late.render(&mut u, &look);
+    let b = early.render(&mut v, &look);
+    let pic = u.node("pic").expect("the picture").rect;
+    assert!(u.perf().dirty < 0.5, "only the picture is drawn again: {:.0} % of the frame ({})", u.perf().dirty * 100.0, u.perf().path.line());
+    assert!(u.perf().dirty * (W * H) as f32 >= 0.9 * pic.w * pic.h, "the picture is drawn again: {:.0} % of the frame", u.perf().dirty * 100.0);
+    let diff = a.iter().zip(&b).filter(|(p, q)| p != q).count();
+    assert_eq!(diff, 0, "the picture given late draws what one given first draws: {diff} bytes differ");
+}

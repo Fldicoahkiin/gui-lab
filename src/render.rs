@@ -236,6 +236,8 @@ pub struct Renderer {
     pictures: HashMap<u32, wgpu::BindGroup>,
     /// The pictures' textures, so their groups can be made again when the hold image is (`resize`).
     picture_views: HashMap<u32, wgpu::TextureView>,
+    /// Pictures given (`set_picture`) since the last frame: the next frame draws again where they are.
+    fresh_pics: Vec<u32>,
     /// The group the hold image is drawn with (the glyph atlas; it does not read the hold image).
     hold_group: Option<wgpu::BindGroup>,
     instances: wgpu::Buffer,
@@ -553,7 +555,7 @@ impl Renderer {
         let mut r = Self {
             device, queue, out_format, layout, ubuf, sampler, atlas, atlas_view, marks, marks_view, palette_view, chars, chars_view,
             before: blank.clone(), blank: blank.clone(), hold: blank.clone(), hold_pipe, holds, hold_cap: 64, hold_n: 0, fmap, fmap_view: fmap_view.clone(), fmap_seen: None, fmap_u: [0.0; 4], split_seen: 0, split: [0.0; 4], last_look: None, marks_ready: false, hide_glyphs: false, atlas_new: true, path: Default::default(), plates_laid: std::cell::Cell::new(0),
-            pictures: HashMap::new(), picture_views: HashMap::new(), hold_group: None, instances, capacity, pipes, annots, annot_capacity: 256, up_pipe: None, trace_pipe: None, specialise: Some(SPECIALISE_AFTER), spec_force: None, spec: Default::default(), drawn: 0, run_mats: (0, 0), spec_used: None, shader, pl,
+            pictures: HashMap::new(), picture_views: HashMap::new(), fresh_pics: vec![], hold_group: None, instances, capacity, pipes, annots, annot_capacity: 256, up_pipe: None, trace_pipe: None, specialise: Some(SPECIALISE_AFTER), spec_force: None, spec: Default::default(), drawn: 0, run_mats: (0, 0), spec_used: None, shader, pl,
             ink: blank.clone(), lo: blank.clone(), lo_key: (0, 0, 0), material_up: material.clone(), auto: Default::default(), always_lo: false, stage_u: Box::new(([[0.0; 4]; STAGES], [[0.0; 4]; STAGES], [0.0; 4])), stage_q: 1.0, soft_q: 1.0, govern: true, no_map: false,
             near: blank, material_first: material.clone(), material, size: (0, 0), tiles, mesh, sim_rows: 0,
             region: crate::dirty::Region::All, parts: None, partial: true, frame_view: blank_view.clone(), alt: [blank_view.clone(), blank_view.clone(), blank_view.clone()], cost: Cost::default(), prev: None, spare: (vec![], vec![]), zero, blit, group: None, group_pipe, had_groups: false, plates: Default::default(), plate_pipes, plate_now: 0.0, plate_fade: [[0.0; 4]; 4], had_plates: 0, plate_inked: [false; 4], plate_mats: [0; 4], gated: Default::default(), plate_drew: [0; 4], plate_fresh: [false; 4], was_ageing: false, plate_serial: 0, reduced: false, fade_s: 0.15, sbox: [0.0; 4], own: [[0.0; 4]; crate::draw::OWN_COLOURS], post: None, blit_group: blank_group, warm: None, condense: false, last_region: None, tr: [[0.0; 4]; 9], boxes: [[0.0; 4]; 16], tr_loose: 0.0, t_cont: 0.0,
@@ -814,6 +816,7 @@ impl Renderer {
         let group = Self::bind(&self.device, &self.layout, &self.ubuf, &self.sampler, [&self.atlas_view, &view, &self.marks_view, &self.palette_view, &self.chars_view, &self.blank, &self.blank, &self.fmap_view, &self.hold]);
         self.pictures.insert(id, group);
         self.picture_views.insert(id, view);
+        if !self.fresh_pics.contains(&id) { self.fresh_pics.push(id); }
     }
 
     /// Device px.
@@ -1398,6 +1401,19 @@ impl Renderer {
             let mut s2 = std::mem::take(&mut p.stage2);
             for st in &ui.scene().stages { let r = crate::dirty::meet(crate::dirty::grow(st.rect, 2.0), v); if !crate::dirty::is_empty(r) { s2.push(r); } }
             p.stage2 = crate::dirty::merge(s2, crate::dirty::MAX_SHADE_BOXES);
+        }
+        // A picture given since the last frame (it was drawn blank, or as it was): drawn again where it is,
+        // the cells that read it with it, not the whole frame.
+        let fresh = std::mem::take(&mut self.fresh_pics);
+        if let Some(p) = parts.as_mut() && !fresh.is_empty() {
+            let pad = crate::text::SPREAD as f32 + 2.0;
+            let screen = [0.0, 0.0, self.size.0 as f32, self.size.1 as f32];
+            let at: Vec<crate::dirty::Bx> = ui.scene().instances.iter().filter(|i| i.paint[3] == crate::scene::PICTURE && fresh.contains(&(i.extra[1] as u32)))
+                .map(|i| crate::dirty::meet(i.bounds(pad), screen)).filter(|b| !crate::dirty::is_empty(*b)).collect();
+            if !at.is_empty() {
+                p.stage1 = crate::dirty::merge(p.stage1.iter().copied().chain(at.iter().copied()).collect(), crate::dirty::MAX_BOXES);
+                p.stage2 = crate::dirty::merge(p.stage2.iter().copied().chain(at).collect(), crate::dirty::MAX_SHADE_BOXES);
+            }
         }
         self.region = parts.as_ref().map_or(crate::dirty::Region::All, |p| p.region());
         self.path = crate::perf::FramePath { moved: parts.as_ref().is_some_and(|p| p.moved.is_some()), why, soft: if soft { q } else { 1.0 }, stage: if staged { qs } else { 1.0 }, reduced: lo.map_or(1.0, |l| l[1]), ..Default::default() };

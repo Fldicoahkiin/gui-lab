@@ -2079,7 +2079,10 @@ copied whole to the target each frame (the web swap chain gives a new image ever
 - The G-buffer boxes: instances whose records differ, those condensing, those touched by a live front (the circle the front
   swept, plus its width and push, intersected with its scope box), pictures and 3D elements the lens may touch
   (only their intersection with the lens's reach), 3D elements under a burst and 3D elements whose mesh
-  fingerprint changed; each instance's rect grown by the SDF range and the push.
+  fingerprint changed; each instance's rect grown by the SDF range and the push; and where a picture given
+  since the last frame (`Renderer::set_picture`: one made as it comes into view) is drawn, with the cells
+  that read it, so a picture that arrives is not a frame drawn whole (`tests/dirty_parts.rs`: the next
+  frame is the frame of a renderer that had it from the start, byte for byte, drawn in its box).
 - The final box: the G-buffer box grown by the material's read range (`dirty::reach`: each material by its own
   parameters, plus picture mark cells), plus the areas fronts act on, the lens (3.5 radii around both old and
   new pointer), bursts, the wipe line's rect and changed instances of the annotation layer.
