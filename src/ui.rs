@@ -2145,7 +2145,15 @@ impl<S, M: Clone> Ui<S, M> {
     pub fn pointer_move(&mut self, x: f32, y: f32) { self.stage_input.0 = true; self.ev = self.event_t.take().unwrap_or(self.clock); self.deferred(|ui| ui.pointer_move_now(x, y)) }
     fn pointer_move_now(&mut self, x: f32, y: f32) {
         if !self.scripted { self.input_t = self.wall; }
-        self.dirty = true;
+        let cursor = self.cursor();
+        // A move asks for a frame when something shows where the pointer is: the lens over pictures and 3D
+        // views, a morph's particles, the annotation layer, a cursor of another shape, a drag, a selection, a
+        // new hover. Handlers that answer it ask for their own. Over a page that shows none of these, a move
+        // draws nothing.
+        let lens = self.look_of.is_none_or(|f| f(&self.state).fx.lens >= 0.5);
+        let shown = self.run.is_some() || self.gaze_of.is_some_and(|f| f(&self.state).mode != GazeMode::Off)
+            || lens && self.scene.instances.iter().any(|i| i.paint[3] == PICTURE || i.paint[3] == MESH);
+        if shown || self.touching || self.capture.is_some() || self.sel_drag || self.text_capture.is_some() { self.dirty = true; }
         let s = self.scale;
         self.keyboard = false;
         // A finger has no hover: it moves what it holds, and the lens does not follow it.
@@ -2154,6 +2162,7 @@ impl<S, M: Clone> Ui<S, M> {
             self.hit_target(x, y).and_then(|i| self.up(i, Node::active)).map(|i| self.nodes[i].key.clone())
         };
         if hover != self.hover {
+            self.dirty = true;
             // A control the pointer comes onto gets a short burst over it (glitchr reads it).
             if let Some(n) = hover.as_deref().and_then(|k| self.node(k)) { self.burst(n.rect, 0.75, 0.22); }
             self.hover = hover;
@@ -2173,6 +2182,7 @@ impl<S, M: Clone> Ui<S, M> {
             let key = self.nodes[i].key.clone();
             if let Some((_, focus)) = &mut self.sel && *focus != (key.clone(), at) { *focus = (key, at); self.paint(); }
         }
+        if self.cursor() != cursor { self.dirty = true; }
     }
 
     /// Tell the element with `on_move` under the pointer where it is (local px), and the one it left
@@ -4347,11 +4357,14 @@ impl<S, M: Clone> Ui<S, M> {
         flatten(el, ctx.parent, ctx.path, ctx.roles, ctx.off, ctx.flow, ctx.inh, &mut vx, &mut built, &mut nodes);
         self.stack_margins(&nodes, &mut built);
         let virt = !vx.made.is_empty();
+        // An absolutely placed element whose offsets alone changed moves without a layout: nothing else
+        // in a flexbox depends on where it is.
+        let moves: Vec<Option<(f32, f32)>> = (0..len.min(nodes.len() - i)).map(|j| self.tree.style(tail[j].tid).ok().and_then(|st| moved_only(st, &built.styles[j]))).collect();
         let same = !virt && nodes.len() - i == len && (0..len).all(|j| {
             let (new, old) = (&nodes[i + j], &tail[j]);
             new.key == old.key && new.parent == old.parent && new.modal.is_none() && new.fit.is_none()
                 && matches!(new.content, Content::None) == matches!(old.content, Content::None)
-                && self.tree.style(old.tid).is_ok_and(|st| *st == built.styles[j])
+                && moves[j].is_some()
                 && (self.mkeys.get(&old.tid) == Some(&measure_key(&new.content))
                     || new.clamp == 0 && same_measure(&mut self.text, &old.content, &new.content, old.local.size.width - old.local.padding.left - old.local.padding.right - old.local.border.left - old.local.border.right))
         });
@@ -4366,6 +4379,12 @@ impl<S, M: Clone> Ui<S, M> {
             // Text that changed and measures as it did: the tree measures it by its new content from now on.
             if !matches!(n.content, Content::None) { self.mkeys.insert(old.tid, measure_key(&n.content)); }
             (n.local, n.exact, n.tid, n.rect, n.clip, n.inner, n.extent, n.shown, n.xf, n.written) = (old.local, old.exact, old.tid, old.rect, old.clip, old.inner, old.extent, old.shown, old.xf, old.written);
+            if let Some((dx, dy)) = moves[j] && (dx != 0.0 || dy != 0.0) {
+                // Where the layout would put it, on whole px; the tree has its new offsets for the next one.
+                n.exact = (n.exact.0 + dx, n.exact.1 + dy);
+                n.local.location = taffy::Point { x: n.exact.0.round(), y: n.exact.1.round() };
+                let _ = self.tree.set_style(n.tid, built.styles[j].clone());
+            }
         }
         nodes.append(&mut tail);
         self.nodes = nodes;
@@ -7151,6 +7170,28 @@ fn stack_extra(o: &[f32], j: usize) -> (f32, f32) {
     if j == 0 { (half, half) } else { (half - w, half) }
 }
 /// A margin with `e` more (a margin that is not a length becomes `e`).
+/// How far an element moved when its new style differs from the old only in an absolutely placed
+/// element's offsets, each side a length before and after or the same (logical px); `None` otherwise.
+fn moved_only(old: &Style, new: &Style) -> Option<(f32, f32)> {
+    if old == new { return Some((0.0, 0.0)); }
+    if old.position != taffy::Position::Absolute || new.position != taffy::Position::Absolute { return None; }
+    let mut o = old.clone();
+    o.inset = new.inset;
+    if o != *new { return None; }
+    use taffy::style::ExpandedLengthPercentageAuto as E;
+    // Along one axis: the near side's change, or the far side's (which moves it the other way), the
+    // other side auto.
+    let axis = |a0: LengthPercentageAuto, a1: LengthPercentageAuto, b0: LengthPercentageAuto, b1: LengthPercentageAuto| -> Option<f32> {
+        match (a0.expand(), a1.expand()) {
+            // With both sides set the box would change size: not a move.
+            (E::Length(x), E::Length(y)) => (b0 == b1 && matches!(b0.expand(), E::Auto)).then_some(y - x),
+            _ if a0 != a1 => None,
+            _ if matches!(a0.expand(), E::Auto) => match (b0.expand(), b1.expand()) { (E::Length(x), E::Length(y)) => Some(x - y), _ => (b0 == b1).then_some(0.0) },
+            _ => (b0 == b1).then_some(0.0),
+        }
+    };
+    Some((axis(old.inset.left, new.inset.left, old.inset.right, new.inset.right)?, axis(old.inset.top, new.inset.top, old.inset.bottom, new.inset.bottom)?))
+}
 fn add_margin(m: LengthPercentageAuto, e: f32) -> LengthPercentageAuto {
     match m.expand() { taffy::style::ExpandedLengthPercentageAuto::Length(x) => length(x + e), _ => length(e) }
 }

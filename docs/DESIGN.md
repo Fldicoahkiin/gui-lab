@@ -1410,7 +1410,7 @@ window read back a frame for saving without presenting it).
 
 | Condition | How it is decided |
 |---|---|
-| Input or a scene change since the last frame | `dirty`: set by every input entry point (pointer move, leave, press, release, wheel, key down, key up, resize) and every `paint`, cleared by `frame_drawn` |
+| Input or a scene change since the last frame | `dirty`: set by every input entry point (pointer leave, press, release, wheel, key down, key up, resize) and every `paint`, cleared by `frame_drawn`. A pointer move sets it only when something shows where the pointer is (a picture or 3D view under a lens that is on, `Fx::lens` 0.5 or more; a morph's particles, the annotation layer on), when it changes the hover or the cursor's shape, or during a touch, a drag, a selection or a field's pointer capture; a handler it reaches asks for its own frame |
 | A front is still alive | Some front's strength > 0 and `now − start < Fx::wave_life` (in the shader a front's strength reaches 0 at `wave_life`) |
 | A commit's front is still on screen | `(now − t) × wave_speed × scale < diagonal` |
 | A brief `burst` (hover, press) | `Field::burst_at(now) > 0` |
@@ -3075,7 +3075,10 @@ What changes with a piece outside its stage (an experiment's formula, a label wi
 `El::steps`: `on_step` returns its key with the stage's, `stage_view` gives its subtree, and it is put in
 place as a stage is, but drawn every frame like anything else (never held, never at a stage's scale). Text
 counts as laid out the same when its words changed but it measures as before at its widest, at its
-narrowest and at its width (figures of one width: the mono face, or a fixed box).
+narrowest and at its width (figures of one width: the mono face, or a fixed box). An absolutely placed
+element whose offsets alone changed (each side a length before and after, the opposite side auto; a chip
+dragged about a stage) counts as laid out the same too: it is moved by the change on whole pixels, with its
+subtree, and the tree takes its new offsets for the next layout.
 
 The hold reads the input of the frame that lays it out: with input coalesced (`Ui::coalesce`, as the hosts
 run), a tick leaves the frame's input to the paint that `Ui::settle` makes, and that paint spends it.

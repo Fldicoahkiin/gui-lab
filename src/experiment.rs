@@ -51,9 +51,9 @@ fn cell(key: &str, name: &str, hint: &str, formula: String, params: &Params, lab
             .child(space(0.0, 0.0).grow(1.0))
             .child(text(hint, 11.0, Paint::DIM).font(Font::Mono).key(format!("{key}/hint"))))
         .child(stage)
-        .child(col().fill_width().min_width(0.0).child(text(formula, 11.0, Paint::DIM).font(Font::Mono).key(format!("{key}/formula")).recompose(false)))
+        .child(col().fill_width().min_width(0.0).child(text(formula, 11.0, Paint::DIM).font(Font::Mono).key(format!("{key}/formula")).recompose(false).selectable()))
         .child(row().fill_width().wrap().gap(8.0)
-            .child(text(label, 11.0, Paint::FAINT).font(Font::Mono).key(format!("{key}/label")))
+            .child(text(label, 11.0, Paint::FAINT).font(Font::Mono).key(format!("{key}/label")).selectable())
             .child(space(0.0, 0.0).grow(1.0))
             .child(toggle));
     if params.open {

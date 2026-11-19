@@ -86,3 +86,80 @@ fn a_stage_that_steps_alone_is_viewed_and_drawn_alone_and_the_frame_is_the_whole
     // The taller stage was laid out with the page.
     assert!(a.node("cell1/stage").expect("the stage").rect.h > 140.0);
 }
+
+/// A stage whose chips move by their absolute offsets alone (the Lab's Weld): each step is restaged with
+/// no layout, and the chips are where a whole layout puts them.
+mod chips {
+    use super::*;
+    #[derive(Clone, Default)]
+    pub struct C { pub t: f32 }
+    pub fn stage(c: &C) -> El<()> {
+        let mut st = col().key("weld").stage().width(300.0).height(200.0).pad(6.0, 6.0);
+        for k in 0..3 {
+            let x = 20.0 + 60.0 * k as f32 + (c.t * 2.0 + k as f32).sin() * 30.0;
+            let y = 40.0 + (c.t * 3.0).cos() * 20.0 * k as f32;
+            st = st.child(col().key(format!("chip{k}")).width(40.0).height(24.0).fill(Paint::FAINT).absolute(Some(x), Some(y), None, None)
+                .child(text(format!("c{k}"), 11.0, Paint::TEXT)));
+        }
+        // One placed from the far edges.
+        st.child(col().key("far").width(30.0).height(20.0).fill(Paint::FAINT).absolute(None, None, Some(10.0 + c.t.sin() * 8.0), Some(10.0)))
+    }
+    pub fn view(c: &C) -> El<()> { col().key("page").pad(10.0, 10.0).gap(8.0).child(text("Weld", 16.0, Paint::TEXT)).child(stage(c)) }
+}
+
+#[test]
+fn chips_moved_by_their_offsets_are_restaged_without_a_layout() {
+    let mk = |staged: bool| {
+        let u = Ui::new(chips::C::default(), chips::view, |_, _| {}, fonts(), 400, 300, 1.0).on_look(|_| Look { material: Material::Plain, ..Look::default() });
+        let mut u = if staged { u.on_step(|c, t| { c.t = t; vec!["weld".to_owned()] }).stage_view(|c, k| (k == "weld").then(|| chips::stage(c))) } else { u.on_tick(|c, t| { c.t = t; true }) };
+        u.tick(1.0);
+        u.settle();
+        u
+    };
+    let (mut a, mut b) = (mk(true), mk(false));
+    let mut t = 1.0;
+    let c0 = a.perf().counters;
+    for _ in 0..60 {
+        t += 1.0 / 60.0;
+        a.tick(t);
+        b.tick(t);
+        a.settle();
+        b.settle();
+        // The chips and the text in one (its key is its path), which moves with it.
+        let inner = a.nodes().iter().find(|n| n.key.starts_with("chip2/")).map(|n| n.key.clone()).expect("chip2's text");
+        for key in ["chip0".to_owned(), "chip1".to_owned(), "chip2".to_owned(), inner, "far".to_owned()] {
+            let (ra, rb) = (a.node(&key).unwrap().rect, b.node(&key).unwrap().rect);
+            assert!((ra.x - rb.x).abs() < 0.51 && (ra.y - rb.y).abs() < 0.51 && ra.w == rb.w, "{key} at {t}: {ra:?} / {rb:?}");
+        }
+    }
+    let c1 = a.perf().counters;
+    assert_eq!((c1.views - c0.views, c1.layouts - c0.layouts, c1.restages - c0.restages), (0, 0, 60));
+}
+
+/// A pointer moving over a page that shows nothing of where it is asks for no frames.
+#[test]
+fn a_hover_with_nothing_changing_asks_for_no_frames() {
+    let view = |_: &()| -> El<()> { col().key("page").pad(10.0, 10.0).child(text("Nothing here follows the pointer", 14.0, Paint::TEXT)).child(col().key("box").width(200.0).height(100.0).fill(Paint::FAINT)) };
+    let mut u = Ui::new((), view, |_, _| {}, fonts(), 400, 300, 1.0).on_look(|_| Look { material: Material::Plain, ..Look::default() });
+    let mut t = 1.0;
+    u.tick(t);
+    u.pointer_move(100.0, 60.0);
+    while u.needs_frame(t) { t += 1.0 / 60.0; u.tick(t); u.frame_drawn(); }
+    let mut asked = 0;
+    for k in 0..60 {
+        u.pointer_move(300.0 + (k % 10) as f32, 60.0 + (k / 10) as f32);
+        if u.needs_frame(t) { asked += 1; }
+    }
+    assert_eq!(asked, 0, "moves over the page with nothing under them that shows the pointer");
+    // Over a picture, frames follow the pointer only while the lens is on.
+    for (lens, want) in [(0.0, false), (1.0, true)] {
+        let view = |_: &f32| -> El<()> { col().key("page").pad(10.0, 10.0).child(amenui::el::picture(1, 0.5).key("pic").width(200.0)) };
+        let mut u = Ui::new(lens, view, |_, _| {}, fonts(), 400, 300, 1.0).on_look(|l: &f32| { let mut k = Look { material: Material::Plain, ..Look::default() }; k.fx.lens = *l; k });
+        let mut t = 1.0;
+        u.tick(t);
+        u.pointer_move(100.0, 40.0);
+        while u.needs_frame(t) && t < 5.0 { t += 1.0 / 60.0; u.tick(t); u.frame_drawn(); }
+        u.pointer_move(104.0, 42.0);
+        assert_eq!(u.needs_frame(t), want, "lens {lens}");
+    }
+}

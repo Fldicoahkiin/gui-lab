@@ -15,6 +15,11 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
 - `el::cached_view(over, from, ink)`: part of a cached subtree, scaled into an element, read as coverage
   nearest (a magnifier's pixels).
 - `El::clip_round(radius)`: a clip with round corners, or a circle.
+- A stage's absolutely placed element that moves by its offsets alone is restaged with no layout, so a chip
+  dragged about a stage costs no page view or layout.
+- A pointer move asks for a frame only when something shows where the pointer is, the hover or the cursor
+  changes, or a drag, touch or selection is under way; hovering a still page draws nothing.
+- An experiment's formula and label are selectable.
 
 ## Fixes from the website: controls at rest
 
