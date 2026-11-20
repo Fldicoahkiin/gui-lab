@@ -8,5 +8,5 @@ pub enum Msg { Nothing, Pick(usize), Edit(TextEdit), Num(Edit), Value(f32) }
 
 /// 显示 · Shown
 pub fn ex_0() -> El<Msg> {
-    tooltip("tt1", button("tb", "保存", Msg::Nothing), "保存到本机", true)
+    tooltip("tt1", button("tb", "Save", Msg::Nothing), "Save to this computer", true)
 }

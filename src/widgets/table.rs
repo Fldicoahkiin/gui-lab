@@ -4,7 +4,7 @@
 //! Props: `key`, `columns` (name, width), `rows` (cells as text), `selected`, `msg`.
 //! States: a selected row (highlighted); one focus stop, Up / Down move the selection.
 //! Messages: `msg(i)` on a row press or a key.
-//! Usage: `table("files", &[("名称", 200.0), ("大小", 80.0)], &rows, s.sel, Msg::Sel)`
+//! Usage: `table("files", &[("Name", 200.0), ("Size", 80.0)], &rows, s.sel, Msg::Sel)`
 //!
 //! A header row of column headers, then data rows of cells; the table, row, columnheader and cell
 //! roles go to the accessibility mirror.

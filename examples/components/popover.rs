@@ -8,5 +8,5 @@ pub enum Msg { Nothing, Pick(usize), Edit(TextEdit), Num(Edit), Value(f32) }
 
 /// 关着 · Closed
 pub fn ex_0() -> El<Msg> {
-    popover("po1", "分享", false, Msg::Nothing, Msg::Nothing, text("链接", 13.0, Paint::TEXT))
+    popover("po1", "Share", false, Msg::Nothing, Msg::Nothing, text("Link", 13.0, Paint::TEXT))
 }

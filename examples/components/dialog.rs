@@ -8,5 +8,5 @@ pub enum Msg { Nothing, Pick(usize), Edit(TextEdit), Num(Edit), Value(f32) }
 
 /// 关着，一个打开它的按钮 · Closed, with a button that opens it
 pub fn ex_0() -> El<Msg> {
-    col().gap(8.0).child(button("rename", "重命名…", Msg::Nothing)).child(dialog("d1", false, "重命名", 320.0, 0.35, Msg::Nothing, text("新的名字", 14.0, Paint::TEXT)))
+    col().gap(8.0).child(button("rename", "Rename…", Msg::Nothing)).child(dialog("d1", false, "Rename", 320.0, 0.35, Msg::Nothing, text("A new name", 14.0, Paint::TEXT)))
 }

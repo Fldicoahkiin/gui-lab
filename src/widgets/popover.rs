@@ -4,7 +4,7 @@
 //! Props: `key`, `trigger` (its label), `open`, `toggle`, `close`, `body`.
 //! States: closed, open (a panel below the trigger, focus moves into it).
 //! Messages: `toggle` on the trigger (Enter / Space too); `close` on Esc or a press outside.
-//! Usage: `popover("share", "分享", s.open, Msg::Toggle, Msg::Close, body)`
+//! Usage: `popover("share", "Share", s.open, Msg::Toggle, Msg::Close, body)`
 //!
 //! Like a menu but with any content: the panel is a layer just below the trigger.
 use super::{LINE, RADIUS, Variant, button_as};

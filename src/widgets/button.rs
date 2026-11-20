@@ -7,7 +7,7 @@
 //!   disabled (`.disabled(true)`).
 //! Messages: sends `msg` on press, Enter or Space; its front reaches only itself unless
 //!   `.ripplr(..)` says otherwise.
-//! Usage: `button_as("save", "保存", Variant::Primary, Msg::Save)`
+//! Usage: `button_as("save", "Save", Variant::Primary, Msg::Save)`
 //!
 //! A button: a label that sends a message when pressed (pointer, Enter or Space). To make it
 //! unavailable, call `.disabled(true)` on what this returns: it then takes no input and is drawn faint.

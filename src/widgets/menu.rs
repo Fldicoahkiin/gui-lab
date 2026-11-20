@@ -5,7 +5,7 @@
 //!   material), `toggle`, `close`, `pick`.
 //! States: closed (shows the current option) or open (a layer under the button).
 //! Messages: `toggle` on the button, `pick(i)` on an option, `close` outside or on Esc.
-//! Usage: `menu("theme", "主题", &names, Some(s.theme), s.menu, true, Msg::Menu, Msg::Close,
+//! Usage: `menu("theme", "Theme", &names, Some(s.theme), s.menu, true, Msg::Menu, Msg::Close,
 //!   Msg::Theme)`
 //!
 //! A drop-down menu: a button that shows the current option; pressed, a list of the options opens

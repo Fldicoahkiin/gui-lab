@@ -13,5 +13,5 @@ pub fn ex_0() -> El<Msg> {
 
 /// 一组 · A group
 pub fn ex_1() -> El<Msg> {
-    toggle_group("tg2", &["左", "中", "右"], &[true, false, false], Msg::Pick)
+    toggle_group("tg2", &["Left", "Center", "Right"], &[true, false, false], Msg::Pick)
 }

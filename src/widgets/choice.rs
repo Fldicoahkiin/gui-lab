@@ -6,7 +6,7 @@
 //! States: the current option is an ink plate with its label in the ground's colour; segmented is one
 //!   focus stop, Left / Right move.
 //! Messages: `msg(i)` with the option's index.
-//! Usage: `segmented("view", &["日", "周"], s.view, 30.0, Msg::View)`
+//! Usage: `segmented("view", &["Day", "Week"], s.view, 30.0, Msg::View)`
 //!
 //! Choosing one of several named options.
 //!

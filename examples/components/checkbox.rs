@@ -8,15 +8,15 @@ pub enum Msg { Nothing, Pick(usize), Edit(TextEdit), Num(Edit), Value(f32) }
 
 /// 未选 · Unchecked
 pub fn ex_0() -> El<Msg> {
-    checkbox("cb1", "同意条款", false, Msg::Nothing)
+    checkbox("cb1", "Accept the terms", false, Msg::Nothing)
 }
 
 /// 已选 · Checked
 pub fn ex_1() -> El<Msg> {
-    checkbox("cb2", "同意条款", true, Msg::Nothing)
+    checkbox("cb2", "Accept the terms", true, Msg::Nothing)
 }
 
 /// 不可用 · Disabled
 pub fn ex_2() -> El<Msg> {
-    checkbox("cb3", "同意条款", true, Msg::Nothing).disabled(true)
+    checkbox("cb3", "Accept the terms", true, Msg::Nothing).disabled(true)
 }

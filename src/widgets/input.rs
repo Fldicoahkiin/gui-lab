@@ -6,7 +6,7 @@
 //! States: empty with placeholder, focused with caret and selection, composing (underlined),
 //!   disabled.
 //! Messages: `msg(TextEdit)` with the edited value for every text event; typing never recomposes.
-//! Usage: `input("name", &s.name, "名称", 280.0, 40, Msg::Name)`
+//! Usage: `input("name", &s.name, "Name", 280.0, 40, Msg::Name)`
 //!
 //! Text fields: a single-line `input` and a multi-line `textarea`. The application keeps the text, the
 //! caret, the selection, text being composed and the undo history in a `TextEdit` in its state; the field

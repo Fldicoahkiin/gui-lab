@@ -4,7 +4,7 @@
 //! Props: `key`, `items` (title, body), `open` (which are open), `msg`.
 //! States: each section open or closed; headings are buttons with `aria-expanded`.
 //! Messages: `msg(i)` toggles section `i` (press, Enter, Space); Up / Down move between headings by Tab.
-//! Usage: `accordion("faq", vec![("什么是材质", body)], &s.open, Msg::Faq)`
+//! Usage: `accordion("faq", vec![("What is a material", body)], &s.open, Msg::Faq)`
 //!
 //! Each heading is a button that toggles its region; an open region shows its body below it.
 use super::{LABEL, LINE};

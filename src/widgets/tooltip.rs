@@ -4,7 +4,7 @@
 //! Props: `key`, `target` (the control), `tip`, `shown`.
 //! States: hidden, shown (below the target, never taking input).
 //! Messages: none (the application shows it from `Ui::on_hover` / focus; Esc hides it).
-//! Usage: `tooltip("save-tip", button("save", "保存", Msg::Save), "保存到本机", s.hovered == Some("save"))`
+//! Usage: `tooltip("save-tip", button("save", "Save", Msg::Save), "Save to this computer", s.hovered == Some("save"))`
 //!
 //! The tip is drawn below its target in plain type, with the tooltip role, and is ignored by fronts
 //! and the pointer (WAI-ARIA tooltip: it describes, it is not focusable).

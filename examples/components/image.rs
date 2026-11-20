@@ -8,5 +8,5 @@ pub enum Msg { Nothing, Pick(usize), Edit(TextEdit), Num(Edit), Value(f32) }
 
 /// 带说明 · With a caption
 pub fn ex_0() -> El<Msg> {
-    image("im1", amenui::pictures::SKY, 0.6, 0, Some("天空"))
+    image("im1", amenui::pictures::SKY, 0.6, 0, Some("Sky"))
 }

@@ -5,7 +5,7 @@
 //!   height.
 //! States: off, on, focused, disabled.
 //! Messages: `msg` on press, Enter or Space.
-//! Usage: `switch("notify", "通知", s.notify, None, Msg::Notify)`
+//! Usage: `switch("notify", "Notifications", s.notify, None, Msg::Notify)`
 //!
 //! A two-state switch with a label and, optionally, the name of the current state. The whole row is
 //! pressable.

@@ -3,8 +3,9 @@
 // @param 填充 0.0 1.0 0.05 2 - 0.25
 // @param 墨带 0.0 3.0 1.0 0 - 0.0
 // @param 带宽 0.0 12.0 1.0 0 px 0.0
-// near: the intermediate images made visible. The signed nearness in bands every `pitch` px, warm
-// inside the ink and cool outside, fading toward the edge of its reach; the outline in the ink colour;
+// near: the intermediate images made visible. The signed nearness in bands every `pitch` px, in the
+// hairline grey inside the ink (the accent is for what is held) and cool outside, fading toward the edge
+// of its reach; the outline in the ink colour;
 // the ink itself as a faint fill; the looseness of each instance as a tint over it.
 // With `墨带` (ink bands) set, 1 to 3: only that many bands outside the ink instead, in the ink at 0.5,
 // 0.3 and 0.15 (two: 0.5 and 0.25), each `带宽` wide with as much ground before it (half the band pitch
@@ -43,7 +44,7 @@ fn m_near(p: vec2f) -> vec3f {
       if (f32(k) > 2.0 - sd * 2.0) { break; }
     }
   }
-  let tint = select(u.second.rgb, u.accent.rgb, sd > 0.0);
+  let tint = select(u.second.rgb, u.greys[1].rgb, sd > 0.0);
   col = mix(col, tint, line * 0.85);
   col = mix(col, u.fg.rgb, clamp(1.0 - abs(sd) / (0.8 * s), 0.0, 1.0));
   col = mix(col, u.third.rgb, clamp(loose_t(p) + half_plane(p), 0.0, 1.0) * 0.35 * step(0.5, n.r) * (1.0 - hold_at(p)));

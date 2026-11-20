@@ -4,7 +4,7 @@
 //! Props: `key`, `title`, `body`, `shown`, `dismiss` (its close button).
 //! States: hidden, shown (at the window's bottom right, polite live region).
 //! Messages: `dismiss` on its close button; the application hides it after a few seconds (`Ui::on_wake`).
-//! Usage: `toast("saved", "已保存", "三项改动已写入", s.toast, Msg::HideToast)`
+//! Usage: `toast("saved", "Saved", "Three changes written", s.toast, Msg::HideToast)`
 //!
 //! The toast has the status role (announced politely) and is never modal: input goes on around it.
 use super::{LABEL, LINE, RADIUS, Variant, button_as};

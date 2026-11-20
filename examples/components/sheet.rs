@@ -8,5 +8,5 @@ pub enum Msg { Nothing, Pick(usize), Edit(TextEdit), Num(Edit), Value(f32) }
 
 /// 关着 · Closed
 pub fn ex_0() -> El<Msg> {
-    sheet("sh1", false, "筛选", 320.0, Msg::Nothing, text("条件", 13.0, Paint::TEXT))
+    sheet("sh1", false, "Filters", 320.0, Msg::Nothing, text("Conditions", 13.0, Paint::TEXT))
 }

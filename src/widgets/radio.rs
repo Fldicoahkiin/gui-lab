@@ -5,7 +5,7 @@
 //! States: one option selected; one focus stop for the group.
 //! Messages: `msg(i)`; options are keyed `key:i`. Arrow keys move the selection (WAI-ARIA radio
 //!   group: Up/Left the previous, Down/Right the next, wrapping; Home / End the ends).
-//! Usage: `radio_group("size", &["小", "中", "大"], s.size, Msg::Size)`
+//! Usage: `radio_group("size", &["Small", "Medium", "Large"], s.size, Msg::Size)`
 //!
 //! A column of round marks and labels. The group is one focus stop; the arrows select as they move.
 use super::{CONTROL_H, LABEL, LINE};

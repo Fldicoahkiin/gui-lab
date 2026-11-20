@@ -54,3 +54,21 @@ fn text_edit_keys() {
     assert_eq!(e.apply(Key::Home, 99).unwrap().apply(Key::Backspace, 99), None, "nothing before the caret");
     assert_eq!(e.apply(Key::Char('\u{8}'), 99), None, "control characters are not typed");
 }
+
+// ── The examples' words ──────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn the_component_examples_show_english_only() {
+    // What an example shows (its code, not its comments) has no CJK: demo text is English.
+    let cjk = |c: char| ('\u{3000}'..='\u{9fff}').contains(&c) || ('\u{ff00}'..='\u{ffef}').contains(&c);
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/components");
+    let mut found = vec![];
+    for e in std::fs::read_dir(dir).expect("examples") {
+        let p = e.expect("entry").path();
+        let src = std::fs::read_to_string(&p).expect("source");
+        for (i, l) in src.lines().enumerate() {
+            if l.split("//").next().is_some_and(|code| code.chars().any(cjk)) { found.push(format!("{}:{}", p.display(), i + 1)); }
+        }
+    }
+    assert!(found.is_empty(), "CJK shown in: {found:?}");
+}

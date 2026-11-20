@@ -8,7 +8,7 @@
 //!   detent or away; Esc dismisses; role dialog.
 //! Messages: `msg(SheetMsg)` for every drag step, Esc and a press on the backdrop; the application
 //!   calls `Sheet::update` with it and `Sheet::step` on every tick while `Sheet::moving()`.
-//! Usage: `bottom_sheet("share", &s.sheet, "分享", body, Msg::Sheet)` (and `Cmd::Focus` on `share/handle`
+//! Usage: `bottom_sheet("share", &s.sheet, "Share", body, Msg::Sheet)` (and `Cmd::Focus` on `share/handle`
 //!   when presenting)
 //!
 //! The sheet's height is state (`Sheet::shown`, logical px above the bottom edge); the widget only

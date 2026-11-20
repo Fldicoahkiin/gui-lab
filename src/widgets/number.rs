@@ -7,7 +7,7 @@
 //!   digits (`{key}/shown`).
 //! Messages: `msg(Edit::Draft(s))` while typing, `Edit::Set(v)` on Enter / steps / arrows / scrub,
 //!   `Edit::Cancel` on Esc or blur.
-//! Usage: `number("copies", "份数", s.copies, SPEC, s.draft.as_deref(), Msg::Copies)`
+//! Usage: `number("copies", "Copies", s.copies, SPEC, s.draft.as_deref(), Msg::Copies)`
 //!
 //! A numeric control for setting a value exactly: step buttons on either side, and once focused the
 //! value can be typed (digits, `.`, `-`, Backspace; Enter commits, Esc cancels) or stepped with

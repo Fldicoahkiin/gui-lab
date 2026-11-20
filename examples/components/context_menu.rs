@@ -8,5 +8,5 @@ pub enum Msg { Nothing, Pick(usize), Edit(TextEdit), Num(Edit), Value(f32) }
 
 /// 关着 · Closed
 pub fn ex_0() -> El<Msg> {
-    context_menu("cm1", None, &["打开", "重命名"], 0, Msg::Pick, Msg::Pick, Msg::Nothing)
+    context_menu("cm1", None, &["Open", "Rename"], 0, Msg::Pick, Msg::Pick, Msg::Nothing)
 }

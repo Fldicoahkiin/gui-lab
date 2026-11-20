@@ -8,5 +8,5 @@ pub enum Msg { Nothing, Pick(usize), Edit(TextEdit), Num(Edit), Value(f32) }
 
 /// 三种 · Three kinds
 pub fn ex_0() -> El<Msg> {
-    row().gap(8.0).child(badge("bd1", "新", Variant::Accent)).child(badge("bd2", "草稿", Variant::Default)).child(badge("bd3", "12", Variant::Quiet))
+    row().gap(8.0).child(badge("bd1", "New", Variant::Primary)).child(badge("bd2", "Draft", Variant::Default)).child(badge("bd3", "12", Variant::Quiet))
 }

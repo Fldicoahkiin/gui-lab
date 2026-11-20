@@ -553,7 +553,7 @@ sampled); value noise.
 | `smudgr` | Paper grain (two layers of noise, amplitude `grain × 2.75%`); accent ink is sampled separately at `(misreg, 0.6 misreg)` and overprinted with multiply on light grounds | Ink spreads outward along the outline by `spread × k × noise`, thresholded by noise into photocopy edges; specks on the paper, dropouts in the ink | grain, misregistration, specks, bleed |
 | `carvr` | As it is | Ink and ground only: the outline moves by two layers of noise (the slow sway and chips of a knife); in a band of `band × k` on both sides of the outline, white wedge-shaped cuts of varying length tapering inward are carved inside, and broken ink lines along the outline are left outside | cuts, band, cut length, cut spacing, jitter |
 | `glitchr` | As it is | Rows of height `slice`, hashed per beat of `hold` ms: some rows shift sideways, a few blocks repeat the block to their left, the RGB channels separate by `split × k`, a few rows invert; a `burst` (a rect the runtime puts in the field while a control is hovered or pressed, `Field::burst`) loosens it there too | row height, displacement, channel separation, hold, blocks |
-| `near` | The G-buffer itself: iso-distance lines of the SDF (warm inside ink, cool outside), the outline, faint ink | A colour overlay where loose | spacing, fill |
+| `near` | The G-buffer itself: iso-distance lines of the SDF (hairline inside ink, cool outside), the outline, faint ink | A colour overlay where loose | spacing, fill |
 | `scribblr` | As it is (the shading stage is exact) | The fill fades and the ink becomes one thin line of constant width: along the outline → bridged into one stroke → wandering, knotting, throwing out tails; the thread is shape instances drawn in the G-buffer stage (§1.30) | line width, sampling, wander, knot, knot radius, tail, follow the map, angularity |
 
 **Text to read keeps the resting look.** `smudgr`, `carvr` and `charr` take their effect from `kt_loose`: the
@@ -607,8 +607,9 @@ G-buffer stage recomputes coverage from the signed distance in the glyph atlas (
 `px`), so headings can be made heavier without a bold font file; particle sampling uses the same
 computation. Lino, Bauhaus, Zine and Glitch headings use +1.5 to +3.
 
-`near` (the eighth, id 7) draws the G-buffer: the signed distance as iso-lines every `spacing` px, warm
-(the accent) inside ink and cool (the second accent) outside, the outline in ink, the ink itself faintly by
+`near` (the eighth, id 7) draws the G-buffer: the signed distance as iso-lines every `spacing` px, in the
+hairline grey inside ink (the accent is for what is held, not a material's rest) and cool (the second accent)
+outside, the outline in ink, the ink itself faintly by
 `fill`, and a layer of the third accent where loose. It is a view for seeing the mechanism and has a look of
 its own at rest. Parameters: spacing 3 px, fill 0.25. The exploded scene uses it.
 

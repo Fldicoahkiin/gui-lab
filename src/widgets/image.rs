@@ -5,7 +5,7 @@
 //!   `caption`.
 //! States: rest; loosens into its marks under fronts and the lens.
 //! Messages: none.
-//! Usage: `image("sky", SKY, 0.6, 0, Some("天空"))`
+//! Usage: `image("sky", SKY, 0.6, 0, Some("Sky"))`
 //!
 //! A picture at its own aspect ratio, filling the width it is given, with an optional caption. `slot`
 //! picks which of the eight `Markr` sets it turns into marks with when it loosens.

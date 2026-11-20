@@ -8,6 +8,13 @@ crate and the `amenui` npm package (`web/`) always carry the same version, becau
 match the module that `web_app!` generates. The minimum Rust is the one CI builds with (`rust-version`
 in Cargo.toml); raising it is a breaking change before 1.0 only in the second number.
 
+## Examples in English; `near` at rest without the accent
+
+- The component examples and the widgets' `Usage:` lines show English only (Badge "New" and "Draft", Avatar
+  "Grace Hopper", ...); Badge's "New" is Primary, not Accent, and Button's disabled example is a disabled
+  Primary.
+- `near` draws its bands inside the ink in the hairline grey (was the accent): at rest a material shows no accent.
+
 ## A held stage costs nothing between its draws
 
 - A slow stage holding its image no longer paints the page on every frame it holds: a frame in which it would

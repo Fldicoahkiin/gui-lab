@@ -103,6 +103,35 @@ fn near_keeps_a_label_on_a_solid_button_whole() {
     }
 }
 
+#[test]
+fn near_at_rest_draws_its_bands_inside_ink_in_the_hairline_not_the_accent() {
+    use amenui::el::{El, Paint, col, space, text};
+    use amenui::style::{Look, Material, THEMES};
+    let (w, h) = (360u32, 240u32);
+    let Ok(mut o) = Offscreen::try_new(w, h) else { eprintln!("no GPU adapter here: skipped"); return };
+    fn view(_: &()) -> El<()> {
+        col().key("page").pad(40.0, 40.0).gap(20.0).fill_width().fill_height()
+            .child(space(160.0, 80.0).key("block").fill(Paint::INK)).child(text("Floating page", 24.0, Paint::TEXT))
+    }
+    for theme in THEMES.iter().take(2) {
+        let mut ui = amenui::ui::Ui::new((), view, |_, _| {}, fonts(), w, h, 1.0);
+        ui.tick(2.0);
+        ui.settle();
+        let look = Look { material: Material::Near, theme: *theme, ..Look::default() };
+        o.r.partial = false;
+        let f = o.render(&mut ui, &look);
+        let near = |c: [f32; 3], p: &[u8]| (0..3).map(|k| (p[k] as f32 - c[k] * 255.0).abs()).sum::<f32>() < 30.0;
+        let b = ui.node("block").expect("block").rect;
+        let inside = (b.y as u32 + 4..b.bottom() as u32 - 4).flat_map(|y| (b.x as u32 + 4..b.right() as u32 - 4).map(move |x| (x, y)));
+        let banded = inside.filter(|&(x, y)| { let i = ((y * w + x) * 4) as usize; !near(theme.ink, &f[i..i + 3]) }).count();
+        // How far a pixel leans from its own grey toward the accent's hue (the accent bands lean about 40).
+        let toward = |p: &[u8]| { let m = (p[0] as f32 + p[1] as f32 + p[2] as f32) / 3.0; let a = theme.accent.map(|v| v * 255.0); let am = (a[0] + a[1] + a[2]) / 3.0; (0..3).map(|k| (p[k] as f32 - m) * (a[k] - am)).sum::<f32>() / (0..3).map(|k| (a[k] - am).powi(2)).sum::<f32>().sqrt() };
+        let warm = f.chunks_exact(4).map(toward).fold(0.0f32, f32::max);
+        assert!(warm < 12.0, "{}: no pixel at rest toward the accent: {warm}", theme.name);
+        assert!(banded > 500, "{}: the bands inside the ink are drawn: {banded} px", theme.name);
+    }
+}
+
 /// A page with a line of text to read in the middle and, when `block`, a status line along the bottom
 /// right; the readout on, in `at`, `inset` from the edges.
 mod readout {

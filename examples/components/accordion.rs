@@ -8,5 +8,5 @@ pub enum Msg { Nothing, Pick(usize), Edit(TextEdit), Num(Edit), Value(f32) }
 
 /// 一节打开 · One open
 pub fn ex_0() -> El<Msg> {
-    accordion("a1", vec![("什么是材质", text("第二遍的画法。", 13.0, Paint::TEXT)), ("什么是预设", text("一组数据。", 13.0, Paint::TEXT))], &[true, false], Msg::Pick).width(320.0)
+    accordion("a1", vec![("What is a material", text("How the second pass draws.", 13.0, Paint::TEXT)), ("What is a preset", text("A set of numbers.", 13.0, Paint::TEXT))], &[true, false], Msg::Pick).width(320.0)
 }

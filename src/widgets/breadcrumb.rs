@@ -4,7 +4,7 @@
 //! Props: `key`, `items` (labels), `msg` (go to level `i`).
 //! States: the last item is the current page (not a link).
 //! Messages: `msg(i)` on a level (press, Enter); links are keyed `key:i`.
-//! Usage: `breadcrumb("crumbs", &["文档", "组件", "按钮"], Msg::Up)`
+//! Usage: `breadcrumb("crumbs", &["Docs", "Components", "Button"], Msg::Up)`
 //!
 //! A navigation landmark of links separated by slashes.
 use super::LABEL;

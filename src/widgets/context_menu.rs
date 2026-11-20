@@ -6,7 +6,7 @@
 //! States: closed, open (a menu in a layer at `at`, an active item).
 //! Messages: `pick(i)` on an item or Enter; Up / Down / Home / End `move_to(i)`; Esc or a press
 //!   outside `close` (WAI-ARIA menu).
-//! Usage: `context_menu("file-menu", s.menu_at, &["打开", "重命名"], s.active, Msg::Pick, Msg::Active, Msg::Close)`
+//! Usage: `context_menu("file-menu", s.menu_at, &["Open", "Rename"], s.active, Msg::Pick, Msg::Active, Msg::Close)`
 //!
 //! The application opens it (from a long press, a secondary button or a key) and keeps where.
 use super::{CONTROL_H, LABEL, LINE, MENU_SURFACE, RADIUS, selected_on};

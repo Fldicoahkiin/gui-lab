@@ -4,7 +4,7 @@
 //! Props: `key`, `label`, `checked`, `msg`.
 //! States: unchecked, checked, focused, disabled.
 //! Messages: `msg` on press, Space or Enter (WAI-ARIA checkbox: Space toggles).
-//! Usage: `checkbox("terms", "同意条款", s.terms, Msg::Terms)`
+//! Usage: `checkbox("terms", "Accept the terms", s.terms, Msg::Terms)`
 //!
 //! A square box and its label; the whole row is pressable and is one focus stop. Checked, the box is
 //! outlined in ink and carries an ink tick made of two bars.

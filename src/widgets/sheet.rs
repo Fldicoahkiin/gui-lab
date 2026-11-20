@@ -5,7 +5,7 @@
 //! Props: `key`, `open`, `title`, `width`, `close`, `body`.
 //! States: closed, open (modal: focus inside, Esc closes; the page beneath held a little loose).
 //! Messages: `close` on Esc, a press on the page beside it, or its close button.
-//! Usage: `sheet("filters", s.open, "筛选", 360.0, Msg::Close, body)`
+//! Usage: `sheet("filters", s.open, "Filters", 360.0, Msg::Close, body)`
 //!
 //! A modal panel along the window's right edge; it arrives as a flow when the view keys it the same
 //! (no animation of its own).

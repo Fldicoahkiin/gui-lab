@@ -6,7 +6,7 @@
 //! States: off, on (`aria-pressed`), focused; in a group one focus stop, Left / Right move focus by
 //!   choosing, Space toggles.
 //! Messages: `msg` / `msg(i)` on press, Enter or Space.
-//! Usage: `toggle("bold", "B", s.bold, Msg::Bold)`, `toggle_group("align", &["左", "中", "右"], &s.align, Msg::Align)`
+//! Usage: `toggle("bold", "B", s.bold, Msg::Bold)`, `toggle_group("align", &["Left", "Center", "Right"], &s.align, Msg::Align)`
 //!
 //! On, the button is an ink plate with its label in the ground's colour.
 use super::{CONTROL_H, LABEL, LINE, RADIUS};

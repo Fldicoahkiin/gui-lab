@@ -4,8 +4,8 @@
 //! Props: `key`, `open`, `title`, `width`, `beneath` (looseness of the page under it, about 0.35),
 //!   `close`, `body`.
 //! States: open or nothing; focus inside while open.
-//! Messages: `close` on Esc or 关闭; whatever its body sends.
-//! Usage: `dialog("rename", s.open, "重命名", 340.0, 0.35, Msg::Close, body)`
+//! Messages: `close` on Esc or its close button; whatever its body sends.
+//! Usage: `dialog("rename", s.open, "Rename", 340.0, 0.35, Msg::Close, body)`
 //!
 //! A modal dialog. While open it is the only thing that takes input: focus moves into it and stays
 //! there, Esc or the close button send `close`, and everything beneath is held partly loose

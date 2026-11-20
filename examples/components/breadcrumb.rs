@@ -8,5 +8,5 @@ pub enum Msg { Nothing, Pick(usize), Edit(TextEdit), Num(Edit), Value(f32) }
 
 /// 三级 · Three levels
 pub fn ex_0() -> El<Msg> {
-    breadcrumb("bc1", &["文档", "组件", "按钮"], Msg::Pick)
+    breadcrumb("bc1", &["Docs", "Components", "Button"], Msg::Pick)
 }

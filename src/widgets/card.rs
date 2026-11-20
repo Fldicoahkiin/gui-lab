@@ -4,7 +4,7 @@
 //! Props: `key`, `title: Option<&str>`, `body: El<M>`.
 //! States: none of its own.
 //! Messages: none; make it pressable with `.on_press(m)`.
-//! Usage: `card("c", Some("标题"), text("内容", 14.0, Paint::TEXT))`
+//! Usage: `card("c", Some("Title"), text("Content", 14.0, Paint::TEXT))`
 //!
 //! A card: a bordered group with an optional title. Change its padding, corner radius or line with
 //! `.pad`, `.radius` and `.border` on what this returns.
