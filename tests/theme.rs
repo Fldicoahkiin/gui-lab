@@ -155,3 +155,33 @@ fn mixed_greys_can_take_dim_as_far_toward_the_ink_as_it_needs_to_read() {
     // Where the plain mix already reads, nothing moves.
     assert_eq!(Greys::mixed_dim(DARK.ground, DARK.ink, 4.5), Greys::mixed(DARK.ground, DARK.ink));
 }
+
+#[test]
+fn menus_and_sheets_are_raised_in_a_hairline_frame_and_their_selected_row_is_hairline() {
+    use amenui::widgets::{MENU_SURFACE, menu, sheet};
+    assert_eq!((MENU_SURFACE, selected_on(MENU_SURFACE)), (Paint::RAISED, Paint::HAIRLINE));
+    fn menu_view(_: &Page) -> El<Msg> {
+        col().key("page").width(W as f32).height(H as f32).pad(10.0, 10.0)
+            .child(menu("m", "Theme", &["Dark", "Light", "System"], Some(1), true, false, Msg::V(0.0), Msg::V(0.0), |_| Msg::V(0.0)))
+    }
+    fn sheet_view(_: &Page) -> El<Msg> {
+        col().key("page").width(W as f32).height(H as f32)
+            .child(sheet("s", true, "Filters", 200.0, Msg::V(0.0), col().key("s/body").height(40.0)))
+    }
+    let mut o = Offscreen::new(W, H);
+    for light in [false, true] {
+        let th = if light { LIGHT } else { DARK };
+        let mut u = open(Page { light, ..Page::default() }, menu_view);
+        let f = render(&mut o, &mut u);
+        let list = u.node("m/list").expect("the list").rect;
+        let row = u.node("m:1").expect("the selected row").rect;
+        let other = u.node("m:2").expect("another row").rect;
+        assert!(near(px(&f, other.right() - 3.0, other.y + other.h * 0.5), byte(th.greys.raised)), "{} the list: {:?}", th.name, px(&f, other.right() - 3.0, other.y + other.h * 0.5));
+        assert!(near(px(&f, row.right() - 3.0, row.y + row.h * 0.5), byte(th.greys.hairline)), "{} the selected row: {:?}", th.name, px(&f, row.right() - 3.0, row.y + row.h * 0.5));
+        assert!(near(px(&f, list.x + 0.5, list.y + list.h * 0.5), byte(th.greys.hairline)), "{} the frame: {:?}", th.name, px(&f, list.x + 0.5, list.y + list.h * 0.5));
+        let mut u = open(Page { light, ..Page::default() }, sheet_view);
+        let f = render(&mut o, &mut u);
+        let p = u.node("s/panel").expect("the panel").rect;
+        assert!(near(px(&f, p.right() - 6.0, p.bottom() - 6.0), byte(th.greys.raised)), "{} the sheet: {:?}", th.name, px(&f, p.right() - 6.0, p.bottom() - 6.0));
+    }
+}

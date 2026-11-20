@@ -19,7 +19,7 @@
 //! `dismiss_velocity`. Above the top detent the drag is rubber-banded (`gesture::RubberBand`). A scroll
 //! area in the body scrolls first; a finger pulling it down at its top drags the sheet instead
 //! (DESIGN.md §1.8.2, hand-off).
-use super::{LABEL, LINE, RADIUS};
+use super::{LABEL, LINE, MENU_SURFACE, RADIUS};
 use crate::el::{Drag, El, Font, Key, Paint, Phase, Response, Role, col, layers, space, text};
 use crate::gesture::{Animated, RubberBand, Spring, Velocity, project};
 use std::rc::Rc;
@@ -149,7 +149,7 @@ pub fn bottom_sheet<M: Clone + 'static>(key: &str, s: &Sheet, title: &str, body:
     // The body is as tall as what shows at the top detent.
     let body = col().key(format!("{key}/body")).fill_width().height((top - 22.0 - 40.0).max(40.0)).scroll().child(body);
     let panel = col().key(format!("{key}/panel")).fill_width().height(h * 2.0).pad(18.0, 0.0).gap(8.0)
-        .radius(RADIUS * 3.0).fill(Paint::GROUND).border(LINE, Paint::HAIRLINE).align(AlignItems::START)
+        .radius(RADIUS * 3.0).fill(MENU_SURFACE).border(LINE, Paint::HAIRLINE).align(AlignItems::START)
         .role(Role::Dialog).label(title).focusable(true).unframed()
         .shift(0.0, h - s.shown())
         // Rising, dragged or springing, its edge stirs the field map (DESIGN.md §1.29).

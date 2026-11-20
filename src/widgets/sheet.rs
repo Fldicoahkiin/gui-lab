@@ -9,13 +9,13 @@
 //!
 //! A modal panel along the window's right edge; it arrives as a flow when the view keys it the same
 //! (no animation of its own).
-use super::{LABEL, LINE, Variant, button_as};
+use super::{LABEL, LINE, MENU_SURFACE, Variant, button_as};
 use crate::el::{El, Font, Paint, Role, col, row, space, text};
 use taffy::AlignItems;
 
 pub fn sheet<M: Clone>(key: &str, open: bool, title: &str, width: f32, close: M, body: El<M>) -> El<M> {
     if !open { return space(0.0, 0.0); }
-    let panel = col().key(format!("{key}/panel")).width(width).fill_height().pad(22.0, 18.0).gap(14.0).fill(Paint::GROUND).border(LINE, Paint::HAIRLINE)
+    let panel = col().key(format!("{key}/panel")).width(width).fill_height().pad(22.0, 18.0).gap(14.0).fill(MENU_SURFACE).border(LINE, Paint::HAIRLINE)
         .role(Role::Dialog).label(title)
         .child(row().gap(12.0).align(AlignItems::CENTER).child(text(title, LABEL + 3.0, Paint::INK).font(Font::Display).grow(1.0))
             .child(button_as(format!("{key}/close"), &crate::i18n::tr("widget.dialog.close"), Variant::Quiet, close.clone())))

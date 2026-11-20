@@ -92,5 +92,7 @@ pub const SELECTED: crate::el::Paint = crate::el::Paint::RAISED;
 /// The plate of what is selected or under the keys on `surface`: `SELECTED`, or the hairline grey on a
 /// surface that is itself raised (a menu, a sheet), where the raised grey would not show.
 pub fn selected_on(surface: crate::el::Paint) -> crate::el::Paint { if surface == crate::el::Paint::RAISED { crate::el::Paint::HAIRLINE } else { SELECTED } }
-/// The surface of the menus and lists that open over the page (menu, select, context and nested menus).
-pub const MENU_SURFACE: crate::el::Paint = crate::el::Paint::GROUND;
+/// The surface of the menus and lists that open over the page (menu, select, context and nested menus)
+/// and of the sheets (sheet, bottom sheet): the raised grey, in a hairline frame; what is selected or hot
+/// on it is `selected_on(MENU_SURFACE)`, the hairline grey.
+pub const MENU_SURFACE: crate::el::Paint = crate::el::Paint::RAISED;

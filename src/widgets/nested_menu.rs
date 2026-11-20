@@ -220,7 +220,8 @@ pub fn nested_menu<M: Clone + 'static>(key: &str, m: &Menu, msg: impl Fn(MenuMsg
             let mut item = row().key(format!("{key}/m{l}/r{r}")).fill_width().height(m.row_h).pad(10.0, 0.0).radius(RADIUS).align(AlignItems::CENTER).gap(8.0)
                 .role(Role::MenuItem).label(it.label.clone()).focusable(false).on_press(a(MenuMsg::Press(l, r)))
                 .child(text(it.label.clone(), LABEL - 1.0, if hot { Paint::INK } else { Paint::TEXT }).grow(1.0));
-            if !it.items.is_empty() { item = item.child(text("›", LABEL, Paint::DIM)); }
+            // The chevron of a row with a submenu: dim does not read 3:1 on the raised panel in the light scheme.
+            if !it.items.is_empty() { item = item.child(text("›", LABEL, Paint::TEXT)); }
             if hot { item = item.fill(selected_on(MENU_SURFACE)); }
             p = p.child(item);
         }

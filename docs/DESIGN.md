@@ -3360,7 +3360,9 @@ background colour); unavailable is `.disabled(true)`.
   current tab's rule, a progress bar's fill and the label of a selected list row or menu option; a selected or
   keyed row's plate (`widgets::SELECTED`) is the raised grey, not a tint of the accent, and the hairline grey on a
   surface that is itself raised (`widgets::selected_on`); a hot menu row (command, context and nested menus) is
-  that plate with an ink label, and a skip link an ink plate with a ground label. The hover and focus marks are
+  that plate with an ink label, and a skip link an ink plate with a ground label. Menus, selects, context and
+  nested menus and the sheets (sheet, bottom sheet) are raised: the raised grey in a hairline frame
+  (`widgets::MENU_SURFACE`), so their selected and hot rows are the hairline grey; a popover stays on the ground. The hover and focus marks are
   ink. Outlines of interactive controls (a default button, an input, a number, a select or menu button, a
   checkbox, a radio, a choice, a toggle, a page of a pagination) are dim at rest and ink under the pointer or with
   focus (`El::border_hover`), and ink while a select or menu is open or a number is typed into; the hairline grey

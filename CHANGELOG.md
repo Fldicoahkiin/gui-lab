@@ -8,6 +8,13 @@ crate and the `amenui` npm package (`web/`) always carry the same version, becau
 match the module that `web_app!` generates. The minimum Rust is the one CI builds with (`rust-version`
 in Cargo.toml); raising it is a breaking change before 1.0 only in the second number.
 
+## Menus and sheets are raised
+
+- `widgets::MENU_SURFACE` is the raised grey (it was the ground): menus, selects, context and nested menus, the
+  sheet and the bottom sheet are raised in their hairline frame, and their selected and hot rows (`selected_on`)
+  are the hairline grey with an ink label. A popover keeps the ground. A nested menu's chevron (a row with a
+  submenu) is the text grey: dim reads 2.93:1 on the raised panel in the light scheme.
+
 ## Recomposing text keeps the cheap redraw
 
 - A stage that steps (`Ui::on_step`) or a subtree whose messages are its own is still drawn alone, the rest of
