@@ -201,3 +201,74 @@ fn a_held_stage_that_steps_costs_nothing_between_its_own_draws() {
     w.settle();
     assert_eq!(now, piece(&w), "the piece where a whole view at this time puts it");
 }
+
+/// A slow stage with a part that changes alone (`El::steps` inside it, the Lab's Loupe and its lens):
+/// after input it holds, draws whole when it may, and then the page comes to rest, asking for no frames.
+mod parted {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    /// Steps still to take (the state's own: set by the test before a tick).
+    pub static MOVES: AtomicUsize = AtomicUsize::new(0);
+    /// Whether the part can be viewed alone (not while the stage warms up: it draws whole, timed).
+    pub static ALONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    #[derive(Clone, Default)]
+    pub struct P { pub x: f32 }
+    pub fn lens(p: &P) -> El<()> {
+        let mut d = amenui::draw::Drawing::new(300.0, 120.0);
+        d.line((p.x, 10.0), (p.x + 40.0, 10.0), 4.0, Paint::INK);
+        col().key("lens").steps().width(300.0).height(120.0).absolute(Some(0.0), Some(0.0), None, None).child(canvas(d).key("glass").width(300.0))
+    }
+    pub fn stage(p: &P) -> El<()> {
+        let mut page = col().key("sheet").width(300.0).gap(2.0);
+        for k in 0..8 { page = page.child(text(format!("line {k} of the page"), 11.0, Paint::DIM)); }
+        col().key("st").stage().width(300.0).height(120.0).clip().child(page).child(lens(p))
+    }
+    pub fn view(p: &P) -> El<()> { col().key("page").pad(20.0, 20.0).child(stage(p)) }
+    pub fn of(p: &P, k: &str) -> Option<El<()>> { match k { "st" => Some(stage(p)), "lens" if ALONE.load(Ordering::Relaxed) => Some(lens(p)), _ => None } }
+    pub fn step(p: &mut P, _: f32) -> Vec<String> {
+        if MOVES.load(Ordering::Relaxed) == 0 { return vec![]; }
+        MOVES.fetch_sub(1, Ordering::Relaxed);
+        p.x += 3.0;
+        vec!["st".to_owned()]
+    }
+}
+
+#[test]
+fn a_slow_stage_with_a_part_comes_to_rest_after_input() {
+    let mut u = Ui::new(parted::P::default(), parted::view, |_, _| {}, fonts(), 400, 300, 1.0)
+        .on_step(parted::step)
+        .stage_view(parted::of)
+        .on_look(|_| Look { material: Material::Plain, ..Look::default() });
+    u.tick(1.0);
+    u.settle();
+    u.slow_stage(40.0);
+    let mut t = u.now();
+    // Slow: every frame steps it, with nothing else.
+    for _ in 0..12 { parted::MOVES.store(1, std::sync::atomic::Ordering::Relaxed); t += 1.0 / 60.0; u.tick(t); u.settle(); }
+    assert_eq!(u.stage_state("st").map(|s| s.0), Some(true), "40 ms draws are slow");
+    parted::ALONE.store(true, std::sync::atomic::Ordering::Relaxed);
+    // Input that steps it, and a whole paint under input (the page relaid out, as a wheel turn or Tab
+    // does): the stage holds, behind what it shows.
+    for f in 0..20 {
+        parted::MOVES.store(1, std::sync::atomic::Ordering::Relaxed);
+        u.pointer_move(390.0, 290.0 - f as f32);
+        u.relayout();
+        t += 1.0 / 60.0;
+        u.tick(t);
+        u.settle();
+        u.frame_drawn();
+    }
+    // At rest: within a hold and a frame it asks for nothing more.
+    let mut rest = None;
+    for f in 0..60 {
+        // As a host runs: a frame drawn whenever one is asked for.
+        if !u.needs_frame(t) { rest = Some(f); break; }
+        u.frame_drawn();
+        t += 1.0 / 60.0;
+        u.tick(t);
+        u.settle();
+    }
+    let f = rest.unwrap_or_else(|| panic!("still asking for frames 1 s after input"));
+    assert!(f as f32 / 60.0 <= 0.5 + 2.0 / 60.0, "rest after {f} frames, more than its longest hold");
+    assert_eq!(u.next_wake(t), None, "and wakes for nothing");
+}

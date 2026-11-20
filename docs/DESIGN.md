@@ -3167,7 +3167,8 @@ number of elements changed draws whatever the input. Holding costs nothing beyon
 frame in which a held stage would still hold paints nothing for it, a step of it (`Ui::on_step`, below) that
 comes while it would hold is not viewed but waits for its next draw, and when it may draw it is viewed and
 drawn alone, as a step is, the rest of the page copied (`Ui::needs_frame` asks for that frame, `next_wake`
-gives the end of its hold). When a stage's own device scale steps down under load
+gives the end of its hold). A stage that held is drawn whole when it may, never by its parts alone (below):
+its held image is behind all of it. When a stage's own device scale steps down under load
 (the governor, below), that acts first; a stage is held only when the lowest scale is still slow. Not for controls: what is inside a stage that holds does not change while it
 holds.
 

@@ -4544,8 +4544,10 @@ impl<S, M: Clone> Ui<S, M> {
             let Some(i) = self.nodes.iter().position(|n| n.stage.is_some() && n.key == *k) else { ok = false; break };
             if roots.iter().any(|&r| within(&self.nodes, i, r)) { continue; }
             // A stage with parts that change alone (`El::steps` inside it): those parts, when each is
-            // viewed and put in place; otherwise the stage whole.
-            let parts = self.parts(i);
+            // viewed and put in place; otherwise the stage whole. A stage that held (its image behind
+            // what it shows) draws whole: drawing its parts alone would leave it behind for good.
+            let behind = self.stages.iter().any(|(sk, st)| sk == k && st.behind);
+            let parts = if behind { vec![] } else { self.parts(i) };
             let alone = !parts.is_empty() && parts.iter().all(|&j| { let pk = self.nodes[j].key.clone(); view(&self.state, &pk).is_some_and(|el| self.swap_stage(j, el)) });
             if alone {
                 if let Some((_, st)) = self.stages.iter_mut().find(|(sk, _)| sk == k) { st.stale = true; }
