@@ -485,6 +485,19 @@ fn cells_of(i: VOut) -> vec4f {
 fn mesh_near(i: VOut) -> vec4f { return textureSampleLevel(tex0, samp, clamp(i.uv, vec2f(0.0), vec2f(1.0)), 0.0); }
 /// A 3D element's colour texel here, nearest (tex1 is its colour image): shade, tone, accent and
 /// 0.5 + hue / 4. At the silhouette's filtered edge an empty texel takes a drawn neighbour's colour.
+/// The outline's tone of the copies drawn nearest here (the resolve's alpha, unfiltered; just off the
+/// silhouette, a neighbour's); the ink where none is.
+fn mesh_outline(i: VOut) -> f32 {
+  let dims = vec2f(textureDimensions(tex0));
+  let q = vec2i(clamp(floor(clamp(i.uv, vec2f(0.0), vec2f(1.0)) * dims), vec2f(0.0), dims - 1.0));
+  let lim = vec2i(dims) - 1;
+  var dirs = array<vec2i, 9>(vec2i(0, 0), vec2i(1, 0), vec2i(-1, 0), vec2i(0, 1), vec2i(0, -1), vec2i(1, 1), vec2i(-1, 1), vec2i(1, -1), vec2i(-1, -1));
+  for (var k = 0; k < 9; k++) {
+    let t = textureLoad(tex0, clamp(q + dirs[k], vec2i(0), lim), 0).a;
+    if (t > 0.5 / 255.0) { return t; }
+  }
+  return 1.0;
+}
 fn mesh_px(i: VOut) -> vec4f {
   let dims = vec2f(textureDimensions(tex1));
   let q = vec2i(clamp(floor(clamp(i.uv, vec2f(0.0), vec2f(1.0)) * dims), vec2f(0.0), dims - 1.0));
@@ -599,10 +612,11 @@ fn ink_of(iv: VOut, solid: bool) -> vec4f {
       return vec4f(col * a, a);
     }
     let code = hue * 0.15 + 0.07;
-    // A drawn outline on the silhouette and the creases (Mesh3d::outline, device px in paint.x).
+    // A drawn outline on the silhouette and the creases (Mesh3d::outline, device px in paint.x), in its
+    // copies' grey (`MeshInstances::outline`, the resolve's alpha, nearest).
     if (i.paint.x > 0.0) {
       let line = clamp(i.paint.x + 0.5 - abs(s.w), 0.0, 1.0) * step(0.02, s.x);
-      return vec4f(mix(r, 1.0, line) * a, mix(g, 0.0, line) * a, code * a, a);
+      return vec4f(mix(r, mesh_outline(i), line) * a, mix(g, 0.0, line) * a, code * a, a);
     }
     return vec4f(r * a, g * a, code * a, a);
   }

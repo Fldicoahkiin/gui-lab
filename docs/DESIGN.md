@@ -2011,8 +2011,10 @@ smoothed by crease), `extrude_bored` (the same with a round hole), `tube` (washe
 gear: tooth count, pitch radius, thickness, hole; the tooth flank rises steeply from the root and curves to the
 tip circle like an involute, with tooth thickness half the circular pitch at the pitch circle), `block` (a box
 with every edge creased) and `rod` (a cylinder with smooth sides and creased ends). `Mesh3d` adds `tones` (2:
-flat lit and shadow tones, with the terminator at `terminator`) and `outline` (ink lines on silhouettes and
-creases, in logical px); flat-shading normals and shading are interpolated in the fragment. Colour is a `Paint`
+flat lit and shadow tones, with the terminator at `terminator`) and `outline` (lines on silhouettes and
+creases, in logical px, in the ink or in the grey a group of copies asks for, `MeshInstances::outline`, by its
+tone; the mesh pass keeps it in the id image's alpha and the resolve's, and a line takes the grey of the copy
+nearest under it, read unfiltered); flat-shading normals and shading are interpolated in the fragment. Colour is a `Paint`
 (tone, accent, hue), using theme colours like shapes do.
 
 **The mesh pass.** Each `scene3d` element has a set of off-screen images the size of its device rect ×
@@ -2406,7 +2408,10 @@ afterwards).
 
 ### 1.24 A stack of cards
 
-`widgets::card_stack` (`Stack { count 5, angle0 42, falloff 0.7, delay_ms 28, spring (k 260, c 24), look, card }`).
+`widgets::card_stack` (`Stack { count 5, angle0 42, falloff 0.7, delay_ms 28, spring (k 260, c 24), look, card,
+paints, outline, outlines }`). By default every card is raised (`paints [RAISED]`), outlined 1 px (`outline`), the
+top card in the ink and the ones under it in the hairline grey (`outlines [INK, HAIRLINE]`: card n takes entry n,
+the last one repeating; empty, the ink); categories are not told apart by the accents.
 Hovering or pressing a card (a 3D element's `Pick`) turns the n-th card beneath it (n from 0) to
 `angle0 × falloff^n` degrees, starting after `delay_ms × n` ms, each with its own spring with velocity hand-off
 (§1.8.4), about its own bottom-left corner; the cards above stay. A press keeps it fanned, Esc closes it, and the

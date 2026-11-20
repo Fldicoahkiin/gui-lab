@@ -473,10 +473,13 @@ pub struct Mesh3d {
 impl Default for Mesh3d { fn default() -> Self { Self { resolution_scale: 0.5, edge_depth: 0.04, edge_normal: 15.0, tones: 0.0, terminator: 0.3, outline: 0.0 } } }
 
 /// Copies of one mesh, drawn in one call: every transform is one copy. `id` names the group in picks.
+/// `outline`: the grey its drawn outline (`Mesh3d::outline`) takes, by its tone (`None`: the ink).
 #[derive(Clone, Debug, PartialEq)]
-pub struct MeshInstances { pub mesh: MeshId, pub transforms: Vec<Mat4>, pub paint: Paint, pub id: u32 }
+pub struct MeshInstances { pub mesh: MeshId, pub transforms: Vec<Mat4>, pub paint: Paint, pub id: u32, pub outline: Option<Paint> }
 impl MeshInstances {
-    pub fn one(mesh: MeshId, transform: Mat4, paint: Paint, id: u32) -> Self { Self { mesh, transforms: vec![transform], paint, id } }
+    pub fn one(mesh: MeshId, transform: Mat4, paint: Paint, id: u32) -> Self { Self { mesh, transforms: vec![transform], paint, id, outline: None } }
+    /// Its outline in `p`'s grey (its tone; the accent is not drawn in an outline).
+    pub fn outlined(mut self, p: Paint) -> Self { self.outline = Some(p); self }
 }
 
 /// What a `scene3d` element draws: meshes with transforms, one camera, one light (DESIGN.md §1.18).
@@ -514,7 +517,7 @@ impl Scene3d {
         let mut h = std::collections::hash_map::DefaultHasher::new();
         let mut f = |v: f32| v.to_bits().hash(&mut h);
         for it in &self.items {
-            f(it.mesh.0 as f32); f(it.paint.tone); f(it.paint.accent); f(it.paint.hue as f32); f(it.id as f32);
+            f(it.mesh.0 as f32); f(it.paint.tone); f(it.paint.accent); f(it.paint.hue as f32); f(it.id as f32); f(it.outline.map_or(-1.0, |p| p.tone));
             for t in &it.transforms { for v in t.0 { f(v); } }
         }
         let c = &self.camera;
@@ -787,7 +790,7 @@ mod tests {
     fn picks_the_nearest_copy() {
         let lib = Library::default();
         let mut s = Scene3d::single(MeshId::CUBE);
-        s.items.push(MeshInstances { mesh: MeshId::CUBE, transforms: vec![Mat4::translate(-0.6, 0.0, -2.0), Mat4::translate(5.0, 0.0, 0.0)], paint: Paint::INK, id: 7 });
+        s.items.push(MeshInstances { mesh: MeshId::CUBE, transforms: vec![Mat4::translate(-0.6, 0.0, -2.0), Mat4::translate(5.0, 0.0, 0.0)], paint: Paint::INK, id: 7, outline: None });
         s.camera = Camera { yaw: 0.0, pitch: 0.0, ..Camera::default() };
         assert_eq!(s.pick(&lib, 0.5, 0.5, 1.0).map(|h| (h.object, h.instance)), Some((1, 0)));
         assert_eq!(s.pick(&lib, 0.02, 0.02, 1.0), None);

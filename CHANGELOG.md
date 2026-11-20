@@ -8,6 +8,15 @@ crate and the `amenui` npm package (`web/`) always carry the same version, becau
 match the module that `web_app!` generates. The minimum Rust is the one CI builds with (`rust-version`
 in Cargo.toml); raising it is a breaking change before 1.0 only in the second number.
 
+## A card stack's outlines, card by card
+
+- `Stack::outlines`: card n's outline grey (the last entry repeats; empty: the ink). The default stack is raised
+  cards (`paints [RAISED]`, was the three accents, ink and dim), outlined 1 px, the top one in the ink and the ones
+  under it in the hairline grey.
+- `MeshInstances::outline` (and `MeshInstances::outlined`): the grey a group of copies' drawn outline
+  (`Mesh3d::outline`) takes, by its tone; `None` is the ink as before. **A struct literal of `MeshInstances` needs
+  `outline: None`** (`MeshInstances::one` sets it).
+
 ## The accent only under the hand, in charts and examples
 
 - `dot_chart`: the picked range is ink (its dots up to the ink, the line under the axis ink) and the rest of the

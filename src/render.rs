@@ -701,7 +701,7 @@ impl Renderer {
                 let start = copies.len() as u32;
                 for m in &it.transforms {
                     let n = copies.len() as u32 + 1;
-                    copies.push(MeshCopy { m: m.cols(), paint: [it.paint.tone, it.paint.accent, it.paint.hue as f32, 0.0], id: [(n & 255) as f32, ((n >> 8) & 255) as f32, 0.0, 0.0] });
+                    copies.push(MeshCopy { m: m.cols(), paint: [it.paint.tone, it.paint.accent, it.paint.hue as f32, it.outline.map_or(0.0, |p| p.tone.clamp(1.0 / 255.0, 1.0))], id: [(n & 255) as f32, ((n >> 8) & 255) as f32, 0.0, 0.0] });
                 }
                 for &(chunk, first, count) in parts { draws.push((chunk, first, count, start, copies.len() as u32)); }
             }

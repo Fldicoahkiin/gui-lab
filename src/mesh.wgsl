@@ -2,13 +2,15 @@
 // off-screen target (its box × resolution_scale) with depth, into three images:
 //   colour (rgba8): r = flat shade (ambient + lambert), g = tone, b = accent, a = 0.5 + hue / 4 (0 = empty)
 //   normal (rgba8): rg = view-space normal xy (0.5 + 0.5 n), ba = linear depth as 16 bits (hi, lo)
-//   id     (rgba8): rg = copy number + 1 as 16 bits (lo, hi), b = view-space normal z, a = 1 where drawn
+//   id     (rgba8): rg = copy number + 1 as 16 bits (lo, hi), b = view-space normal z, a = where drawn,
+//          the outline's tone (1: the ink; at least 1 / 255), 0 elsewhere
 // Then three full-target passes turn that into what stage 1 needs:
 //   mask:  r = inside the faces (drawn and not on an edge), g = drawn (the silhouette)
 //   h:     for both masks, the horizontal distance (texels) to the nearest texel inside and outside
 //   v:     the exact Euclidean distance (two-pass, Felzenszwalb style brute force over ±R rows), as the
 //          signed nearness stage 1 uses: r = silhouette, g = silhouette and edges; b = the projected
-//          normal's code (1 = facing the viewer, 2..9 = its direction in eighths of a half turn)
+//          normal's code (1 = facing the viewer, 2..9 = its direction in eighths of a half turn); a =
+//          the outline's tone where drawn (the id image's), 0 elsewhere
 
 struct MU {
   view: mat4x4f,
@@ -28,7 +30,7 @@ struct MU {
 struct MIn {
   @location(0) pos: vec3f, @location(1) nrm: vec3f,
   @location(2) m0: vec4f, @location(3) m1: vec4f, @location(4) m2: vec4f, @location(5) m3: vec4f,
-  @location(6) paint: vec4f, // tone, accent, hue, _
+  @location(6) paint: vec4f, // tone, accent, hue, the outline's tone (0: the ink)
   @location(7) id: vec4f,    // copy number + 1 (lo byte, hi byte), _, _
 };
 struct MOut {
@@ -73,7 +75,7 @@ struct GOut { @location(0) c: vec4f, @location(1) g: vec4f, @location(2) k: vec4
   var o: GOut;
   o.c = vec4f(shade, tone, i.paint.y, 0.5 + i.paint.z * 0.25);
   o.g = vec4f(n.xy * 0.5 + 0.5, hi / 255.0, d * 255.0 - hi);
-  o.k = vec4f(i.id.x / 255.0, i.id.y / 255.0, n.z * 0.5 + 0.5, 1.0);
+  o.k = vec4f(i.id.x / 255.0, i.id.y / 255.0, n.z * 0.5 + 0.5, select(i.paint.w, 1.0, i.paint.w <= 0.0));
   return o;
 }
 
@@ -82,7 +84,7 @@ struct GOut { @location(0) c: vec4f, @location(1) g: vec4f, @location(2) k: vec4
 }
 
 fn inside(q: vec2i) -> bool { return q.x >= 0 && q.y >= 0 && f32(q.x) < mu.size.x && f32(q.y) < mu.size.y; }
-fn drawn(q: vec2i) -> bool { return inside(q) && textureLoad(tk, q, 0).a > 0.5; }
+fn drawn(q: vec2i) -> bool { return inside(q) && textureLoad(tk, q, 0).a > 0.5 / 255.0; }
 fn depth(q: vec2i) -> f32 { let g = textureLoad(tg, q, 0); let d = (round(g.z * 255.0) + g.w) / 255.0; return mu.misc.x + d * (mu.misc.y - mu.misc.x); }
 fn normal(q: vec2i) -> vec3f { let g = textureLoad(tg, q, 0); let k = textureLoad(tk, q, 0); return vec3f(g.xy * 2.0 - 1.0, k.z * 2.0 - 1.0); }
 fn ident(q: vec2i) -> f32 { let k = textureLoad(tk, q, 0); return round(k.x * 255.0) + round(k.y * 255.0) * 256.0; }
@@ -157,5 +159,6 @@ fn hdist(q: vec2i) -> vec4f {
     let ang = atan2(-n.y, n.x);
     code = select(2.0 + floor(fract(ang / 3.14159265) * 8.0 + 0.0001) % 8.0, 1.0, l < 0.35);
   }
-  return vec4f(clamp(0.5 + dsil * px / (2.0 * s), 0.0, 1.0), clamp(0.5 + dface * px / (2.0 * s), 0.0, 1.0), code / 255.0, 1.0);
+  let tone = select(0.0, textureLoad(tk, p, 0).a, inside(p));
+  return vec4f(clamp(0.5 + dsil * px / (2.0 * s), 0.0, 1.0), clamp(0.5 + dface * px / (2.0 * s), 0.0, 1.0), code / 255.0, tone);
 }

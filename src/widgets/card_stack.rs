@@ -3,7 +3,7 @@
 //! Purpose: A stack of cards that fans open under the pointer: hovering or pressing a card swings the
 //!   cards beneath it out, each a little less and a little later than the one above.
 //! Props: `key`, `stack` (`Stack`: `count`, `angle0`, `falloff`, `delay_ms`, `spring`, `look`,
-//!   `card`), `msg`.
+//!   `card`, `paints`, `outline`, `outlines`), `msg`.
 //! States: closed, fanning (cards springing toward their angles, each after its delay), fanned under
 //!   card k, held (pressed: stays fanned when the pointer leaves); arrow keys move the fan when
 //!   focused, Enter or Space holds it.
@@ -57,6 +57,9 @@ pub struct Stack {
     /// Card n's colour (cycled), and an outline (logical px) round flat cards (0: none).
     pub paints: Vec<Paint>,
     pub outline: f32,
+    /// Card n's outline grey (card 0 is the top one; the last repeats for the rest; empty: the ink). By
+    /// default every card is raised, the top one in an ink outline and the ones under it in hairline.
+    pub outlines: Vec<Paint>,
     /// Which card the fan is under (hovered, or held by a press).
     hover: Option<usize>,
     held: Option<usize>,
@@ -68,7 +71,7 @@ impl Default for Stack {
     fn default() -> Self {
         let spring = Spring { stiffness: 260.0, damping: 24.0, ..Spring::default() };
         let count = 5;
-        Self { count, angle0: 42.0, falloff: 0.7, delay_ms: 28.0, spring, look: StackLook::Plain, card: (0.8, 0.52), paints: vec![Paint::hue(0), Paint::hue(1), Paint::hue(2), Paint::INK, Paint::DIM], outline: 0.0, hover: None, held: None,
+        Self { count, angle0: 42.0, falloff: 0.7, delay_ms: 28.0, spring, look: StackLook::Plain, card: (0.8, 0.52), paints: vec![Paint::RAISED], outline: 1.0, outlines: vec![Paint::INK, Paint::HAIRLINE], hover: None, held: None,
                angles: vec![Animated::new(0.0, spring); count], queue: vec![None; count] }
     }
 }
@@ -138,7 +141,8 @@ impl Stack {
             // The pivot: the bottom-left corner, a little left and down of the centre of the view.
             let pivot = Mat4::translate(-w * 0.4, -h * 0.7, -(i as f32) * (depth + 0.006));
             let t = pivot.mul(&Mat4::rotate_z(self.angle_of(i))).mul(&Mat4::translate(w * 0.5, h * 0.5, 0.0)).mul(&Mat4::scale(w, h, depth));
-            MeshInstances::one(MeshId::CUBE, t, colours[i % colours.len().max(1)], i as u32 + 1)
+            let one = MeshInstances::one(MeshId::CUBE, t, colours[i % colours.len().max(1)], i as u32 + 1);
+            match self.outlines.get(i.min(self.outlines.len().saturating_sub(1))) { Some(&p) => one.outlined(p), None => one }
         }).collect();
         let camera = if thick { Camera { projection: Projection::Perspective { fov: 34.0 }, yaw: -22.0, pitch: 24.0, distance: 2.3, target: [0.0, 0.0, -0.06], ..Camera::default() } }
             else { Camera { projection: Projection::Orthographic { height: 1.25 }, yaw: 0.0, pitch: 0.0, distance: 3.0, target: [0.0, 0.0, 0.0], ..Camera::default() } };
