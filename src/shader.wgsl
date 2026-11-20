@@ -632,7 +632,7 @@ fn near_in(i: VOut, top: bool) -> vec4f {
   // glyphs, so text set in its own material does not change the shape it sits on. A glyph at display
   // size in a material that draws round the ink takes all the ground its quad covers: near's bands and
   // carvr's ridges are part of the letter.
-  if (i.look.x >= 127.5 && (s.y > select(0.02, 0.42, i.paint.w < 0.5) || i.paint.w < 0.5 && display_override(i.size, i.look.x))) { code = i.look.x / 255.0; }
+  if (i.look.x >= 127.5 && (s.y > select(0.02, 0.42, i.paint.w < 0.5) || (i.paint.w < 0.5 && display_override(i.size, i.look.x)))) { code = i.look.x / 255.0; }
   return vec4f(s.y * step(0.01, i.paint.z), slot, loose, code);
 }
 // Text to read over others' ink (scene.rs Scene::holds): 1 on its own ink and within paint.x device px of
