@@ -3325,7 +3325,8 @@ background colour); unavailable is `.disabled(true)`.
   `HAIRLINE` (`FAINT`), `DIM` and `TEXT` stand at fixed tones (20, 51, 168 and 219 of 255, so the ink image holds
   them exactly) and are drawn as those colours exactly; a tone between two is drawn straight between their colours
   (`Theme::grey`, the shaders' `grey`), so a grey is never the ink at an alpha. A theme without greys of its own
-  takes `Greys::mixed` (the plain mixes of ground and ink at those tones); a theme made from another with its own
+  takes `Greys::mixed` (the plain mixes of ground and ink at those tones), or `Greys::mixed_dim(ground, ink, 4.5)`,
+  the same with `dim` taken toward the ink as little as it takes to stand 4.5:1 from the ground; a theme made from another with its own
   ground and ink sets them (`greys: Greys::mixed(ground, ink)`), or it keeps the other's.
 - **The extreme** (`Paint::EXTREME`, `Theme::extreme`) is white on a dark scheme and black on a light one: past the
   ink, for what the pointer is over. In the ink image it is a fourth hue code (0.45; the code the glyph heights once
@@ -3339,13 +3340,19 @@ background colour); unavailable is `.disabled(true)`.
   run hairline; a radio's dot, a checkbox's tick and outline, a pressed toggle and the current option of a choice are
   ink (a toggle, an option and the current page of a pagination as an ink plate with a ground label), as are a
   current tab's rule, a progress bar's fill and the label of a selected list row or menu option; a selected or
-  keyed row's plate (`widgets::SELECTED`) is the raised grey, not a tint of the accent; the hover and focus marks
-  are ink. The accent is
-  for a control under the hand (a slider's thumb while dragged, a menu or select that is open, a number being
-  edited) and for the explicit `Variant::Accent`.
-- **Fills that answer the pointer** (`El::fill_hover`, `El::fill_held`): an element's fill while the pointer is over
-  it or the control it is part of (the nearest pressable element at or above it), and while that is pressed or
-  dragged; each falls back to the fill at rest (held to the hover fill under the pointer). The page is painted again
+  keyed row's plate (`widgets::SELECTED`) is the raised grey, not a tint of the accent, and the hairline grey on a
+  surface that is itself raised (`widgets::selected_on`); a hot menu row (command, context and nested menus) is
+  that plate with an ink label, and a skip link an ink plate with a ground label. The hover and focus marks are
+  ink. Outlines of interactive controls (a default button, an input, a number, a select or menu button, a
+  checkbox, a radio, a choice, a toggle, a page of a pagination) are dim at rest and ink under the pointer or with
+  focus (`El::border_hover`), and ink while a select or menu is open or a number is typed into; the hairline grey
+  is for card frames, rules, dividers and the outer frame of a group (panels, dialogs, sheets, popovers, toasts,
+  tooltips, menus). The accent is for what is held or dragged (a slider's thumb, a switch's knob while pressed),
+  a number's caret, a dot chart's point under the pointer, and the explicit `Variant::Accent`.
+- **Paints that answer the pointer** (`El::fill_hover`, `El::fill_held`, `El::border_hover`): an element's fill while
+  the pointer is over it or the control it is part of (the nearest pressable element at or above it), and while
+  that is pressed or dragged; its border while the pointer is over it or it, or the control it is part of, has
+  focus. Each falls back to the paint at rest (held to the hover fill under the pointer). The page is painted again
   when what they answer changes; a cached subtree with one is drawn every time.
 - **A material** is how the shading stage draws.
 - **Annotation** is whether the third pass is on and what it draws.

@@ -15,7 +15,7 @@ pub fn pagination<M: Clone>(key: &str, page: usize, pages: usize, msg: impl Fn(u
     let pages = pages.max(1);
     let page = page.min(pages - 1);
     let cell = |k: String, label: String, on: bool| row().key(k).height(CONTROL_H).min_width(CONTROL_H).pad(8.0, 0.0).radius(RADIUS).center()
-        .fill(if on { Paint::INK } else { Paint::GROUND }).border(LINE, if on { Paint::INK } else { Paint::HAIRLINE })
+        .fill(if on { Paint::INK } else { Paint::GROUND }).border(LINE, if on { Paint::INK } else { Paint::DIM }).border_hover(Paint::INK)
         .child(text(label, LABEL - 1.0, if on { Paint::GROUND } else { Paint::TEXT }));
     let mut r = row().key(key).gap(6.0).align(AlignItems::CENTER).role(Role::Navigation)
         .child(cell(format!("{key}/prev"), "‹".into(), false).on_press(msg(page.saturating_sub(1))).disabled(page == 0).label(crate::i18n::tr("widget.pagination.prev")));

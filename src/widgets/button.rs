@@ -32,7 +32,7 @@ pub fn button<M: Clone>(key: impl Into<String>, label: &str, msg: M) -> El<M> { 
 pub fn button_as<M: Clone>(key: impl Into<String>, label: &str, v: Variant, msg: M) -> El<M> {
     let b = row().key(key).center().height(CONTROL_H).pad(14.0, 0.0).radius(RADIUS).on_press(msg).role(Role::Button);
     match v {
-        Variant::Default => b.fill(Paint::GROUND).border(LINE, Paint::HAIRLINE).child(text(label, LABEL, Paint::TEXT)),
+        Variant::Default => b.fill(Paint::GROUND).border(LINE, Paint::DIM).border_hover(Paint::INK).child(text(label, LABEL, Paint::TEXT)),
         Variant::Primary => b.fill(Paint::INK).fill_hover(Paint::EXTREME).child(text(label, LABEL, Paint::GROUND)),
         Variant::Quiet => b.child(text(label, LABEL, Paint::TEXT)),
         // The label is set in the page's ground colour, so it reads on the accent in every theme.

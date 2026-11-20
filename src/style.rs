@@ -39,6 +39,24 @@ impl Greys {
         const fn at(g: [f32; 3], k: [f32; 3], t: f32) -> [f32; 3] { [g[0] + (k[0] - g[0]) * t, g[1] + (k[1] - g[1]) * t, g[2] + (k[2] - g[2]) * t] }
         Self { raised: at(ground, ink, Paint::RAISED.tone), hairline: at(ground, ink, Paint::HAIRLINE.tone), dim: at(ground, ink, Paint::DIM.tone), text: at(ground, ink, Paint::TEXT.tone) }
     }
+    /// The plain mixes (`Greys::mixed`) with `dim` taken further toward the ink, as little as it takes,
+    /// until it stands at least `ratio` from the ground (WCAG contrast; 4.5 for dim text to read), and
+    /// `text` at least as far as `dim`. Where the ink itself does not, `dim` is the ink.
+    pub fn mixed_dim(ground: [f32; 3], ink: [f32; 3], ratio: f32) -> Self {
+        let mut g = Self::mixed(ground, ink);
+        let at = |t: f32| std::array::from_fn::<f32, 3, _>(|i| ground[i] + (ink[i] - ground[i]) * t);
+        let mut t = Paint::DIM.tone;
+        if contrast(g.dim, ground) < ratio {
+            // The least mix that reads, found by halves.
+            let (mut lo, mut hi) = (t, 1.0f32);
+            if contrast(ink, ground) < ratio { lo = 1.0; }
+            for _ in 0..24 { let m = 0.5 * (lo + hi); if contrast(at(m), ground) >= ratio { hi = m; } else { lo = m; } }
+            t = hi;
+            g.dim = at(t);
+        }
+        if t > Paint::TEXT.tone { g.text = at(t); }
+        g
+    }
     /// The four with the tone each stands at, ground to ink.
     pub fn stops(&self) -> [([f32; 3], f32); 4] {
         [(self.raised, Paint::RAISED.tone), (self.hairline, Paint::HAIRLINE.tone), (self.dim, Paint::DIM.tone), (self.text, Paint::TEXT.tone)]

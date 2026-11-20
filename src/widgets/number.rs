@@ -3,7 +3,7 @@
 //! Purpose: Set a number exactly.
 //! Props: `key`, `label`, `value`, `spec: Spec` (min, max, step, decimals, unit), `draft` (what is
 //!   being typed), `msg`.
-//! States: rest, focused, typing (accent border and caret), disabled; a new value recomposes its
+//! States: rest, focused, typing (ink border, accent caret), disabled; a new value recomposes its
 //!   digits (`{key}/shown`).
 //! Messages: `msg(Edit::Draft(s))` while typing, `Edit::Set(v)` on Enter / steps / arrows / scrub,
 //!   `Edit::Cancel` on Esc or blur.
@@ -93,12 +93,12 @@ fn control(key: &str, label: &str, value: f32, spec: Spec, draft: Option<&str>) 
     let shown = draft.clone().unwrap_or_else(|| spec.show(value));
     let mut field = row().key(format!("{key}/value")).height(CONTROL_H).width(96.0).pad(10.0, 0.0).gap(4.0).radius(RADIUS)
         .align(AlignItems::CENTER).fill(Paint::GROUND)
-        .border(LINE, if editing { Paint::ACCENT } else { Paint::HAIRLINE })
+        .border(LINE, if editing { Paint::INK } else { Paint::DIM }).border_hover(Paint::INK)
         .on_key(handler)
         .on_drag_with(scrub)
         // A new value recomposes the changed digits (DESIGN.md §1.16); digits being typed appear at once.
         .child({
-            let t = text(shown, LABEL, if editing { Paint::ACCENT } else { Paint::INK }).key(format!("{key}/shown"));
+            let t = text(shown, LABEL, Paint::INK).key(format!("{key}/shown"));
             // Typing shows digits at once; otherwise it follows its subtree (on, unless turned off around it).
             if editing { t.recompose(false) } else { t }
         });

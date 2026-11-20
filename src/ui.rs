@@ -82,7 +82,7 @@ pub struct Node<M> {
     /// What it shows.
     pub content: Content,
     fill: Option<Paint>,
-    fill_on: crate::el::FillOn,
+    fill_on: crate::el::PaintOn,
     border: Option<(f32, Paint)>,
     radius: f32,
     on_press: Option<M>,
@@ -869,9 +869,10 @@ pub struct Ui<S, M> {
     /// What waits: a layout (and the paint after it), or only a paint (`Ui::settle`).
     stale_layout: bool,
     stale_paint: bool,
-    /// What the fills that answer the pointer (`El::fill_hover`, `fill_held`) were painted for: the
-    /// hovered and the held key (`Ui::under_now`); `None` when no element has such a fill.
-    fill_state: Option<(Option<String>, Option<String>)>,
+    /// What the paints that answer the pointer (`El::fill_hover`, `fill_held`, `border_hover`) were
+    /// painted for: the hovered, the held and the focused key (`Ui::under_now`); `None` when no element
+    /// has such a paint.
+    fill_state: Option<(Option<String>, Option<String>, Option<String>)>,
     /// Decode transitions running (by key), and each decoding element's instances as last painted
     /// (what its disappearance plays over).
     decodes: HashMap<String, DecodeRun>,
@@ -3085,9 +3086,9 @@ impl<S, M: Clone> Ui<S, M> {
         self.stage_input = (false, false);
     }
     /// The hovered and the held key, when some element's fill answers them (`El::fill_hover`).
-    fn under_now(&self) -> Option<(Option<String>, Option<String>)> {
+    fn under_now(&self) -> Option<(Option<String>, Option<String>, Option<String>)> {
         if self.nodes.iter().all(|n| n.fill_on.none()) { return None; }
-        Some((self.hover.clone(), self.capture.as_ref().map(|c| c.key.clone()).or_else(|| self.pressed.clone())))
+        Some((self.hover.clone(), self.capture.as_ref().map(|c| c.key.clone()).or_else(|| self.pressed.clone()), self.focus.clone()))
     }
     /// Laying out or painting waits for the frame (`Ui::settle`).
     fn stale(&self) -> bool { self.stale_layout || self.stale_paint || !self.stale_stages.is_empty() }
@@ -3830,7 +3831,9 @@ impl<S, M: Clone> Ui<S, M> {
         // and `El::fill_held` answer.
         let mut hand = vec![0u8; self.nodes.len()];
         self.fill_state = self.under_now();
-        let (over, grip) = self.fill_state.clone().unwrap_or_default();
+        let (over, grip, focused) = self.fill_state.clone().unwrap_or_default();
+        // Under the pointer or with focus, itself or the control it is part of: what `El::border_hover` answers.
+        let mut lit = vec![false; self.nodes.len()];
         // The drawings' own colours (`Drawing::palette`), in the order first drawn.
         let mut own_cols: Vec<[f32; 3]> = kept.as_ref().map_or(vec![], |k| k.own.clone());
         // `El::focus_shown` subtrees without focus inside are not drawn.
@@ -3971,6 +3974,7 @@ impl<S, M: Clone> Ui<S, M> {
             if self.modal_at.is_none() && self.scene.layer.is_none() && n.stirr.is_some() && n.fill.is_some() && !n.hidden { self.scene.begin_layer(); }
             veiled[i] = n.parent.is_some_and(|p| veiled[p]) || n.focus_shown && !focus_at.is_some_and(|f| within(&self.nodes, f, i));
             hand[i] = if grip.as_deref() == Some(n.key.as_str()) { 2 } else if over.as_deref() == Some(n.key.as_str()) { 1 } else { 0 }.max(n.parent.map_or(0, |p| hand[p]));
+            lit[i] = hand[i] > 0 || focused.as_deref() == Some(n.key.as_str()) || n.parent.is_some_and(|p| lit[p]);
             held[i] = !self.timing.off.loosen && (self.pressed.as_deref() == Some(n.key.as_str()) || n.parent.is_some_and(|p| held[p]));
             stirred[i] = n.stirr.is_some() || n.parent.is_some_and(|p| stirred[p]);
             unit[i] = n.parent.and_then(|p| unit[p]).or(n.piece(self.size).then_some(i));
@@ -4121,7 +4125,7 @@ impl<S, M: Clone> Ui<S, M> {
                 continue;
             }
             if let Some(p) = n.fill_on.at(n.fill, hand[i]) { put(&mut sink, shape(p, 0.0), ident(&n.key, u32::MAX, 0), None); }
-            if let Some((w, p)) = n.border { put(&mut sink, shape(p, w), ident(&n.key, u32::MAX - 1, 0), None); }
+            if let Some((w, p)) = n.fill_on.border_at(n.border, lit[i]) { put(&mut sink, shape(p, w), ident(&n.key, u32::MAX - 1, 0), None); }
             match &n.content {
                 Content::Text { line, paint, caret, weight, select, mark, pose, .. } => {
                     let proto = Instance { paint: [paint.tone, paint.accent, paint.alpha, 0.0], look: [mat, paint.theme_hue(), (n.inner.y * s).round(), (line * s).round().max(1.0)], ..Default::default() };

@@ -11,7 +11,7 @@
 //!
 //! The button shows the current option; the list opens in a layer right below it. The application
 //! keeps whether it is open and which option is active.
-use super::{CONTROL_H, LABEL, LINE, RADIUS, SELECTED};
+use super::{CONTROL_H, LABEL, LINE, MENU_SURFACE, RADIUS, selected_on};
 use crate::el::{El, Key, Paint, Role, col, row, space, text};
 use std::rc::Rc;
 use taffy::AlignItems;
@@ -31,19 +31,19 @@ pub fn select<M: Clone + 'static>(key: &str, options: &[&str], current: Option<u
     }) };
     let mut r = col().key(format!("{key}/select"))
         .child(row().key(key).height(CONTROL_H).min_width(160.0).pad(10.0, 0.0).gap(8.0).radius(RADIUS).align(AlignItems::CENTER).focusable(true)
-            .fill(Paint::GROUND).border(LINE, if open { Paint::ACCENT } else { Paint::HAIRLINE }).on_press(toggle).on_key({ let k = keys.clone(); move |a, b| k(a, b) })
+            .fill(Paint::GROUND).border(LINE, if open { Paint::INK } else { Paint::DIM }).border_hover(Paint::INK).on_press(toggle).on_key({ let k = keys.clone(); move |a, b| k(a, b) })
             .role(Role::Combobox).expanded(open).text_value(shown)
             .child(text(shown, LABEL, Paint::TEXT).grow(1.0))
             .child(col().gap(1.0).align(AlignItems::CENTER).child(space(7.0, 1.5).fill(Paint::DIM)).child(space(4.0, 1.5).fill(Paint::DIM)).child(space(1.5, 1.5).fill(Paint::DIM))));
     if open {
-        let mut list = col().key(format!("{key}/list")).anchor(key).min_width(160.0).pad(4.0, 4.0).gap(1.0).radius(RADIUS + 2.0).fill(Paint::GROUND).border(LINE, Paint::HAIRLINE).role(Role::Listbox)
+        let mut list = col().key(format!("{key}/list")).anchor(key).min_width(160.0).pad(4.0, 4.0).gap(1.0).radius(RADIUS + 2.0).fill(MENU_SURFACE).border(LINE, Paint::HAIRLINE).role(Role::Listbox)
             // Open, the keyboard is in the list (the layer takes the focus): the same keys work there.
             .focusable(true).on_key(move |a, b| keys(a, b));
         for (i, o) in options.iter().enumerate() {
             let (on, act) = (Some(i) == current, i == active);
             let mut item = row().key(format!("{key}:{i}")).height(CONTROL_H - 2.0).pad(10.0, 0.0).radius(RADIUS).align(AlignItems::CENTER).on_press(pick(i)).focusable(false)
                 .role(Role::Option).selected(on).child(text(*o, LABEL, if on { Paint::INK } else { Paint::TEXT }));
-            if act { item = item.fill(SELECTED); }
+            if act { item = item.fill(selected_on(MENU_SURFACE)); }
             list = list.child(item);
         }
         r = r.child(col().key(format!("{key}/layer")).modal(close.clone(), 0.0).on_press(close).focusable(false).child(list));

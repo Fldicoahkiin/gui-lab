@@ -30,7 +30,7 @@ fn choice_in<M: Clone>(key: &str, label: &str, options: &[&str], current: usize,
         let on = i == current;
         opts = opts.child(row().key(format!("{key}:{i}")).center().height(CONTROL_H - 4.0).pad(10.0, 0.0).radius(RADIUS)
             .fill(if on { Paint::INK } else { Paint::GROUND })
-            .border(LINE, if on { Paint::INK } else { Paint::HAIRLINE })
+            .border(LINE, if on { Paint::INK } else { Paint::DIM }).border_hover(Paint::INK)
             .on_press(msg(i))
             .child(text(*o, LABEL - 1.0, if on { Paint::GROUND } else { Paint::TEXT })));
     }

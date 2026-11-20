@@ -15,7 +15,7 @@ use taffy::AlignItems;
 
 pub fn toggle<M: Clone>(key: impl Into<String>, label: &str, on: bool, msg: M) -> El<M> {
     row().key(key).height(CONTROL_H).min_width(CONTROL_H).pad(10.0, 0.0).radius(RADIUS).center()
-        .fill(if on { Paint::INK } else { Paint::GROUND }).border(LINE, if on { Paint::INK } else { Paint::HAIRLINE })
+        .fill(if on { Paint::INK } else { Paint::GROUND }).border(LINE, if on { Paint::INK } else { Paint::DIM }).border_hover(Paint::INK)
         .on_press(msg).role(Role::Button).checked(on).label(label)
         .child(text(label, LABEL, if on { Paint::GROUND } else { Paint::TEXT }))
 }

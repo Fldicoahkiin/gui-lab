@@ -4,9 +4,9 @@
 //! button's plate under the pointer, a slider's thumb while it is dragged.
 use amenui::el::{El, Paint, col, row, space};
 use amenui::offscreen::Offscreen;
-use amenui::style::{DARK, Greys, LIGHT, Look, Material, NORMCORE, Theme, hex};
+use amenui::style::{DARK, Greys, LIGHT, Look, Material, NORMCORE, Theme, contrast, hex};
 use amenui::ui::Ui;
-use amenui::widgets::{Spec, Variant, button_as, slider};
+use amenui::widgets::{Spec, Variant, button, button_as, selected_on, slider};
 
 fn fonts() -> Vec<amenui::text::Face> { amenui::text::load_bundled(concat!(env!("CARGO_MANIFEST_DIR"), "/assets")).expect("fonts") }
 const W: u32 = 480;
@@ -25,7 +25,7 @@ fn swatches(_: &Page) -> El<Msg> {
 }
 fn controls(s: &Page) -> El<Msg> {
     col().key("page").width(W as f32).height(H as f32).pad(20.0, 20.0).gap(20.0)
-        .child(button_as("save", "Save", Variant::Primary, Msg::V(0.0)))
+        .child(row().gap(12.0).child(button_as("save", "Save", Variant::Primary, Msg::V(0.0))).child(button("plain", "Cancel", Msg::V(0.0))))
         .child(slider("level", s.v, Spec { min: 0.0, max: 1.0, step: 0.01, decimals: 2, unit: "" }, 240.0, Msg::V))
 }
 fn theme(p: &Page) -> Theme { p.theme.unwrap_or(if p.light { LIGHT } else { DARK }) }
@@ -119,4 +119,39 @@ fn a_slider_rests_in_ink_and_its_thumb_turns_to_the_accent_while_dragged() {
     u.pointer_move(W as f32 - 4.0, H as f32 - 4.0);
     let f = render(&mut o, &mut u);
     assert!(near(px(&f, x, y), byte(th.ink)), "the thumb let go: {:?}", px(&f, x, y));
+}
+
+#[test]
+fn a_control_outline_is_dim_at_rest_and_ink_under_the_pointer_or_with_focus() {
+    let mut o = Offscreen::new(W, H);
+    let th = DARK;
+    let mut u = open(Page::default(), controls);
+    let r = u.node("plain").expect("plain").rect;
+    // Its left edge, half way down.
+    let (x, y) = (r.x + 0.5, r.y + r.h * 0.5);
+    let at = |u: &mut Ui<Page, Msg>, o: &mut Offscreen| px(&render(o, u), x, y);
+    assert!(near(at(&mut u, &mut o), byte(th.greys.dim)), "at rest: {:?}", at(&mut u, &mut o));
+    u.pointer_move(r.x + r.w * 0.5, y);
+    assert!(near(at(&mut u, &mut o), byte(th.ink)), "under the pointer: {:?}", at(&mut u, &mut o));
+    u.pointer_move(W as f32 - 4.0, H as f32 - 4.0);
+    assert!(near(at(&mut u, &mut o), byte(th.greys.dim)), "left: {:?}", at(&mut u, &mut o));
+    u.command(amenui::morph::Cmd::Focus { key: "plain".into() });
+    assert!(near(at(&mut u, &mut o), byte(th.ink)), "with focus: {:?}", at(&mut u, &mut o));
+    // What is selected on a raised surface is the hairline grey; on the ground the raised one.
+    assert_eq!((selected_on(Paint::RAISED), selected_on(Paint::GROUND)), (Paint::HAIRLINE, Paint::RAISED));
+}
+
+#[test]
+fn mixed_greys_can_take_dim_as_far_toward_the_ink_as_it_needs_to_read() {
+    // A mid ground where the plain mix of dim stands under 4.5:1.
+    let (ground, ink) = ([0.32, 0.26, 0.58], [0.95, 0.95, 0.93]);
+    let plain = Greys::mixed(ground, ink);
+    assert!(contrast(plain.dim, ground) < 4.5, "the plain mix: {}", contrast(plain.dim, ground));
+    let g = Greys::mixed_dim(ground, ink, 4.5);
+    let c = contrast(g.dim, ground);
+    assert!((4.5..4.52).contains(&c), "dim reads 4.5:1 and no more than it takes: {c}");
+    assert!(contrast(g.text, ground) >= c, "text at least as far as dim");
+    assert_eq!((g.raised, g.hairline), (plain.raised, plain.hairline), "the others as mixed");
+    // Where the plain mix already reads, nothing moves.
+    assert_eq!(Greys::mixed_dim(DARK.ground, DARK.ink, 4.5), Greys::mixed(DARK.ground, DARK.ink));
 }

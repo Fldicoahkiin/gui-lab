@@ -16,6 +16,6 @@ use crate::el::{El, Paint, Role, row, text};
 
 pub fn skip_link<M>(key: &str, label: &str, target: &str) -> El<M> {
     row().key(key).absolute(Some(8.0), Some(8.0), None, None).height(32.0).pad(12.0, 0.0).radius(RADIUS).center()
-        .fill(Paint::ACCENT).skip_to(target).focus_shown().role(Role::Link).label(label)
+        .fill(Paint::INK).skip_to(target).focus_shown().role(Role::Link).label(label)
         .child(text(label, LABEL, Paint::GROUND))
 }

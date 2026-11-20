@@ -14,7 +14,7 @@ use taffy::AlignItems;
 
 pub fn checkbox<M: Clone>(key: impl Into<String>, label: &str, checked: bool, msg: M) -> El<M> {
     let s = 16.0;
-    let mut bx = stack([space(s, s).radius(RADIUS - 1.0).fill(Paint::GROUND).border(LINE, if checked { Paint::INK } else { Paint::HAIRLINE })]);
+    let mut bx = stack([space(s, s).radius(RADIUS - 1.0).fill(Paint::GROUND).border(LINE, if checked { Paint::INK } else { Paint::DIM }).border_hover(Paint::INK)]);
     // The tick: a short bar and a long one meeting low on the left (no rotation needed: an L in the box).
     if checked { bx = stack([bx, row().width(8.0).height(5.0).align(AlignItems::END).child(space(2.0, 5.0).fill(Paint::INK)).child(space(6.0, 2.0).fill(Paint::INK))]); }
     row().key(key).height(CONTROL_H).gap(10.0).align(AlignItems::CENTER).on_press(msg).role(Role::Checkbox).checked(checked).label(label)

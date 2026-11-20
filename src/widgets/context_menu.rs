@@ -9,7 +9,7 @@
 //! Usage: `context_menu("file-menu", s.menu_at, &["打开", "重命名"], s.active, Msg::Pick, Msg::Active, Msg::Close)`
 //!
 //! The application opens it (from a long press, a secondary button or a key) and keeps where.
-use super::{CONTROL_H, LABEL, LINE, RADIUS, SELECTED};
+use super::{CONTROL_H, LABEL, LINE, MENU_SURFACE, RADIUS, selected_on};
 use crate::el::{El, Key, Paint, Role, col, row, space, text};
 use std::rc::Rc;
 use taffy::AlignItems;
@@ -21,12 +21,12 @@ pub fn context_menu<M: Clone + 'static>(key: &str, at: Option<(f32, f32)>, items
     let keys = { let pick = pick.clone(); move |k: Key, _: bool| -> Option<M> { match k {
         Key::Down => Some(move_to((active + 1) % n.max(1))), Key::Up => Some(move_to((active + n.max(1) - 1) % n.max(1))),
         Key::Home => Some(move_to(0)), Key::End => Some(move_to(n.saturating_sub(1))), Key::Enter | Key::Char(' ') => Some(pick(active)), _ => None } } };
-    let mut m = col().key(format!("{key}/menu")).min_width(180.0).pad(4.0, 4.0).gap(1.0).radius(RADIUS + 2.0).fill(Paint::GROUND).border(LINE, Paint::HAIRLINE)
+    let mut m = col().key(format!("{key}/menu")).min_width(180.0).pad(4.0, 4.0).gap(1.0).radius(RADIUS + 2.0).fill(MENU_SURFACE).border(LINE, Paint::HAIRLINE)
         .role(Role::Menu).focusable(true).on_key(keys).absolute(Some(x), Some(y), None, None);
     for (i, it) in items.iter().enumerate() {
         let mut r = row().key(format!("{key}:{i}")).height(CONTROL_H - 2.0).pad(10.0, 0.0).radius(RADIUS).align(AlignItems::CENTER).on_press(pick(i)).focusable(false).role(Role::MenuItem)
-            .child(text(*it, LABEL, Paint::TEXT));
-        if i == active { r = r.fill(SELECTED); }
+            .child(text(*it, LABEL, if i == active { Paint::INK } else { Paint::TEXT }));
+        if i == active { r = r.fill(selected_on(MENU_SURFACE)); }
         m = m.child(r);
     }
     col().key(key).fill_width().fill_height().modal(close.clone(), 0.0).on_press(close).focusable(false).child(m)

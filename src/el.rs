@@ -56,23 +56,29 @@ impl Paint {
     pub const EXTREME: Self = Self { tone: 1.0, accent: 1.0, alpha: 1.0, hue: Self::EXTREME_HUE };
 }
 
-/// What an element's fill turns to under the pointer and while held (`El::fill_hover`,
-/// `El::fill_held`); each falls back to the fill at rest.
+/// What an element's fill and border turn to under the pointer, while held, and with focus
+/// (`El::fill_hover`, `El::fill_held`, `El::border_hover`); each falls back to the paint at rest.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct FillOn {
-    /// Under the pointer.
+pub struct PaintOn {
+    /// The fill under the pointer.
     pub hover: Option<Paint>,
-    /// Pressed or dragged.
+    /// The fill pressed or dragged.
     pub held: Option<Paint>,
+    /// The border under the pointer or with focus.
+    pub border_hover: Option<Paint>,
 }
-impl FillOn {
+impl PaintOn {
     /// The fill for a state (0 at rest, 1 under the pointer, 2 held), from `rest`.
     pub fn at(&self, rest: Option<Paint>, state: u8) -> Option<Paint> {
         let hover = if state >= 1 { self.hover.or(rest) } else { rest };
         if state >= 2 { self.held.or(hover) } else { hover }
     }
+    /// The border, from `rest`, under the pointer or with focus (`lit`).
+    pub fn border_at(&self, rest: Option<(f32, Paint)>, lit: bool) -> Option<(f32, Paint)> {
+        rest.map(|(w, p)| (w, if lit { self.border_hover.unwrap_or(p) } else { p }))
+    }
     /// It changes nothing.
-    pub fn none(&self) -> bool { self.hover.is_none() && self.held.is_none() }
+    pub fn none(&self) -> bool { self.hover.is_none() && self.held.is_none() && self.border_hover.is_none() }
 }
 
 /// A key, as the runtime and handlers see it.
@@ -646,8 +652,9 @@ pub struct Props {
     pub content: Content,
     /// Its background.
     pub fill: Option<Paint>,
-    /// What its fill turns to under the pointer and while held (`El::fill_hover`, `El::fill_held`).
-    pub fill_on: FillOn,
+    /// What its fill and border turn to under the pointer, while held and with focus (`El::fill_hover`,
+    /// `El::fill_held`, `El::border_hover`).
+    pub fill_on: PaintOn,
     /// Its border: width (logical px) and paint.
     pub border: Option<(f32, Paint)>,
     /// Corner radius of the fill and border, logical px.
@@ -785,7 +792,7 @@ pub struct Props {
 }
 impl Props {
     #[inline(never)]
-    fn new(style: Style, content: Content) -> Self { Props { key: String::new(), style, content, fill: None, fill_on: FillOn { hover: None, held: None }, border: None, radius: 0.0, focusable: false, tab_order: 0, skip_to: None, focus_shown: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, shift: (0.0, 0.0), shed: None, flow_field: None, stirr: None, trace: None, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, clips: false, calm: false, map_life: None, multiline: false, selectable: false, cursor: None, ripple: Ripple::default(), guide: None, skeleton: false, rtl: None, decode: None, form: None, turn: 0.0, reveal_by: Reveal::Glyph, ongoing: false, pass: false, opacity: 1.0, commit_scope: false, preview: false, fit: None, clamp: 0, plate: None, cached: false, clip_radius: 0.0, own_size: None, grain: false, show_clear: None, pen: 1.0, view_scale: None, stage: false, stack: false, steps: false, local_messages: false } }
+    fn new(style: Style, content: Content) -> Self { Props { key: String::new(), style, content, fill: None, fill_on: PaintOn { hover: None, held: None, border_hover: None }, border: None, radius: 0.0, focusable: false, tab_order: 0, skip_to: None, focus_shown: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, shift: (0.0, 0.0), shed: None, flow_field: None, stirr: None, trace: None, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, clips: false, calm: false, map_life: None, multiline: false, selectable: false, cursor: None, ripple: Ripple::default(), guide: None, skeleton: false, rtl: None, decode: None, form: None, turn: 0.0, reveal_by: Reveal::Glyph, ongoing: false, pass: false, opacity: 1.0, commit_scope: false, preview: false, fit: None, clamp: 0, plate: None, cached: false, clip_radius: 0.0, own_size: None, grain: false, show_clear: None, pen: 1.0, view_scale: None, stage: false, stack: false, steps: false, local_messages: false } }
 }
 impl<M> std::ops::Deref for El<M> { type Target = Props; fn deref(&self) -> &Props { &self.props } }
 impl<M> std::ops::DerefMut for El<M> { fn deref_mut(&mut self) -> &mut Props { &mut self.props } }
@@ -945,6 +952,9 @@ impl<M> El<M> {
     /// The background while it, or the control it is part of, is held: pressed, or dragged. Without
     /// one it takes its hover fill while the pointer is over it, else its fill at rest.
     pub fn fill_held(mut self, p: Paint) -> Self { self.fill_on.held = Some(p); self }
+    /// The border while the pointer is over it or it has focus, itself or the control it is part of (the
+    /// nearest pressable or focusable element at or above it). Without one it keeps its border at rest.
+    pub fn border_hover(mut self, p: Paint) -> Self { self.fill_on.border_hover = Some(p); self }
     /// A border `w` logical px wide (it takes room in the layout, as CSS's does).
     pub fn border(mut self, w: f32, p: Paint) -> Self { self.border = Some((w, p)); self.style.border = Rect { left: length(w), right: length(w), top: length(w), bottom: length(w) }; self }
     /// Rounded corners of the fill and border, logical px.

@@ -16,10 +16,12 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
   exactly, not as the ink mixed toward the ground; a tone between two greys is drawn between their colours. Their
   tones moved to whole 255ths (dim 0.66 → 168/255, text 0.86 → 219/255). Other themes take their greys mixed as
   before (`Greys::mixed`); **a theme built from `DARK` or `LIGHT` with its own ground and ink keeps their greys
-  unless it sets `greys: Greys::mixed(ground, ink)`.**
+  unless it sets `greys: Greys::mixed(ground, ink)`** (or `Greys::mixed_dim(ground, ink, 4.5)`, which takes dim
+  toward the ink until it reads 4.5:1 on the ground).
 - `Paint::EXTREME`: white on a dark scheme, black on a light one (`Theme::extreme`). It is the ink image's fourth
   hue code (0.45, which the unused glyph-height code held).
-- `El::fill_hover` and `El::fill_held`: a fill under the pointer and while held or dragged.
+- `El::fill_hover` and `El::fill_held`: a fill under the pointer and while held or dragged; `El::border_hover`: a
+  border under the pointer or with focus.
 - `Variant::Primary`: an ink plate with a ground label, the extreme under the pointer, for the one main action of
   a group. `Variant::Accent` stays for an explicitly coloured action. Badges take `Primary` too.
 - The default controls rest in ink: a switch that is on (ink track, ground knob; off a hairline track and a dim
@@ -27,7 +29,11 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
   checkbox's outline and tick, a toggle that is on and a choice's current option (ink plates with ground labels).
   So are a pagination's current page (an ink plate), a current tab's rule, a progress bar's fill and the label of a
   selected list row or menu option; `widgets::SELECTED`, the plate of a selected or keyed row, is the raised grey (it
-  was the accent at 0.12). Control outlines and panel frames at rest are hairline (were dim). The hover and focus marks are ink
+  was the accent at 0.12), the hairline grey on a raised surface (`widgets::selected_on`). Hot rows of the command,
+  context and nested menus are that plate with an ink label, a skip link an ink plate. Outlines of interactive
+  controls stay dim at rest and turn ink under the pointer or with focus, and while a select or menu is open or a
+  number is typed into (they were the accent then); panel frames (menus, dialogs, sheets, popovers, toasts,
+  tooltips) are hairline. A switch's knob is the accent while pressed. The hover and focus marks are ink
   (`Fx::marks_accent` is 0 by default).
 - The recipes' and samples' main actions are `Primary`; the components' button page shows it.
 

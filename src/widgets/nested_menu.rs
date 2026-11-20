@@ -20,7 +20,7 @@
 //! closes one, Enter on a leaf chooses it. The geometry is the state's own (rows `row_h` tall, menus
 //! `width` wide, each submenu beside its row), so the state can test the triangle without a layout;
 //! `show_safe_zone` draws the triangle through the annotation layer (`El::guide`).
-use super::{LABEL, LINE, RADIUS, SELECTED};
+use super::{LABEL, LINE, MENU_SURFACE, RADIUS, selected_on};
 use crate::el::{El, Key, Paint, Role, col, layers, row, space, text};
 use std::rc::Rc;
 use taffy::AlignItems;
@@ -212,16 +212,16 @@ pub fn nested_menu<M: Clone + 'static>(key: &str, m: &Menu, msg: impl Fn(MenuMsg
     let mut panels: Vec<El<M>> = vec![];
     for l in 0..m.depth() {
         let (x, y, w, h) = m.panel(l);
-        let mut p = col().key(format!("{key}/m{l}")).width(w).height(h).pad(m.pad, m.pad).radius(RADIUS + 2.0).fill(Paint::GROUND).border(LINE, Paint::HAIRLINE)
+        let mut p = col().key(format!("{key}/m{l}")).width(w).height(h).pad(m.pad, m.pad).radius(RADIUS + 2.0).fill(MENU_SURFACE).border(LINE, Paint::HAIRLINE)
             .role(Role::Menu).shift(x, y);
         for (r, it) in m.rows(l).iter().enumerate() {
             let hot = m.hot(l) == Some(r);
             let a = msg.clone();
             let mut item = row().key(format!("{key}/m{l}/r{r}")).fill_width().height(m.row_h).pad(10.0, 0.0).radius(RADIUS).align(AlignItems::CENTER).gap(8.0)
                 .role(Role::MenuItem).label(it.label.clone()).focusable(false).on_press(a(MenuMsg::Press(l, r)))
-                .child(text(it.label.clone(), LABEL - 1.0, if hot { Paint::ACCENT } else { Paint::TEXT }).grow(1.0));
+                .child(text(it.label.clone(), LABEL - 1.0, if hot { Paint::INK } else { Paint::TEXT }).grow(1.0));
             if !it.items.is_empty() { item = item.child(text("›", LABEL, Paint::DIM)); }
-            if hot { item = item.fill(SELECTED); }
+            if hot { item = item.fill(selected_on(MENU_SURFACE)); }
             p = p.child(item);
         }
         panels.push(p);

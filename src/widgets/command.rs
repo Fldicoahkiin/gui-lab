@@ -9,8 +9,8 @@
 //!
 //! The film's palette, promoted: a field, then the matching rows keyed by place (so a new filter
 //! recomposes only the characters that changed). `command_matches` is the filter.
-use super::{LABEL, TextEdit, input};
-use crate::el::{El, Font, Paint, Role, col, row, space, text};
+use super::{LABEL, RADIUS, SELECTED, TextEdit, input};
+use crate::el::{El, Font, Paint, Role, col, row, text};
 use taffy::AlignItems;
 
 /// The items matching `q` (every character of it, in order, ignoring case and spaces), as indices.
@@ -23,9 +23,10 @@ pub fn command<M: Clone + 'static>(key: &str, query: &TextEdit, items: &[&str], 
     let mut list = col().key(format!("{key}/list")).gap(2.0).role(Role::Listbox);
     for (r, &i) in found.iter().take(8).enumerate() {
         let on = r == active.min(found.len().saturating_sub(1));
-        list = list.child(row().key(format!("{key}/row{r}")).height(34.0).pad(10.0, 0.0).gap(10.0).align(AlignItems::CENTER).on_press(run(i)).focusable(false).role(Role::Option).selected(on)
-            .child(space(2.0, 18.0).fill(if on { Paint::ACCENT } else { Paint::GROUND }))
-            .child(text(items[i], LABEL, if on { Paint::ACCENT } else { Paint::TEXT }).font(Font::Mono).key(format!("{key}/row{r}/text"))));
+        let mut row_el = row().key(format!("{key}/row{r}")).height(34.0).pad(10.0, 0.0).gap(10.0).radius(RADIUS).align(AlignItems::CENTER).on_press(run(i)).focusable(false).role(Role::Option).selected(on)
+            .child(text(items[i], LABEL, if on { Paint::INK } else { Paint::TEXT }).font(Font::Mono).key(format!("{key}/row{r}/text")));
+        if on { row_el = row_el.fill(SELECTED); }
+        list = list.child(row_el);
     }
     if found.is_empty() { list = list.child(text(crate::i18n::tr("widget.command.none"), LABEL - 1.0, Paint::DIM)); }
     col().key(key).gap(10.0).width(420.0)
