@@ -161,3 +161,55 @@ fn a_fast_scroll_over_stages_at_their_own_scale_moves_the_last_frame() {
         assert!(traced >= 8, "{mat:?}: only {traced} of 30 frames moved the last frame with the trace showing ({})", u.perf().path.line());
     }
 }
+
+/// Under dottr and charr a fast scroll's trace comes on and fades: as it passes the strength that holds
+/// the rows to the lattice, the frame moves too (by what it shows: the content held in one frame, at its
+/// offset in the other), and with another lattice's material only outside the viewport (a bar in dottr
+/// over a list in charr) it moves as well; each frame is the frame drawn whole, byte for byte.
+#[test]
+fn the_hold_coming_on_or_off_and_a_lattice_outside_the_viewport_still_move_the_last_frame() {
+    struct B { mat: Material, bar: Option<Material> }
+    fn barred(s: &B) -> El<()> {
+        let rows = (0..60).fold(col().key("rows").gap(6.0).pad(12.0, 12.0), |c, i| {
+            c.child(row().key(format!("row{i}")).gap(10.0).child(space(14.0, 14.0).radius(3.0).fill(if i % 3 == 0 { Paint::ACCENT } else { Paint::DIM }))
+                .child(text(format!("Row {i}: a line of text to read as it scrolls past"), 14.0, Paint::TEXT)))
+        });
+        let bar = text("A bar over the list that stays", 16.0, Paint::INK).key("bar");
+        col().key("page").fill_width().fill_height().gap(24.0)
+            .child(match s.bar { Some(m) => bar.material(m.id()), None => bar })
+            .child(col().key("list").fill_width().grow(1.0).scroll().child(rows))
+    }
+    let Ok(mut part) = Offscreen::try_new(W, H) else { eprintln!("no GPU adapter here: skipped"); return };
+    let Ok(mut whole) = Offscreen::try_new(W, H) else { return };
+    whole.r.partial = false;
+    for (mat, bar) in [(Material::Dottr, None), (Material::Charr, None), (Material::Charr, Some(Material::Dottr))] {
+        let mk = || { let mut u = Ui::new(B { mat, bar }, barred, |_, _| {}, fonts(), W, H, 1.0).on_look(|s| Look { material: s.mat, ..Look::default() }); u.pointer_leave(); u.tick(5.0); u };
+        let (mut u, mut v) = (mk(), mk());
+        let look = u.look();
+        let _ = part.render(&mut u, &look);
+        let _ = whole.render(&mut v, &look);
+        let mut t = 5.0;
+        let (mut on, mut off, mut held) = (0, 0, 0);
+        let mut last = 0.0f32;
+        for f in 0..48 {
+            t += 1.0 / 60.0;
+            // Gathering speed, then still while the trace fades.
+            let dy = if f < 14 { 6.0 + 4.0 * f as f32 } else { 0.0 };
+            for ui in [&mut u, &mut v] { if dy != 0.0 { ui.wheel(240.0, 220.0, dy); } ui.tick(t); }
+            let a = part.render(&mut u, &look);
+            let b = whole.render(&mut v, &look);
+            let diff = a.iter().zip(&b).filter(|(p, q)| p != q).count();
+            assert_eq!(diff, 0, "{mat:?} bar {bar:?}, frame {f}: {diff} bytes differ from the frame drawn whole");
+            let k = u.field().scrollo.iter().map(|o| o[2]).fold(0.0, f32::max);
+            let path = u.perf().path;
+            assert!(path.why != "latch on/off" && path.why != "latch: mixed lattices", "{mat:?} bar {bar:?}, frame {f}: {}", path.line());
+            let crossed = (last > 0.02) != (k > 0.02);
+            if crossed && path.moved { if k > 0.02 { on += 1 } else { off += 1 } }
+            if k > 0.02 && path.moved && part.r.cost.moved > 0 { held += 1; }
+            last = k;
+        }
+        assert!(on >= 1, "{mat:?} bar {bar:?}: the frame the hold came on in did not move the last frame");
+        assert!(off >= 1, "{mat:?} bar {bar:?}: the frame the hold went off in did not move the last frame");
+        assert!(held >= 6, "{mat:?} bar {bar:?}: only {held} frames with the rows held moved the last frame");
+    }
+}

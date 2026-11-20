@@ -18,6 +18,13 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
   spread once more, so what the material draws round the letter is drawn; text at reading sizes keeps the
   override just round its ink.
 
+## Fast scrolls under dottr and charr
+
+- The frame in which a fast scroll's trace starts or stops holding the rows to the lattice moves the last frame by
+  what it shows, instead of shading the whole viewport (the readout's `latch on/off`).
+- A lattice material used only outside the scrolled viewport (a bar in dottr over a list in charr) no longer stops
+  the last frame from moving (the readout's `latch: mixed lattices`).
+
 ## 3D elements that come and go
 
 - A 3D element that comes on the page or goes (scrolled into view, a section opened) draws the frame again only where

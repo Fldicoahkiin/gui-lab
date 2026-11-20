@@ -2127,8 +2127,11 @@ copied whole to the target each frame (the web swap chain gives a new image ever
   viewport's edges grow by the trace's length (what it read there has moved out of sight, or in). Dottr and charr
   hold the rows to their lattice while the trace shows (`latch`): the frame shows the content at its offset
   rounded to the pitch, so it moves by how far that rounding stepped (`Move::frame`, maybe 0) while the
-  G-buffer moves with the content; this needs the rows held in both frames, the scroll area alone in its
-  viewport, a step of whole device px and neither offset half way between two rows, and the boxes grow by the
+  G-buffer moves with the content. In the frame the hold comes on or goes off in (the trace passing the strength
+  that holds the rows), one frame shows the content held and the other at its offset, and the frame moves by the
+  difference. This needs one lattice for every material drawn in the viewport (the page's, and those of what lies
+  in it or reaches it; one only elsewhere on the page, a bar's, does not count), the scroll area alone in its
+  viewport, a step of whole device px and no held offset half way between two rows, and the boxes grow by the
   pitch. With a reduced pass for what is loose the frame is drawn whole. With one for the stages alone (§1.35)
   the frame moves and the trace is shaded at full resolution as without it; the reduced grid stays with the
   window, so every stage in the viewport that moved is shaded again where it is (its box among the shade boxes,

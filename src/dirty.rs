@@ -155,8 +155,10 @@ impl Move {
 /// The first scroll node whose content moved by whole device px (or, with its trace showing, stayed),
 /// and less than its viewport, under a ground that is the same at every height. With the trace showing:
 /// the same way in both frames, not under glitchr (its rows slip on their own clock) or an added
-/// material, and under dottr or charr holding the rows the same way in both frames, alone in its
-/// viewport, with the lattice stepping by whole device px.
+/// material, and under dottr or charr (one lattice for every material drawn in the viewport) alone in its
+/// viewport, with what the frame shows stepping by whole device px: the content held to the lattice in a
+/// frame whose trace holds the rows, at its offset in one whose trace is too faint to (the hold coming on
+/// or off).
 fn scroll_move(prev: &Inputs, cur: &Inputs, mats: &[Material], s: f32) -> (Option<(usize, Move)>, &'static str) {
     let why = std::cell::Cell::new("");
     let no = |w: &'static str| { if why.get().is_empty() { why.set(w); } None };
@@ -180,18 +182,29 @@ fn scroll_move(prev: &Inputs, cur: &Inputs, mats: &[Material], s: f32) -> (Optio
         let w3 = if b[2] > 0.0 { b[3] } else { a[3] };
         let across = w3.abs() > 1.5;
         let way = if across { [w3.signum(), 0.0] } else { [0.0, w3.signum()] };
-        if (a[2] > LATCH) != (b[2] > LATCH) { return no("latch on/off"); }
-        let pitches: Vec<f32> = mats.iter().filter_map(|m| latch_pitch(*m, &cur.look, s)).collect();
-        if b[2] <= LATCH || pitches.is_empty() { return Some((j, Move { rect, d, frame: d, trace, way, latch: 0.0 })); }
-        // The rows held to the lattice: the frame shows the content at its offset rounded to the pitch.
+        let (la, lb) = (a[2] > LATCH, b[2] > LATCH);
+        let plain = Some((j, Move { rect, d, frame: d, trace, way, latch: 0.0 }));
+        if !la && !lb { return plain; }
+        // The materials drawn in the viewport: the page's (its ground) and those of what lies over it or
+        // reaches into it, in either frame; one used only elsewhere on the page holds no row here.
+        let mut vm = vec![cur.look.material];
+        for i in prev.instances.iter().chain(&cur.instances) {
+            if i.look[0] < 127.5 || is_empty(meet(i.bounds(SPREAD as f32 + 2.0), v)) { continue; }
+            let m = Material::from_id((i.look[0].round() as u32 % 16) as u8);
+            if !vm.contains(&m) { vm.push(m); }
+        }
+        let pitches: Vec<f32> = vm.iter().filter_map(|m| latch_pitch(*m, &cur.look, s)).collect();
+        if pitches.is_empty() { return plain; }
+        // The rows held to the lattice: the frame shows the content at its offset rounded to the pitch
+        // (and at its offset in a frame whose trace is too faint to hold them: the hold coming on or off).
         let p = pitches[0];
         let alone = (0..8).all(|i| i == j || is_empty(meet(cur.field.scrolls[i], r)));
-        if pitches.len() != mats.len() || pitches.iter().any(|q| *q != p) { return no("latch: mixed lattices"); }
+        if pitches.len() != vm.len() || pitches.iter().any(|q| *q != p) { return no("latch: mixed lattices"); }
         if !alone { return no("latch: not alone"); }
         let (oa, ob) = if across { (a[0], b[0]) } else { (a[1], b[1]) };
         // An offset half way between two rows is rounded by the GPU's own division: not relied on.
-        let held = |o: f32| { let x = o / p; ((x.fract().abs() - 0.5).abs() > 1e-3).then(|| x.round_ties_even() * p) };
-        let (Some(ha), Some(hb)) = (held(oa), held(ob)) else { return no("latch: half a row") };
+        let held = |o: f32, on: bool| { let x = o / p; if !on { Some(o) } else { ((x.fract().abs() - 0.5).abs() > 1e-3).then(|| x.round_ties_even() * p) } };
+        let (Some(ha), Some(hb)) = (held(oa, la), held(ob, lb)) else { return no("latch: half a row") };
         let step = ha - hb;
         if (step - step.round()).abs() > 1e-3 || step.abs() >= if across { v[2] - v[0] } else { v[3] - v[1] } { return no("latch: step"); }
         let step = step.round() as i32;
