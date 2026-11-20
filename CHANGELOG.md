@@ -8,6 +8,12 @@ crate and the `amenui` npm package (`web/`) always carry the same version, becau
 match the module that `web_app!` generates. The minimum Rust is the one CI builds with (`rust-version`
 in Cargo.toml); raising it is a breaking change before 1.0 only in the second number.
 
+## A held stage costs nothing between its draws
+
+- A slow stage holding its image no longer paints the page on every frame it holds: a frame in which it would
+  hold paints nothing for it, a step that comes while it would hold waits for its next draw (not viewed), and it
+  draws alone, the rest of the page copied, on its own cadence and on the first frame without input.
+
 ## A card stack's outlines, card by card
 
 - `Stack::outlines`: card n's outline grey (the last entry repeats; empty: the ink). The default stack is raised

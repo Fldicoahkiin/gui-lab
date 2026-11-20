@@ -650,6 +650,8 @@ pub struct Ui<S, M> {
     stage_of: Option<StageView<S, M>>,
     /// How each stage's root was flattened, by key, and the stages stepped while layout waits for the frame.
     stale_stages: Vec<String>,
+    /// Steps of slow stages that held when they came (`Ui::restage`): viewed when the stage draws next.
+    held_steps: Vec<String>,
     /// While a paint draws only some stages again: their roots (the rest is the last paint's).
     restaging: Option<Vec<usize>>,
     /// The page instances as painted, before morph ramps and flows are applied; and their flow tags.
@@ -1198,7 +1200,7 @@ impl<S, M: Clone> Ui<S, M> {
             state, view, update, text: Text::new(faces), size: (0.0, 0.0), scale, clock: 0.0, wall: 0.0, bclock: crate::beat::Clock::default(), sent: vec![], sets: vec![], nodes: vec![], scene: Scene::default(),
             owners: vec![], page_len: 0, field: Field::default(), scroll: HashMap::new(), births: HashMap::new(), ramp: None, text_births: HashMap::new(),
             hover: None, focus: None, after_focus: None, fit_short: vec![], grain_at: None, bloom_at: None, clears: HashMap::new(), clearing: false, clear_many: vec![], flow_own: vec![], flow_join: None, fit_k: HashMap::new(), fit_last: None, pressed: None, capture: None, modal_at: None, modal_key: None, return_focus: None, split: None, splits: 0,
-            keyboard: false, marks: Marks::default(), sized: None, commands: None, unseen: vec![], stages: vec![], stage_input: (false, false), stage_add_ms: 0.0, faces_to: None, root_roles: Default::default(), scaler: Default::default(), stage_pin: None, scaler_fed: f64::NEG_INFINITY, governed: false, stepped: None, stage_of: None, stale_stages: vec![], restaging: None, base: vec![], tags: vec![], roles: vec![],
+            keyboard: false, marks: Marks::default(), sized: None, commands: None, unseen: vec![], stages: vec![], stage_input: (false, false), stage_add_ms: 0.0, faces_to: None, root_roles: Default::default(), scaler: Default::default(), stage_pin: None, scaler_fed: f64::NEG_INFINITY, governed: false, stepped: None, stage_of: None, stale_stages: vec![], held_steps: vec![], restaging: None, base: vec![], tags: vec![], roles: vec![],
             run: None, painted_phase: 0, flows: HashMap::new(), ghosts: vec![], grows: vec![], ground_seen: None, ground_hold: None, body_len: 0, animating: false, lifted: HashMap::new(),
             gaze_of: None, gaze_seen: HashMap::new(), annots: vec![], focused: None, focus_moved: false, readout: gaze::Readout::default(), hovered: None, pointer_of: None, scripted: false, ticked: None, warm: None, warmed: None, owed: false, soft_shown: false, ambient: 60.0, input_t: -1e9, frame_t: -1e9, tick_gap: 1.0 / 60.0, unused_key: None, shortcut: None, scrolled_of: None, released: None, input: None,
             dirty: true, look_of: None, locale_of: None, timing: Timing::default(), wake_of: None, latest_birth: f32::NEG_INFINITY, gaze_until: f32::NEG_INFINITY,
@@ -1571,7 +1573,7 @@ impl<S, M: Clone> Ui<S, M> {
     pub fn needs_frame(&self, now: f32) -> bool {
         if self.paced_until(now).is_some() { return false; }
         let b = self.beat_of(now);
-        self.dirty || self.clearing || self.stale_layout || self.stale_paint || self.owed || self.stage_behind() || self.prep.pending() || self.held(now) || self.moving_at(b) || self.wake_at(b).is_some_and(|w| w <= b) || (self.sweeping && !self.arriving.is_empty())
+        self.dirty || self.clearing || self.stale_layout || self.stale_paint || self.owed || self.stage_due() || self.prep.pending() || self.held(now) || self.moving_at(b) || self.wake_at(b).is_some_and(|w| w <= b) || (self.sweeping && !self.arriving.is_empty())
             || (self.plates_ageing() && self.clock - self.plate_frame >= PLATE_FRAME - 1e-4)
             || self.soft_wake().is_some_and(|w| w <= now)
     }
@@ -1592,11 +1594,11 @@ impl<S, M: Clone> Ui<S, M> {
         let b = self.beat_of(now);
         let wanted = self.dirty || self.clearing || self.owed || self.prep.pending() || self.held(now) || self.moving_at(b) || (self.sweeping && !self.arriving.is_empty());
         if wanted && let Some(t) = self.paced_until(now) { return Some(t); }
-        if self.dirty || self.clearing || self.owed || self.stage_behind() || self.prep.pending() || self.held(now) || self.moving_at(b) || (self.sweeping && !self.arriving.is_empty()) { return Some(now); }
+        if self.dirty || self.clearing || self.owed || self.stage_due() || self.prep.pending() || self.held(now) || self.moving_at(b) || (self.sweeping && !self.arriving.is_empty()) { return Some(now); }
         let soft = self.soft_wake().map(|w| w.max(now));
         if self.plates_ageing() { return Some((self.plate_frame + PLATE_FRAME).max(now).min(soft.unwrap_or(f32::MAX))); }
         // A wake on the beat clock is that much later on the runtime's.
-        [self.wake_at(b).map(|w| (w + now - b).max(now)), soft].into_iter().flatten().reduce(f32::min)
+        [self.wake_at(b).map(|w| (w + now - b).max(now)), self.stage_wake().map(|w| (w + now - b).max(now)), soft].into_iter().flatten().reduce(f32::min)
     }
     /// Prepare something over the next frames (DESIGN.md §1.23): `job` is called with the state in the
     /// time the frames leave (at least once a frame) until it says 1; each call does a small piece and
@@ -1985,6 +1987,7 @@ impl<S, M: Clone> Ui<S, M> {
     /// Advance the clock to `t` seconds; the marks glide toward their target.
     pub fn tick(&mut self, t: f32) {
         crate::budget::begin_frame();
+        let scenes0 = self.perf.counters.scenes;
         let wall = t;
         if t > self.wall && t - self.wall < 0.1 { self.tick_gap = t - self.wall; }
         self.wall = t;
@@ -2060,7 +2063,13 @@ impl<S, M: Clone> Ui<S, M> {
         // The readout: switched on or off, or a second past the last frame (it then says idle, once).
         let hud = self.timing.overlay != self.overlay || (self.overlay > 0 && !self.hud_idle && t >= self.overlay_at + 1.05);
         let sweep = !self.arriving.is_empty() && self.sweeping;
-        if repaint || scrolled || hud || sweep || self.clearing || self.stage_behind() { self.paint(); } else { self.finish(); }
+        let due = if repaint || scrolled || hud || sweep || self.clearing { vec![] } else { self.stages_due() };
+        if repaint || scrolled || hud || sweep || self.clearing { self.paint(); }
+        else if !due.is_empty() && (self.perf.counters.scenes == scenes0 || due.iter().any(|k| self.held_steps.contains(k))) {
+            // A stage that held draws when it may, alone where it can be viewed alone; nothing else is drawn
+            // again for it, and between its draws it costs nothing.
+            if self.stage_of.is_some() { let sp = self.span_begin(); self.restage(due); self.span_end(sp); } else { self.paint(); }
+        } else { self.finish(); }
         // The frame is drawn: input from here on is the next frame's (for the stages). Input whose layout
         // waits for the frame (coalesced, `Ui::settle`) is this frame's still: the paint that lays it out
         // reads it, and only then is it spent.
@@ -3116,6 +3125,7 @@ impl<S, M: Clone> Ui<S, M> {
         if self.defer > 0 { self.stale_layout = true; self.dirty = true; return; }
         self.stale_layout = false;
         self.stale_stages.clear();
+        self.held_steps.clear();
         let sp = self.span_begin();
         self.relayout_inner();
         self.span_end(sp);
@@ -4515,6 +4525,17 @@ impl<S, M: Clone> Ui<S, M> {
         }
         if self.stale_layout { self.relayout(); return; }
         let Some(view) = self.stage_of else { self.relayout(); return };
+        // A slow stage that would hold now is not viewed: its step waits for the frame it draws in.
+        let mut keys = keys;
+        let mut held = std::mem::take(&mut self.held_steps);
+        keys.retain(|k| {
+            let holds = self.stage_holds(k);
+            if holds && !held.contains(k) { held.push(k.clone()); }
+            if !holds { held.retain(|h| h != k); }
+            !holds
+        });
+        self.held_steps = held;
+        if keys.is_empty() { return; }
         let sp = self.span_begin();
         let mut roots = vec![];
         let mut ok = self.run.is_none() && self.flows.is_empty() && self.ghosts.is_empty() && self.sent.is_empty();
@@ -4710,8 +4731,28 @@ impl<S, M: Clone> Ui<S, M> {
     pub fn slow_stage(&mut self, ms: f32) { self.stage_add_ms = ms.max(0.0); }
     /// Whether the stage under `key` is slow, and how many times it has drawn (`El::stage`).
     pub fn stage_state(&self, key: &str) -> Option<(bool, usize)> { self.stages.iter().find(|(k, _)| k == key).map(|(_, s)| (s.slow, s.count)) }
-    /// A stage held through a paint: it draws again when it may.
-    fn stage_behind(&self) -> bool { self.stages.iter().any(|(_, s)| s.behind) }
+    /// Whether the held stage under `key` would hold if it were painted now (slow, input since the last
+    /// paint, within its hold, in the box it was drawn in).
+    fn stage_holds(&self, key: &str) -> bool {
+        let Some((_, st)) = self.stages.iter().find(|(k, _)| k == key) else { return false };
+        let Some(i) = self.nodes.iter().position(|n| n.key == key && n.stage.as_ref().is_some_and(|c| c.held)) else { return false };
+        let n = &self.nodes[i];
+        let size = (i + 1..self.nodes.len()).take_while(|&j| within(&self.nodes, j, i)).count() + 1;
+        !st.draws_now(n.rect, n.clip, size, self.clock, self.stage_input.0, self.stage_input.1)
+    }
+    /// The stages that held (through a paint, or a step that waits) and would draw if painted now.
+    fn stages_due(&self) -> Vec<String> {
+        let (input, released) = self.stage_input;
+        self.stages.iter().filter(|(k, s)| (s.behind || self.held_steps.contains(k)) && s.draws_now(s.rect, s.clip, s.nodes, self.clock, input, released)).map(|(k, _)| k.clone()).collect()
+    }
+    fn stage_due(&self) -> bool {
+        let (input, released) = self.stage_input;
+        self.stages.iter().any(|(k, s)| (s.behind || self.held_steps.contains(k)) && s.draws_now(s.rect, s.clip, s.nodes, self.clock, input, released))
+    }
+    /// When the first stage that holds may draw though input goes on (its hold over), on the beat clock.
+    fn stage_wake(&self) -> Option<f32> {
+        self.stages.iter().filter(|(k, s)| s.behind || self.held_steps.contains(k)).map(|(_, s)| s.drawn_at + s.hold_s()).reduce(f32::min)
+    }
     /// What text to read and controls hold (DESIGN.md §1.15): each of their instances that has some ink
     /// of something else (not legible) drawn before it within `r1` of it holds the looseness there to the
     /// legibility cap. `r0 = max(3, size / 4)` and `r1 = r0 + max(6, size / 2)` logical px, by the type

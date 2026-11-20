@@ -2,7 +2,7 @@
 //! its draw, a 2 s drag of a slider beside it at 60 Hz answers in every frame that does not redraw the stage,
 //! the stage redraws at most once per hold during the drag and on the first frame after the release, and a
 //! stage that draws within the frame is drawn every frame.
-use amenui::el::{El, Paint, col, row, space, text};
+use amenui::el::{El, Paint, canvas, col, row, space, text};
 use amenui::style::{Look, Material};
 use amenui::ui::Ui;
 use amenui::widgets::{Spec, slider};
@@ -43,7 +43,7 @@ fn shown(u: &Ui<S, Msg>) -> (f32, Vec<[f32; 8]>) {
     let of = |j: usize| u.owners().iter().enumerate().filter(move |(_, o)| o.0 == j).map(|(k, _)| { let i = &insts[k]; [i.rect[0], i.rect[1], i.rect[2], i.rect[3], i.uv[0], i.uv[1], i.uv[2], i.uv[3]] }).collect::<Vec<_>>();
     (of(knob).first().map_or(-1.0, |r| r[0]), of(value))
 }
-fn piece(u: &Ui<S, Msg>) -> Vec<[f32; 4]> {
+fn piece<T, M: Clone + 'static>(u: &Ui<T, M>) -> Vec<[f32; 4]> {
     let nodes = u.nodes();
     let st = nodes.iter().position(|n| n.key == "stage").expect("the stage");
     let insts = &u.scene().instances;
@@ -133,4 +133,71 @@ fn a_stage_that_draws_in_time_is_drawn_every_frame_and_a_held_one_catches_up_at_
     assert!(u.needs_frame(t), "a held stage asks for a frame");
     t += 1.0 / 60.0; u.tick(t);
     assert!(u.stage_state("stage").map_or(0, |s| s.1) > drawn, "the first frame without input did not draw the stage");
+}
+
+/// A slow stage that steps by itself (`Ui::on_step`), with the pointer moving over the page (input that
+/// changes nothing else): while it holds, a frame costs nothing (no paint, no view of the stage); it draws,
+/// alone, once per hold; and the first frame without input draws it as it is now.
+mod stepped {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    pub static VIEWS: AtomicUsize = AtomicUsize::new(0);
+    pub fn stage(t: f32) -> El<()> {
+        let mut d = amenui::draw::Drawing::new(300.0, 120.0);
+        for k in 0..12 {
+            let x = ((t * 3.0 + k as f32 * 0.7).sin() * 0.5 + 0.5) * 280.0;
+            d.line((x, 4.0 + k as f32 * 9.0), (x + 6.0, 4.0 + k as f32 * 9.0), 4.0, Paint::TEXT);
+        }
+        col().key("stage").stage().width(300.0).height(120.0).child(canvas(d).key("dots").width(300.0))
+    }
+    pub fn view(t: &f32) -> El<()> { col().key("page").pad(20.0, 20.0).gap(12.0).child(stage(*t)).child(text("beside it", 13.0, Paint::TEXT)) }
+    pub fn of(t: &f32, k: &str) -> Option<El<()>> { VIEWS.fetch_add(1, Ordering::Relaxed); (k == "stage").then(|| stage(*t)) }
+}
+
+#[test]
+fn a_held_stage_that_steps_costs_nothing_between_its_own_draws() {
+    use std::sync::atomic::Ordering;
+    let mut u = Ui::new(0.0f32, stepped::view, |_, _| {}, fonts(), 400, 300, 1.0)
+        .on_step(|t, now| { *t = now; vec!["stage".to_owned()] })
+        .stage_view(stepped::of)
+        .on_look(|_| Look { material: Material::Plain, ..Look::default() });
+    u.tick(1.0);
+    u.settle();
+    u.slow_stage(40.0);
+    let mut t = u.now();
+    for _ in 0..12 { t += 1.0 / 60.0; u.tick(t); u.settle(); }
+    assert_eq!(u.stage_state("stage").map(|s| s.0), Some(true), "40 ms draws are slow");
+    let hold = (6.0 * 0.040f32).clamp(0.1, 0.5);
+    let (mut draws, mut held, mut last) = (0, 0, t);
+    for f in 0..60 {
+        let (c0, v0, d0) = (u.perf().counters, stepped::VIEWS.load(Ordering::Relaxed), u.stage_state("stage").map_or(0, |s| s.1));
+        u.pointer_move(380.0, 280.0 - f as f32);
+        t += 1.0 / 60.0;
+        u.tick(t);
+        u.settle();
+        let (c1, v1, d1) = (u.perf().counters, stepped::VIEWS.load(Ordering::Relaxed), u.stage_state("stage").map_or(0, |s| s.1));
+        assert_eq!((c1.views - c0.views, c1.layouts - c0.layouts), (0, 0), "frame {f}: the page is not viewed");
+        if d1 > d0 {
+            draws += 1;
+            assert!(f == 0 || t - last >= hold - 1.0 / 60.0 - 1e-3, "frame {f}: drawn {:.3} s after the last draw", t - last);
+            assert_eq!((c1.scenes - c0.scenes, c1.restages - c0.restages, v1 - v0), (1, 1, 1), "frame {f}: the stage drawn alone");
+            last = t;
+        } else {
+            held += 1;
+            assert_eq!((c1.scenes - c0.scenes, v1 - v0), (0, 0), "frame {f}: a held frame paints nothing and views nothing");
+        }
+    }
+    assert!(held >= 50 && (2..=5).contains(&draws), "{draws} draws, {held} held frames in 1 s");
+    // A frame without input: the stage draws, as it is now.
+    let d0 = u.stage_state("stage").map_or(0, |s| s.1);
+    assert!(u.needs_frame(t), "a held stage asks for the frame without input");
+    t += 1.0 / 60.0;
+    u.tick(t);
+    u.settle();
+    assert!(u.stage_state("stage").map_or(0, |s| s.1) > d0, "the first frame without input draws it");
+    let now = piece(&u);
+    let mut w = Ui::new(t, stepped::view, |_, _| {}, fonts(), 400, 300, 1.0).on_look(|_| Look { material: Material::Plain, ..Look::default() });
+    w.tick(t);
+    w.settle();
+    assert_eq!(now, piece(&w), "the piece where a whole view at this time puts it");
 }

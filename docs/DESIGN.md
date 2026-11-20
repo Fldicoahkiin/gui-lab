@@ -3163,7 +3163,11 @@ nothing new to draw there and the controls are drawn in the frame. It draws agai
 input, on the first frame after a release, and during a long stream of input at least every
 `max(100 ms, 6 × its average draw)`, at most 500 ms (`stage::HOLD_MIN_S`, `HOLD_DRAWS`, `HOLD_MAX_S`). A draw
 replaces the image whole, at once (a cut), and nothing marks a stage that holds. A stage whose box, clip or
-number of elements changed draws whatever the input. When a stage's own device scale steps down under load
+number of elements changed draws whatever the input. Holding costs nothing beyond the stage's own draws: a
+frame in which a held stage would still hold paints nothing for it, a step of it (`Ui::on_step`, below) that
+comes while it would hold is not viewed but waits for its next draw, and when it may draw it is viewed and
+drawn alone, as a step is, the rest of the page copied (`Ui::needs_frame` asks for that frame, `next_wake`
+gives the end of its hold). When a stage's own device scale steps down under load
 (the governor, below), that acts first; a stage is held only when the lowest scale is still slow. Not for controls: what is inside a stage that holds does not change while it
 holds.
 
