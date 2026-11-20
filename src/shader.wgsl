@@ -45,7 +45,7 @@ struct U {
   scrollo: array<vec4f, 8>, // their content offsets (x, y, whole device px), trace strength, the way the content moves (±1 down/up, ±2 right/left)
   scrp: vec4f,     // the trace's lengths (device px): trail, misregistration, glitch slip, glitch band
   scrq: vec4f,     // the least time between two glitch slips (s); the beat clock off the grid (condensing); how much ink plain keeps at the legibility cap (Theme::press_keep); w: with less motion, how long new things fade in (s; 0 otherwise)
-  post: array<vec4f, 6>, // the finishing pass (post.rs Post::pack): dither kind, levels, palette size, on; bloom strength, threshold, radius, dither strength; chroma offset, scanline strength, period, grain; vignette strength, radius, curvature, grain cell; invert
+  post: array<vec4f, 7>, // the finishing pass (post.rs Post::pack): dither kind, levels, palette size, on; bloom strength, threshold, radius, dither strength; chroma offset, scanline strength, period, grain; vignette strength, radius, curvature, grain cell; invert, binary, the grain's region on, the bloom's; the grain's region; the bloom's
   pal: array<vec4f, 16>, // the palette, sRGB 0–1
   fmap: vec4f,     // the field map (DESIGN.md §1.29): cell (device px), drift (device px), nodes across, down (0: all zero, not read)
   sbox: vec4f,     // a commit's scope (El::commit_scope): x0, y0, x1, y1 device px; outside it the old frame stays (x1 <= x0: none)
@@ -1615,10 +1615,13 @@ fn plate_age(slot: u32, a: vec4f) -> f32 {
 // Curvature is the last thing done to the image, so its warp is worked out first and everything
 // before it is read where it lands; the dither is on the screen's own pixels.
 fn post_src(p: vec2f) -> vec3f { return textureSampleLevel(tex0, samp, p / u.res.xy, 0.0).rgb; }
+/// Whether `p` is within the bloom's region (`El::bloom`), when it has one.
+fn in_bloom(p: vec2f) -> bool { let b = u.post[6]; return u.post[4].w < 0.5 || (p.x >= b.x && p.y >= b.y && p.x < b.z && p.y < b.w); }
 fn post_bloom(p: vec2f) -> vec3f {
   var c = post_src(p);
   let s = u.post[1].x;
-  if (s > 0.0) {
+  // With a region, it glows only inside it and only from what is inside it.
+  if (s > 0.0 && in_bloom(p)) {
     let r = u.post[1].z;
     let th = u.post[1].y;
     var acc = vec3f(0.0);
@@ -1632,7 +1635,8 @@ fn post_bloom(p: vec2f) -> vec3f {
       let k = 1.0 - f32(ring) / 3.0;
       let a = f32(i % 6) * 1.0471976 + spin + f32(ring) * 0.5235988;
       let w = 0.6 + 0.4 * (1.0 - k);
-      acc += w * max(post_src(p + vec2f(cos(a), sin(a)) * r * k) - vec3f(th), vec3f(0.0));
+      let q = p + vec2f(cos(a), sin(a)) * r * k;
+      acc += w * max(post_src(q) - vec3f(th), vec3f(0.0)) * select(0.0, 1.0, in_bloom(q));
       wsum += w;
     }
     c += acc * (s * 2.0 / wsum);

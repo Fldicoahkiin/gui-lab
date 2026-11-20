@@ -105,6 +105,8 @@ pub struct Node<M> {
     pen: f32,
     /// The look's grain is drawn over it (`El::grain`).
     grain: bool,
+    /// The look's bloom is drawn over it (`El::bloom`).
+    bloom: bool,
     /// Shown only while clear (`El::show_clear`): inset and rank.
     show_clear: Option<(f32, u8)>,
     /// A view scale's container (`El::view_scale`).
@@ -590,6 +592,8 @@ pub struct Ui<S, M> {
     fit_short: Vec<(String, f32, f32)>,
     /// Where the look's grain is drawn this frame (device px, `El::grain`): `None` over the whole frame.
     grain_at: Option<[f32; 4]>,
+    /// Where the look's bloom is drawn this frame (device px, `El::bloom`): `None` over the whole frame.
+    bloom_at: Option<[f32; 4]>,
     /// Each label shown only while clear (`El::show_clear`), by key: its opacity, and when that was
     /// worked out if it is to be shown, or `−1 −` that time if it is to be hidden.
     clears: HashMap<String, (f32, f32)>,
@@ -1192,7 +1196,7 @@ impl<S, M: Clone> Ui<S, M> {
         let mut ui = Self {
             state, view, update, text: Text::new(faces), size: (0.0, 0.0), scale, clock: 0.0, wall: 0.0, bclock: crate::beat::Clock::default(), sent: vec![], sets: vec![], nodes: vec![], scene: Scene::default(),
             owners: vec![], page_len: 0, field: Field::default(), scroll: HashMap::new(), births: HashMap::new(), ramp: None, text_births: HashMap::new(),
-            hover: None, focus: None, after_focus: None, fit_short: vec![], grain_at: None, clears: HashMap::new(), clearing: false, clear_many: vec![], flow_own: vec![], flow_join: None, fit_k: HashMap::new(), fit_last: None, pressed: None, capture: None, modal_at: None, modal_key: None, return_focus: None, split: None, splits: 0,
+            hover: None, focus: None, after_focus: None, fit_short: vec![], grain_at: None, bloom_at: None, clears: HashMap::new(), clearing: false, clear_many: vec![], flow_own: vec![], flow_join: None, fit_k: HashMap::new(), fit_last: None, pressed: None, capture: None, modal_at: None, modal_key: None, return_focus: None, split: None, splits: 0,
             keyboard: false, marks: Marks::default(), sized: None, commands: None, unseen: vec![], stages: vec![], stage_input: (false, false), stage_add_ms: 0.0, faces_to: None, root_roles: Default::default(), scaler: Default::default(), stage_pin: None, scaler_fed: f64::NEG_INFINITY, governed: false, stepped: None, stage_of: None, stale_stages: vec![], restaging: None, base: vec![], tags: vec![], roles: vec![],
             run: None, painted_phase: 0, flows: HashMap::new(), ghosts: vec![], grows: vec![], ground_seen: None, ground_hold: None, body_len: 0, animating: false, lifted: HashMap::new(),
             gaze_of: None, gaze_seen: HashMap::new(), annots: vec![], focused: None, focus_moved: false, readout: gaze::Readout::default(), hovered: None, pointer_of: None, scripted: false, ticked: None, warm: None, warmed: None, owed: false, soft_shown: false, ambient: 60.0, input_t: -1e9, frame_t: -1e9, tick_gap: 1.0 / 60.0, unused_key: None, shortcut: None, scrolled_of: None, released: None, input: None,
@@ -1419,6 +1423,7 @@ impl<S, M: Clone> Ui<S, M> {
         // What is turned off (DESIGN.md §1.34) is turned off in the look the renderer draws with.
         if l.off.bloom { l.post.bloom.strength = 0.0; }
         l.post.region = self.grain_at;
+        l.post.bloom_region = self.bloom_at;
         if l.off.material_still { l.beat.bpm = 0.0; }
         l
     }
@@ -5397,7 +5402,8 @@ impl<S, M: Clone> Ui<S, M> {
         // Over the annotation layer the gaze makes afresh (`paint_gaze` clears it).
         self.paint_marks();
         self.paint_overlay();
-        self.grain_at = self.grain_region();
+        self.grain_at = self.marked_region(|n| n.grain);
+        self.bloom_at = self.marked_region(|n| n.bloom);
         if !self.painting { self.perf.pending.scene += (crate::perf::now_ms() - t0) as f32; }
     }
 
@@ -5463,10 +5469,10 @@ impl<S, M: Clone> Ui<S, M> {
     /// How much a label marked `El::show_clear` is shown now (0–1), or `None` for one that is not.
     pub fn clear_opacity(&self, key: &str) -> Option<f32> { self.clears.get(key).map(|c| c.0) }
 
-    /// The box round what the elements marked `El::grain` draw now (device px, each instance within its
-    /// clip; a flowing picture where it is this frame), or `None` when none is marked.
-    fn grain_region(&self) -> Option<[f32; 4]> {
-        let marked: Vec<usize> = (0..self.nodes.len()).filter(|&i| self.nodes[i].grain && !self.nodes[i].hidden).collect();
+    /// The box round what the elements `mark` picks (`El::grain`, `El::bloom`) draw now (device px, each
+    /// instance within its clip; a flowing picture where it is this frame), or `None` when none is marked.
+    fn marked_region(&self, mark: fn(&Node<M>) -> bool) -> Option<[f32; 4]> {
+        let marked: Vec<usize> = (0..self.nodes.len()).filter(|&i| mark(&self.nodes[i]) && !self.nodes[i].hidden).collect();
         if marked.is_empty() { return None; }
         let mut b = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
         let mut add = |r: [f32; 4]| if r[2] > r[0] && r[3] > r[1] { b = [b[0].min(r[0]), b[1].min(r[1]), b[2].max(r[2]), b[3].max(r[3])]; };
@@ -7530,7 +7536,7 @@ fn measure_key(c: &Content) -> u64 {
 #[allow(clippy::too_many_arguments)]
 fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], off: (bool, bool), flow: Option<(Rc<str>, usize)>, inh: Inherit, vx: &mut VirtCtx, built: &mut Built, nodes: &mut Vec<Node<M>>) -> usize {
     let stage_at = (el.props.stage || el.props.steps || el.props.local_messages).then(|| Box::new(StageCtx { parent, path: path.clone(), roles, off, flow: flow.clone(), inh: inh.clone(), held: el.props.stage, local: el.props.local_messages }));
-    let El { props: crate::el::Props { key, mut style, mut content, fill, fill_on, border, radius, mut focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, mut commit, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, map_life, multiline, selectable, cursor, ripple, guide, skeleton, rtl, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview, fit, clamp, plate, cached, clip_radius, own_size, grain, show_clear, pen, view_scale, stage: _, stack, steps: _, local_messages: _ }, mut on_press, mut on_key, mut on_drag, mut on_blur, modal, mut on_text, virt, access, mut on_pick, mut on_wheel, mut on_move, on_visible, on_outline, mut children } = el;
+    let El { props: crate::el::Props { key, mut style, mut content, fill, fill_on, border, radius, mut focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, mut commit, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, map_life, multiline, selectable, cursor, ripple, guide, skeleton, rtl, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview, fit, clamp, plate, cached, clip_radius, own_size, grain, bloom, show_clear, pen, view_scale, stage: _, stack, steps: _, local_messages: _ }, mut on_press, mut on_key, mut on_drag, mut on_blur, modal, mut on_text, virt, access, mut on_pick, mut on_wheel, mut on_move, on_visible, on_outline, mut children } = el;
     // A view scale scales what it holds, not its pen (`El::view_scale`).
     if let Some(s) = view_scale { children = children.into_iter().map(|c| c.zoom_by(s, true)).collect(); }
     let mut inh = inh;
@@ -7606,7 +7612,7 @@ fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], of
         content, fill, fill_on, border, radius, on_press, on_key, on_drag, on_blur, loose, wipe, bar, reveal, commit, modal, hidden, shift, shed, flow_field, stirr, trace, flow: flow.clone(),
         mat: inh.code(), loosen: inh.loosen, annotate, scope: gaze_scope, anchor, clips, calm, map_life, on_text, multiline, selectable: inh.select, cursor,
         virt: virt_info, access, respond, legible, ripple: inh.scope.clone(), ripple_scope: ripple.container || commit_scope, recompose, recompose_always: is_text && ripple.recompose == Some(true), unframed: ripple.unframed, keyed,
-        on_pick, on_wheel, on_move, guide, on_visible, on_outline, decode, skeleton: inh.skeleton, form, turn, xf: None, reveal_by, ongoing: ongoing || parent.is_some_and(|p| nodes[p].ongoing), pass, opacity, opacity_all: opacity * parent.map_or(1.0, |p| nodes[p].opacity_all), commit_scope, fit, clamp, shown: None, plate, cached, clip_radius, clip_r: 0.0, own_size, grain, show_clear, view_scale, stage: stage_at, op0: (0.0, 0.0), pen, own_in_flow: own_size.is_some() && style.position != taffy::Position::Absolute, local: taffy::Layout::new(), exact: (0.0, 0.0), tid: placeholder,
+        on_pick, on_wheel, on_move, guide, on_visible, on_outline, decode, skeleton: inh.skeleton, form, turn, xf: None, reveal_by, ongoing: ongoing || parent.is_some_and(|p| nodes[p].ongoing), pass, opacity, opacity_all: opacity * parent.map_or(1.0, |p| nodes[p].opacity_all), commit_scope, fit, clamp, shown: None, plate, cached, clip_radius, clip_r: 0.0, own_size, grain, bloom, show_clear, view_scale, stage: stage_at, op0: (0.0, 0.0), pen, own_in_flow: own_size.is_some() && style.position != taffy::Position::Absolute, local: taffy::Layout::new(), exact: (0.0, 0.0), tid: placeholder,
     });
     { let n = nodes.last_mut().expect("pushed"); n.op0 = (n.opacity, n.opacity_all); }
     crate::el::snap_style(&mut style);

@@ -2261,6 +2261,13 @@ flows carries it where it is on each frame; the grain itself is the same (its ha
 shows the page's grain pixel for pixel. With nothing marked it covers the whole frame. The runtime sets the region in
 the look it draws with (`Post::region`). `tests/grain.rs`.
 
+**Bloom in a region** (`El::bloom()`): the same for the bloom. Once any element is marked, the bloom glows only
+inside the box round what marked elements draw this frame, and only from what is drawn inside it (a tap outside the
+box adds nothing), so a bright control beside a glowing picture stays its own colour and lights nothing. With
+nothing marked it covers the whole frame, as before, and the pass is the same pixel for pixel. The region is set
+each frame from where the marked elements are (`Post::bloom_region`); the finishing pass runs on the kept frame
+whenever it is shown, so a scroll's or a stage's moved frame takes it like any other. `tests/bloom.rs`.
+
 **Dithering** (`DithrKind`): `bayer2`, `bayer4`, `bayer8` (recursive Bayer matrices); `blue_noise`: not a real
 blue-noise mask (that would need a texture or void-and-cluster at start-up) but the R2 low-discrepancy sequence
 `fract(0.7549 x + 0.5698 y)`, as even and textureless; `atkinson_like`: real error diffusion runs pixel after

@@ -52,7 +52,7 @@ struct Uniforms {
     scrp: [f32; 4],
     scrq: [f32; 4],
     /// The finishing pass (`post::Post::pack`) and its palette.
-    post: [[f32; 4]; 6],
+    post: [[f32; 4]; 7],
     pal: [[f32; 4]; crate::post::PALETTE_MAX],
     /// The field map: cell and drift (device px), nodes across and down (0: all zero, not read).
     fmap: [f32; 4],

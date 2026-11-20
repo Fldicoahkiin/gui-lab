@@ -774,6 +774,8 @@ pub struct Props {
     pub own_size: Option<([f32; 2], f32)>,
     /// The look's grain is drawn over it (`El::grain`).
     pub grain: bool,
+    /// The look's bloom is drawn over it (`El::bloom`).
+    pub bloom: bool,
     /// Shown only while it is clear (`El::show_clear`): how far inside its view it must be, and its rank.
     pub show_clear: Option<(f32, u8)>,
     /// How much a view scale above it (`El::view_scale`) scaled its geometry and not its pen: a drawing's
@@ -792,7 +794,7 @@ pub struct Props {
 }
 impl Props {
     #[inline(never)]
-    fn new(style: Style, content: Content) -> Self { Props { key: String::new(), style, content, fill: None, fill_on: PaintOn { hover: None, held: None, border_hover: None }, border: None, radius: 0.0, focusable: false, tab_order: 0, skip_to: None, focus_shown: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, shift: (0.0, 0.0), shed: None, flow_field: None, stirr: None, trace: None, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, clips: false, calm: false, map_life: None, multiline: false, selectable: false, cursor: None, ripple: Ripple::default(), guide: None, skeleton: false, rtl: None, decode: None, form: None, turn: 0.0, reveal_by: Reveal::Glyph, ongoing: false, pass: false, opacity: 1.0, commit_scope: false, preview: false, fit: None, clamp: 0, plate: None, cached: false, clip_radius: 0.0, own_size: None, grain: false, show_clear: None, pen: 1.0, view_scale: None, stage: false, stack: false, steps: false, local_messages: false } }
+    fn new(style: Style, content: Content) -> Self { Props { key: String::new(), style, content, fill: None, fill_on: PaintOn { hover: None, held: None, border_hover: None }, border: None, radius: 0.0, focusable: false, tab_order: 0, skip_to: None, focus_shown: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, shift: (0.0, 0.0), shed: None, flow_field: None, stirr: None, trace: None, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, clips: false, calm: false, map_life: None, multiline: false, selectable: false, cursor: None, ripple: Ripple::default(), guide: None, skeleton: false, rtl: None, decode: None, form: None, turn: 0.0, reveal_by: Reveal::Glyph, ongoing: false, pass: false, opacity: 1.0, commit_scope: false, preview: false, fit: None, clamp: 0, plate: None, cached: false, clip_radius: 0.0, own_size: None, grain: false, bloom: false, show_clear: None, pen: 1.0, view_scale: None, stage: false, stack: false, steps: false, local_messages: false } }
 }
 impl<M> std::ops::Deref for El<M> { type Target = Props; fn deref(&self) -> &Props { &self.props } }
 impl<M> std::ops::DerefMut for El<M> { fn deref_mut(&mut self) -> &mut Props { &mut self.props } }
@@ -1077,6 +1079,11 @@ impl<M> El<M> {
     /// page's grain and a picture that flows carries it where it is drawn each frame. With none marked it
     /// covers the whole frame.
     pub fn grain(mut self) -> Self { self.grain = true; self }
+    /// Where the look's bloom (`PostSpec::bloom`) is drawn: once any element on the page is marked, the
+    /// bloom glows only inside the box round all that marked elements draw (each within its clip), and
+    /// only from what is drawn inside it, so a bright control beside a marked picture neither glows nor
+    /// lights the picture. With none marked it covers the whole frame, as before.
+    pub fn bloom(mut self) -> Self { self.bloom = true; self }
     /// Keep this element's own size when it is zoomed (`El::zoom`) or carried by a picture that grows
     /// (`Cmd::Flow`): a label on a scaled drawing, at its own size and sharp at any device pixel ratio.
     /// Its type, box, border and pose stay as they are; where it is (insets, margins, `shift`) scales,

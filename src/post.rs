@@ -163,7 +163,7 @@ impl PostSpec {
         let mut colors = [[0u8; 3]; PALETTE_MAX];
         for (i, c) in cols.iter().enumerate() { colors[i] = *c; }
         let dithr = if self.binary { Dithr { kind: DithrKind::None, ..self.dithr } } else { self.dithr };
-        Post { bloom: self.bloom, chroma: self.chroma, scanlines: self.scanlines, grain: self.grain, vignette: self.vignette, curvature: self.curvature, dithr, colors, count: cols.len() as u8, binary: self.binary, invert: self.invert, region: None }
+        Post { bloom: self.bloom, chroma: self.chroma, scanlines: self.scanlines, grain: self.grain, vignette: self.vignette, curvature: self.curvature, dithr, colors, count: cols.len() as u8, binary: self.binary, invert: self.invert, region: None, bloom_region: None }
     }
 }
 
@@ -175,6 +175,9 @@ pub struct Post {
     /// Where the grain is drawn (device px, x0 y0 x1 y1; set by the runtime from `El::grain`): `None`
     /// over the whole frame.
     pub region: Option<[f32; 4]>,
+    /// Where the bloom glows and what it glows from (device px, x0 y0 x1 y1; set by the runtime from
+    /// `El::bloom`): `None` over the whole frame.
+    pub bloom_region: Option<[f32; 4]>,
 }
 impl Post {
     pub fn bloom_on(&self) -> bool { self.bloom.strength > 0.0 && self.bloom.radius > 0.0 }
@@ -189,18 +192,20 @@ impl Post {
     pub fn active(&self) -> bool {
         self.bloom_on() || self.chroma_on() || self.scanlines_on() || self.grain_on() || self.vignette_on() || self.curvature_on() || self.dithr_on() || self.palette_on() || self.invert
     }
-    /// The uniform form (device px where lengths): six vec4s (the fifth's x is `invert`, y `binary`, z whether the grain has a region; the sixth that region), then the
-    /// palette's sixteen.
-    pub fn pack(&self, scale: f32) -> ([[f32; 4]; 6], [[f32; 4]; PALETTE_MAX]) {
+    /// The uniform form (device px where lengths): seven vec4s (the fifth's x is `invert`, y `binary`, z
+    /// whether the grain has a region, w whether the bloom has one; the sixth the grain's region, the
+    /// seventh the bloom's), then the palette's sixteen.
+    pub fn pack(&self, scale: f32) -> ([[f32; 4]; 7], [[f32; 4]; PALETTE_MAX]) {
         let f = |b: bool| if b { 1.0 } else { 0.0 };
         let d = &self.dithr;
-        let mut p = [[0.0; 4]; 6];
+        let mut p = [[0.0; 4]; 7];
         p[0] = [if self.dithr_on() { d.kind.id() } else { 0.0 }, d.levels.clamp(2, 16) as f32, self.count as f32, f(self.active())];
         p[1] = [if self.bloom_on() { self.bloom.strength } else { 0.0 }, self.bloom.threshold, self.bloom.radius * scale, d.strength.clamp(0.0, 1.0)];
         p[2] = [self.chroma.offset * scale, if self.scanlines_on() { self.scanlines.strength.clamp(0.0, 1.0) } else { 0.0 }, self.scanlines.period.max(1.0) * scale, self.grain.amount.max(0.0)];
         p[3] = [self.vignette.strength.clamp(0.0, 1.0), self.vignette.radius.clamp(0.0, 1.5), self.curvature.amount, (self.grain.size.max(0.25) * scale).max(1.0)];
-        p[4] = [f(self.invert), f(self.binary), f(self.region.is_some()), 0.0];
+        p[4] = [f(self.invert), f(self.binary), f(self.region.is_some()), f(self.bloom_region.is_some())];
         p[5] = self.region.unwrap_or([0.0; 4]);
+        p[6] = self.bloom_region.unwrap_or([0.0; 4]);
         let mut pal = [[0.0; 4]; PALETTE_MAX];
         for (i, c) in self.colors.iter().take(self.count as usize).enumerate() { pal[i] = [c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0, 1.0]; }
         (p, pal)
