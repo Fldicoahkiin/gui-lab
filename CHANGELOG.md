@@ -8,6 +8,12 @@ crate and the `amenui` npm package (`web/`) always carry the same version, becau
 match the module that `web_app!` generates. The minimum Rust is the one CI builds with (`rust-version`
 in Cargo.toml); raising it is a breaking change before 1.0 only in the second number.
 
+## Recomposing text keeps the cheap redraw
+
+- A stage that steps (`Ui::on_step`) or a subtree whose messages are its own is still drawn alone, the rest of
+  the page copied, while a label or a slot's text recomposes glyph by glyph; before, the whole page was painted
+  until the tiles landed. `perf().counters.restages` now counts only the frames that were drawn so.
+
 ## Parts of a stage that change alone
 
 - `El::steps()` inside a stage marks a part of it that changes alone (a lens over a page that stays): a step

@@ -3809,6 +3809,7 @@ impl<S, M: Clone> Ui<S, M> {
         let sel = self.look().select;
         // Only some stages drawn again (`Ui::restage`): what the rest of the page drew last time.
         let mut kept = self.restaging.take().and_then(|roots| self.kept(roots));
+        if kept.is_some() { self.perf.counters.restages += 1; }
         self.scene.clear();
         if let Some(k) = &mut kept { self.scene.meshes = std::mem::take(&mut k.meshes); }
         self.glyphs.clear();
@@ -4535,7 +4536,6 @@ impl<S, M: Clone> Ui<S, M> {
             roots.push(i);
         }
         if !ok { self.span_end(sp); self.relayout(); return; }
-        self.perf.counters.restages += 1;
         self.place();
         // A paint already owed draws the whole page; otherwise only the stages.
         if !self.stale_paint { self.restaging = Some(roots); }
@@ -4555,19 +4555,20 @@ impl<S, M: Clone> Ui<S, M> {
         out
     }
     /// What the last paint drew, per node, for a paint that draws only the stages at `roots` again
-    /// (`Ui::restage`); `None` when it cannot be kept (each node's instances not one run, text
-    /// recomposing, 3D elements, faces arriving).
+    /// (`Ui::restage`); `None` when it cannot be kept (each node's instances not one run, 3D elements,
+    /// faces arriving). Text recomposing anywhere is kept: its tiles are drawn over the scene by id.
     fn kept(&mut self, roots: Vec<usize>) -> Option<Kept> {
         let n = self.page_len;
-        if self.owners.len() != n || self.tags.len() != n || self.scene.instances.len() < n || !self.recomps.is_empty() || !self.arriving.is_empty() { return None; }
+        if self.owners.len() != n || self.tags.len() != n || self.scene.instances.len() < n || !self.arriving.is_empty() { return None; }
         // 3D elements outside the stages keep their meshes (and their places in the list); one in a stage
         // drawn again would add its own.
         let mesh = |j: usize| matches!(self.nodes[j].content, Content::Scene3d(_));
         if roots.iter().any(|&r| (r..self.nodes.len()).take_while(|&j| within(&self.nodes, j, r)).any(mesh)) { return None; }
         let runs = runs_of(self.owners.iter().map(|o| o.0), self.nodes.len())?;
         let log_runs = runs_of(self.glyphs.log.iter().map(|g| g.node), self.nodes.len())?;
-        let mut insts = std::mem::take(&mut self.scene.instances);
-        insts.truncate(n);
+        // As painted, not as the last frame's motion left them (a glyph hidden under its tiles, one sliding).
+        if self.base.len() != n { return None; }
+        let insts = self.base.clone();
         Some(Kept { roots, insts, owners: std::mem::take(&mut self.owners), tags: std::mem::take(&mut self.tags), runs, log: std::mem::take(&mut self.glyphs.log), log_runs,
             laid: std::mem::take(&mut self.glyphs.laid), unseen: std::mem::take(&mut self.unseen), own: self.scene.own.clone(), meshes: std::mem::take(&mut self.scene.meshes) })
     }
@@ -6323,6 +6324,7 @@ impl<S, M: Clone> Ui<S, M> {
         use unicode_segmentation::UnicodeSegmentation;
         let now = self.clock;
         let spec = self.timing.recompose;
+        let done: Vec<(usize, String)> = jobs.iter().map(|j| (j.node, self.nodes[j.node].key.clone())).collect();
         for job in jobs {
             let key = self.nodes[job.node].key.clone();
             let mut new = job.rec;
@@ -6462,6 +6464,13 @@ impl<S, M: Clone> Ui<S, M> {
             };
             self.recomps.insert(key, Recomp { tiles: rtiles, start: now, end: now + dur, hide: new_changed.into_iter().collect(), keep, keep_until });
             self.animating = true;
+        }
+        // Each text's record holds its glyphs as this paint leaves them (births given above included), as
+        // the next paint would find them: a paint that copies the text (`Ui::restage`) records nothing.
+        for (node, key) in done {
+            let Some(rec) = self.recs.get_mut(&key) else { continue };
+            let index: HashMap<u64, usize> = (0..self.scene.instances.len()).filter(|&k| self.owners.get(k).is_some_and(|o| o.0 == node)).map(|k| (self.owners[k].1, k)).collect();
+            for (id, inst) in rec.glyphs.iter_mut() { if let Some(&k) = index.get(id) { *inst = self.scene.instances[k]; } }
         }
     }
 

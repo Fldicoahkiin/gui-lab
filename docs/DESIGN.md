@@ -3170,7 +3170,11 @@ draws only those subtrees, copying every other element's instances, glyphs and c
 frame is the one a whole view, layout and paint of the page would give, instance for instance. A step whose
 subtree is laid out otherwise (it grew, an element came or went, a text changed what is measured), a stage that
 holds a 3D scene, an animation or a transition in flight, or anything else that changed the view on that tick,
-and the whole page is viewed, laid out and painted again. `perf().counters.restages` counts the frames drawn so.
+and the whole page is viewed, laid out and painted again. Text recomposing glyph by glyph (§1.16), in a
+stage or anywhere else on the page, does not: what is copied is copied as it was painted, not as the last
+frame's motion left it (a glyph hidden under its tiles, one sliding), and the tiles are drawn over it as they
+are on any frame. `perf().counters.restages` counts the frames drawn so (a frame that had to paint the page
+whole is not counted).
 What changes with a piece outside its stage (an experiment's formula, a label with the value) is marked
 `El::steps`: `on_step` returns its key with the stage's, `stage_view` gives its subtree, and it is put in
 place as a stage is, but drawn every frame like anything else (never held, never at a stage's scale). An

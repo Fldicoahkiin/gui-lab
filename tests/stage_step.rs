@@ -306,3 +306,58 @@ fn a_step_of_a_stage_with_a_part_that_changes_alone_views_and_draws_the_part_alo
         assert_eq!(viewed, want, "alone {alone}: what was viewed");
     }
 }
+
+/// A label beside a stage that changes every fifth of a second recomposes glyph by glyph (the default)
+/// while the stage steps every frame: the frames are still drawn by the stage (and the label when it
+/// changes) alone, the label copied from the last paint between, and each is the whole page's, tiles and all.
+#[test]
+fn a_label_recomposing_beside_a_stepping_stage_keeps_the_cheap_redraw() {
+    fn label(s: &S) -> El<()> { text(format!("phase {}", ((s.t * 5.0) as usize % 9 + 1) * 11), 11.0, Paint::DIM).font(Font::Mono).key("cell1/n").steps() }
+    fn view(s: &S) -> El<()> { col().key("page").pad(10.0, 10.0).gap(10.0).child(text("The lab", 20.0, Paint::TEXT)).child(stage(s, 1)).child(label(s)) }
+    let mk = |staged: bool| {
+        let s = S { t: 0.0, n: [20, 12, 16], tall: false };
+        let u = Ui::new(s, view, |_, _| {}, fonts(), 640, 420, 1.0).on_look(|_| Look { material: Material::Plain, ..Look::default() });
+        let mut u = if staged {
+            // The label is named only on the step that changes it: between, it is copied while it recomposes.
+            u.on_step(|s, t| {
+                s.t = t;
+                s.n[1] = 12 + ((t * 7.0) as usize % 9);
+                let ph = (t * 5.0) as usize;
+                let named = ph != s.n[0];
+                s.n[0] = ph;
+                if named { vec!["cell1/stage".to_owned(), "cell1/n".to_owned()] } else { vec!["cell1/stage".to_owned()] }
+            })
+                .stage_view(|s, key| match key {
+                    "cell1/stage" => Some(stage(s, 1)),
+                    "cell1/n" => Some(label(s)),
+                    _ => None,
+                })
+        } else {
+            u.on_tick(|s, t| { s.t = t; s.n[1] = 12 + ((t * 7.0) as usize % 9); true })
+        };
+        u.tick(1.0);
+        u.settle();
+        u
+    };
+    let (mut a, mut b) = (mk(true), mk(false));
+    let mut t = 1.0;
+    let mut recomposing = 0;
+    for f in 0..90 {
+        t += 1.0 / 60.0;
+        let c0 = a.perf().counters;
+        a.tick(t);
+        b.tick(t);
+        a.settle();
+        b.settle();
+        let c1 = a.perf().counters;
+        if a.recompose_tiles() > 0 { recomposing += 1; }
+        assert_eq!(a.recompose_tiles(), b.recompose_tiles(), "frame {f}: tiles");
+        assert_eq!((c1.views - c0.views, c1.layouts - c0.layouts, c1.restages - c0.restages), (0, 0, 1), "frame {f}: the stage and the label drawn alone");
+        let (fa, fb) = (frame(&a), frame(&b));
+        assert_eq!(fa.0.len(), fb.0.len(), "frame {f}: instances");
+        let diff = fa.0.iter().zip(&fb.0).position(|(x, y)| x != y);
+        assert!(diff.is_none(), "frame {f}: instance {diff:?}: {:?} / {:?}", diff.map(|k| fa.0[k]), diff.map(|k| fb.0[k]));
+        assert_eq!(fa.1, fb.1, "frame {f}: owners");
+    }
+    assert!(recomposing > 20, "the label recomposed: {recomposing} frames");
+}
