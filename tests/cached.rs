@@ -143,3 +143,78 @@ fn a_page_painted_before_a_renderer_is_made_is_drawn_by_it() {
         }
     }
 }
+
+/// A cached page that nothing it draws from changed is passed by: a paint neither draws nor compares it
+/// (`Counters::kept`), its plate is laid on as it was, and the frame is the one of a page that is not
+/// cached. When its words change it is drawn again, the glyphs that stayed keeping their births (they do
+/// not condense again), and passed by again after; a new size or a new renderer has it drawn again.
+#[test]
+fn a_cached_page_nothing_changed_in_is_passed_by_not_drawn_and_compared() {
+    if Offscreen::try_new(W, H).is_err() { eprintln!("no GPU adapter here: skipped"); return; }
+    let s = S { cached: true, n: 0, words: "alpha", glass: false };
+    let (mut oc, mut op) = (Offscreen::new(W, H), Offscreen::new(W, H));
+    let (mut c, mut p) = (mk(s.clone()), mk(S { cached: false, ..s }));
+    let _ = (frame(&mut oc, &mut c), frame(&mut op, &mut p));
+    let kept = |ui: &Ui<S, ()>| ui.counters().kept;
+    let span = |ui: &Ui<S, ()>| ui.scene().plates.iter().map(|p| p.end - p.start).sum::<u32>();
+    // The first paint after it was drawn compares it (the plate is inked); from then on it is passed by.
+    set(&mut c, |s| s.n += 1);
+    set(&mut p, |s| s.n += 1);
+    let _ = (frame(&mut oc, &mut c), frame(&mut op, &mut p));
+    for k in 0..3 {
+        let before = kept(&c);
+        set(&mut c, |s| s.n += 1);
+        set(&mut p, |s| s.n += 1);
+        let (a, b) = (frame(&mut oc, &mut c), frame(&mut op, &mut p));
+        assert_eq!(kept(&c), before + 1, "change {k} elsewhere: the cached page is passed by");
+        assert_eq!(span(&c), 0, "change {k}: nothing of it is in the scene");
+        assert!(diff(&a, &b) < 1e-3, "change {k}: as a page not cached: {}", diff(&a, &b));
+    }
+    // Its words change: drawn again, not passed by; the glyphs that stayed do not condense again.
+    let born: Vec<f32> = c.instances_of("small").iter().map(|i| i.extra[3]).collect();
+    let before = kept(&c);
+    set(&mut c, |s| s.words = "alphb");
+    set(&mut p, |s| s.words = "alphb");
+    assert_eq!(kept(&c), before, "its words changed: it is drawn");
+    assert!(span(&c) > 100, "drawn again: {} instances", span(&c));
+    let now: Vec<f32> = c.instances_of("small").iter().map(|i| i.extra[3]).collect();
+    assert!(born.is_empty() || now.iter().filter(|&&b| b == c.now()).count() < now.len() / 4, "most of its glyphs condense again");
+    let (a, b) = (frame(&mut oc, &mut c), frame(&mut op, &mut p));
+    assert!(diff(&a, &b) < 1e-3, "drawn again as a page not cached: {}", diff(&a, &b));
+    // And passed by again once drawn and compared.
+    set(&mut c, |s| s.n += 1);
+    set(&mut p, |s| s.n += 1);
+    let _ = (frame(&mut oc, &mut c), frame(&mut op, &mut p));
+    let before = kept(&c);
+    set(&mut c, |s| s.n += 1);
+    set(&mut p, |s| s.n += 1);
+    let (a, b) = (frame(&mut oc, &mut c), frame(&mut op, &mut p));
+    assert_eq!(kept(&c), before + 1, "passed by again");
+    assert!(diff(&a, &b) < 1e-3, "as a page not cached: {}", diff(&a, &b));
+    // A new size empties the plate: drawn again, then passed by.
+    let (mut oc2, mut op2) = (Offscreen::new(W + 20, H), Offscreen::new(W + 20, H));
+    c.resize(W + 20, H, 1.0);
+    p.resize(W + 20, H, 1.0);
+    let before = kept(&c);
+    let (a, b) = (frame(&mut oc2, &mut c), frame(&mut op2, &mut p));
+    assert_eq!(kept(&c), before, "a new size: drawn again");
+    assert!(diff(&a, &b) < 1e-3, "after a new size: {}", diff(&a, &b));
+    // A renderer of its own draws it as it is.
+    let mut other = Offscreen::new(W + 20, H);
+    let first = frame(&mut oc2, &mut c);
+    for k in 0..2 { let o = frame(&mut other, &mut c); assert!(diff(&first, &o) < 1e-3, "frame {k} of a new renderer: {}", diff(&first, &o)); }
+    // A glass over it reads what its plate holds while it is passed by: as a page drawn from the start.
+    let g = S { cached: true, n: 0, words: "alpha", glass: true };
+    let mut og = Offscreen::new(W, H);
+    let mut ui = mk(g.clone());
+    for _ in 0..2 { let _ = frame(&mut og, &mut ui); }
+    let before = kept(&ui);
+    for _ in 0..3 { set(&mut ui, |s| s.n += 1); let _ = frame(&mut og, &mut ui); }
+    assert!(kept(&ui) >= before + 2, "under the glass it is passed by");
+    let a = frame(&mut og, &mut ui);
+    let mut fresh = mk(S { n: ui.state.n, ..g });
+    let mut of = Offscreen::new(W, H);
+    let mut b = frame(&mut of, &mut fresh);
+    for _ in 0..2 { b = frame(&mut of, &mut fresh); }
+    assert!(diff(&a, &b) < 1e-3, "the glass over a page passed by: {}", diff(&a, &b));
+}

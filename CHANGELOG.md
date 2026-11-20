@@ -18,6 +18,12 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
   spread once more, so what the material draws round the letter is drawn; text at reading sizes keeps the
   override just round its ink.
 
+## Cached subtrees
+
+- A cached subtree (`El::cached`) in which nothing it draws from changed is passed by when the page is painted:
+  it is neither drawn nor hashed, and its plate is laid on as it was (`Counters::kept` counts them). It was drawn
+  and hashed instance by instance on every paint (about 9 ms for 11,000 glyphs natively).
+
 ## Shaders in Chrome
 
 - `fs_ink`'s code test no longer mixes `||` and `&&` without parentheses, which Chrome's WGSL compiler rejects

@@ -405,6 +405,56 @@ struct Recomp { tiles: Vec<RTile>, start: f32, end: f32, hide: HashSet<u64>, kee
 struct Slide { from: [f32; 4], clip: [f32; 4], start: f32, dur: f32 }
 /// A recomposition found while painting, worked out after the scene is built.
 struct RecJob { node: usize, rec: TextRec }
+/// What a cached subtree (`El::cached`) last drew besides its instances, kept so a paint in which nothing
+/// it draws from changed (`sig`, `Ui::keep_sig`) passes it by: its identities' births, its texts' births and
+/// recomposition records, its texts' laid glyphs (by node, from its root), and its latest birth and
+/// whether something in it moves loose by itself.
+struct PlateKeep { sig: u64, timing: Timing, births: Vec<(u64, f32)>, text_births: Vec<(u64, f32)>, recs: Vec<String>, laid: Vec<crate::hit::Laid>, latest: f32, loose: bool }
+/// A cached subtree being painted: its root, plate slot and first instance; what it is drawn from (`None`:
+/// something it reads cannot be told the same next time); how long the lists it may add to were.
+struct KeepOpen { root: usize, slot: u8, start: usize, sig: Option<u64>, lens: [usize; 7] }
+/// One node of a cached subtree into its signature (`Ui::keep_sig`): what it is drawn from.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn sig_node(h: &mut std::hash::DefaultHasher, key: &str, nums: [f32; 15], flags: (bool, bool, bool, bool, crate::el::Reveal, u16, &Option<String>), fill: Option<Paint>, border: Option<(f32, Paint)>, respond: Response, content: &Content) {
+    use std::hash::Hash;
+    let paint = |p: Option<Paint>, h: &mut std::hash::DefaultHasher| p.map(|p| ([p.tone, p.accent, p.alpha].map(f32::to_bits), p.hue)).hash(h);
+    key.hash(h);
+    nums.map(f32::to_bits).hash(h);
+    flags.hash(h);
+    paint(fill, h);
+    paint(border.map(|b| b.1), h);
+    (border.map(|b| b.0.to_bits()), respond).hash(h);
+    if let Content::Text { s, size, line, paint: tp, font, print, weight, nowrap, track, .. } = content {
+        s.hash(h);
+        [*size, *line, *print, *weight, *track].map(f32::to_bits).hash(h);
+        nowrap.hash(h);
+        paint(Some(*tp), h);
+        font.hash(h);
+    }
+}
+impl PlateKeep {
+    /// What the subtree of `root` (the nodes `root..end`, keyed `keys`) drew from instance `start` on.
+    #[allow(clippy::too_many_arguments)]
+    fn take(sig: u64, timing: Timing, insts: &[Instance], owners: &[(usize, u64)], births: &HashMap<u64, f32>, text_births: &HashMap<u64, f32>, jobs: &[(usize, &str)], laid: &[crate::hit::Laid], root: usize, keys: &[&str]) -> Self {
+        use std::hash::{Hash, Hasher};
+        let mut ids: Vec<(u64, f32)> = owners.iter().filter_map(|&(_, id)| births.get(&id).map(|&b| (id, b))).collect();
+        ids.dedup_by_key(|x| x.0);
+        let last = root + keys.len().saturating_sub(1);
+        let tb = keys.iter().filter_map(|key| { let mut h = std::hash::DefaultHasher::new(); key.hash(&mut h); let h = h.finish(); text_births.get(&h).map(|&b| (h, b)) }).collect();
+        let recs = jobs.iter().filter(|j| j.0 >= root && j.0 <= last).map(|j| j.1.to_string()).collect();
+        let laid = laid.iter().filter(|l| l.0 >= root && l.0 <= last).map(|l| (l.0 - root, l.1.clone(), l.2.clone())).collect();
+        let latest = insts.iter().map(|i| i.extra[3]).fold(f32::NEG_INFINITY, f32::max);
+        let loose = insts.iter().any(|i| { let m = if i.look[0] >= 127.5 { (i.look[0].round() as u32 % 16) as u8 } else { timing.material }; i.extra[2] > 0.0 && crate::style::Material::from_id(m).time_varying() });
+        PlateKeep { sig, timing, births: ids, text_births: tb, recs, laid, latest, loose }
+    }
+    /// Lay on what it drew besides its instances, for the subtree now at `root`.
+    fn lay(&self, root: usize, births: &mut HashMap<u64, f32>, text_births: &mut HashMap<u64, f32>, seen_recs: &mut HashSet<String>, laid: &mut Vec<crate::hit::Laid>) {
+        for &(id, b) in &self.births { births.insert(id, b); }
+        for &(h, b) in &self.text_births { text_births.insert(h, b); }
+        for r in &self.recs { seen_recs.insert(r.clone()); }
+        for l in &self.laid { laid.push((l.0 + root, l.1.clone(), l.2.clone())); }
+    }
+}
 
 const NEVER: f32 = f32::INFINITY;
 
@@ -717,6 +767,10 @@ pub struct Ui<S, M> {
     plate_slots: [Option<(String, f32, f32)>; crate::scene::PLATES],
     /// What each cached plate last drew (`El::cached`): a hash of its instances.
     plate_sig: [Option<u64>; crate::scene::PLATES],
+    /// What each cached plate's subtree last drew from and besides its instances (`PlateKeep`).
+    plate_keep: [Option<PlateKeep>; crate::scene::PLATES],
+    /// Faces added so far (`Ui::add_face`): text in a face that came draws otherwise from the same nodes.
+    faces_added: u32,
     plate_clear: Vec<u8>,
     plate_over: Vec<String>,
     pclock: f32,
@@ -1139,7 +1193,7 @@ impl<S, M: Clone> Ui<S, M> {
             gaze_of: None, gaze_seen: HashMap::new(), annots: vec![], focused: None, focus_moved: false, readout: gaze::Readout::default(), hovered: None, pointer_of: None, scripted: false, ticked: None, warm: None, warmed: None, owed: false, soft_shown: false, ambient: 60.0, input_t: -1e9, frame_t: -1e9, tick_gap: 1.0 / 60.0, unused_key: None, shortcut: None, scrolled_of: None, released: None, input: None,
             dirty: true, look_of: None, locale_of: None, timing: Timing::default(), wake_of: None, latest_birth: f32::NEG_INFINITY, gaze_until: f32::NEG_INFINITY,
             marks_moving: false, caret: None, caret_on: true, static_loose: false, mclock: 0.0, moving: false, gclock: 0.0, ground_moving: false,
-            perf: crate::perf::Perf { quality: 1.0, ..Default::default() }, span: 0, painting: false, overlay: 0, overlay_at: 0.0, overlay_box: None, overlay_w: (0, (0.0, 0.0), 0.0), fade_s: REDUCED_FADE, came: vec![], arriving: HashMap::new(), sweeping: false, swept_nodes: vec![], remeasure: false, plate_slots: Default::default(), plate_sig: Default::default(), plate_clear: vec![], plate_over: vec![], pclock: 0.0, plate_frame: f32::NEG_INFINITY, assets: HashMap::new(), assets_asked: Default::default(), shape_seen: 0.0, hud_idle: false, rebuilt: 0,
+            perf: crate::perf::Perf { quality: 1.0, ..Default::default() }, span: 0, painting: false, overlay: 0, overlay_at: 0.0, overlay_box: None, overlay_w: (0, (0.0, 0.0), 0.0), fade_s: REDUCED_FADE, came: vec![], arriving: HashMap::new(), sweeping: false, swept_nodes: vec![], remeasure: false, plate_slots: Default::default(), plate_sig: Default::default(), plate_keep: Default::default(), faces_added: 0, plate_clear: vec![], plate_over: vec![], pclock: 0.0, plate_frame: f32::NEG_INFINITY, assets: HashMap::new(), assets_asked: Default::default(), shape_seen: 0.0, hud_idle: false, rebuilt: 0,
             text_capture: None, sel: None, sel_drag: false, clicks: (f32::NEG_INFINITY, 0.0, 0.0, 0), a11y_sent: HashMap::new(), a11y_focus: None,
             tree: TaffyTree::new(), tids: HashMap::new(), mkeys: HashMap::new(), moved: HashMap::new(), virt_views: HashMap::new(), virt_made: HashMap::new(), stack_w: HashMap::new(),
             scrolling: Scrolling::default(), touch: None, touches: HashSet::new(), touching: false, fling: None, over: HashMap::new(), motion: HashMap::new(), scroll_paint: false, event_t: None, ev: 0.0,
@@ -1248,6 +1302,7 @@ impl<S, M: Clone> Ui<S, M> {
     pub fn add_face(&mut self, name: &str, bytes: Vec<u8>) -> Result<u8, crate::error::FontError> {
         let before = self.text.face_named(name).and_then(|i| self.text.stand_in(i));
         let id = self.text.add(name, bytes)?;
+        self.faces_added += 1;
         if let Some(f) = self.faces_to { let fs = self.faces(); f(&mut self.state, fs); }
         match before {
             Some(d) => { self.came.push((id, d)); self.dirty = true; }
@@ -1664,6 +1719,47 @@ impl<S, M: Clone> Ui<S, M> {
         if off.decode && !self.decodes.is_empty() { cut = true; }
         if off.fronts && self.field.fronts.iter().any(|f| f[3] > 0.0) { for f in &mut self.field.fronts { f[3] = 0.0; } cut = true; }
         if cut { self.dirty = true; self.paint(); }
+    }
+    /// What the cached subtree of `root` draws from, as one number, or `None` when something it reads
+    /// cannot be told the same by its nodes (a morph, a flow, faces changing; in it: a drawing, a picture,
+    /// a 3D view, a stage, posed or selected text, a caret, a see-through group, something hidden, turned,
+    /// fitted to its own size, that loosens by itself or is pressed, focused or recomposing). `ctx`: what
+    /// its ancestors give it; `pull`: each node's pull past a scroll end; `ro`: the selected ranges.
+    fn keep_sig(&self, root: usize, ctx: impl std::hash::Hash, pull: &[f32], ro: &HashMap<usize, (usize, usize)>) -> Option<u64> {
+        use std::hash::{Hash, Hasher};
+        if self.run.is_some() || !self.flows.is_empty() || self.sweeping || !self.swept_nodes.is_empty() || self.remeasure || !self.came.is_empty() || !self.arriving.is_empty() { return None; }
+        let mut h = std::hash::DefaultHasher::new();
+        ctx.hash(&mut h);
+        self.faces_added.hash(&mut h);
+        self.no_recompose.hash(&mut h);
+        for (k, j) in (root..self.nodes.len()).take_while(|&j| within(&self.nodes, j, root)).enumerate() {
+            let n = &self.nodes[j];
+            let plain = match &n.content {
+                Content::None => true,
+                Content::Text { pose, around, select, mark, caret, .. } => pose.is_none() && around.is_none() && select.is_none() && mark.is_none() && caret.is_none(),
+                _ => false,
+            };
+            if !plain || n.hidden || n.opacity != 1.0 || n.calm || n.trace.is_some() || n.shed.is_some() || n.flow_field.is_some() || n.stirr.is_some() || n.wipe.is_some()
+                || n.skeleton || n.form.is_some() || n.xf.is_some() || n.stage.is_some() || n.own_size.is_some() || n.view_scale.is_some() || n.modal.is_some()
+                || n.show_clear.is_some() || n.flow.is_some() || n.focus_shown || n.scroll || n.ripple.is_some() || (j != root && n.plate.is_some())
+                || ro.contains_key(&j) || self.recomps.contains_key(&n.key) || self.decodes.contains_key(&n.key)
+                || self.focus.as_deref() == Some(n.key.as_str()) || self.pressed.as_deref() == Some(n.key.as_str()) || self.modal_at == Some(j) { return None; }
+            let nums = [n.rect.x, n.rect.y, n.rect.w, n.rect.h, n.clip.x, n.clip.y, n.clip.w, n.clip.h, n.clip_r, n.opacity_all, n.mat, n.loose, n.loosen, n.radius, pull.get(k).copied().unwrap_or(0.0)];
+            sig_node(&mut h, &n.key, nums, (n.disabled, n.legible, n.recompose, n.recompose_always, n.reveal_by, n.clamp, &n.shown), n.fill, n.border, n.respond, &n.content);
+        }
+        Some(h.finish())
+    }
+    /// A cached subtree has been painted (`keep_open`): what it drew besides its instances is kept for a
+    /// paint that passes it by, when what it drew from can be told the same and it added to no list that
+    /// is not kept (`lens`). `more`: the field's calm boxes and the drawings' colours now.
+    fn keep_close(&mut self, o: KeepOpen, births: &HashMap<u64, f32>, text_births: &HashMap<u64, f32>, jobs: &[RecJob], more: [usize; 2]) {
+        let k = o.slot as usize;
+        let now = [self.unseen.len(), self.scene.groups.len(), self.scene.meshes.len(), o.lens[3], o.lens[4], more[0], more[1]];
+        let (Some(sig), true) = (o.sig, now == o.lens) else { self.plate_keep[k] = None; return };
+        let keys: Vec<&str> = (o.root..self.nodes.len()).take_while(|&j| within(&self.nodes, j, o.root)).map(|j| self.nodes[j].key.as_str()).collect();
+        let jobs: Vec<(usize, &str)> = jobs.iter().map(|j| (j.node, self.nodes[j.node].key.as_str())).collect();
+        let keep = PlateKeep::take(sig, self.timing, &self.scene.instances[o.start..], &self.owners[o.start..], births, text_births, &jobs, &self.glyphs.laid, o.root, &keys);
+        self.plate_keep[k] = Some(keep);
     }
     /// The plate in `slot` drew the instances from `start` to now (the subtree of `root`).
     fn plate_span(&mut self, root: usize, slot: u8, start: u32) {
@@ -3773,8 +3869,13 @@ impl<S, M: Clone> Ui<S, M> {
         let mut stage_skip: Option<usize> = None;
         let mut stage_open: Option<(usize, usize, f64)> = None;
         let mut stage_seen: Vec<String> = vec![];
+        // A cached subtree passed by (drawn from what its plate holds, nothing it draws from changed), and
+        // the one being painted.
+        let mut keep_skip: Option<usize> = None;
+        let mut keep_open: Option<KeepOpen> = None;
         for i in 0..self.nodes.len() {
             if let Some(root) = stage_skip { if within(&self.nodes, i, root) { continue; } stage_skip = None; }
+            if let Some(root) = keep_skip { if within(&self.nodes, i, root) { continue; } keep_skip = None; }
             if let Some((root, start, t0)) = stage_open && !within(&self.nodes, i, root) {
                 self.stage_close(root, start, t0, &text_births, &seen_recs);
                 stage_open = None;
@@ -3816,10 +3917,36 @@ impl<S, M: Clone> Ui<S, M> {
             }
             // A plate's subtree (`El::plate`): its instances, kept by the renderer.
             if let Some((root, start, slot)) = plate && !within(&self.nodes, i, root) {
+                if let Some(o) = keep_open.take() { self.keep_close(o, &births, &text_births, &jobs, [calms, own_cols.len()]); }
                 self.plate_span(root, slot, start);
                 plate = None;
             }
-            if plate.is_none() && let Some(&slot) = plates.get(&i) { plate = Some((i, self.scene.instances.len() as u32, slot)); }
+            if plate.is_none() && let Some(&slot) = plates.get(&i) {
+                let start = self.scene.instances.len();
+                if self.nodes[i].cached && kept.is_none() {
+                    let n = &self.nodes[i];
+                    let p = n.parent;
+                    let pull: Vec<f32> = (i..self.nodes.len()).take_while(|&j| within(&self.nodes, j, i)).map(|j| pulled(&self.nodes, j)).collect();
+                    let unit_r = p.and_then(|p| unit[p]).map(|u| { let r = self.nodes[u].rect; [r.x, r.y, r.w, r.h].map(f32::to_bits) });
+                    let ctx = (s.to_bits(), p.is_some_and(|p| held[p]), p.is_some_and(|p| veiled[p]), p.is_some_and(|p| stirred[p]), unit_r, self.modal_at.is_some_and(|m| i < m), beneath.to_bits());
+                    let sig = self.keep_sig(i, ctx, &pull, &ro);
+                    let k = slot as usize;
+                    if let Some(sig) = sig && self.plate_sig[k].is_some() && !self.plate_clear.contains(&slot) && let Some(keep) = &self.plate_keep[k] && keep.sig == sig && keep.timing == self.timing {
+                        // Laid on from the plate: what it drew besides is as it was.
+                        keep.lay(i, &mut births, &mut text_births, &mut seen_recs, &mut self.glyphs.laid);
+                        latest = latest.max(keep.latest);
+                        any_loose |= keep.loose;
+                        let fade = self.plate_slots[k].as_ref().map_or(0.0, |p| p.2);
+                        self.scene.plates.push(crate::scene::PlateSpan { slot, start: start as u32, end: start as u32, fade_s: fade });
+                        self.perf.counters.kept += 1;
+                        keep_skip = Some(i);
+                        continue;
+                    }
+                    let lens = [self.unseen.len(), self.scene.groups.len(), self.scene.meshes.len(), self.glyphs.laid.len(), jobs.len(), calms, own_cols.len()];
+                    keep_open = Some(KeepOpen { root: i, slot, start, sig, lens });
+                }
+                plate = Some((i, start as u32, slot));
+            }
             let n = &self.nodes[i];
             if Some(i) == self.modal_at { self.scene.begin_layer(); }
             // A filled element that leaves a trail (a floating window, a sheet's panel) is drawn over the
@@ -4266,7 +4393,10 @@ impl<S, M: Clone> Ui<S, M> {
             }
         }
         if let Some((_, start, op)) = group && (self.scene.instances.len() as u32) > start { self.scene.groups.push(crate::scene::Group { start, end: self.scene.instances.len() as u32, opacity: op }); }
-        if let Some((root, start, slot)) = plate { self.plate_span(root, slot, start); }
+        if let Some((root, start, slot)) = plate {
+            if let Some(o) = keep_open.take() { self.keep_close(o, &births, &text_births, &jobs, [calms, own_cols.len()]); }
+            self.plate_span(root, slot, start);
+        }
         if let Some((root, start, t0)) = stage_open { self.stage_close(root, start, t0, &text_births, &seen_recs); }
         // A drawn stage keeps its see-through groups with its image; a stage no longer in the view is gone.
         for (_, st) in &mut self.stages {

@@ -3244,6 +3244,15 @@ instances every frame it is drawn. `El::cached()` draws such a subtree once and 
   the plate lays on what it kept, so the frame costs no instances for it. Different, the plate is emptied and
   they are drawn onto it, once. A restage that copies the subtree from the last paint with nothing in it
   leaves it as it was.
+- A paint in which nothing the subtree draws from changed passes it by: it is neither drawn nor hashed
+  (`Counters::kept`), the plate's span is empty, and what it drew besides its instances (its identities' and
+  texts' births, its texts' recomposition records and laid glyphs) is what it last drew. What it draws from is
+  its nodes (key, box, clip, text and its type, fill, border, looseness, opacity, material) and what its
+  ancestors give it (scale, a press held, the modal layer, the look's timing). Something it reads that its
+  nodes cannot tell the same is never passed by and is compared as above: a morph or flow on the page, faces
+  changing, and in it a drawing, a picture, a 3D view, a stage, posed, selected or composing text, a caret, a
+  see-through group, something hidden, turned, at its own size, under a view scale, that stirs, sheds,
+  traces or wipes, or that is pressed, focused, recomposing or decoding (`tests/cached.rs`).
 - So it is drawn again whenever what it draws changes: it scrolls or moves, it loosens (a front passing, its
   birth), its words change, the window changes size (which empties every plate). A stage, a 3D view or a
   see-through group inside it is drawn with the rest, each time the rest is.

@@ -38,6 +38,9 @@ pub struct Counters {
     /// Instances whose ink the field map read for `creep` (one that had not changed since the last scene
     /// is not read again).
     pub inked: u64,
+    /// Cached subtrees (`El::cached`) passed by in a scene: nothing they draw from changed, so they were
+    /// neither drawn nor compared, and their plates were laid on as they were.
+    pub kept: u64,
 }
 
 /// The readout's numbers. The runtime adds update / layout and scene time as it spends it; the

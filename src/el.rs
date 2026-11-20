@@ -98,7 +98,7 @@ impl Key {
 
 /// Which face a text element is set in: a role that the nearest `fonts` ancestor (normally the
 /// theme, at the root) resolves, or a face index directly.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 /// `Whisper` is small tracked type in the bundled serif (`text::SERIF`, the same in every theme;
 /// `El::whisper` sets it up).
 pub enum Font {
