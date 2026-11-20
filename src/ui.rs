@@ -636,6 +636,11 @@ pub struct Ui<S, M> {
     stage_add_ms: f32,
     /// Where the page's faces for glyph outlines go when one comes (`Ui::on_faces`).
     faces_to: Option<fn(&mut S, crate::pair::Faces)>,
+    /// Where a cached element's having a kept image or not goes when it changes (`Ui::on_kept`), what
+    /// each was last told (absent: kept), and the changes the last paint found, not yet told.
+    kept_to: Option<fn(&mut S, &str, bool)>,
+    kept_told: HashMap<String, bool>,
+    kept_flips: Vec<(String, bool)>,
     /// What the page's root resolves the roles to (its `El::fonts`), shared with the faces handed out.
     root_roles: std::rc::Rc<std::cell::Cell<[u8; 3]>>,
     /// The stages' device scale and the frames it goes by (DESIGN.md §1.35), the scale pinned by the look's
@@ -1200,7 +1205,7 @@ impl<S, M: Clone> Ui<S, M> {
             state, view, update, text: Text::new(faces), size: (0.0, 0.0), scale, clock: 0.0, wall: 0.0, bclock: crate::beat::Clock::default(), sent: vec![], sets: vec![], nodes: vec![], scene: Scene::default(),
             owners: vec![], page_len: 0, field: Field::default(), scroll: HashMap::new(), births: HashMap::new(), ramp: None, text_births: HashMap::new(),
             hover: None, focus: None, after_focus: None, fit_short: vec![], grain_at: None, bloom_at: None, clears: HashMap::new(), clearing: false, clear_many: vec![], flow_own: vec![], flow_join: None, fit_k: HashMap::new(), fit_last: None, pressed: None, capture: None, modal_at: None, modal_key: None, return_focus: None, split: None, splits: 0,
-            keyboard: false, marks: Marks::default(), sized: None, commands: None, unseen: vec![], stages: vec![], stage_input: (false, false), stage_add_ms: 0.0, faces_to: None, root_roles: Default::default(), scaler: Default::default(), stage_pin: None, scaler_fed: f64::NEG_INFINITY, governed: false, stepped: None, stage_of: None, stale_stages: vec![], held_steps: vec![], restaging: None, base: vec![], tags: vec![], roles: vec![],
+            keyboard: false, marks: Marks::default(), sized: None, commands: None, unseen: vec![], stages: vec![], stage_input: (false, false), stage_add_ms: 0.0, faces_to: None, kept_to: None, kept_told: HashMap::new(), kept_flips: vec![], root_roles: Default::default(), scaler: Default::default(), stage_pin: None, scaler_fed: f64::NEG_INFINITY, governed: false, stepped: None, stage_of: None, stale_stages: vec![], held_steps: vec![], restaging: None, base: vec![], tags: vec![], roles: vec![],
             run: None, painted_phase: 0, flows: HashMap::new(), ghosts: vec![], grows: vec![], ground_seen: None, ground_hold: None, body_len: 0, animating: false, lifted: HashMap::new(),
             gaze_of: None, gaze_seen: HashMap::new(), annots: vec![], focused: None, focus_moved: false, readout: gaze::Readout::default(), hovered: None, pointer_of: None, scripted: false, ticked: None, warm: None, warmed: None, owed: false, soft_shown: false, ambient: 60.0, input_t: -1e9, frame_t: -1e9, tick_gap: 1.0 / 60.0, unused_key: None, shortcut: None, scrolled_of: None, released: None, input: None,
             dirty: true, look_of: None, locale_of: None, timing: Timing::default(), wake_of: None, latest_birth: f32::NEG_INFINITY, gaze_until: f32::NEG_INFINITY,
@@ -1299,6 +1304,17 @@ impl<S, M: Clone> Ui<S, M> {
     /// `f` gets the page's faces for glyph outlines (`Ui::faces`) now, and again each time a face comes
     /// (`Ui::add_face`): for a state that keeps them.
     pub fn on_faces(mut self, f: fn(&mut S, crate::pair::Faces)) -> Self { self.faces_to = Some(f); let fs = self.faces(); f(&mut self.state, fs); self }
+    /// `f` is told when a cached element (`El::cached`) stops having a kept image, being over the plates'
+    /// limit (four, twice the window's area; DESIGN.md §1.36) and drawn as a plain one, and again when
+    /// it has one again (or goes, while it had none): its key and whether it is kept. A paint that finds
+    /// the change asks for the next frame, which tells it and views the page again, so what the view
+    /// does about it (a `cached_view` showing nothing) changes on that frame, on a cut.
+    pub fn on_kept(mut self, f: fn(&mut S, &str, bool)) -> Self { self.kept_to = Some(f); self }
+    /// Whether the cached element `key` has a kept image, as the last paint found: `None` when there
+    /// is no cached element of that key.
+    pub fn kept_image(&self, key: &str) -> Option<bool> {
+        self.nodes.iter().any(|n| n.cached && n.key == key).then(|| self.kept_told.get(key).copied().unwrap_or(true))
+    }
     /// its number.
     pub fn declare_face(&mut self, name: &str, decl: crate::text::FaceDecl) -> u8 {
         let known = self.text.face_named(name).is_some();
@@ -1575,7 +1591,7 @@ impl<S, M: Clone> Ui<S, M> {
         let b = self.beat_of(now);
         self.dirty || self.clearing || self.stale_layout || self.stale_paint || self.owed || self.stage_due() || self.prep.pending() || self.held(now) || self.moving_at(b) || self.wake_at(b).is_some_and(|w| w <= b) || (self.sweeping && !self.arriving.is_empty())
             || (self.plates_ageing() && self.clock - self.plate_frame >= PLATE_FRAME - 1e-4)
-            || self.soft_wake().is_some_and(|w| w <= now)
+            || self.soft_wake().is_some_and(|w| w <= now) || !self.kept_flips.is_empty()
     }
     /// Whether a scroll area's offset changed within `SOFT_STOP`: the renderer may shade the scroll
     /// areas softened (DESIGN.md §1.12).
@@ -1594,7 +1610,7 @@ impl<S, M: Clone> Ui<S, M> {
         let b = self.beat_of(now);
         let wanted = self.dirty || self.clearing || self.owed || self.prep.pending() || self.held(now) || self.moving_at(b) || (self.sweeping && !self.arriving.is_empty());
         if wanted && let Some(t) = self.paced_until(now) { return Some(t); }
-        if self.dirty || self.clearing || self.owed || self.stage_due() || self.prep.pending() || self.held(now) || self.moving_at(b) || (self.sweeping && !self.arriving.is_empty()) { return Some(now); }
+        if self.dirty || self.clearing || self.owed || self.stage_due() || self.prep.pending() || self.held(now) || self.moving_at(b) || (self.sweeping && !self.arriving.is_empty()) || !self.kept_flips.is_empty() { return Some(now); }
         let soft = self.soft_wake().map(|w| w.max(now));
         if self.plates_ageing() { return Some((self.plate_frame + PLATE_FRAME).max(now).min(soft.unwrap_or(f32::MAX))); }
         // A wake on the beat clock is that much later on the runtime's.
@@ -1715,6 +1731,21 @@ impl<S, M: Clone> Ui<S, M> {
             }
         }
         out
+    }
+    /// Whether each cached element has a kept image in this paint's plan, against what it was last told
+    /// (`Ui::on_kept`; `Ui::kept_image`): the changes wait for the next frame's `flush`.
+    fn note_kept(&mut self, plates: &HashMap<usize, u8>) {
+        let now: Vec<(String, bool)> = self.nodes.iter().enumerate().filter(|(_, n)| n.cached).map(|(i, n)| (n.key.clone(), plates.contains_key(&i))).collect();
+        // One that went while it had none is told it is not over the limit.
+        let gone: Vec<String> = self.kept_told.keys().filter(|k| !now.iter().any(|(n, _)| n == *k)).cloned().collect();
+        for k in gone { if self.kept_told.remove(&k) == Some(false) { self.kept_flips.push((k, true)); } }
+        for (k, kept) in now {
+            if self.kept_told.get(&k).copied().unwrap_or(true) != kept {
+                if kept { self.kept_told.remove(&k); } else { self.kept_told.insert(k.clone(), false); }
+                self.kept_flips.push((k, kept));
+            }
+        }
+        if self.kept_to.is_none() { self.kept_flips.clear(); }
     }
     /// Node `i` is on a plate: it or an element above it has `El::plate`.
     fn on_plate(&self, i: usize) -> bool {
@@ -3688,6 +3719,10 @@ impl<S, M: Clone> Ui<S, M> {
     /// Send what the runtime itself had to say after a layout or paint (visibility, outlines), then lay
     /// out once for all of it.
     fn flush(&mut self) {
+        if !self.flushing && let Some(f) = self.kept_to && !self.kept_flips.is_empty() {
+            for (k, kept) in std::mem::take(&mut self.kept_flips) { f(&mut self.state, &k, kept); }
+            self.relayout();
+        }
         if self.flushing || self.queued.is_empty() { return; }
         self.flushing = true;
         for _ in 0..4 {
@@ -3898,6 +3933,7 @@ impl<S, M: Clone> Ui<S, M> {
         });
         let mut group: Option<(usize, u32, f32)> = None;
         let plates = self.plate_plan();
+        self.note_kept(&plates);
         let mut plate: Option<(usize, u32, u8)> = None;
         // The stages (`El::stage`): one that holds is its last image, and its subtree is not painted; the
         // one being drawn (its root, its first instance, when it began, ms).

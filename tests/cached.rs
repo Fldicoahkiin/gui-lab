@@ -218,3 +218,68 @@ fn a_cached_page_nothing_changed_in_is_passed_by_not_drawn_and_compared() {
     for _ in 0..2 { b = frame(&mut of, &mut fresh); }
     assert!(diff(&a, &b) < 1e-3, "the glass over a page passed by: {}", diff(&a, &b));
 }
+
+/// Pages the size of the window, each cached, `skip` of them left out from the first; a glass over the
+/// last that shows its kept image, or a line saying it has none (as the state was told, `Ui::on_kept`).
+mod over {
+    use amenui::el::{El, Paint, cached_view, col, text};
+    #[derive(Clone, Default)]
+    pub struct S { pub pages: usize, pub skip: usize, pub small: bool, pub told: Vec<(String, bool)>, pub missing: bool }
+    pub fn view(s: &S) -> El<()> {
+        let mut root = col().key("root").fill_width().fill_height();
+        for k in s.skip..s.pages {
+            let f = if s.small { 0.2 } else { 1.0 };
+            root = root.child(col().key(format!("p{k}")).width(super::W as f32 * f).height(super::H as f32 * f).absolute(Some(0.0), Some(0.0), None, None)
+                .child(text(format!("page {k}"), 9.0, Paint::TEXT)).cached());
+        }
+        let last = format!("p{}", s.pages - 1);
+        let glass = col().key("glass").width(60.0).height(60.0).absolute(Some(10.0), Some(10.0), None, None);
+        root.child(if s.missing { glass.child(text("×1", 11.0, Paint::INK).key("x1")) } else { glass.fill(Paint::GROUND).child(cached_view(last, [0.0, 0.0, 30.0, 30.0], Paint::INK).width(60.0).height(60.0)) })
+    }
+    pub fn kept(s: &mut S, key: &str, kept: bool) {
+        s.told.push((key.to_owned(), kept));
+        if key == format!("p{}", s.pages - 1) { s.missing = !kept; }
+    }
+}
+
+#[test]
+fn a_cached_page_over_the_plates_limit_is_told_it_has_no_kept_image_and_again_when_it_has() {
+    use over::*;
+    let mut ui = Ui::new(S { pages: 2, ..S::default() }, view, |_, _| {}, fonts(), W, H, 1.0).on_look(|_| Look { material: Material::Plain, ..Look::default() }).on_kept(kept);
+    let mut t = 2.0;
+    ui.tick(t);
+    assert_eq!((ui.kept_image("p0"), ui.kept_image("p1"), ui.kept_image("nothing")), (Some(true), Some(true), None));
+    // A third page the size of the window: three times its area, over twice it. The last is drawn plain.
+    ui.state.pages = 3;
+    ui.relayout();
+    assert_eq!(ui.kept_image("p2"), Some(false), "over the limit");
+    // Told after the paint that found it, there or on the frame it asks for.
+    assert!(!ui.state.told.is_empty() || (ui.needs_frame(t) && ui.next_wake(t) == Some(t)), "the paint that found it asks for the next frame");
+    t += 1.0 / 60.0;
+    ui.tick(t);
+    assert_eq!(ui.state.told, [("p2".to_owned(), false)]);
+    assert!(ui.node("x1").is_some(), "the view ran again on that frame: the glass says ×1");
+    for _ in 0..180 { t += 1.0 / 60.0; ui.tick(t); ui.frame_drawn(); }
+    assert!(!ui.needs_frame(t) && ui.state.told.len() == 1, "and then rests, told once");
+    // The first page goes: two pages, both kept; the last is told it has its image again.
+    ui.state.skip = 1;
+    ui.relayout();
+    assert_eq!(ui.kept_image("p2"), Some(true));
+    t += 1.0 / 60.0;
+    ui.tick(t);
+    assert_eq!(ui.state.told, [("p2".to_owned(), false), ("p2".to_owned(), true)]);
+    assert!(ui.node("x1").is_none(), "the glass shows the kept image again");
+    // Five small pages: the fifth is over by count. Going while it had none, it is told it is not over
+    // the limit.
+    ui.state = S { pages: 6, skip: 1, small: true, told: vec![], missing: false };
+    ui.relayout();
+    assert_eq!((ui.kept_image("p4"), ui.kept_image("p5")), (Some(true), Some(false)), "four plates at most");
+    t += 1.0 / 60.0;
+    ui.tick(t);
+    assert_eq!(ui.state.told, [("p5".to_owned(), false)]);
+    ui.state.pages = 5;
+    ui.relayout();
+    t += 1.0 / 60.0;
+    ui.tick(t);
+    assert_eq!(ui.state.told, [("p5".to_owned(), false), ("p5".to_owned(), true)]);
+}

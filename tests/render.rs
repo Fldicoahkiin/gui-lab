@@ -104,7 +104,7 @@ fn near_keeps_a_label_on_a_solid_button_whole() {
 }
 
 #[test]
-fn near_at_rest_draws_its_bands_inside_ink_in_the_hairline_not_the_accent() {
+fn near_at_rest_is_the_ink_and_its_greys_only() {
     use amenui::el::{El, Paint, col, space, text};
     use amenui::style::{Look, Material, THEMES};
     let (w, h) = (360u32, 240u32);
@@ -120,15 +120,25 @@ fn near_at_rest_draws_its_bands_inside_ink_in_the_hairline_not_the_accent() {
         let look = Look { material: Material::Near, theme: *theme, ..Look::default() };
         o.r.partial = false;
         let f = o.render(&mut ui, &look);
+        let at = |x: u32, y: u32| { let i = ((y * w + x) * 4) as usize; &f[i..i + 3] };
         let near = |c: [f32; 3], p: &[u8]| (0..3).map(|k| (p[k] as f32 - c[k] * 255.0).abs()).sum::<f32>() < 30.0;
         let b = ui.node("block").expect("block").rect;
         let inside = (b.y as u32 + 4..b.bottom() as u32 - 4).flat_map(|y| (b.x as u32 + 4..b.right() as u32 - 4).map(move |x| (x, y)));
-        let banded = inside.filter(|&(x, y)| { let i = ((y * w + x) * 4) as usize; !near(theme.ink, &f[i..i + 3]) }).count();
-        // How far a pixel leans from its own grey toward the accent's hue (the accent bands lean about 40).
-        let toward = |p: &[u8]| { let m = (p[0] as f32 + p[1] as f32 + p[2] as f32) / 3.0; let a = theme.accent.map(|v| v * 255.0); let am = (a[0] + a[1] + a[2]) / 3.0; (0..3).map(|k| (p[k] as f32 - m) * (a[k] - am)).sum::<f32>() / (0..3).map(|k| (a[k] - am).powi(2)).sum::<f32>().sqrt() };
-        let warm = f.chunks_exact(4).map(toward).fold(0.0f32, f32::max);
-        assert!(warm < 12.0, "{}: no pixel at rest toward the accent: {warm}", theme.name);
+        let banded = inside.filter(|&(x, y)| !near(theme.ink, at(x, y))).count();
         assert!(banded > 500, "{}: the bands inside the ink are drawn: {banded} px", theme.name);
+        // Outside, left of the block: bands toward the ink.
+        let y = (b.y + b.h * 0.5) as u32;
+        let outside = (b.x as u32 - 12..b.x as u32 - 1).filter(|&x| !near(theme.ground, at(x, y))).count();
+        assert!(outside >= 2, "{}: bands outside the ink: {outside} px", theme.name);
+        // How far a pixel leans from its own grey toward a hue (the old bands leaned about 40).
+        for (name, hue) in [("accent", theme.accent), ("second", theme.second), ("warn", theme.third)] {
+            let hm = (hue[0] + hue[1] + hue[2]) * 255.0 / 3.0;
+            let dir = hue.map(|v| v * 255.0 - hm);
+            let len = dir.iter().map(|d| d * d).sum::<f32>().sqrt().max(1e-3);
+            let toward = |p: &[u8]| { let m = (p[0] as f32 + p[1] as f32 + p[2] as f32) / 3.0; (0..3).map(|k| (p[k] as f32 - m) * dir[k]).sum::<f32>() / len };
+            let most = f.chunks_exact(4).map(toward).fold(0.0f32, f32::max);
+            assert!(most < 12.0, "{}: no pixel at rest toward the {name}: {most}", theme.name);
+        }
     }
 }
 

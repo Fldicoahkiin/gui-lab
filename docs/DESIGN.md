@@ -553,7 +553,7 @@ sampled); value noise.
 | `smudgr` | Paper grain (two layers of noise, amplitude `grain × 2.75%`); accent ink is sampled separately at `(misreg, 0.6 misreg)` and overprinted with multiply on light grounds | Ink spreads outward along the outline by `spread × k × noise`, thresholded by noise into photocopy edges; specks on the paper, dropouts in the ink | grain, misregistration, specks, bleed |
 | `carvr` | As it is | Ink and ground only: the outline moves by two layers of noise (the slow sway and chips of a knife); in a band of `band × k` on both sides of the outline, white wedge-shaped cuts of varying length tapering inward are carved inside, and broken ink lines along the outline are left outside | cuts, band, cut length, cut spacing, jitter |
 | `glitchr` | As it is | Rows of height `slice`, hashed per beat of `hold` ms: some rows shift sideways, a few blocks repeat the block to their left, the RGB channels separate by `split × k`, a few rows invert; a `burst` (a rect the runtime puts in the field while a control is hovered or pressed, `Field::burst`) loosens it there too | row height, displacement, channel separation, hold, blocks |
-| `near` | The G-buffer itself: iso-distance lines of the SDF (hairline inside ink, cool outside), the outline, faint ink | A colour overlay where loose | spacing, fill |
+| `near` | The G-buffer itself, in the ink and its greys: iso-distance lines of the SDF (hairline inside ink, the ink at 0.5, 0.3, 0.15 outside), the outline, faint ink | The dim grey over it where loose | spacing, fill |
 | `scribblr` | As it is (the shading stage is exact) | The fill fades and the ink becomes one thin line of constant width: along the outline → bridged into one stroke → wandering, knotting, throwing out tails; the thread is shape instances drawn in the G-buffer stage (§1.30) | line width, sampling, wander, knot, knot radius, tail, follow the map, angularity |
 
 **Text to read keeps the resting look.** `smudgr`, `carvr` and `charr` take their effect from `kt_loose`: the
@@ -607,11 +607,11 @@ G-buffer stage recomputes coverage from the signed distance in the glyph atlas (
 `px`), so headings can be made heavier without a bold font file; particle sampling uses the same
 computation. Lino, Bauhaus, Zine and Glitch headings use +1.5 to +3.
 
-`near` (the eighth, id 7) draws the G-buffer: the signed distance as iso-lines every `spacing` px, in the
-hairline grey inside ink (the accent is for what is held, not a material's rest) and cool (the second accent)
-outside, the outline in ink, the ink itself faintly by
-`fill`, and a layer of the third accent where loose. It is a view for seeing the mechanism and has a look of
-its own at rest. Parameters: spacing 3 px, fill 0.25. The exploded scene uses it.
+`near` (the eighth, id 7) draws the G-buffer in the ink and its greys only (the accents are for what is held,
+not a material's rest): the signed distance as iso-lines every `spacing` px, in the hairline grey inside ink
+and, outside it, the three nearest in the ink at 0.5, 0.3 and 0.15 (none further out); the outline in ink, the
+ink itself faintly by `fill`, and the dim grey at 0.35 where loose. It is a view for seeing the mechanism and
+has a look of its own at rest. Parameters: spacing 3 px, fill 0.25. The exploded scene uses it.
 
 ### 1.6.3 Pixel type
 
@@ -3303,6 +3303,13 @@ instances every frame it is drawn. `El::cached()` draws such a subtree once and 
   coordinates are packed below −1 with the slot; its batch, `scene::CACHED_BATCH` + slot, binds the plate's
   ink where a glyph's atlas would be). It draws nothing before the cached element has drawn once in this
   window, or inside the cached element itself.
+- A cached element over the plates' limit (a fifth, or past twice the window's area) is drawn as a plain one
+  and has no kept image, so a `cached_view` of it draws nothing. The state can know: `Ui::on_kept(f)` tells
+  it a cached element's key and `false` when a paint finds it so, and `true` when it has a kept image again or
+  goes while it had none (`Ui::kept_image(key)` reads it). The paint that finds the change asks for the next
+  frame; the state is told there (or straight after a paint run by a message or a relayout) and the page is
+  viewed again, so what the view does instead (the Loupe's glass shows only its rim, ×1) is a cut on that
+  frame, both ways.
 - `El::clip_round(radius)` clips the subtree to the box inside the border with round corners (half the side:
   a circle). The radius rides in each instance's `look[3]` above its in-place flag (twice the radius in
   quarter device px); the ink stage discards past half a pixel outside and antialiases the edge. A square
@@ -3313,7 +3320,8 @@ Acceptance: `tests/cached.rs` (a cached page drawn the first frame as without ca
 instances of its own while something else changes and the same as uncached; a frame with nothing new
 identical; drawn again when its words change, with no old ink; after a new window size as uncached; a
 cached view at ×4 inside a round clip of radius 40: every source pixel a 4 × 4 square of one colour, with
-ink, and the box's corners outside the circle as the page without it).
+ink, and the box's corners outside the circle as the page without it; a page pushed over the limit, by area
+and by count, told it has no kept image and viewed again, then told it has one when back under or gone).
 
 ## 2. Parameters must be exact
 

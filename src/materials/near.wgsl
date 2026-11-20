@@ -3,10 +3,10 @@
 // @param 填充 0.0 1.0 0.05 2 - 0.25
 // @param 墨带 0.0 3.0 1.0 0 - 0.0
 // @param 带宽 0.0 12.0 1.0 0 px 0.0
-// near: the intermediate images made visible. The signed nearness in bands every `pitch` px, in the
-// hairline grey inside the ink (the accent is for what is held) and cool outside, fading toward the edge
-// of its reach; the outline in the ink colour;
-// the ink itself as a faint fill; the looseness of each instance as a tint over it.
+// near: the intermediate images made visible, in the ink and its greys only (the accents are for what is
+// held). The signed nearness in bands every `pitch` px: in the hairline grey inside the ink, and outside
+// it the three nearest in the ink at 0.5, 0.3 and 0.15; the outline in the ink colour; the ink itself as
+// a faint fill; the looseness of each instance as the dim grey over it at 0.35.
 // With `墨带` (ink bands) set, 1 to 3: only that many bands outside the ink instead, in the ink at 0.5,
 // 0.3 and 0.15 (two: 0.5 and 0.25), each `带宽` wide with as much ground before it (half the band pitch
 // when 0), square round the ink's pixel corners: for pixel type on whole pixels and on the lattice.
@@ -44,10 +44,15 @@ fn m_near(p: vec2f) -> vec3f {
       if (f32(k) > 2.0 - sd * 2.0) { break; }
     }
   }
-  let tint = select(u.second.rgb, u.greys[1].rgb, sd > 0.0);
-  col = mix(col, tint, line * 0.85);
+  if (sd > 0.0) { col = mix(col, u.greys[1].rgb, line * 0.85); }
+  else {
+    // Outside: the ink, nearest band first at 0.5, 0.3, 0.15; none further out.
+    let k = i32(round(-sd / band));
+    var al = array<f32, 4>(0.0, 0.5, 0.3, 0.15);
+    col = mix(col, u.fg.rgb, line * select(0.0, al[min(k, 3)], k >= 1 && k <= 3));
+  }
   col = mix(col, u.fg.rgb, clamp(1.0 - abs(sd) / (0.8 * s), 0.0, 1.0));
-  col = mix(col, u.third.rgb, clamp(loose_t(p) + half_plane(p), 0.0, 1.0) * 0.35 * step(0.5, n.r) * (1.0 - hold_at(p)));
+  col = mix(col, u.greys[2].rgb, clamp(loose_t(p) + half_plane(p), 0.0, 1.0) * 0.35 * step(0.5, n.r) * (1.0 - hold_at(p)));
   // Text keeps its own ink whole, the bands around it: a glyph's outline alone is too thin to read
   // at text sizes, and on a filled panel (a selected row, a button) the panel's nearness, max-blended
   // over the glyph's, leaves it no outline at all. (Text in the ground's colour is written in the ink's

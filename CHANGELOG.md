@@ -15,6 +15,15 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
   Primary.
 - `near` draws its bands inside the ink in the hairline grey (was the accent): at rest a material shows no accent.
 
+## near in the ink only; knowing a cached page has no kept image
+
+- `near` at rest is the ink and its greys only: outside ink its three nearest bands are the ink at 0.5, 0.3 and
+  0.15 (was the second accent; none further out), and where loose the dim grey at 0.35 (was the third, the
+  warning colour). Inside ink the bands stay hairline.
+- `Ui::on_kept(f)` and `Ui::kept_image(key)`: a cached element over the plates' limit (four, twice the window's
+  area) has no kept image and a `cached_view` of it draws nothing; `f` is told its key and `false`, then `true`
+  when it has one again or goes, and the page is viewed again on that frame.
+
 ## A card stack's turned outlines are smooth
 
 - `Mesh3d::resolution_scale` goes up to 2 (was 1): above 1 the mesh pass is supersampled, so a silhouette and
