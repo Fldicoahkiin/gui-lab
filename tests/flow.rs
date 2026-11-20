@@ -25,7 +25,7 @@ const PIECE_GROUND: [f32; 3] = [0.92, 0.84, 0.30];
 const SPEC: FlowSpec = FlowSpec { flow_ms: 420.0, flow_loose: 0.0, out_ms: 180.0, fade_ms: 180.0 };
 
 #[derive(Default)]
-struct Site { piece: bool, cmds: Vec<Cmd>, birds: u32, stirr: bool }
+struct Site { piece: bool, cmds: Vec<Cmd>, birds: u32, stirr: bool, pointer: bool }
 fn at<M: 'static>(e: El<M>, x: f32, y: f32) -> El<M> { e.absolute(Some(x), Some(y), None, None) }
 /// The other window's own colour (green, which nothing else here is) and its ray's ends in its layer.
 const RAY: [f32; 3] = [0.1, 0.85, 0.3];
@@ -64,12 +64,26 @@ fn frame(key: &str, w: f32, h: f32) -> El<()> {
     d.line((x1, y1), (0.0, y1), 1.0, Paint::ACCENT); d.line((0.0, y1), (0.0, 0.0), 1.0, Paint::ACCENT);
     at(canvas(d).key(key).width(w).pass(true), 0.0, 0.0)
 }
+/// The pointer's box and its label, as the site's over its scan: a box drawn with a cross, and a
+/// mono label of its own size beside it, at (x, y). The same keys on both pages; on the index it is in
+/// the window's layer, on the piece's page over its frame, outside the subtree that flows.
+fn pointer(x: f32, y: f32) -> El<()> {
+    let mut d = Drawing::new(W as f32, H as f32);
+    let (x0, y0, x1, y1) = (x - 16.0, y - 16.0, x + 16.0, y + 16.0);
+    d.line((x0, y0), (x1, y0), 1.0, Paint::ACCENT); d.line((x1, y0), (x1, y1), 1.0, Paint::ACCENT);
+    d.line((x1, y1), (x0, y1), 1.0, Paint::ACCENT); d.line((x0, y1), (x0, y0), 1.0, Paint::ACCENT);
+    d.line((x - 9.0, y), (x + 9.0, y), 1.0, Paint::ACCENT); d.line((x, y - 9.0), (x, y + 9.0), 1.0, Paint::ACCENT);
+    col().key("pointer").width(W as f32).height(H as f32).pass(true)
+        .child(at(col().key("pointer/light").width(W as f32).height(H as f32).pass(true).child(at(canvas(d).key("pointer/light/box").width(W as f32).pass(true), 0.0, 0.0)), 0.0, 0.0))
+        .child(at(text("HUMAN? 0.58", 11.0, Paint::INK).font(Font::Mono).key("pointer/human").own_size(0.0, 0.0).pass(true), x + 22.0, y - 16.0))
+}
 fn view(s: &Site) -> El<()> {
     let root = col().key("root").width(W as f32).height(H as f32).clip();
     if !s.piece {
         root.child(at(text("works", 30.0, Paint::INK).key("works/title"), 32.0, 40.0))
             .child(at(col().key("w/0").width(240.0).height(300.0).clip().flow("work/a")
                 .child(at(layer("w/0/layer", (480.0, 360.0), PIC_A, (150.0, 40.0), [180.0, 120.0, 40.0, 30.0], s.birds), -120.0, 0.0))
+                .children(s.pointer.then(|| at(pointer(200.0, 150.0), -120.0, 0.0)))
                 .child(frame("w/0/frame", 240.0, 300.0)), 32.0, 120.0))
             // A thing that stirs the field, as the site's index has: what is drawn after it is a layer.
             .children(s.stirr.then(|| at(col().key("works/stirr").width(12.0).height(12.0).fill(Paint::DIM).stirr(Stirr { energy: 0.0, ..Stirr::default() }), 760.0, 20.0)))
@@ -83,6 +97,7 @@ fn view(s: &Site) -> El<()> {
                 .child(layer("page/layer", (W as f32, H as f32), PIC_A, (420.0, 100.0), [500.0, 260.0, 60.0, 45.0], s.birds).flow("work/a")), 0.0, 0.0))
             .child(at(text("Alpha", 30.0, Paint::INK).key("page/title").flow("work/a/title"), 32.0, 520.0))
             .child(at(text("back", 11.0, Paint::DIM).font(Font::Mono).key("page/back"), 720.0, 24.0))
+            .children(s.pointer.then(|| at(pointer(640.0, 440.0), 0.0, 0.0)))
     }
 }
 fn look(s: &Site) -> Look {
@@ -345,4 +360,39 @@ fn a_note_laid_out_mid_flight_outside_the_growing_picture_waits_for_it_to_land()
     u.tick(t0 + 1.0);
     u.settle();
     assert!(u.instances_of("page/layer/bird0").iter().all(|i| i.paint[2] > 0.99), "landed, the late note is there");
+}
+
+/// The pointer's box and label, keyed the same on both pages: in the window's layer on the index, and
+/// over the piece's frame on its page, outside the subtree that flows (the site's scan and pointer). An
+/// instance that rode on the growing picture on the old page is carried by it to its new place, never
+/// drawn at once where it is outside the part of the picture that shows; landed, it is there.
+#[test]
+fn a_pointer_over_the_window_goes_with_the_picture_to_its_place_over_the_page() {
+    let mut u = open();
+    u.state.pointer = true;
+    u.relayout();
+    u.settle();
+    assert!(!u.instances_of("pointer/light").is_empty() && !u.instances_of("pointer/human").is_empty());
+    let t0 = u.now();
+    go(&mut u, true);
+    for ms in [0.0f32, 17.0, 40.0, 100.0, 200.0, 300.0, 400.0] {
+        u.tick(t0 + ms / 1000.0);
+        let r = shows(&pictures(&u, PIC_A)[0]);
+        for key in ["pointer/light", "pointer/human"] {
+            for i in u.instances_of(key).iter().filter(|i| visible(i)) {
+                let s = shows(i);
+                assert!(s[0] >= r[0] - 0.5 && s[1] >= r[1] - 0.5 && s[2] <= r[2] + 0.5 && s[3] <= r[3] + 0.5, "{ms} ms: {key} is drawn outside the growing picture: {s:?} in {r:?}");
+            }
+        }
+        // Mid-flight the pointer moves (a new view while the flow is on its way): still with the picture.
+        if ms == 100.0 { u.state.cmds.clear(); u.relayout(); }
+    }
+    u.tick(t0 + 1.0);
+    u.settle();
+    for key in ["pointer/light", "pointer/human"] {
+        let is = u.instances_of(key);
+        assert!(!is.is_empty() && is.iter().all(|i| i.paint[2] > 0.99), "landed, {key} is there");
+    }
+    let b = u.instances_of("pointer/light");
+    assert!(b.iter().any(|i| (i.rect[0] - 624.0).abs() < 1.5 || (i.rect[0] + i.rect[2] * 0.5 - 640.0).abs() < 17.0), "landed, the box is where the page puts it: {:?}", b.iter().map(|i| i.rect).collect::<Vec<_>>());
 }

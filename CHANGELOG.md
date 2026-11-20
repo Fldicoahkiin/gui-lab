@@ -28,6 +28,9 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
 - What a new page lays out only after a flow began (a label shown once what it follows is in view, a drawing's
   new marks) comes in as what was new when the flow began: over a growing picture once it has landed. It was drawn
   at once where it is, outside the part of the picture that shows.
+- An element keyed the same on both pages that rode on the growing picture on the old page and is outside every flow
+  on the new one (a layer over the page's frame: a pointer's box and its label) is carried by the picture to its new
+  place. It was drawn at once there, outside the part of the picture that shows.
 
 ## Stage scale
 

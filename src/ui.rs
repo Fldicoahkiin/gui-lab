@@ -6006,9 +6006,16 @@ impl<S, M: Clone> Ui<S, M> {
                 let (node, id) = self.owners[i];
                 // (Kept on both pages, its identity is the same: it is found by its key all the same.)
                 if self.flows.contains_key(&id) || !self.nodes[node].keyed { continue; }
-                let Some(flow) = self.tags[i].as_ref().map(|t| t.flow.clone()) else { continue };
-                let Some(&g) = grow_of.get(&flow) else { continue };
-                let Some(&k) = by_key.get(self.nodes[node].key.as_str()).and_then(|ks| ks.iter().find(|&&k| old[k].slot == slot)) else { continue };
+                // In a growing subtree on the new page, it is carried by that picture; outside every
+                // flow (a layer over the page's frame), by the one it rode on the old page.
+                let new_g = match &self.tags[i] { Some(t) => match grow_of.get(&t.flow) { Some(&g) => Some(g), None => continue }, None => None };
+                let old_g = |k: usize| old[k].tag.as_ref().and_then(|t| grow_of.get(&t.flow)).copied();
+                let Some(&k) = by_key.get(self.nodes[node].key.as_str()).and_then(|ks| ks.iter().find(|&&k| match new_g {
+                    Some(g) => old[k].slot == slot && old_g(k) == Some(g),
+                    // (Outside the flows a glyph has no glyph id in its slot: by its place in the text.)
+                    None => old[k].slot.0 == slot.0 && old[k].slot.1 == slot.1,
+                })) else { continue };
+                let Some(g) = new_g.or_else(|| old_g(k)) else { continue };
                 let (o, n) = (old[k].inst, self.base[i]);
                 let own = old[k].own || self.nodes[node].own_size.is_some();
                 if own && n.paint[3] == GLYPH && ((o.rect[2] - n.rect[2]).abs() > 0.5 || (o.rect[3] - n.rect[3]).abs() > 0.5) {

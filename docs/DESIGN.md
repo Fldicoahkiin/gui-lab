@@ -1357,8 +1357,11 @@ point) is carried by the picture's transform, and what is left between that and 
 picture's cubic, as does its size (a line's width does not change); its colour goes linearly. It is drawn once every
 frame, over the picture after what rides on it, inside the part that shows, and lands on its new layout within half a
 pixel. Own-size type keyed the same at another type size on the new page cannot change size on the way: it is
-reported (`ViewProblem::FlowOwnSize`) and the two cross-fade once the picture lands. A picture with the same flow id
-on both pages whose box changed grows too. `tests/keyed.rs` (into the piece and back).
+reported (`ViewProblem::FlowOwnSize`) and the two cross-fade once the picture lands. One keyed the same that rode on
+the growing picture on the old page and is outside every flow on the new (a layer over the page's frame: the site's
+pointer box and its label) is carried by that picture in the same way (its glyphs matched by their place in the
+text), never drawn at once at its new place outside the part that shows (`tests/flow.rs`). A picture with the same
+flow id on both pages whose box changed grows too. `tests/keyed.rs` (into the piece and back).
 
 On the website: on a page change, the page title (`page-title`) and the side rail's selection background
 (`rail-selection`) flow, the selection sliding from the old item to the new one; on the page-change page,
