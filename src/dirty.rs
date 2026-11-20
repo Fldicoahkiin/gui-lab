@@ -347,7 +347,6 @@ pub fn parts_why(prev: &Inputs, cur: &Inputs, scale: f32) -> Result<Parts, &'sta
     if prev.size != cur.size { return Err("size"); }
     if prev.look != cur.look { return Err("look"); }
     if prev.field.calm != cur.field.calm { return Err("calm"); }
-    if prev.meshes.len() != cur.meshes.len() { return Err("meshes"); }
     let mats = materials(cur);
     // The dot ground drifts everywhere on the ground clock.
     if prev.gclock != cur.gclock && mats.contains(&Material::Dottr) { return Err("dottr ground clock"); }
@@ -365,15 +364,33 @@ pub fn parts_why(prev: &Inputs, cur: &Inputs, scale: f32) -> Result<Parts, &'sta
     // where passes begin); with the cuts in another order, in place.
     // The last frame's instances as the move carried them: what is matched there the move draws.
     let carried: Vec<Instance>;
+    // A 3D element's instance names its meshes by their number on the page (`extra[1]`); one that comes or
+    // goes before others moves theirs. Compared by what that number draws (its fingerprint) instead, a 3D
+    // element differs only where it came, went or changed.
+    let by_mesh = |v: &[Instance], fp: &[u64]| -> Option<Vec<Instance>> {
+        if !v.iter().any(|i| i.paint[3] == MESH) { return None; }
+        Some(v.iter().map(|i| {
+            let mut i = *i;
+            if i.paint[3] == MESH {
+                // 30 bits of the fingerprint as a finite float (never NaN, which is unequal to itself); none
+                // past the list, which only a number that matches nothing can be.
+                let f = fp.get(i.extra[1] as usize).map_or(u64::MAX, |f| f ^ f >> 30 ^ f >> 60);
+                i.extra[1] = f32::from_bits((f & 0x3fff_ffff) as u32);
+            }
+            i
+        }).collect())
+    };
+    let (ma, mb) = (by_mesh(&prev.instances, &prev.meshes), by_mesh(&cur.instances, &cur.meshes));
+    let (pa_i, cb_i) = (ma.as_deref().unwrap_or(&prev.instances), mb.as_deref().unwrap_or(&cur.instances));
     let (a, b) = match mv {
         Some((_, m)) => {
-            carried = prev.instances.iter().map(|i| m.moved(i)).collect();
+            carried = pa_i.iter().map(|i| m.moved(i)).collect();
             // What is not the content's but lies over the viewport was moved with it: drawn again where
             // it is and where it went.
             for i in prev.instances.iter().filter(|i| !m.holds(i)) { let r = meet(i.bounds(pad), m.bx()); if !is_empty(r) { st1.extend([r, m.carry(r)]); } }
-            (&carried, &cur.instances)
+            (&carried[..], cb_i)
         }
-        None => (&prev.instances, &cur.instances),
+        None => (pa_i, cb_i),
     };
     let what = |c: &[(u32, u32)]| c.iter().map(|x| x.1).collect::<Vec<_>>();
     if what(&prev.cuts) == what(&cur.cuts) {
@@ -387,10 +404,6 @@ pub fn parts_why(prev: &Inputs, cur: &Inputs, scale: f32) -> Result<Parts, &'sta
                 (x, y) => { for i in [x, y].into_iter().flatten() { st1.push(i.bounds(pad)); } }
             }
         }
-    }
-    // 3D elements whose meshes changed (the instance is the same box).
-    for (k, (pa, pb)) in prev.meshes.iter().zip(&cur.meshes).enumerate() {
-        if pa != pb { for i in b.iter().filter(|i| i.paint[3] == MESH && i.extra[1] as usize == k) { st1.push(i.bounds(pad)); } }
     }
     // What changes because time passes: condensing, the fronts, the lens and the burst on 3D elements.
     let enter = look.fx.enter.max(1e-3);

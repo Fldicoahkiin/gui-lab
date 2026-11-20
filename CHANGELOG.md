@@ -18,6 +18,11 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
   spread once more, so what the material draws round the letter is drawn; text at reading sizes keeps the
   override just round its ink.
 
+## 3D elements that come and go
+
+- A 3D element that comes on the page or goes (scrolled into view, a section opened) draws the frame again only where
+  it is or was, not the frame whole (the readout's `meshes`); the 3D elements after it are not drawn again.
+
 ## Pictures that arrive
 
 - A picture given after its page is drawn (`Renderer::set_picture`) is drawn on the next frame where it is, with the

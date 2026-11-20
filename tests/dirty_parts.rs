@@ -159,3 +159,62 @@ fn a_picture_given_late_draws_again_only_where_it_is() {
     let diff = a.iter().zip(&b).filter(|(p, q)| p != q).count();
     assert_eq!(diff, 0, "the picture given late draws what one given first draws: {diff} bytes differ");
 }
+
+/// 3D elements that come on the page or go (scrolled into view, a section opened or closed), each in its
+/// own place: the frame draws again only where one came or went, not the whole frame, and is the frame
+/// drawn whole, byte for byte. One that goes before another moves the other's number on the page, not
+/// what it draws: that one is not drawn again.
+mod meshes_come {
+    use super::*;
+    use amenui::mesh::MeshId;
+    #[derive(Clone, Copy)]
+    pub struct S { pub ids: Option<(MeshId, MeshId)>, pub on: [bool; 3] }
+    fn at(e: El<()>, x: f32, y: f32) -> El<()> { e.absolute(Some(x), Some(y), None, None) }
+    pub fn view(s: &S) -> El<()> {
+        let mut c = col().key("page").width(W as f32).height(H as f32)
+            .child(at(text("A heading over the objects, and a line of text after it.", 14.0, Paint::TEXT).key("head").width(600.0), 10.0, 10.0));
+        if let Some((a, b)) = s.ids {
+            for (k, (id, x)) in [(a, 10.0), (b, 220.0), (a, 430.0)].into_iter().enumerate() {
+                if s.on[k] { c = c.child(at(amenui::el::mesh(id).key(format!("m{k}")).width(160.0).height(120.0), x, 60.0)); }
+            }
+        }
+        c.child(at(text("A paragraph after them, to read.", 14.0, Paint::TEXT).key("after").width(600.0), 10.0, 300.0))
+    }
+}
+
+#[test]
+fn a_3d_element_that_comes_or_goes_draws_again_only_where_it_is() {
+    let (Ok(mut part), Ok(mut whole)) = (Offscreen::try_new(W, H), Offscreen::try_new(W, H)) else { eprintln!("no GPU adapter here: skipped"); return };
+    whole.r.partial = false;
+    let mk = || {
+        let mut u = Ui::new(meshes_come::S { ids: None, on: [true, true, false] }, meshes_come::view, |_, _| {}, fonts(), W, H, 1.0).on_look(|_| Look { material: Material::Plain, ..Look::default() });
+        let ids = (u.add_mesh(amenui::mesh::cube()), u.add_mesh(amenui::mesh::icosphere(1)));
+        u.state.ids = Some(ids);
+        u.relayout();
+        u.pointer_leave();
+        u.tick(5.0);
+        u.settle();
+        u
+    };
+    let (mut u, mut v) = (mk(), mk());
+    let look = u.look();
+    for _ in 0..3 { let _ = part.render(&mut u, &look); let _ = whole.render(&mut v, &look); }
+    // One object's box, with the material's reach round it: what one that comes or goes may draw again.
+    let one = (160.0 + 2.0 * 40.0) * (120.0 + 2.0 * 40.0) / (W * H) as f32;
+    // A third comes after the two; the first goes (the others' numbers move); the first comes back
+    // before them; the last goes.
+    for on in [[true, true, true], [false, true, true], [true, true, true], [true, true, false]] {
+        // From a page at rest (what came last has come in), the frame of the change.
+        for ui in [&mut u, &mut v] { let t = ui.now(); ui.tick(t + 2.0); ui.settle(); }
+        let _ = (part.render(&mut u, &look), whole.render(&mut v, &look));
+        for ui in [&mut u, &mut v] { ui.state.on = on; ui.relayout(); ui.settle(); }
+        let a = part.render(&mut u, &look);
+        let b = whole.render(&mut v, &look);
+        let line = u.perf().path.line();
+        assert!(!line.contains("meshes"), "{on:?}: {line}");
+        assert!(u.perf().dirty <= one, "{on:?}: only where the object came or went is drawn again: {:.0} %, one object's {:.0} % ({line})", u.perf().dirty * 100.0, one * 100.0);
+        assert!(u.perf().dirty > 0.0, "{on:?}: nothing is drawn again ({line})");
+        let diff = a.iter().zip(&b).filter(|(p, q)| p != q).count();
+        assert_eq!(diff, 0, "{on:?}: {diff} bytes differ from the frame drawn whole");
+    }
+}

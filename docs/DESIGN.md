@@ -2082,7 +2082,9 @@ copied whole to the target each frame (the web swap chain gives a new image ever
 - The G-buffer boxes: instances whose records differ, those condensing, those touched by a live front (the circle the front
   swept, plus its width and push, intersected with its scope box), pictures and 3D elements the lens may touch
   (only their intersection with the lens's reach), 3D elements under a burst and 3D elements whose mesh
-  fingerprint changed; each instance's rect grown by the SDF range and the push; and where a picture given
+  fingerprint changed (a 3D element's instance is compared by its meshes' fingerprint, not their number on the
+  page, so one that comes or goes draws again only where it is or was, never the frame whole, and the others,
+  renumbered, not at all: `tests/dirty_parts.rs`); each instance's rect grown by the SDF range and the push; and where a picture given
   since the last frame (`Renderer::set_picture`: one made as it comes into view) is drawn, with the cells
   that read it, so a picture that arrives is not a frame drawn whole (`tests/dirty_parts.rs`: the next
   frame is the frame of a renderer that had it from the start, byte for byte, drawn in its box).
