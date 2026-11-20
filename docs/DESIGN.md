@@ -649,6 +649,12 @@ with its name and its numbers, then its function:
 fn m_smudgr(p: vec2f) -> vec3f { … mp(SELF, 0) … }
 ```
 
+Every WGSL source the renderer compiles is written to the grammar, not to what naga accepts: Chrome's compiler
+(Tint) throws out a module that mixes `||` and `&&` without parentheses, puts a bitwise `&`, `|` or `^` or a
+shift beside another operator without them, or compares a comparison, and naga takes all of these. A token
+scanner holds the material pass's shader (with every material, so its specialised, gated and override
+pipelines too), the mesh pass and the particles to it (`tests/wgsl_tint.rs`).
+
 The header matches `style::MAT_PARAMS` (a unit test holds them equal), and a material reads its own two `vec4f`s
 of numbers as `mp(SELF, 0)` and `mp(SELF, 1)`. `registry.json` lists the materials under `materials`, and
 `amenui add material <name>` copies a file into a project. `Look::material_source(name, wgsl, params)` adds a

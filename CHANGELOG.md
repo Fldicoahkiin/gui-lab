@@ -18,6 +18,12 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
   spread once more, so what the material draws round the letter is drawn; text at reading sizes keeps the
   override just round its ink.
 
+## Shaders in Chrome
+
+- `fs_ink`'s code test no longer mixes `||` and `&&` without parentheses, which Chrome's WGSL compiler rejects
+  (the ink, nearness and clearing passes were invalid there). A test now holds every WGSL source the renderer
+  compiles to the expression rules Chrome enforces and naga does not.
+
 ## Fast scrolls under dottr and charr
 
 - The frame in which a fast scroll's trace starts or stops holding the rows to the lattice moves the last frame by
