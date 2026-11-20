@@ -3173,7 +3173,14 @@ holds a 3D scene, an animation or a transition in flight, or anything else that 
 and the whole page is viewed, laid out and painted again. `perf().counters.restages` counts the frames drawn so.
 What changes with a piece outside its stage (an experiment's formula, a label with the value) is marked
 `El::steps`: `on_step` returns its key with the stage's, `stage_view` gives its subtree, and it is put in
-place as a stage is, but drawn every frame like anything else (never held, never at a stage's scale). Text
+place as a stage is, but drawn every frame like anything else (never held, never at a stage's scale). An
+element marked `El::steps` inside a stage is a **part** of it that changes alone (the Lab's Loupe: a lens
+moving over a page that stays): a step that names the stage views only its outermost parts, by their keys
+through `stage_view`, and puts them in place as a stage is, and the paint draws only them, the rest of the
+stage copied from the last paint as the rest of the page is. A part that is not viewed (`stage_view` gives
+`None` for its key) or is laid out otherwise, and the stage is viewed whole as above. A slow stage a part of
+which was drawn alone draws on its next paint whatever the input, since its held image is no longer what it
+shows. So the page that names a stage's step need not know what in it moves. Text
 counts as laid out the same when its words changed but it measures as before at its widest, at its
 narrowest and at its width (figures of one width: the mono face, or a fixed box). An absolutely placed
 element whose offsets alone changed (each side a length before and after, the opposite side auto; a chip

@@ -8,6 +8,13 @@ crate and the `amenui` npm package (`web/`) always carry the same version, becau
 match the module that `web_app!` generates. The minimum Rust is the one CI builds with (`rust-version`
 in Cargo.toml); raising it is a breaking change before 1.0 only in the second number.
 
+## Parts of a stage that change alone
+
+- `El::steps()` inside a stage marks a part of it that changes alone (a lens over a page that stays): a step
+  (`Ui::on_step`) that names the stage views and draws only those parts, by their keys through `Ui::stage_view`,
+  and the rest of the stage is the last frame's. A part `stage_view` does not give, or laid out otherwise, and
+  the stage is viewed whole as before. The page naming the step no longer needs to name what in the stage moves.
+
 ## Bloom in a region
 
 - `El::bloom()` marks what the look's bloom glows over: once any element is marked, the bloom glows only inside

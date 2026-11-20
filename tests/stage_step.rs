@@ -53,7 +53,7 @@ fn open(staged: bool) -> Ui<S, ()> {
 }
 /// A frame: its instances, their owners, and what text holds.
 type Frame = (Vec<amenui::scene::Instance>, Vec<(usize, u64)>, Vec<(u32, [f32; 2])>);
-fn frame(u: &Ui<S, ()>) -> Frame {
+fn frame<T>(u: &Ui<T, ()>) -> Frame {
     (u.scene().instances.clone(), u.owners().to_vec(), u.scene().holds.clone())
 }
 
@@ -245,5 +245,64 @@ fn an_element_moved_by_many_restages_is_where_a_layout_puts_it() {
         if f % 3 == 2 { a.relayout(); }
         let (ra, rb) = (a.node("chip").unwrap().rect, b.node("chip").unwrap().rect);
         assert!((ra.x - rb.x).abs() < 0.51 && (ra.y - rb.y).abs() < 0.51, "the chip at frame {f}: {ra:?}, a layout puts it at {rb:?}");
+    }
+}
+
+/// A stage with a part that changes alone when it steps (`El::steps` inside it, the Lab's Loupe and its
+/// lens over a page): a step naming the stage views and draws the part alone, and the frame is the whole
+/// one; a part that cannot be viewed alone gives the stage viewed whole.
+mod parts {
+    use super::*;
+    use std::sync::Mutex;
+    #[derive(Clone, Default)]
+    pub struct P { pub t: f32, pub alone: bool }
+    pub static VIEWED: Mutex<Vec<String>> = Mutex::new(vec![]);
+    pub fn lens(p: &P) -> El<()> {
+        let x = 40.0 + (p.t * 2.0).sin() * 30.0;
+        col().key("st/lens").steps().width(300.0).height(200.0).absolute(Some(0.0), Some(0.0), None, None)
+            .child(col().key("glass").width(60.0).height(40.0).fill(Paint::FAINT).absolute(Some(x), Some(50.0), None, None)
+                .child(text(format!("{:>3}", (p.t * 10.0) as i32 % 1000), 11.0, Paint::TEXT).font(Font::Mono).key("glass/n")))
+    }
+    pub fn stage(p: &P) -> El<()> {
+        let mut page = col().key("st/page").width(300.0).gap(2.0);
+        for k in 0..12 { page = page.child(text(format!("line {k} of the page under the lens"), 11.0, Paint::DIM)); }
+        col().key("st").stage().width(300.0).height(200.0).clip().child(page).child(lens(p))
+    }
+    pub fn view(p: &P) -> El<()> { col().key("page").pad(10.0, 10.0).gap(8.0).child(text("Loupe", 16.0, Paint::TEXT)).child(stage(p)) }
+    pub fn of(p: &P, k: &str) -> Option<El<()>> {
+        VIEWED.lock().unwrap().push(k.to_owned());
+        match k { "st" => Some(stage(p)), "st/lens" if p.alone => Some(lens(p)), _ => None }
+    }
+}
+
+#[test]
+fn a_step_of_a_stage_with_a_part_that_changes_alone_views_and_draws_the_part_alone() {
+    for alone in [true, false] {
+        let mk = |staged: bool| {
+            let u = Ui::new(parts::P { t: 0.0, alone }, parts::view, |_, _| {}, fonts(), 400, 300, 1.0).on_look(|_| Look { material: Material::Plain, ..Look::default() });
+            let mut u = if staged { u.on_step(|p, t| { p.t = t; vec!["st".to_owned()] }).stage_view(parts::of) } else { u.on_tick(|p, t| { p.t = t; true }) };
+            u.tick(1.0);
+            u.settle();
+            u
+        };
+        let (mut a, mut b) = (mk(true), mk(false));
+        let mut t = 1.0;
+        let c0 = a.perf().counters;
+        parts::VIEWED.lock().unwrap().clear();
+        for f in 0..40 {
+            t += 1.0 / 60.0;
+            a.tick(t);
+            b.tick(t);
+            a.settle();
+            b.settle();
+            let (fa, fb) = (frame(&a), frame(&b));
+            assert!(fa.0 == fb.0 && fa.1 == fb.1 && fa.2 == fb.2, "alone {alone}, frame {f}: the whole page's frame");
+            assert_eq!(a.node("glass").unwrap().rect, b.node("glass").unwrap().rect);
+        }
+        let c1 = a.perf().counters;
+        assert_eq!((c1.views - c0.views, c1.layouts - c0.layouts, c1.restages - c0.restages), (0, 0, 40), "alone {alone}");
+        let viewed = std::mem::take(&mut *parts::VIEWED.lock().unwrap());
+        let want: Vec<&str> = if alone { vec!["st/lens"; 40] } else { ["st/lens", "st"].repeat(40) };
+        assert_eq!(viewed, want, "alone {alone}: what was viewed");
     }
 }

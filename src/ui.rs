@@ -1118,7 +1118,8 @@ impl<S, M: Clone> Ui<S, M> {
     /// them and returns the keys of the stages whose pieces changed, and of the elements beside them that
     /// changed with them (`El::steps`: a formula, a label). When nothing else changed the view, only those
     /// are viewed again (`Ui::stage_view`), in the boxes the last layout gave them, and drawn again; the
-    /// rest of the page is the last frame's (DESIGN.md §1.35).
+    /// rest of the page is the last frame's (DESIGN.md §1.35). A stage with parts that change alone
+    /// (`El::steps` inside it) is viewed and drawn by those parts.
     pub fn on_step(mut self, f: fn(&mut S, f32) -> Vec<String>) -> Self { self.stepped = Some(f); self }
     /// A stage's subtree alone (`El::stage`, or `El::steps`, by its key), as the page's view would make
     /// it: what one that stepped (`Ui::on_step`) is viewed by. `None`, or a subtree laid out otherwise
@@ -4519,8 +4520,18 @@ impl<S, M: Clone> Ui<S, M> {
         for k in &keys {
             if !ok { break; }
             let Some(i) = self.nodes.iter().position(|n| n.stage.is_some() && n.key == *k) else { ok = false; break };
-            if roots.contains(&i) { continue; }
+            if roots.iter().any(|&r| within(&self.nodes, i, r)) { continue; }
+            // A stage with parts that change alone (`El::steps` inside it): those parts, when each is
+            // viewed and put in place; otherwise the stage whole.
+            let parts = self.parts(i);
+            let alone = !parts.is_empty() && parts.iter().all(|&j| { let pk = self.nodes[j].key.clone(); view(&self.state, &pk).is_some_and(|el| self.swap_stage(j, el)) });
+            if alone {
+                if let Some((_, st)) = self.stages.iter_mut().find(|(sk, _)| sk == k) { st.stale = true; }
+                roots.extend(parts);
+                continue;
+            }
             ok = view(&self.state, k).is_some_and(|el| self.swap_stage(i, el));
+            roots.retain(|&r| !within(&self.nodes, r, i));
             roots.push(i);
         }
         if !ok { self.span_end(sp); self.relayout(); return; }
@@ -4532,6 +4543,16 @@ impl<S, M: Clone> Ui<S, M> {
         self.restaging = None;
         self.span_end(sp);
         self.flush();
+    }
+    /// The parts of the stage at `i` that change alone when it steps (`El::steps` inside it), outermost
+    /// first; none for an element that is not a held stage.
+    fn parts(&self, i: usize) -> Vec<usize> {
+        if !self.nodes[i].stage.as_ref().is_some_and(|c| c.held) { return vec![]; }
+        let mut out: Vec<usize> = vec![];
+        for j in (i + 1..self.nodes.len()).take_while(|&j| within(&self.nodes, j, i)) {
+            if self.nodes[j].stage.as_ref().is_some_and(|c| c.part) && !out.iter().any(|&r| within(&self.nodes, j, r)) { out.push(j); }
+        }
+        out
     }
     /// What the last paint drew, per node, for a paint that draws only the stages at `roots` again
     /// (`Ui::restage`); `None` when it cannot be kept (each node's instances not one run, text
@@ -7502,7 +7523,7 @@ fn runs_of(nodes: impl Iterator<Item = usize>, count: usize) -> Option<Vec<(usiz
 /// What a stage's root was flattened with (`El::stage`, `Ui::stage_view`): so its subtree alone can be
 /// flattened again in place.
 #[derive(Clone)]
-struct StageCtx { parent: Option<usize>, path: String, roles: [u8; 3], off: (bool, bool), flow: Option<(Rc<str>, usize)>, inh: Inherit, held: bool, local: bool }
+struct StageCtx { parent: Option<usize>, path: String, roles: [u8; 3], off: (bool, bool), flow: Option<(Rc<str>, usize)>, inh: Inherit, held: bool, local: bool, part: bool }
 
 /// The rows `first..last` a viewport `h` tall at offset `off` shows.
 fn visible_rows(off: f32, h: f32, count: usize, row_h: f32) -> (usize, usize) {
@@ -7535,7 +7556,7 @@ fn measure_key(c: &Content) -> u64 {
 /// A virtual list's rows are built here, for what its viewport shows.
 #[allow(clippy::too_many_arguments)]
 fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], off: (bool, bool), flow: Option<(Rc<str>, usize)>, inh: Inherit, vx: &mut VirtCtx, built: &mut Built, nodes: &mut Vec<Node<M>>) -> usize {
-    let stage_at = (el.props.stage || el.props.steps || el.props.local_messages).then(|| Box::new(StageCtx { parent, path: path.clone(), roles, off, flow: flow.clone(), inh: inh.clone(), held: el.props.stage, local: el.props.local_messages }));
+    let stage_at = (el.props.stage || el.props.steps || el.props.local_messages).then(|| Box::new(StageCtx { parent, path: path.clone(), roles, off, flow: flow.clone(), inh: inh.clone(), held: el.props.stage, local: el.props.local_messages, part: el.props.steps }));
     let El { props: crate::el::Props { key, mut style, mut content, fill, fill_on, border, radius, mut focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, mut commit, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, map_life, multiline, selectable, cursor, ripple, guide, skeleton, rtl, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview, fit, clamp, plate, cached, clip_radius, own_size, grain, bloom, show_clear, pen, view_scale, stage: _, stack, steps: _, local_messages: _ }, mut on_press, mut on_key, mut on_drag, mut on_blur, modal, mut on_text, virt, access, mut on_pick, mut on_wheel, mut on_move, on_visible, on_outline, mut children } = el;
     // A view scale scales what it holds, not its pen (`El::view_scale`).
     if let Some(s) = view_scale { children = children.into_iter().map(|c| c.zoom_by(s, true)).collect(); }

@@ -1366,7 +1366,10 @@ impl<M> El<M> {
     pub fn stage(mut self) -> Self { self.stage = true; self }
     /// It changes with a stage's piece and can be viewed alone (`Ui::on_step`, `Ui::stage_view`), as a
     /// stage is, without being one: a formula or a label beside the piece that follows it. It is drawn
-    /// every frame like anything else, never held and never at a stage's scale.
+    /// every frame like anything else, never held and never at a stage's scale. Inside a stage it is a
+    /// part of it that changes alone (a lens moving over a page that stays): a step that names the stage
+    /// views and draws only its parts so marked, by their keys, and the rest of the stage is the last
+    /// frame's; a part that cannot be viewed alone, and the stage is viewed whole.
     pub fn steps(mut self) -> Self { self.steps = true; self }
     /// What the handlers in this subtree send (a press, a drag, a key, the pointer over it, the wheel)
     /// changes only what is inside it and the elements that change with a stage (`El::steps`): after

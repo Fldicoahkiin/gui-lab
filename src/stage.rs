@@ -55,6 +55,9 @@ pub(crate) struct Stage {
     pub behind: bool,
     /// It was drawn at least once.
     pub drawn: bool,
+    /// A part of it was drawn again alone since it last drew (`El::steps` inside it): its image is not
+    /// what it shows, so it does not hold.
+    pub stale: bool,
     /// How many times it has drawn.
     pub count: usize,
 }
@@ -71,6 +74,7 @@ impl Stage {
         if self.draws.len() > DRAWS { self.draws.remove(0); }
         self.drawn_at = now;
         self.behind = false;
+        self.stale = false;
         self.drawn = true;
         self.count += 1;
         let avg = self.average();
@@ -86,7 +90,7 @@ impl Stage {
     }
     /// Whether it draws in this paint: `input` came since the last paint, `released` a press ended.
     pub fn draws_now(&self, rect: Rect, clip: Rect, nodes: usize, now: f32, input: bool, released: bool) -> bool {
-        !self.drawn || !self.slow || !input || released || self.rect != rect || self.clip != clip || self.nodes != nodes || now - self.drawn_at >= self.hold_s() - 1e-4
+        !self.drawn || self.stale || !self.slow || !input || released || self.rect != rect || self.clip != clip || self.nodes != nodes || now - self.drawn_at >= self.hold_s() - 1e-4
     }
 }
 
@@ -108,5 +112,17 @@ mod tests {
         assert_eq!(q.hold_s(), HOLD_MAX_S);
         q.draws = vec![5.0; 8];
         assert_eq!(q.hold_s(), HOLD_MIN_S);
+    }
+    #[test]
+    fn a_slow_stage_a_part_of_which_was_drawn_alone_draws_through_input() {
+        let mut s = Stage::default();
+        for k in 0..8 { s.drew(40.0, k as f32 * 0.01, 16.7, true); }
+        let r = Rect::new(0.0, 0.0, 10.0, 10.0);
+        (s.rect, s.clip) = (r, r);
+        assert!(!s.draws_now(r, r, 0, 0.08, true, false), "slow, under input: it holds");
+        s.stale = true;
+        assert!(s.draws_now(r, r, 0, 0.08, true, false), "its image is not what it shows");
+        s.drew(40.0, 0.09, 16.7, true);
+        assert!(!s.stale);
     }
 }
