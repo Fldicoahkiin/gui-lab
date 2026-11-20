@@ -398,6 +398,8 @@ pub enum Reveal {
 }
 /// An element coming into view (`true`, any part inside its clip) or leaving it.
 pub type OnVisible<M> = Rc<dyn Fn(bool) -> Option<M>>;
+/// A text's pens as the shaper set them (`El::on_pens`).
+pub type OnPens<M> = Rc<dyn Fn(Rc<Vec<f32>>) -> Option<M>>;
 /// Asks for the true outline of an element's subtree as coverage on a grid (`El::on_outline`).
 pub struct Outline<M> {
     /// Grid columns.
@@ -637,6 +639,8 @@ pub struct El<M> {
     pub on_visible: Option<OnVisible<M>>,
     /// Told its subtree's true outline as coverage on a grid, whenever it changes (`El::on_outline`).
     pub on_outline: Option<Outline<M>>,
+    /// Told its glyphs' pens whenever they change (`El::on_pens`).
+    pub on_pens: Option<OnPens<M>>,
     /// What it holds, in order.
     pub children: Vec<El<M>>,
 }
@@ -908,7 +912,7 @@ impl<M> El<M> {
     fn new(style: Style, content: Content) -> Self {
         // Nothing shrinks unless asked: fixed sizes stay fixed inside columns and scroll areas.
         let style = Style { flex_shrink: 0.0, ..style };
-        Self { props: Props::new(style, content), on_press: None, on_key: None, on_drag: None, on_blur: None, modal: None, on_text: None, virt: None, access: None, on_pick: None, on_wheel: None, on_move: None, on_visible: None, on_outline: None, children: vec![] }
+        Self { props: Props::new(style, content), on_press: None, on_key: None, on_drag: None, on_blur: None, modal: None, on_text: None, virt: None, access: None, on_pick: None, on_wheel: None, on_move: None, on_visible: None, on_outline: None, on_pens: None, children: vec![] }
     }
     /// Its key: unique on the page, stable across views (focus, scroll, births and recomposition follow it).
     pub fn key(mut self, k: impl Into<String>) -> Self { self.key = k.into(); self }
@@ -1269,6 +1273,11 @@ impl<M> El<M> {
     /// Hear when this element comes into view or leaves it (inside its scroll area's and clips' view):
     /// a live demo steps only while it can be seen.
     pub fn on_visible(mut self, f: impl Fn(bool) -> Option<M> + 'static) -> Self { self.on_visible = Some(Rc::new(f)); self }
+    /// Hear where the shaper set this text's glyphs: each one's pen x as laid out (logical px in the
+    /// content box, kerning included, not put on a pixel; `GlyphAt::pen`), in the glyphs' order
+    /// (`GlyphAt::i`), sent after a paint that draws the text when they differ from those last sent. For a
+    /// state that places the letters itself (the Lab's Kern) and measures from the face's own setting.
+    pub fn on_pens(mut self, f: impl Fn(Rc<Vec<f32>>) -> Option<M> + 'static) -> Self { self.on_pens = Some(Rc::new(f)); self }
     /// Be told this subtree's true outline — the coverage of its glyphs, shapes and pictures, hidden
     /// ones included — sampled on a `cols × rows` grid over its box (values 0..1), each time it changes.
     /// What it gives is a mask for a field (DESIGN.md §1.26).
@@ -1291,7 +1300,7 @@ impl<M> El<M> {
 
     /// The same tree sending other messages: lets one application embed another's view.
     pub fn map<N: 'static>(self, f: Rc<dyn Fn(M) -> N>) -> El<N> where M: 'static {
-        let El { props, on_press, on_key, on_drag, on_blur, modal, on_text, virt, on_pick, on_wheel, on_move, on_visible, on_outline, access, children } = self;
+        let El { props, on_press, on_key, on_drag, on_blur, modal, on_text, virt, on_pick, on_wheel, on_move, on_visible, on_outline, on_pens, access, children } = self;
         let virt = virt.map(|v| { let f = f.clone(); let b = v.build; Virtual { count: v.count, row_h: v.row_h, overscan: v.overscan, selected: v.selected, build: Rc::new(move |i: usize| b(i).map(f.clone())) as Rc<dyn Fn(usize) -> El<N>> } });
         let on_key = on_key.map(|k| { let f = f.clone(); Rc::new(move |key: Key, shift: bool| k(key, shift).map(|m| f(m))) as OnKey<N> });
         let on_text = on_text.map(|t| { let f = f.clone(); Rc::new(move |i: TextInput| t(i).map(|m| f(m))) as OnText<N> });
@@ -1300,13 +1309,14 @@ impl<M> El<M> {
         let on_wheel = on_wheel.map(|d| { let f = f.clone(); Rc::new(move |x: f32, y: f32| d(x, y).map(|m| f(m))) as OnWheel<N> });
         let on_move = on_move.map(|d| { let f = f.clone(); Rc::new(move |p: Option<Point>| d(p).map(|m| f(m))) as OnMove<N> });
         let on_visible = on_visible.map(|d| { let f = f.clone(); Rc::new(move |v: bool| d(v).map(|m| f(m))) as OnVisible<N> });
+        let on_pens = on_pens.map(|d| { let f = f.clone(); Rc::new(move |v: Rc<Vec<f32>>| d(v).map(|m| f(m))) as OnPens<N> });
         let on_outline = on_outline.map(|o| { let f = f.clone(); let g = o.f; Outline { cols: o.cols, rows: o.rows, f: Rc::new(move |x: Rc<crate::field::Grid>| g(x).map(|m| f(m))) } });
         // A plain loop, not a collect: mapping in place would be built again for every pair of message types.
         let mut kids = Vec::with_capacity(children.len());
         for c in children { kids.push(c.map(f.clone())); }
         El {
             props, on_press: on_press.map(|m| f(m)), on_key, on_drag, on_blur: on_blur.map(|m| f(m)), modal: modal.map(|m| Modal { dismiss: f(m.dismiss), beneath: m.beneath }),
-            on_text, virt, on_pick, on_wheel, on_move, on_visible, on_outline, access, children: kids,
+            on_text, virt, on_pick, on_wheel, on_move, on_visible, on_outline, on_pens, access, children: kids,
         }
     }
 }

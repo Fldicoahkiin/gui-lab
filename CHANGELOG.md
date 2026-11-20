@@ -15,6 +15,15 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
   Primary.
 - `near` draws its bands inside the ink in the hairline grey (was the accent): at rest a material shows no accent.
 
+## A text's pens to the state, and its glyphs as drawn
+
+- `El::on_pens(f)`: a text sends its glyphs' pens as the shaper set them (logical px in the content box, the
+  numbers `GlyphAt::pen` gives a pose) after a paint, when they changed; a state no longer collects them from
+  inside a pose.
+- `Ui::glyphs_drawn(key) -> Vec<GlyphDrawn>`: each glyph of a text as the last paint drew it, after its pose:
+  its number, the box its raster covers (logical px, window coordinates) and its opacity.
+- A message the runtime queues in a paint (`on_outline`, `on_pens`) asks for the next frame.
+
 ## near in the ink only; knowing a cached page has no kept image
 
 - `near` at rest is the ink and its greys only: outside ink its three nearest bands are the ink at 0.5, 0.3 and

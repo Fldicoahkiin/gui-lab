@@ -129,3 +129,97 @@ fn a_cell_made_alone_is_handed_the_faces() {
     assert_eq!(f.face_of(Font::Display), amenui::style::LAB.display);
     assert!(f.glyph(Font::Display, 'K', 40.0).is_some());
 }
+
+/// A text that says where the shaper set its pens (`El::on_pens`), posed or not, and a glyph moved and
+/// one turned by a pose (`Ui::glyphs_drawn`).
+mod told {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    #[derive(Clone)]
+    pub struct T { pub word: &'static str, pub posed: bool, pub told: Vec<Rc<Vec<f32>>>, pub seen: Rc<RefCell<Vec<f32>>> }
+    pub fn view(s: &T) -> amenui::el::El<Rc<Vec<f32>>> {
+        let t = amenui::el::text(s.word, 48.0, amenui::el::Paint::INK).font(amenui::el::Font::Face(amenui::text::SANS)).key("w").on_pens(Some);
+        let rec = s.seen.clone();
+        let t = if s.posed {
+            t.pose(move |g| {
+                if g.i == 0 { rec.borrow_mut().clear(); }
+                rec.borrow_mut().push(g.pen);
+                amenui::el::Pose { dx: 10.0 * g.i as f32, angle: if g.i == 2 { 0.4 } else { 0.0 }, ..Default::default() }
+            })
+        } else { t };
+        amenui::el::col().pad(20.0, 30.0).child(t)
+    }
+    pub fn update(s: &mut T, p: Rc<Vec<f32>>) { s.told.push(p); }
+}
+
+#[test]
+fn a_text_tells_the_state_its_pens_as_the_shaper_set_them_once_each_time_they_change() {
+    use told::*;
+    let mut u = Ui::new(T { word: "AVATAR", posed: true, told: vec![], seen: Default::default() }, view, update, fonts(), 400, 120, 2.0);
+    let mut t = 1.0;
+    u.tick(t);
+    assert_eq!(u.state.told.len(), 1, "told after the first paint");
+    let pens = u.state.told[0].clone();
+    assert_eq!(pens.len(), 6);
+    // The pens a pose is told: the same numbers, logical px in the content box.
+    let seen = u.state.seen.borrow().clone();
+    assert!(pens.iter().zip(&seen).all(|(a, b)| (a - b).abs() < 1e-4), "{pens:?} / {seen:?}");
+    // Kerned: A to V is less than A's own advance.
+    let a = u.faces().glyph(amenui::el::Font::Face(amenui::text::SANS), 'A', 48.0).expect("A").advance;
+    assert!(pens[0] == 0.0 && pens[1] < a - 0.5, "A V kerned: {} / {a}", pens[1]);
+    // Unposed, the same.
+    let mut plain = Ui::new(T { posed: false, ..u.state.clone() }, view, update, fonts(), 400, 120, 2.0);
+    plain.tick(t);
+    assert_eq!(plain.state.told.last().map(|p| p.as_slice()), Some(pens.as_slice()));
+    // Frames that lay out nothing new tell nothing.
+    for _ in 0..30 { t += 1.0 / 60.0; u.tick(t); u.frame_drawn(); }
+    u.relayout();
+    assert_eq!(u.state.told.len(), 1, "told once while they are the same");
+    // Other words, other pens: told again.
+    u.state.word = "AWAY";
+    u.relayout();
+    t += 1.0 / 60.0;
+    u.tick(t);
+    assert_eq!(u.state.told.len(), 2);
+    assert_eq!(u.state.told[1].len(), 4);
+}
+
+#[test]
+fn the_glyphs_drawn_are_where_their_poses_put_them_and_hold_all_their_coverage() {
+    use amenui::offscreen::Offscreen;
+    use told::*;
+    let (w, h) = (400u32, 120u32);
+    let Ok(mut o) = Offscreen::try_new(w, h) else { eprintln!("no GPU adapter here: skipped"); return };
+    let shot = |o: &mut Offscreen, posed: bool| {
+        let mut u = Ui::new(T { word: "AVATAR", posed, told: vec![], seen: Default::default() }, view, update, fonts(), w, h, 1.0)
+            .on_look(|_| amenui::style::Look { material: amenui::style::Material::Plain, ..amenui::style::Look::default() });
+        u.tick(2.0);
+        let l = u.look();
+        o.r.partial = false;
+        let f = o.render(&mut u, &l);
+        (u.glyphs_drawn("w"), f, u.look().theme.ground)
+    };
+    let (plain, _, _) = shot(&mut o, false);
+    let (posed, f, ground) = shot(&mut o, true);
+    assert_eq!((plain.len(), posed.len()), (6, 6));
+    assert!(Ui::<T, std::rc::Rc<Vec<f32>>>::new(T { word: "A", posed: false, told: vec![], seen: Default::default() }, view, update, fonts(), w, h, 1.0).glyphs_drawn("none").is_empty());
+    for (a, b) in plain.iter().zip(&posed) {
+        assert_eq!(a.i, b.i);
+        assert!((b.alpha - 1.0).abs() < 1e-3);
+        // Moved by its pose (the turned one's box is the box round it: about the same centre).
+        let (ca, cb) = (a.rect.x + a.rect.w * 0.5, b.rect.x + b.rect.w * 0.5);
+        assert!((cb - ca - 10.0 * a.i as f32).abs() < 0.6, "glyph {}: {:?} / {:?}", a.i, a.rect, b.rect);
+        if a.i == 2 { assert!(b.rect.w > a.rect.w + 4.0, "turned: the box round it is wider"); }
+    }
+    // Every pixel of the posed word's coverage is inside some glyph's box.
+    let g = ground.map(|v| (v * 255.0).round() as i32);
+    let mut inked = 0;
+    for y in 0..h { for x in 0..w {
+        let i = ((y * w + x) * 4) as usize;
+        if (0..3).all(|k| (f[i + k] as i32 - g[k]).abs() <= 1) { continue; }
+        inked += 1;
+        let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+        assert!(posed.iter().any(|d| px > d.rect.x - 0.5 && px < d.rect.right() + 0.5 && py > d.rect.y - 0.5 && py < d.rect.bottom() + 0.5), "ink at ({x}, {y}) outside every glyph's box");
+    } }
+    assert!(inked > 300, "the word is drawn: {inked} px");
+}
