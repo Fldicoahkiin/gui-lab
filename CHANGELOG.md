@@ -8,6 +8,17 @@ crate and the `amenui` npm package (`web/`) always carry the same version, becau
 match the module that `web_app!` generates. The minimum Rust is the one CI builds with (`rust-version`
 in Cargo.toml); raising it is a breaking change before 1.0 only in the second number.
 
+## The accent only under the hand, in charts and examples
+
+- `dot_chart`: the picked range is ink (its dots up to the ink, the line under the axis ink) and the rest of the
+  field dim; the accent is only on the dot under the pointer (`DotChart::under`) and on a control point and its
+  tick while dragged (`DotChart::dragged`).
+- `avatar`'s last argument is a shade, not a hue: 0 ink, 1 dim, 2 text (`widgets::SHADES`), initials in the ground.
+- The examples: a main action is `Variant::Primary` (`counter`, `morph`, `mesh`, `chapter`), and nothing is in the
+  accent that is not held or dragged or a named specimen (`counter`'s shape, `morph`'s disc, `chapter`'s numbers
+  and `annotate`'s panel are ink; `annotate`'s meter and `loading`'s pictures are greys, not hues; the
+  `caption` specimen is raised in a hairline frame). `badge`'s usage line shows `Variant::Primary`.
+
 ## Menus and sheets are raised
 
 - `widgets::MENU_SURFACE` is the raised grey (it was the ground): menus, selects, context and nested menus, the

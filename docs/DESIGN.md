@@ -2426,7 +2426,9 @@ unit }`). The curve is a Catmull-Rom spline through the control points, sampled 
 column c (counting up from the axis) covers the band [r, r+1)/rows, and how much of it lies under the curve is its
 coverage `k = clamp(v·rows − r, 0, 1)`: diameter `pitch × (0.25 + 0.65k)`, tone `0.25 + 0.75k`, so a column's
 coverages add up to exactly v·rows and the field of dots is the area under the curve; above the curve are the
-smallest, faintest dots. Columns in the range use the accent, with an accent line under the axis. While the pointer
+smallest, faintest dots. The picked range is ink: its dots' tones go up to the ink, with an ink line under the axis;
+outside it a dot's tone is scaled to go no further than dim (`tone × Paint::DIM.tone`). The accent is only under the
+hand: the dot under the pointer, and a control point and its tick while it is dragged. While the pointer
 moves over the chart (`El::on_move`), that column shows a vertical line and its value (in the mono face, which is the
 pixel face); each control point on the axis is a draggable round handle (`Role::Slider`), dragged up and down to
 change its value, with the curve and dots recomputed; once focused, Left and Right move the line and Up and Down
@@ -3368,7 +3370,11 @@ background colour); unavailable is `.disabled(true)`.
   focus (`El::border_hover`), and ink while a select or menu is open or a number is typed into; the hairline grey
   is for card frames, rules, dividers and the outer frame of a group (panels, dialogs, sheets, popovers, toasts,
   tooltips, menus). The accent is for what is held or dragged (a slider's thumb, a switch's knob while pressed),
-  a number's caret, a dot chart's point under the pointer, and the explicit `Variant::Accent`.
+  a number's caret, a dot chart's dot under the pointer and its control points while dragged, and the explicit
+  `Variant::Accent`. Categories (an avatar's people, a chart's series) are told apart by ink, dim and text
+  (`widgets::SHADES`), and by shape where three are not enough; `second` and `warn` are not category colours. The
+  framework's examples follow the same rule: a main action is `Variant::Primary`, and the accent is only in a
+  named Accent or colour specimen or on what is held or dragged.
 - **Paints that answer the pointer** (`El::fill_hover`, `El::fill_held`, `El::border_hover`): an element's fill while
   the pointer is over it or the control it is part of (the nearest pressable element at or above it), and while
   that is pressed or dragged; its border while the pointer is over it or it, or the control it is part of, has

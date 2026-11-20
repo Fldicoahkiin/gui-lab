@@ -42,7 +42,7 @@ mod toggle;
 mod tooltip;
 
 pub use accordion::accordion;
-pub use avatar::{avatar, initials};
+pub use avatar::{SHADES, avatar, initials};
 pub use badge::badge;
 pub use bottom_sheet::{Sheet, SheetMsg, bottom_sheet};
 pub use breadcrumb::breadcrumb;

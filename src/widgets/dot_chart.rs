@@ -1,9 +1,10 @@
 //! dot_chart
 //!
 //! Purpose: A series drawn as a field of dots: each column is filled from the axis up to the curve, a
-//!   dot's size and brightness saying how much of it lies under the curve; a range picked out in the
-//!   accent colour; a marker that follows the pointer with the value under it; control points on the
-//!   axis that can be dragged, the curve recomputed as they move.
+//!   dot's size and brightness saying how much of it lies under the curve; a range picked out in ink,
+//!   the rest of the field dim; a marker that follows the pointer with the value under it, the dot under
+//!   the pointer in the accent; control points on the axis that can be dragged (in the accent while
+//!   dragged), the curve recomputed as they move.
 //! Props: `key`, `chart` (`DotChart`: `knots`, `cols`, `rows`, `pitch`, `range`, `max`, `unit`),
 //!   `msg`.
 //! States: rest, scrubbing (a marker and a label at the column under the pointer), dragging a
@@ -41,12 +42,14 @@ pub struct DotChart {
     pub unit: &'static str,
     /// The column under the marker.
     hover: Option<usize>,
-    /// A control point being dragged: its value at the press.
-    grab: Option<f32>,
+    /// The dot under the pointer: its column and row (from the axis).
+    under: Option<(usize, usize)>,
+    /// A control point being dragged: which, and its value at the press.
+    grab: Option<(usize, f32)>,
 }
 impl Default for DotChart {
     fn default() -> Self {
-        Self { knots: vec![0.22, 0.38, 0.7, 0.52, 0.86, 0.6, 0.3], cols: 56, rows: 16, pitch: 9.0, range: (0.42, 0.68), max: 120.0, unit: "", hover: None, grab: None }
+        Self { knots: vec![0.22, 0.38, 0.7, 0.52, 0.86, 0.6, 0.3], cols: 56, rows: 16, pitch: 9.0, range: (0.42, 0.68), max: 120.0, unit: "", hover: None, under: None, grab: None }
     }
 }
 /// Catmull-Rom through `k` at `t` (0..1 along all of them).
@@ -71,9 +74,13 @@ impl DotChart {
     pub fn dot(&self, k: f32) -> (f32, f32) { (self.pitch * (0.25 + 0.65 * k), 0.25 + 0.75 * k) }
     /// The column under the marker.
     pub fn hover(&self) -> Option<usize> { self.hover }
+    /// The dot under the pointer (column, row from the axis).
+    pub fn under(&self) -> Option<(usize, usize)> { self.under }
+    /// The control point being dragged.
+    pub fn dragged(&self) -> Option<usize> { self.grab.map(|g| g.0) }
     /// Whether column `c` is in the highlighted range.
     pub fn in_range(&self, c: usize) -> bool { let f = (c as f32 + 0.5) / self.cols.max(1) as f32; f >= self.range.0 && f <= self.range.1 }
-    /// The area under the curve in the range, in `max` × axis fractions (what the accent dots add up to).
+    /// The area under the curve in the range, in `max` × axis fractions (what the ink dots add up to).
     pub fn range_area(&self) -> f32 {
         let cs: Vec<usize> = (0..self.cols).filter(|&c| self.in_range(c)).collect();
         cs.iter().map(|&c| self.value(c)).sum::<f32>() / self.cols.max(1) as f32
@@ -85,14 +92,15 @@ impl DotChart {
             ChartMsg::Move(p) => {
                 let (w, h) = self.size();
                 self.hover = p.filter(|&(x, y)| x >= 0.0 && x < w && y >= 0.0 && y <= h + 40.0).map(|(x, _)| ((x / self.pitch) as usize).min(self.cols - 1));
+                self.under = p.filter(|&(x, y)| x >= 0.0 && x < w && y >= 0.0 && y < h).map(|(x, y)| (((x / self.pitch) as usize).min(self.cols - 1), (((h - y) / self.pitch) as usize).min(self.rows - 1)));
             }
             ChartMsg::Knot(i, d) => {
                 if i >= self.knots.len() { return; }
                 let (_, h) = self.size();
                 match d.phase {
-                    Phase::Start => self.grab = Some(self.knots[i]),
+                    Phase::Start => self.grab = Some((i, self.knots[i])),
                     Phase::Move | Phase::End => {
-                        let Some(g) = self.grab else { return };
+                        let Some((_, g)) = self.grab else { return };
                         self.knots[i] = (g - d.dy / h).clamp(0.0, 1.0);
                         self.hover = Some(((self.knot_x(i) / self.pitch) as usize).min(self.cols - 1));
                         if d.phase == Phase::End { self.grab = None; }
@@ -128,26 +136,30 @@ pub fn dot_chart<M: Clone + 'static>(key: &str, c: &DotChart, msg: impl Fn(Chart
         for r in 0..c.rows {
             let k = c.coverage(x, r);
             let (d, tone) = c.dot(k);
-            // Dots over the curve are the faintest, smallest ones: the empty part of the field.
-            let paint = if k <= 0.0 { Paint::tone(0.14) } else if hot { Paint { tone, accent: 1.0, alpha: 1.0, hue: 0 } } else { Paint::tone(tone) };
+            // Dots over the curve are the faintest, smallest ones: the empty part of the field. In the range
+            // the dots go up to the ink, outside it up to dim; the one under the pointer is the accent.
+            let paint = if c.under == Some((x, r)) { Paint::ACCENT } else if k <= 0.0 { Paint::tone(0.14) } else if hot { Paint::tone(tone) } else { Paint::tone(tone * Paint::DIM.tone) };
             let (cx, cy) = (x as f32 * p + p * 0.5, h - (r as f32 * p + p * 0.5));
             parts.push(space(d, d).radius(d * 0.5).fill(paint).shift((cx - d * 0.5).round(), (cy - d * 0.5).round()).key(format!("{key}/d{x}.{r}")));
         }
     }
     // The axis and the range under it.
     parts.push(space(w, LINE).fill(Paint::DIM).shift(0.0, h + 4.0).key(format!("{key}/axis")));
-    parts.push(space((c.range.1 - c.range.0) * w, 3.0).fill(Paint::ACCENT).shift(c.range.0 * w, h + 3.0).key(format!("{key}/range")));
+    parts.push(space((c.range.1 - c.range.0) * w, 3.0).fill(Paint::INK).shift(c.range.0 * w, h + 3.0).key(format!("{key}/range")));
     // Control points: a small handle on the axis per knot, dragged up and down.
     for i in 0..c.knots.len() {
         let x = c.knot_x(i);
         let m = msg.clone();
-        parts.push(col().key(format!("{key}/knot{i}")).width(14.0).height(14.0).radius(7.0).fill(Paint::GROUND).border(1.5, Paint::INK)
+        // Ink at rest; the accent while it is dragged.
+        let held = c.dragged() == Some(i);
+        let pen = if held { Paint::ACCENT } else { Paint::INK };
+        parts.push(col().key(format!("{key}/knot{i}")).width(14.0).height(14.0).radius(7.0).fill(Paint::GROUND).border(1.5, pen)
             .shift(x - 7.0, h + 10.0).cursor(crate::el::Cursor::RowResize).role(Role::Slider).label(format!("{i}"))
             .value_range(c.knots[i] * c.max, 0.0, c.max).focusable(false)
             .on_drag_with(move |d| Some(m(ChartMsg::Knot(i, d)))));
         // Its height on the curve, as a tick.
         let y = h - c.knots[i] * h;
-        parts.push(space(5.0, 5.0).radius(1.0).fill(Paint::INK).shift(x - 2.5, y - 2.5).key(format!("{key}/kdot{i}")));
+        parts.push(space(5.0, 5.0).radius(1.0).fill(pen).shift(x - 2.5, y - 2.5).key(format!("{key}/kdot{i}")));
     }
     // The marker and its label.
     if let Some(x) = c.hover {
@@ -196,5 +208,38 @@ mod tests {
         assert_eq!(c.hover(), Some(11));
         c.update(ChartMsg::Move(None));
         assert_eq!(c.hover(), None);
+    }
+    #[test]
+    fn the_range_is_ink_the_rest_dim_and_the_accent_only_under_the_hand() {
+        let mut c = DotChart::default();
+        // Each element's fill by its key, and its border's paint by its key and `#border`.
+        fn walk<M>(e: &El<M>, out: &mut std::collections::HashMap<String, Paint>) {
+            if let Some(f) = e.fill { out.insert(e.key.clone(), f); }
+            if let Some(b) = e.border { out.insert(format!("{}#border", e.key), b.1); }
+            for ch in &e.children { walk(ch, out); }
+        }
+        let fills = |c: &DotChart| { let mut out = std::collections::HashMap::new(); walk(&dot_chart("c", c, |m| m), &mut out); out };
+        let accents = |f: &std::collections::HashMap<String, Paint>| f.iter().filter(|(_, p)| p.accent > 0.0).map(|(k, _)| k.clone()).collect::<Vec<_>>();
+        let f = fills(&c);
+        assert!(accents(&f).is_empty(), "no accent at rest: {:?}", accents(&f));
+        assert_eq!(f["c/range"], Paint::INK);
+        // The fullest dot in the range is ink; outside it no dot is past dim.
+        let inside = (0..c.cols).find(|&x| c.in_range(x)).unwrap();
+        assert_eq!(f[&format!("c/d{inside}.0")].tone, c.dot(c.coverage(inside, 0)).1);
+        assert!((0..c.cols).filter(|&x| !c.in_range(x)).all(|x| (0..c.rows).all(|r| f[&format!("c/d{x}.{r}")].tone <= Paint::DIM.tone + 1e-6)));
+        // The pointer over a dot: that dot alone is the accent.
+        let (_, h) = c.size();
+        c.update(ChartMsg::Move(Some((c.pitch * 3.5, h - c.pitch * 0.5))));
+        assert_eq!(c.under(), Some((3, 0)));
+        assert_eq!(accents(&fills(&c)), vec!["c/d3.0".to_owned()]);
+        c.update(ChartMsg::Move(None));
+        // A control point dragged: it and its tick are the accent until the release.
+        let d = |phase| ChartMsg::Knot(2, Drag { phase, x: 0.0, y: 0.0, w: 14.0, h: 14.0, dx: 0.0, dy: -4.0, t: 0.0 });
+        c.update(d(Phase::Start));
+        let mut a = accents(&fills(&c));
+        a.sort();
+        assert_eq!(a, vec!["c/kdot2".to_owned(), "c/knot2#border".to_owned()]);
+        c.update(d(Phase::End));
+        assert!(accents(&fills(&c)).is_empty());
     }
 }

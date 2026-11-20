@@ -20,7 +20,7 @@ pub const ROWS: [(&str, &str); 5] = [
 pub fn row_el(i: usize) -> El<Msg> {
     let (title, meta) = ROWS[i];
     row().key(format!("row{i}")).gap(12.0).height(52.0)
-        .child(space(40.0, 40.0).radius(6.0).fill(Paint::hue((i % 3) as u8)).key(format!("row{i}/pic")))
+        .child(space(40.0, 40.0).radius(6.0).fill([Paint::INK, Paint::DIM, Paint::TEXT][i % 3]).key(format!("row{i}/pic")))
         .child(col().gap(4.0).child(text(title, 15.0, Paint::TEXT).key(format!("row{i}/title"))).child(text(meta, 12.0, Paint::DIM).key(format!("row{i}/meta"))))
 }
 

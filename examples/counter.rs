@@ -13,9 +13,9 @@ pub enum Msg { Inc }
 
 pub fn view(s: &Counter) -> El<Msg> {
     col().key("page").pad(32.0, 28.0).child(row().key("row").ripplr_scope().gap(24.0).pad(20.0, 16.0).border(1.0, Paint::FAINT)
-        .child(button_as("inc", "Add one", Variant::Default, Msg::Inc).ripplr(Scope::Container(None)))
+        .child(button_as("inc", "Add one", Variant::Primary, Msg::Inc).ripplr(Scope::Container(None)))
         .child(text(s.n.to_string(), 40.0, Paint::INK).font(Font::Display).key("count"))
-        .child(space(60.0, 40.0).radius(6.0).fill(Paint::ACCENT).key("decor")))
+        .child(space(60.0, 40.0).radius(6.0).fill(Paint::INK).key("decor")))
 }
 
 pub fn update(s: &mut Counter, m: Msg) {

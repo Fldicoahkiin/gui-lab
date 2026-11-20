@@ -4,7 +4,7 @@
 //! Props: `key`, `label`, `variant` (`Variant::Default` outlined, `Quiet` faint, `Primary` ink, `Accent` filled).
 //! States: none.
 //! Messages: none.
-//! Usage: `badge("new", "新", Variant::Accent)`
+//! Usage: `badge("new", "新", Variant::Primary)`
 //!
 //! A pill of small type; filled with the accent for what needs attention.
 use super::{LABEL, LINE, Variant};

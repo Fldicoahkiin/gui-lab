@@ -29,7 +29,7 @@ pub fn view(s: &Shop) -> El<Msg> {
     let body = col().gap(12.0)
         .child(orbit("ring", torus, &s.orbit, Msg::Orbit).height(220.0))
         .child(row().gap(12.0)
-            .child(button_as("turn", "Turn 45°", Variant::Default, Msg::Turn))
+            .child(button_as("turn", "Turn 45°", Variant::Primary, Msg::Turn))
             .child(text(format!("Turns: {}", s.turns), 14.0, Paint::DIM).key("turns")));
     col().key("page").pad(32.0, 28.0).child(card("ring-card", Some("A ring"), body).width(360.0))
 }

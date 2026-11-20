@@ -11,6 +11,6 @@ pub fn ex_0() -> El<Msg> {
     let (w, r) = (120.0_f32, 8.0_f32);
     let spec = Spec { min: 0.0, max: 400.0, step: 1.0, decimals: 0, unit: "px" };
     let params = [CaptionParam::new("width", w, spec), CaptionParam::new("radius", r, spec)];
-    space(w, 40.0).radius(r).fill(Paint::ACCENT).key("cap1/demo")
+    space(w, 40.0).radius(r).fill(Paint::RAISED).border(1.0, Paint::HAIRLINE).key("cap1/demo")
         .caption_params("cap1", format!("rect(w={w:.0}, r={r:.0})"), &params, Msg::Num)
 }
