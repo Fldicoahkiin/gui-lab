@@ -255,16 +255,17 @@ fn the_focus_corners_move_with_the_control_a_press_pushes() {
     ui.press(x, y);
     // The press's front is strongest a few frames on.
     let mut best: Option<(i32, i32, i32, i32)> = None;
-    let accent = look.theme.accent;
     let ground = look.theme.ground;
-    // Two masks of a frame: the corners (near the accent) and the label (off the ground, not accent).
-    // The flash changes how bright the label is, not its shape.
+    // Two masks of a frame: the corners (off the ground, outside the button: they are in the ink, as the
+    // label nearly is) and the label (off the ground, inside it). The flash changes how bright the
+    // label is, not its shape.
+    let inside = |i: usize| { let (x, y) = ((i as u32 % w) as f32, (i as u32 / w) as f32); x >= b.x + 3.0 && x < b.right() - 3.0 && y >= b.y + 3.0 && y < b.bottom() - 3.0 };
     let masks = |px: &[u8]| {
         let (mut a, mut l) = (vec![false; (w * h) as usize], vec![false; (w * h) as usize]);
         for (i, c) in px.chunks_exact(4).enumerate() {
             let f = [c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0];
             let d = |q: [f32; 3]| (0..3).map(|k| (f[k] - q[k]).abs()).fold(0.0f32, f32::max);
-            if d(accent) < 0.15 { a[i] = true; } else if d(ground) > 0.2 { l[i] = true; }
+            if d(ground) > 0.2 { if inside(i) { l[i] = true; } else { a[i] = true; } }
         }
         (a, l)
     };
@@ -311,8 +312,8 @@ fn the_marks_on_a_segment_stay_inside_its_controls_border() {
     let mut t = 1.0;
     for _ in 0..12 { t += 1.0 / 60.0; ui.tick(t); ui.frame_drawn(); }
     assert_eq!(ui.marks_frame().expect("marks on the segment").0, seg);
-    let accent = ui.look().theme.accent;
-    let bars: Vec<[f32; 4]> = ui.scene().annot.iter().filter(|i| i.resp[1] > 1.5 && i.look[..3] == accent[..]).map(|i| i.rect).collect();
+    let ink = ui.look().theme.ink;
+    let bars: Vec<[f32; 4]> = ui.scene().annot.iter().filter(|i| i.resp[1] > 1.5 && i.look[..3] == ink[..]).map(|i| i.rect).collect();
     assert_eq!(bars.len(), 8, "four corners of two bars each in the annotation layer");
     assert!(ui.scene().instances.iter().all(|i| !(i.resp[1] > 1.5 && i.rect[2] <= 16.0 && i.rect[3] <= 16.0 && i.paint[1] >= 1.0)), "no marks among the page's own instances");
     // Inside the control's 1 px border (device px).

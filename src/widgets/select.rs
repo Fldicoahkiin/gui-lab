@@ -31,18 +31,18 @@ pub fn select<M: Clone + 'static>(key: &str, options: &[&str], current: Option<u
     }) };
     let mut r = col().key(format!("{key}/select"))
         .child(row().key(key).height(CONTROL_H).min_width(160.0).pad(10.0, 0.0).gap(8.0).radius(RADIUS).align(AlignItems::CENTER).focusable(true)
-            .fill(Paint::GROUND).border(LINE, if open { Paint::ACCENT } else { Paint::DIM }).on_press(toggle).on_key({ let k = keys.clone(); move |a, b| k(a, b) })
+            .fill(Paint::GROUND).border(LINE, if open { Paint::ACCENT } else { Paint::HAIRLINE }).on_press(toggle).on_key({ let k = keys.clone(); move |a, b| k(a, b) })
             .role(Role::Combobox).expanded(open).text_value(shown)
             .child(text(shown, LABEL, Paint::TEXT).grow(1.0))
             .child(col().gap(1.0).align(AlignItems::CENTER).child(space(7.0, 1.5).fill(Paint::DIM)).child(space(4.0, 1.5).fill(Paint::DIM)).child(space(1.5, 1.5).fill(Paint::DIM))));
     if open {
-        let mut list = col().key(format!("{key}/list")).anchor(key).min_width(160.0).pad(4.0, 4.0).gap(1.0).radius(RADIUS + 2.0).fill(Paint::GROUND).border(LINE, Paint::DIM).role(Role::Listbox)
+        let mut list = col().key(format!("{key}/list")).anchor(key).min_width(160.0).pad(4.0, 4.0).gap(1.0).radius(RADIUS + 2.0).fill(Paint::GROUND).border(LINE, Paint::HAIRLINE).role(Role::Listbox)
             // Open, the keyboard is in the list (the layer takes the focus): the same keys work there.
             .focusable(true).on_key(move |a, b| keys(a, b));
         for (i, o) in options.iter().enumerate() {
             let (on, act) = (Some(i) == current, i == active);
             let mut item = row().key(format!("{key}:{i}")).height(CONTROL_H - 2.0).pad(10.0, 0.0).radius(RADIUS).align(AlignItems::CENTER).on_press(pick(i)).focusable(false)
-                .role(Role::Option).selected(on).child(text(*o, LABEL, if on { Paint::ACCENT } else { Paint::TEXT }));
+                .role(Role::Option).selected(on).child(text(*o, LABEL, if on { Paint::INK } else { Paint::TEXT }));
             if act { item = item.fill(SELECTED); }
             list = list.child(item);
         }

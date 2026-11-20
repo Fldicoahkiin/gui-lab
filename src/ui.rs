@@ -82,6 +82,7 @@ pub struct Node<M> {
     /// What it shows.
     pub content: Content,
     fill: Option<Paint>,
+    fill_on: crate::el::FillOn,
     border: Option<(f32, Paint)>,
     radius: f32,
     on_press: Option<M>,
@@ -868,6 +869,9 @@ pub struct Ui<S, M> {
     /// What waits: a layout (and the paint after it), or only a paint (`Ui::settle`).
     stale_layout: bool,
     stale_paint: bool,
+    /// What the fills that answer the pointer (`El::fill_hover`, `fill_held`) were painted for: the
+    /// hovered and the held key (`Ui::under_now`); `None` when no element has such a fill.
+    fill_state: Option<(Option<String>, Option<String>)>,
     /// Decode transitions running (by key), and each decoding element's instances as last painted
     /// (what its disappearance plays over).
     decodes: HashMap<String, DecodeRun>,
@@ -1198,7 +1202,7 @@ impl<S, M: Clone> Ui<S, M> {
             tree: TaffyTree::new(), tids: HashMap::new(), mkeys: HashMap::new(), moved: HashMap::new(), virt_views: HashMap::new(), virt_made: HashMap::new(), stack_w: HashMap::new(),
             scrolling: Scrolling::default(), touch: None, touches: HashSet::new(), touching: false, fling: None, over: HashMap::new(), motion: HashMap::new(), scroll_paint: false, event_t: None, ev: 0.0,
             recs: HashMap::new(), recomps: HashMap::new(), slides: HashMap::new(), no_recompose: false,
-            meshes: crate::mesh::Library::default(), mesh_hover: None, glyphs: Default::default(), prep: Default::default(), move_over: None, particle_gpu: false, motes: vec![], shed_at: HashMap::new(), shed_owed: HashMap::new(), field_marks: HashMap::new(), seen: HashMap::new(), outlines: HashMap::new(), decodes: HashMap::new(), decode_last: HashMap::new(), last_morph: None, left: Default::default(), queued: vec![], flushing: false, coalesce: false, defer: 0, stale_layout: false, stale_paint: false, motes_made: 0,
+            meshes: crate::mesh::Library::default(), mesh_hover: None, glyphs: Default::default(), prep: Default::default(), move_over: None, particle_gpu: false, motes: vec![], shed_at: HashMap::new(), shed_owed: HashMap::new(), field_marks: HashMap::new(), seen: HashMap::new(), outlines: HashMap::new(), decodes: HashMap::new(), decode_last: HashMap::new(), last_morph: None, left: Default::default(), queued: vec![], flushing: false, coalesce: false, defer: 0, stale_layout: false, stale_paint: false, fill_state: None, motes_made: 0,
             fmap: crate::fieldmap::FieldMap::default(), stirr_at: HashMap::new(), fmap_size: (0.0, 0.0), fmap_ink: u64::MAX, fmap_inks: HashMap::new(), strand_faded: HashMap::new(), strand_cache: HashMap::new(), strand_hold: HashMap::new(), strand_drawn: vec![], trace_drawn: vec![], leaders: vec![], echoes: HashMap::new(), echo_at: f32::NEG_INFINITY, frozen: None, trace_head: HashMap::new(),
         };
         ui.resize(w, h, scale);
@@ -1741,7 +1745,7 @@ impl<S, M: Clone> Ui<S, M> {
             };
             if !plain || n.hidden || n.opacity != 1.0 || n.calm || n.trace.is_some() || n.shed.is_some() || n.flow_field.is_some() || n.stirr.is_some() || n.wipe.is_some()
                 || n.skeleton || n.form.is_some() || n.xf.is_some() || n.stage.is_some() || n.own_size.is_some() || n.view_scale.is_some() || n.modal.is_some()
-                || n.show_clear.is_some() || n.flow.is_some() || n.focus_shown || n.scroll || n.ripple.is_some() || (j != root && n.plate.is_some())
+                || n.show_clear.is_some() || n.flow.is_some() || n.focus_shown || n.scroll || !n.fill_on.none() || n.ripple.is_some() || (j != root && n.plate.is_some())
                 || ro.contains_key(&j) || self.recomps.contains_key(&n.key) || self.decodes.contains_key(&n.key)
                 || self.focus.as_deref() == Some(n.key.as_str()) || self.pressed.as_deref() == Some(n.key.as_str()) || self.modal_at == Some(j) { return None; }
             let nums = [n.rect.x, n.rect.y, n.rect.w, n.rect.h, n.clip.x, n.clip.y, n.clip.w, n.clip.h, n.clip_r, n.opacity_all, n.mat, n.loose, n.loosen, n.radius, pull.get(k).copied().unwrap_or(0.0)];
@@ -3073,10 +3077,17 @@ impl<S, M: Clone> Ui<S, M> {
     /// Lay out and paint what pointer moves, wheels and ticks left waiting: the renderer does it before
     /// it draws, and every other input before it looks at the page.
     pub fn settle(&mut self) {
+        // A fill that answers the pointer is painted again when what it answers changes.
+        if self.fill_state.is_some() && self.under_now() != self.fill_state { self.stale_paint = true; }
         if !self.stale() { return; }
         if self.stale_layout { self.relayout(); } else if !self.stale_stages.is_empty() { let k = std::mem::take(&mut self.stale_stages); self.restage(k); } else if self.stale_paint { self.paint(); }
         // The input this paint answered is spent (for the stages: `tick` leaves it while the paint waits).
         self.stage_input = (false, false);
+    }
+    /// The hovered and the held key, when some element's fill answers them (`El::fill_hover`).
+    fn under_now(&self) -> Option<(Option<String>, Option<String>)> {
+        if self.nodes.iter().all(|n| n.fill_on.none()) { return None; }
+        Some((self.hover.clone(), self.capture.as_ref().map(|c| c.key.clone()).or_else(|| self.pressed.clone())))
     }
     /// Laying out or painting waits for the frame (`Ui::settle`).
     fn stale(&self) -> bool { self.stale_layout || self.stale_paint || !self.stale_stages.is_empty() }
@@ -3815,6 +3826,11 @@ impl<S, M: Clone> Ui<S, M> {
         self.field.calm = [[0.0; 4]; 4];
         let mut calms = 0;
         let mut held = vec![false; self.nodes.len()];
+        // Under the pointer (1) or held (2), itself or the control it is part of: what `El::fill_hover`
+        // and `El::fill_held` answer.
+        let mut hand = vec![0u8; self.nodes.len()];
+        self.fill_state = self.under_now();
+        let (over, grip) = self.fill_state.clone().unwrap_or_default();
         // The drawings' own colours (`Drawing::palette`), in the order first drawn.
         let mut own_cols: Vec<[f32; 3]> = kept.as_ref().map_or(vec![], |k| k.own.clone());
         // `El::focus_shown` subtrees without focus inside are not drawn.
@@ -3954,6 +3970,7 @@ impl<S, M: Clone> Ui<S, M> {
             // decoration it passes over never shows through it as loose marks (DESIGN.md §1.29).
             if self.modal_at.is_none() && self.scene.layer.is_none() && n.stirr.is_some() && n.fill.is_some() && !n.hidden { self.scene.begin_layer(); }
             veiled[i] = n.parent.is_some_and(|p| veiled[p]) || n.focus_shown && !focus_at.is_some_and(|f| within(&self.nodes, f, i));
+            hand[i] = if grip.as_deref() == Some(n.key.as_str()) { 2 } else if over.as_deref() == Some(n.key.as_str()) { 1 } else { 0 }.max(n.parent.map_or(0, |p| hand[p]));
             held[i] = !self.timing.off.loosen && (self.pressed.as_deref() == Some(n.key.as_str()) || n.parent.is_some_and(|p| held[p]));
             stirred[i] = n.stirr.is_some() || n.parent.is_some_and(|p| stirred[p]);
             unit[i] = n.parent.and_then(|p| unit[p]).or(n.piece(self.size).then_some(i));
@@ -4103,7 +4120,7 @@ impl<S, M: Clone> Ui<S, M> {
                 }
                 continue;
             }
-            if let Some(p) = n.fill { put(&mut sink, shape(p, 0.0), ident(&n.key, u32::MAX, 0), None); }
+            if let Some(p) = n.fill_on.at(n.fill, hand[i]) { put(&mut sink, shape(p, 0.0), ident(&n.key, u32::MAX, 0), None); }
             if let Some((w, p)) = n.border { put(&mut sink, shape(p, w), ident(&n.key, u32::MAX - 1, 0), None); }
             match &n.content {
                 Content::Text { line, paint, caret, weight, select, mark, pose, .. } => {
@@ -4267,7 +4284,7 @@ impl<S, M: Clone> Ui<S, M> {
                     let uv = [(r[0] / s - pr.x) / pr.w.max(1e-3), (r[1] / s - pr.y) / pr.h.max(1e-3), (r[0] / s + r[2] / s - pr.x) / pr.w.max(1e-3), (r[1] / s + r[3] / s - pr.y) / pr.h.max(1e-3)];
                     let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round();
                     let packed_ink = q(c.mix) + 256.0 * q(c.ink.tone) + 65536.0 * q(c.ink.accent);
-                    let hue = c.ink.hue.min(2) as f32;
+                    let hue = if c.ink.hue == Paint::EXTREME_HUE { 3.0 } else { c.ink.hue.min(2) as f32 };
                     let inst = Instance { rect: r, uv, paint: [packed_ink, fx as f32, c.ink.alpha, PICTURE], clip,
                         extra: [ramp.len() as f32 + 64.0 * (cw + 256.0 * ch) + if c.light_dense { 1.0 / 4.0 } else { 0.0 }, id as f32, 0.0, 0.0],
                         look: [mat, hue + 4.0 * (ax as f32 + 2048.0 * ay as f32), 0.0, 1.0], resp, xf: [0.0; 4] };
@@ -6476,7 +6493,7 @@ impl<S, M: Clone> Ui<S, M> {
         let (len, th) = (8.0f32.min(r.w * 0.4).min(r.h * 0.4), 1.5);
         let c = self.marks.clip.inset(-6.0, -6.0, -6.0, -6.0);
         let clip = [c.x * s, c.y * s, c.right() * s, c.bottom() * s];
-        // Over the material, exact, in the accent (the annotation layer), or toward the ink by
+        // Over the material, exact, in the ink (the annotation layer), or toward the accent by
         // `Fx::marks_accent`: a material would draw the bars as its own shapes (near's bands round each
         // one, with the control's border running through).
         let look = self.look();
@@ -7509,7 +7526,7 @@ fn measure_key(c: &Content) -> u64 {
 #[allow(clippy::too_many_arguments)]
 fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], off: (bool, bool), flow: Option<(Rc<str>, usize)>, inh: Inherit, vx: &mut VirtCtx, built: &mut Built, nodes: &mut Vec<Node<M>>) -> usize {
     let stage_at = (el.props.stage || el.props.steps || el.props.local_messages).then(|| Box::new(StageCtx { parent, path: path.clone(), roles, off, flow: flow.clone(), inh: inh.clone(), held: el.props.stage, local: el.props.local_messages }));
-    let El { props: crate::el::Props { key, mut style, mut content, fill, border, radius, mut focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, mut commit, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, map_life, multiline, selectable, cursor, ripple, guide, skeleton, rtl, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview, fit, clamp, plate, cached, clip_radius, own_size, grain, show_clear, pen, view_scale, stage: _, stack, steps: _, local_messages: _ }, mut on_press, mut on_key, mut on_drag, mut on_blur, modal, mut on_text, virt, access, mut on_pick, mut on_wheel, mut on_move, on_visible, on_outline, mut children } = el;
+    let El { props: crate::el::Props { key, mut style, mut content, fill, fill_on, border, radius, mut focusable, tab_order, skip_to, focus_shown, scroll, horizontal, bar, reveal, disabled, mut commit, fonts, loose, wipe, flow: own_flow, hidden, shift, shed, flow_field, stirr, trace, annotate, gaze_scope, material, loosen, anchor, clips, calm, map_life, multiline, selectable, cursor, ripple, guide, skeleton, rtl, decode, form, turn, reveal_by, ongoing, pass, opacity, commit_scope, preview, fit, clamp, plate, cached, clip_radius, own_size, grain, show_clear, pen, view_scale, stage: _, stack, steps: _, local_messages: _ }, mut on_press, mut on_key, mut on_drag, mut on_blur, modal, mut on_text, virt, access, mut on_pick, mut on_wheel, mut on_move, on_visible, on_outline, mut children } = el;
     // A view scale scales what it holds, not its pen (`El::view_scale`).
     if let Some(s) = view_scale { children = children.into_iter().map(|c| c.zoom_by(s, true)).collect(); }
     let mut inh = inh;
@@ -7582,7 +7599,7 @@ fn flatten<M>(el: El<M>, parent: Option<usize>, path: String, roles: [u8; 3], of
     let placeholder = NodeId::from(0u64);
     nodes.push(Node {
         key, parent, rect: Rect::default(), clip: Rect::default(), inner: Rect::default(), scroll, horizontal, focusable, tab_order, skip_to, focus_shown, written: 0, preview, disabled: off, extent: 0.0,
-        content, fill, border, radius, on_press, on_key, on_drag, on_blur, loose, wipe, bar, reveal, commit, modal, hidden, shift, shed, flow_field, stirr, trace, flow: flow.clone(),
+        content, fill, fill_on, border, radius, on_press, on_key, on_drag, on_blur, loose, wipe, bar, reveal, commit, modal, hidden, shift, shed, flow_field, stirr, trace, flow: flow.clone(),
         mat: inh.code(), loosen: inh.loosen, annotate, scope: gaze_scope, anchor, clips, calm, map_life, on_text, multiline, selectable: inh.select, cursor,
         virt: virt_info, access, respond, legible, ripple: inh.scope.clone(), ripple_scope: ripple.container || commit_scope, recompose, recompose_always: is_text && ripple.recompose == Some(true), unframed: ripple.unframed, keyed,
         on_pick, on_wheel, on_move, guide, on_visible, on_outline, decode, skeleton: inh.skeleton, form, turn, xf: None, reveal_by, ongoing: ongoing || parent.is_some_and(|p| nodes[p].ongoing), pass, opacity, opacity_all: opacity * parent.map_or(1.0, |p| nodes[p].opacity_all), commit_scope, fit, clamp, shown: None, plate, cached, clip_radius, clip_r: 0.0, own_size, grain, show_clear, view_scale, stage: stage_at, op0: (0.0, 0.0), pen, own_in_flow: own_size.is_some() && style.position != taffy::Position::Absolute, local: taffy::Layout::new(), exact: (0.0, 0.0), tid: placeholder,

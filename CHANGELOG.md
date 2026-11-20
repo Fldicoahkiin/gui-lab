@@ -8,6 +8,29 @@ crate and the `amenui` npm package (`web/`) always carry the same version, becau
 match the module that `web_app!` generates. The minimum Rust is the one CI builds with (`rust-version`
 in Cargo.toml); raising it is a breaking change before 1.0 only in the second number.
 
+## The default theme's colours
+
+- The default theme (`DARK`, `LIGHT`) takes the AA.9 table: new grounds, ink and accents (the accent is `#f47a3c`
+  dark and `#b23f0d` light; `#ff6b2b` is retired), and four greys of its own (`Theme::greys`: raised, hairline,
+  dim, text). `Paint::DIM`, `TEXT` and `FAINT` (now `HAIRLINE`, and `RAISED` new) are drawn as those colours
+  exactly, not as the ink mixed toward the ground; a tone between two greys is drawn between their colours. Their
+  tones moved to whole 255ths (dim 0.66 → 168/255, text 0.86 → 219/255). Other themes take their greys mixed as
+  before (`Greys::mixed`); **a theme built from `DARK` or `LIGHT` with its own ground and ink keeps their greys
+  unless it sets `greys: Greys::mixed(ground, ink)`.**
+- `Paint::EXTREME`: white on a dark scheme, black on a light one (`Theme::extreme`). It is the ink image's fourth
+  hue code (0.45, which the unused glyph-height code held).
+- `El::fill_hover` and `El::fill_held`: a fill under the pointer and while held or dragged.
+- `Variant::Primary`: an ink plate with a ground label, the extreme under the pointer, for the one main action of
+  a group. `Variant::Accent` stays for an explicitly coloured action. Badges take `Primary` too.
+- The default controls rest in ink: a switch that is on (ink track, ground knob; off a hairline track and a dim
+  knob), a slider (ink run and thumb, a hairline rest; the thumb is the accent while dragged), a radio's dot, a
+  checkbox's outline and tick, a toggle that is on and a choice's current option (ink plates with ground labels).
+  So are a pagination's current page (an ink plate), a current tab's rule, a progress bar's fill and the label of a
+  selected list row or menu option; `widgets::SELECTED`, the plate of a selected or keyed row, is the raised grey (it
+  was the accent at 0.12). Control outlines and panel frames at rest are hairline (were dim). The hover and focus marks are ink
+  (`Fx::marks_accent` is 0 by default).
+- The recipes' and samples' main actions are `Primary`; the components' button page shows it.
+
 ## Display type in its own material
 
 - `near` has ink bands (`墨带`, 1 to 3, and `带宽`, px; 0 by default, the bands as before): only that many bands

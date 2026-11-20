@@ -13,7 +13,7 @@ pub enum Msg { Open, Close, Name(TextEdit), Save }
 pub fn view(s: &Rename) -> El<Msg> {
     let body = col().gap(14.0)
         .child(input("rename/name", &s.name, "Name", 296.0, 40, Msg::Name))
-        .child(button_as("rename/save", "Save", Variant::Accent, Msg::Save));
+        .child(button_as("rename/save", "Save", Variant::Primary, Msg::Save));
     col().key("page").pad(32.0, 28.0).gap(14.0)
         .child(text(format!("Current name: {}", s.saved), 16.0, Paint::TEXT).key("page/name"))
         .child(button_as("page/open", "Rename…", Variant::Default, Msg::Open))

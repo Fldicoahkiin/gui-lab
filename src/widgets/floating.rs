@@ -117,7 +117,7 @@ pub fn floating<M: Clone + 'static>(key: &str, f: &Floating, content: El<M>, msg
     let (a, b) = (msg.clone(), msg);
     let (x, y) = f.at();
     col().key(key.to_owned()).width(f.size.0).height(f.size.1).radius(RADIUS * 2.0).clip()
-        .fill(Paint::GROUND).border(1.0, Paint::DIM).focusable(true).role(Role::Group).label(crate::i18n::tr("widget.floating.label"))
+        .fill(Paint::GROUND).border(1.0, Paint::HAIRLINE).focusable(true).role(Role::Group).label(crate::i18n::tr("widget.floating.label"))
         .cursor(if f.dragging() { crate::el::Cursor::Grabbing } else { crate::el::Cursor::Grab })
         .shift(x, y)
         // Dragged, thrown or gliding, it leaves a trail in the field map (DESIGN.md §1.29).

@@ -22,7 +22,7 @@ pub fn dialog<M: Clone>(key: &str, open: bool, title: &str, width: f32, beneath:
         .child(button_as(format!("{key}/close"), &crate::i18n::tr("widget.dialog.close"), Variant::Quiet, close.clone()));
     // The card is filled with the page's ground, so what is beneath does not show through it.
     let card = col().key(format!("{key}/card")).width(width).gap(14.0).pad(22.0, 18.0).radius(8.0)
-        .fill(Paint::GROUND).border(LINE, Paint::DIM)
+        .fill(Paint::GROUND).border(LINE, Paint::HAIRLINE)
         .child(head).child(body);
     col().key(key).center().modal(close, beneath).child(card.role(Role::Dialog).label(title))
 }

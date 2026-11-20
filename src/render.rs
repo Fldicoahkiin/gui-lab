@@ -70,6 +70,8 @@ struct Uniforms {
     /// A scroll move with its trace showing (`dirty::Move`): the stronger trace of the two frames and the
     /// way it points.
     mv: [f32; 4],
+    /// The theme's greys, ground to ink (rgb and the tone each is at), then the extreme (`greys`).
+    greys: [[f32; 4]; 5],
 }
 /// How many stages are drawn at their own scale at most (the others at the device's), and how many boxes
 /// over them are kept at the device's.
@@ -124,6 +126,8 @@ pub fn soft_floor(m: crate::style::Material) -> f32 {
 struct PartUniforms {
     res: [f32; 4], m: [f32; 4], bg: [f32; 4], fg: [f32; 4], accent: [f32; 4],
     ga: [f32; 4], gb: [f32; 4], gd: [f32; 4], ge: [f32; 4], gp: [f32; 4], gf: [f32; 4], gw: [f32; 4], gt: [f32; 4], fronts: [[f32; 4]; 8],
+    /// The theme's greys and the extreme (`greys`).
+    greys: [[f32; 4]; 5],
 }
 
 /// How particles can be simulated here (DESIGN.md §1.10): a compute shader (WebGPU, native), a fragment
@@ -936,7 +940,7 @@ impl Renderer {
         let c = |v: [f32; 3]| [v[0], v[1], v[2], 1.0];
         let pa = &look.particles;
         let mut u = PartUniforms { res: [self.size.0 as f32, self.size.1 as f32, scale, clock], m, bg: c(th.ground), fg: c(th.ink), accent: c(th.accent),
-            ga: [0.0; 4], gb: [0.0; 4], gd: [0.0; 4], ge: [SIM_DT, 0.0, -1.0, 0.0], gp: [0.0; 4], gf: [0.0; 4], gw: [0.0; 4], gt: [1.0, 0.0, 0.0, 0.0], fronts: [[0.0; 4]; 8] };
+            ga: [0.0; 4], gb: [0.0; 4], gd: [0.0; 4], ge: [SIM_DT, 0.0, -1.0, 0.0], gp: [0.0; 4], gf: [0.0; 4], gw: [0.0; 4], gt: [1.0, 0.0, 0.0, 0.0], fronts: [[0.0; 4]; 8], greys: greys(th) };
         if let Some((g, stagger, start)) = grid {
             u.ga = g.a; u.gb = g.b;
             u.gd = [g.cols as f32, g.rows as f32, self.tiles.sim.as_ref().map_or(1.0, |s| s.width as f32), stagger];
@@ -1915,9 +1919,18 @@ impl Renderer {
             own: self.own,
             stages: self.stage_u.0, sharp: self.stage_u.1, stagen: self.stage_u.2,
             mv: match self.parts.as_ref().and_then(|p| p.moved) { Some(m) if m.trace > 0.0 => [m.trace, m.way[0], m.way[1], 1.0], _ => [0.0; 4] },
+            greys: greys(th),
         };
         self.queue.write_buffer(&self.ubuf, 0, bytemuck::bytes_of(&u));
     }
+}
+
+/// The theme's greys as the shaders take them: raised, hairline, dim and text, each with the tone it
+/// stands at, then the extreme.
+fn greys(th: &crate::style::Theme) -> [[f32; 4]; 5] {
+    let [a, b, c, d] = th.greys.stops().map(|(g, t)| [g[0], g[1], g[2], t]);
+    let x = th.extreme();
+    [a, b, c, d, [x[0], x[1], x[2], 1.0]]
 }
 
 /// A pass that keeps what the target holds.

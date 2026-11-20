@@ -18,8 +18,20 @@ struct PU {
   gw: vec4f, // fronts: speed (device px/s), width (device px), push (px/s²), now (absolute s)
   gt: vec4f, // turned around (any number of times, `morph::Turn`): alpha, beta, the leg's end (0 or 1)
   fronts: array<vec4f, 8>, // x, y, start time (absolute), strength
+  greys: array<vec4f, 5>,  // the theme's greys, ground to ink, w the tone each is at (shader.wgsl `grey`)
 };
 @group(0) @binding(0) var<uniform> pu: PU;
+/// A tone's colour: the ground through the theme's greys to the ink, as the page draws it.
+fn grey_p(t: f32) -> vec3f {
+  let tc = clamp(t, 0.0, 1.0);
+  var a = pu.bg.rgb; var ta = 0.0;
+  for (var k = 0; k < 4; k++) {
+    let b = pu.greys[k];
+    if (tc <= b.w) { return mix(a, b.rgb, clamp((tc - ta) / max(b.w - ta, 1e-6), 0.0, 1.0)); }
+    a = b.rgb; ta = b.w;
+  }
+  return mix(a, pu.fg.rgb, clamp((tc - ta) / max(1.0 - ta, 1e-6), 0.0, 1.0));
+}
 @group(0) @binding(1) var src_ink: texture_2d<f32>;
 @group(0) @binding(2) var dst_ink: texture_2d<f32>;
 @group(0) @binding(3) var src_near: texture_2d<f32>;
@@ -262,7 +274,7 @@ fn tile_px(f: POut) -> Px {
     // ends of the flight stay exact.
     if (pu.m.z > 0.0 && pu.res.w > 0.03 && pu.res.w < pu.m.w - 0.03 && ink.a > 0.0) {
       let t = ink.r / ink.a; let g = ink.g / ink.a;
-      let c = pu.bg.rgb * max(1.0 - t - g, 0.0) + pu.fg.rgb * t + pu.accent.rgb * g;
+      let c = grey_p(select(t / max(1.0 - g, 1e-6), 0.0, g > 0.999)) * max(1.0 - g, 0.0) + pu.accent.rgb * g;
       ink = vec4f(c * ink.a, ink.a);
       nr.g = pu.m.z;
     }

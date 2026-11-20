@@ -21,7 +21,7 @@ use taffy::AlignItems;
 pub fn menu<M: Clone>(key: &str, label: &str, options: &[&str], current: Option<usize>, open: bool, commit: bool, toggle: M, close: M, pick: impl Fn(usize) -> M) -> El<M> {
     let shown = current.and_then(|i| options.get(i)).copied().unwrap_or("—");
     let button = row().key(key).height(CONTROL_H).pad(10.0, 0.0).gap(8.0).radius(RADIUS).align(AlignItems::CENTER)
-        .fill(if open { SELECTED } else { Paint::GROUND }).border(LINE, if open { Paint::ACCENT } else { Paint::DIM })
+        .fill(if open { SELECTED } else { Paint::GROUND }).border(LINE, if open { Paint::ACCENT } else { Paint::HAIRLINE })
         .on_press(toggle)
         .child(text(shown, LABEL - 1.0, Paint::TEXT))
         // A small chevron drawn as two strokes would need rotation; a narrow triangle of bars reads the same.
@@ -32,11 +32,11 @@ pub fn menu<M: Clone>(key: &str, label: &str, options: &[&str], current: Option<
         .child(button);
     if open {
         let mut list = col().key(format!("{key}/list")).anchor(key).min_width(160.0).pad(4.0, 4.0).gap(1.0).radius(RADIUS + 2.0)
-            .fill(Paint::GROUND).border(LINE, Paint::DIM);
+            .fill(Paint::GROUND).border(LINE, Paint::HAIRLINE);
         for (i, o) in options.iter().enumerate() {
             let on = Some(i) == current;
             let mut item = row().key(format!("{key}:{i}")).height(CONTROL_H - 2.0).pad(10.0, 0.0).radius(RADIUS).align(AlignItems::CENTER).on_press(pick(i))
-                .child(text(*o, LABEL - 1.0, if on { Paint::ACCENT } else { Paint::TEXT }));
+                .child(text(*o, LABEL - 1.0, if on { Paint::INK } else { Paint::TEXT }));
             if on { item = item.fill(SELECTED); }
             if commit { item = item.commit(); }
             list = list.child(item);

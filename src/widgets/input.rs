@@ -246,7 +246,7 @@ pub fn input<M: Clone + 'static>(key: &str, edit: &TextEdit, placeholder: &str, 
 fn input_in<M: Clone + 'static>(key: &str, edit: &TextEdit, placeholder: &str, width: f32, max: usize, msg: std::rc::Rc<dyn Fn(TextEdit) -> M>) -> El<M> {
     let now = edit.clone();
     row().key(key).width(width).height(CONTROL_H).pad(10.0, 0.0).radius(RADIUS).align(AlignItems::CENTER)
-        .fill(Paint::GROUND).border(LINE, Paint::DIM).scroll_x().cursor(Cursor::Text).role(Role::TextBox).label(placeholder).text_value(edit.text.clone())
+        .fill(Paint::GROUND).border(LINE, Paint::HAIRLINE).scroll_x().cursor(Cursor::Text).role(Role::TextBox).label(placeholder).text_value(edit.text.clone())
         .on_text(move |ev| now.handle(&ev, max, false).map(&*msg))
         .child(shown(edit, placeholder, LABEL, None).nowrap().key(format!("{key}/text")))
 }
@@ -258,7 +258,7 @@ pub fn textarea<M: Clone + 'static>(key: &str, edit: &TextEdit, placeholder: &st
     // Outlined, not filled: a filled box this tall is one of the "big" shapes chrome and liquid shade,
     // and the text in it would sit on metal.
     col().key(key).width(width).height(rows as f32 * line + 16.0).pad(10.0, 8.0).radius(RADIUS)
-        .border(LINE, Paint::DIM).scroll().bar().multiline().cursor(Cursor::Text).role(Role::TextBox).label(placeholder).text_value(edit.text.clone())
+        .border(LINE, Paint::HAIRLINE).scroll().bar().multiline().cursor(Cursor::Text).role(Role::TextBox).label(placeholder).text_value(edit.text.clone())
         .on_text(move |ev| now.handle(&ev, max, true).map(&msg))
         .child(shown(edit, placeholder, LABEL, Some(line)).fill_width().key(format!("{key}/text")))
 }

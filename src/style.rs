@@ -1,6 +1,7 @@
 //! Style as data: a theme (colours, type, lines), a material (how stage 2 draws), and up to eight sets
 //! of picture-mark parameters that picture instances choose between. See DESIGN.md §1.6.1 and §4.
 #![warn(missing_docs)]
+use crate::el::Paint;
 use crate::scene::Fx;
 use crate::text::{MONO, PIXEL, SANS};
 
@@ -18,8 +19,37 @@ pub struct TypeScale {
     pub small: f32,
 }
 
+/// The greys between a theme's ground and its ink, each an opaque colour of its own (DESIGN.md §4):
+/// `Paint::RAISED`, `HAIRLINE`, `DIM` and `TEXT` are these colours exactly, and a tone between two of
+/// them is drawn straight between their colours (`Theme::grey`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Greys {
+    /// Surfaces raised off the ground: a stage, a preview box.
+    pub raised: [f32; 3],
+    /// Card frames, rules, dividers and control outlines at rest.
+    pub hairline: [f32; 3],
+    /// Labels, numbers, hints and descriptions.
+    pub dim: [f32; 3],
+    /// Prose and idle control labels.
+    pub text: [f32; 3],
+}
+impl Greys {
+    /// The greys as plain mixes of `ground` and `ink` at their tones.
+    pub const fn mixed(ground: [f32; 3], ink: [f32; 3]) -> Self {
+        const fn at(g: [f32; 3], k: [f32; 3], t: f32) -> [f32; 3] { [g[0] + (k[0] - g[0]) * t, g[1] + (k[1] - g[1]) * t, g[2] + (k[2] - g[2]) * t] }
+        Self { raised: at(ground, ink, Paint::RAISED.tone), hairline: at(ground, ink, Paint::HAIRLINE.tone), dim: at(ground, ink, Paint::DIM.tone), text: at(ground, ink, Paint::TEXT.tone) }
+    }
+    /// The four with the tone each stands at, ground to ink.
+    pub fn stops(&self) -> [([f32; 3], f32); 4] {
+        [(self.raised, Paint::RAISED.tone), (self.hairline, Paint::HAIRLINE.tone), (self.dim, Paint::DIM.tone), (self.text, Paint::TEXT.tone)]
+    }
+}
+
+/// An sRGB colour written `0xrrggbb`, as the theme holds it (0–1).
+pub const fn hex(c: u32) -> [f32; 3] { [((c >> 16) & 255) as f32 / 255.0, ((c >> 8) & 255) as f32 / 255.0, (c & 255) as f32 / 255.0] }
+
 /// A theme: the page's colours, the faces and sizes of its type, and its line widths (DESIGN.md §4).
-/// Colours are linear RGB, 0–1.
+/// Colours are sRGB values, 0–1, mixed as they are written.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Theme {
     /// The theme's name, as presets and `theme_index` find it.
@@ -35,8 +65,11 @@ pub struct Theme {
     pub accent: [f32; 3],
     /// Hue 1 of `Paint`.
     pub second: [f32; 3],
-    /// Hue 2 of `Paint`.
+    /// Hue 2 of `Paint`: the warning colour in the default themes.
     pub third: [f32; 3],
+    /// The greys between the ground and the ink (`Paint::RAISED` … `TEXT`). A theme made from another
+    /// with its own ground and ink takes `Greys::mixed` of them, or its own.
+    pub greys: Greys,
     /// Face indices (see `text::SANS` …) for headings, running text and figures.
     pub display: u8,
     /// The face of running text.
@@ -51,6 +84,29 @@ pub struct Theme {
     pub rule: f32,
 }
 impl Theme {
+    /// The colour of a tone (0 the ground at the top of the window, 1 the ink): each grey exactly at its
+    /// tone, straight between them (the shaders' `grey`).
+    pub fn grey(&self, t: f32) -> [f32; 3] {
+        let t = t.clamp(0.0, 1.0);
+        let (mut a, mut ta) = (self.ground, 0.0);
+        for (b, tb) in self.greys.stops().into_iter().chain([(self.ink, 1.0)]) {
+            if t <= tb { let f = ((t - ta) / (tb - ta).max(1e-6)).clamp(0.0, 1.0); return std::array::from_fn(|i| a[i] + (b[i] - a[i]) * f); }
+            (a, ta) = (b, tb);
+        }
+        self.ink
+    }
+    /// The scheme's extreme (`Paint::EXTREME`): white where the ink is lighter than the ground, black
+    /// otherwise.
+    pub fn extreme(&self) -> [f32; 3] { if contrast(self.ink, [0.0; 3]) > contrast(self.ground, [0.0; 3]) { [1.0; 3] } else { [0.0; 3] } }
+    /// A hue's colour: the three accents and the extreme (hue 0 for any other).
+    pub fn hue_colour(&self, hue: u8) -> [f32; 3] {
+        match hue { 1 => self.second, 2 => self.third, Paint::EXTREME_HUE => self.extreme(), _ => self.accent }
+    }
+    /// A paint's colour, opaque, over the ground at the top of the window (the shaders' `paint_rgb`).
+    pub fn colour(&self, p: Paint) -> [f32; 3] {
+        let (g, h) = (self.grey(p.tone), self.hue_colour(p.hue));
+        std::array::from_fn(|i| g[i] * (1.0 - p.accent) + h[i] * p.accent)
+    }
     /// display, body, mono: what a subtree's `Font::Display` / `Body` / `Mono` resolve to.
     pub fn roles(&self) -> [u8; 3] { [self.display, self.body, self.mono] }
     /// How much of a control's ink `plain` keeps while it is held at the legibility cap `cap` (a press's
@@ -66,9 +122,9 @@ impl Theme {
         let lum = |c: [f32; 3]| 0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2]);
         let ratio = |a: [f32; 3], b: [f32; 3]| { let (x, y) = (lum(a), lum(b)); (x.max(y) + 0.05) / (x.min(y) + 0.05) };
         let g = self.ground;
-        let tone = |t: f32| std::array::from_fn::<f32, 3, _>(|i| g[i] + (self.ink[i] - g[i]) * t);
-        // Fill and label, each as it is drawn: mixed toward the ground by `a`.
-        let pairs = [(self.accent, g), (g, tone(0.66)), (g, tone(0.86)), (g, self.ink)];
+        // Fill and label, each as it is drawn: mixed toward the ground by `a`. A primary button's plate
+        // (the ink, the extreme under the pointer) with its ground label counts too.
+        let pairs = [(self.accent, g), (g, self.greys.dim), (g, self.greys.text), (g, self.ink), (self.ink, g), (self.extreme(), g)];
         let at = |c: [f32; 3], a: f32| std::array::from_fn::<f32, 3, _>(|i| (g[i] + (c[i] - g[i]) * a).clamp(0.0, 1.0));
         // 4.8 rather than 4.5: a label's thin strokes come out a little lighter than its colour.
         let ok = |a: f32| pairs.iter().filter(|(f, l)| ratio(*f, *l) >= 4.8).all(|(f, l)| ratio(at(*f, a), at(*l, a)) >= 4.8);
@@ -109,13 +165,21 @@ impl Gaze {
 
 const SIZES: TypeScale = TypeScale { display: 34.0, title: 20.0, body: 16.0, small: 13.0 };
 const fn theme(name: &'static str, ground: [f32; 3], ink: [f32; 3], accent: [f32; 3]) -> Theme {
-    Theme { name, ground, ground2: ground, ink, accent, second: accent, third: accent, display: SANS, body: SANS, mono: MONO, sizes: SIZES, hairline: 1.0, rule: 1.0 }
+    Theme { name, ground, ground2: ground, ink, accent, second: accent, third: accent, greys: Greys::mixed(ground, ink), display: SANS, body: SANS, mono: MONO, sizes: SIZES, hairline: 1.0, rule: 1.0 }
 }
 
-/// Near-black ground, warm white ink, an orange accent: the default.
-pub const DARK: Theme = Theme { second: [0.30, 0.62, 1.0], third: [0.98, 0.80, 0.25], ..theme("暗", [0.047, 0.051, 0.055], [0.886, 0.89, 0.878], [1.0, 0.42, 0.17]) };
-/// Warm white ground, near-black ink, a deep orange accent.
-pub const LIGHT: Theme = Theme { second: [0.10, 0.36, 0.78], third: [0.80, 0.60, 0.02], ..theme("明", [0.914, 0.910, 0.890], [0.09, 0.094, 0.10], [0.64, 0.20, 0.035]) };
+/// Near-black ground, warm white ink, an orange accent: the default. Opaque greys between them.
+pub const DARK: Theme = Theme {
+    ground2: hex(0x1a1b1d), second: hex(0x7db0f7), third: hex(0xf2c94c),
+    greys: Greys { raised: hex(0x232528), hairline: hex(0x383b40), dim: hex(0x989da4), text: hex(0xd6d8d4) },
+    ..theme("暗", hex(0x1a1b1d), hex(0xf2f2ee), hex(0xf47a3c))
+};
+/// Warm white ground, near-black ink, a deep orange accent. Opaque greys between them.
+pub const LIGHT: Theme = Theme {
+    ground2: hex(0xf1f0eb), second: hex(0x1a5cc7), third: hex(0x7d5c00),
+    greys: Greys { raised: hex(0xe6e5df), hairline: hex(0xcbc9c1), dim: hex(0x5f6266), text: hex(0x2b2c2e) },
+    ..theme("明", hex(0xf1f0eb), hex(0x141517), hex(0xb23f0d))
+};
 /// The Lab (DESIGN.md §5.3): near-black ground, grey-white ink, one blue accent (all three hues the
 /// same blue), everything in the monospaced pixel face.
 pub const LAB: Theme = Theme { display: MONO, body: MONO, ..theme("实验室", [0.031, 0.033, 0.036], [0.84, 0.85, 0.86], [0.26, 0.52, 1.0]) };

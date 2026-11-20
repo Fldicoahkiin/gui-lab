@@ -1,11 +1,12 @@
 // Two stages.
 //   Stage 1 draws every instance exactly, into two intermediate images (same geometry, drawn twice):
 //     ink  (rgba8): what is there. Glyphs and shapes: r = tone × (1 − accent), g = accent, a = coverage
-//                   (premultiplied); the colour is ground × (1 − r − g) + ink × r + hue × g, linear, so
-//                   an anti-aliased edge over another paint decodes to the blend of the two colours.
+//                   (premultiplied); the colour is grey(tone) × (1 − g) + hue × g (`paint_rgb`: the
+//                   tone through the theme's greys, straight between them), so an anti-aliased edge over
+//                   another paint decodes to a colour between the two.
 //                   Pictures: rgb = their colour, a = coverage.
-//                   b = a code (straight, b / a): hue × 0.15 + is-shape × 0.05 (so a glyph's
-//                   anti-aliased edge over a shape of the same hue keeps its hue).
+//                   b = a code (straight, b / a): hue × 0.15 + is-shape × 0.05 (hue 3 the extreme; so a
+//                   glyph's anti-aliased edge over a shape of the same hue keeps its hue).
 //     near (rgba8, max-blended): r = signed nearness to the outline, by true outline: 0.5 on it, 1 at
 //                   SPREAD px inside, 0 at SPREAD px outside; g = where a picture is, (PicFx slot + 1) / 8;
 //                   b = the instance's own looseness (held, born, or set at rest); a = a material
@@ -55,6 +56,7 @@ struct U {
   sharp: array<vec4f, 16>,  // what is drawn over them, kept at the device's scale (the same)
   stagen: vec4f,   // how many stages, how many boxes over them; z 1: the reduced pass is for the stages alone
   mv: vec4f,       // a scroll move with its trace showing: the stronger trace of the two frames, the way it points (render.rs)
+  greys: array<vec4f, 5>, // the theme's greys, ground to ink (raised, hairline, dim, text: rgb, w the tone each is at), then the extreme
 };
 @group(0) @binding(0) var<uniform> u: U;
 @group(0) @binding(1) var samp: sampler;
@@ -80,11 +82,33 @@ override MAT: i32 = -1;
 override ONLY: bool = false;
 /// The material an instance (or a pixel) is drawn with: its override, or the global one.
 fn eff_mat(code: f32) -> i32 { if (MAT >= 0 && !ONLY) { return MAT; } if (code >= 127.5) { return i32(round(code)) % 16; } return i32(u.fd.x); }
-/// A hue's colour: the theme's three accents, then the drawings' own colours (`Drawing::palette`).
-fn hue_col(h: f32) -> vec3f { if (h > 2.5) { return u.own[clamp(i32(round(h)) - 3, 0, 31)].rgb; } if (h > 1.5) { return u.third.rgb; } if (h > 0.5) { return u.second.rgb; } return u.accent.rgb; }
+/// The extreme's hue code (`Paint::EXTREME_CODE`: after the theme's three and the drawings' 32).
+const XHUE = 35.0;
+/// A hue's colour: the theme's three accents, then the drawings' own colours (`Drawing::palette`), then
+/// the scheme's extreme.
+fn hue_col(h: f32) -> vec3f { if (h > XHUE - 0.5) { return u.greys[4].rgb; } if (h > 2.5) { return u.own[clamp(i32(round(h)) - 3, 0, 31)].rgb; } if (h > 1.5) { return u.third.rgb; } if (h > 0.5) { return u.second.rgb; } return u.accent.rgb; }
 /// A hue as the coverage buffer codes it, off a picture: one of the theme's three (a drawing's own colour
 /// is hue 0 there).
-fn theme_hue(h: f32) -> f32 { return select(round(h), 0.0, h > 2.5); }
+fn theme_hue(h: f32) -> f32 { return select(select(round(h), 0.0, h > 2.5), 3.0, h > XHUE - 0.5); }
+/// A hue in the ink image's code (0–3) as `hue_col` takes it.
+fn code_hue(h: f32) -> f32 { return select(h, XHUE, h > 2.5); }
+/// A tone's colour (`Theme::grey`): the ground here (0) through the theme's greys, each exactly at its
+/// tone, to the ink (1), straight between them.
+fn grey(t: f32, at: vec2f) -> vec3f {
+  let tc = clamp(t, 0.0, 1.0);
+  var a = gnd(at); var ta = 0.0;
+  for (var k = 0; k < 4; k++) {
+    let b = u.greys[k];
+    if (tc <= b.w) { return mix(a, b.rgb, clamp((tc - ta) / max(b.w - ta, 1e-6), 0.0, 1.0)); }
+    a = b.rgb; ta = b.w;
+  }
+  return mix(a, u.fg.rgb, clamp((tc - ta) / max(1.0 - ta, 1e-6), 0.0, 1.0));
+}
+/// A paint's colour from its ink code: r = tone × (1 − accent), g = accent, the hue `hue_col` takes.
+fn paint_rgb(r: f32, g: f32, hue: f32, at: vec2f) -> vec3f {
+  let t = select(r / max(1.0 - g, 1e-6), 0.0, g > 0.999);
+  return grey(t, at) * max(1.0 - g, 0.0) + hue_col(hue) * g;
+}
 fn loose_scale() -> f32 { return u.ground2.w; }
 /// The ground's own marks are drawn (`Off::ground` not set).
 fn ground_marks() -> bool { return u.wipe.z < 0.5; }
@@ -454,8 +478,7 @@ fn cells_of(i: VOut) -> vec4f {
   let m = (pk % 256.0) / 255.0;
   let tone = (floor(pk / 256.0) % 256.0) / 255.0;
   let ac = floor(pk / 65536.0) / 255.0;
-  let r = tone * (1.0 - ac);
-  let ink = gnd(i.pos.xy) * max(1.0 - r - ac, 0.0) + u.fg.rgb * r + hue_col(hue) * ac;
+  let ink = grey(tone, i.pos.xy) * (1.0 - ac) + hue_col(code_hue(hue)) * ac;
   return vec4f(mix(c, ink, m), cov);
 }
 /// A 3D element's resolved nearness here (tex0 is its resolve for mesh batches).
@@ -550,7 +573,7 @@ fn from_oklab(lab: vec3f) -> vec3f {
   return vec3f(srgb1(c.r), srgb1(c.g), srgb1(c.b));
 }
 /// A paint's colour as drawn over a picture: ground, ink and its accent mixed (`ink_of`).
-fn paint_col(p: vec3f, hue: f32, at: vec2f) -> vec3f { let r = p.x * (1.0 - p.y); let g = p.y; return gnd(at) * max(1.0 - r - g, 0.0) + u.fg.rgb * r + hue_col(round(hue)) * g; }
+fn paint_col(p: vec3f, hue: f32, at: vec2f) -> vec3f { return grey(p.x, at) * (1.0 - p.y) + hue_col(round(hue)) * p.y; }
 
 fn ink_of(iv: VOut, solid: bool) -> vec4f {
   var i = iv;
@@ -572,7 +595,7 @@ fn ink_of(iv: VOut, solid: bool) -> vec4f {
     let g = c.r * c.b;
     if (i.extra.x > 0.5) {
       // Drawn as a picture: its own colours, straight.
-      let col = u.bg.rgb * max(1.0 - r - g, 0.0) + u.fg.rgb * r + hue_col(hue) * g;
+      let col = paint_rgb(r, g, hue, vec2f(0.0));
       return vec4f(col * a, a);
     }
     let code = hue * 0.15 + 0.07;
@@ -596,7 +619,7 @@ fn ink_of(iv: VOut, solid: bool) -> vec4f {
       return vec4f(col * a, a);
     }
     let r = i.paint.x * (1.0 - i.paint.y); let g = i.paint.y;
-    let col = gnd(i.pos.xy) * max(1.0 - r - g, 0.0) + u.fg.rgb * r + hue_col(round(i.look.y)) * g;
+    let col = paint_rgb(r, g, round(i.look.y), i.pos.xy);
     return vec4f(col * a, a);
   }
   // Text set in the ground's colour (a label on a solid button) under `near`, which draws panels open:
@@ -1036,25 +1059,22 @@ fn gnd(p: vec2f) -> vec3f {
   return mix(u.bg.rgb, u.ground2.rgb, clamp(p.y / u.res.y, 0.0, 1.0));
 }
 
-/// Text and shape ink, decoded: straight colour and coverage, whether it is a shape, and for what the
-/// height materials shade, its height coordinate (`ly` ≥ 0; −1 for everything else).
-struct Ink { rgb: vec3f, a: f32, shape: bool, ly: f32, acc: f32, tone: f32, txt: bool, hue: f32 };
+/// Text and shape ink, decoded: straight colour and coverage, whether it is a shape or has a glyph in it,
+/// its accent, tone and hue (as `hue_col` takes it).
+struct Ink { rgb: vec3f, a: f32, shape: bool, acc: f32, tone: f32, txt: bool, hue: f32 };
 fn dec_at(c: vec4f, p: vec2f) -> Ink {
   var o: Ink;
-  o.a = c.a; o.shape = false; o.ly = -1.0; o.rgb = gnd(p); o.acc = 0.0; o.tone = 0.0; o.txt = false; o.hue = 0.0;
+  o.a = c.a; o.shape = false; o.rgb = gnd(p); o.acc = 0.0; o.tone = 0.0; o.txt = false; o.hue = 0.0;
   if (c.a < 1e-3) { return o; }
   let t = c.r / c.a; let g = c.g / c.a; let b = c.b / c.a;
-  var hue = 0.0;
-  if (b >= 0.45) { o.ly = clamp((b - 0.5) / 0.49, 0.0, 1.0); }
-  else {
-    hue = clamp(round(b / 0.15), 0.0, 2.0);
-    let rest = b - hue * 0.15;
-    o.shape = rest > 0.025;
-    // Any glyph in the pixel, even a faint edge over a shape: a pure shape's rest is 0.05.
-    o.txt = rest < 0.049;
-  }
+  let code = clamp(round(b / 0.15), 0.0, 3.0);
+  let hue = code_hue(code);
+  let rest = b - code * 0.15;
+  o.shape = rest > 0.025;
+  // Any glyph in the pixel, even a faint edge over a shape: a pure shape's rest is 0.05.
+  o.txt = rest < 0.049;
   o.acc = g; o.tone = t;
-  o.rgb = gnd(p) * max(1.0 - t - g, 0.0) + u.fg.rgb * t + hue_col(hue) * g;
+  o.rgb = paint_rgb(t, g, hue, p);
   o.hue = hue;
   return o;
 }

@@ -156,7 +156,7 @@ pub mod components {
         match name {
             "menu" => f(vec![menu::ex_0()]),
             "orbit" => f(vec![orbit::ex_0()]),
-            "button" => f(vec![button::ex_0(), button::ex_1(), button::ex_2(), button::ex_3()]),
+            "button" => f(vec![button::ex_0(), button::ex_1(), button::ex_2(), button::ex_3(), button::ex_4()]),
             "number" => f(vec![number::ex_0(), number::ex_1()]),
             "input" => f(vec![input::ex_0(), input::ex_1(), input::ex_2()]),
             "switch" => f(vec![switch::ex_0(), switch::ex_1()]),

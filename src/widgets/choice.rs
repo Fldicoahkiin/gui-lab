@@ -3,7 +3,8 @@
 //! Purpose: Choose one of several named options.
 //! Props: `choice(key, label, options, current, msg)`; `segmented(key, options, current, height,
 //!   msg)`.
-//! States: the current option is filled; segmented is one focus stop, Left / Right move.
+//! States: the current option is an ink plate with its label in the ground's colour; segmented is one
+//!   focus stop, Left / Right move.
 //! Messages: `msg(i)` with the option's index.
 //! Usage: `segmented("view", &["日", "周"], s.view, 30.0, Msg::View)`
 //!
@@ -12,7 +13,7 @@
 //! - `choice`: a label and a row of small buttons that wraps; each option is its own focus stop.
 //! - `segmented`: the options joined into one control with a single focus stop; Left and Right move
 //!   the choice.
-use super::{CONTROL_H, LABEL, LINE, RADIUS, SELECTED};
+use super::{CONTROL_H, LABEL, LINE, RADIUS};
 use crate::el::{El, Key, Paint, row, text};
 use std::rc::Rc;
 use taffy::AlignItems;
@@ -28,10 +29,10 @@ fn choice_in<M: Clone>(key: &str, label: &str, options: &[&str], current: usize,
     for (i, o) in options.iter().enumerate() {
         let on = i == current;
         opts = opts.child(row().key(format!("{key}:{i}")).center().height(CONTROL_H - 4.0).pad(10.0, 0.0).radius(RADIUS)
-            .fill(if on { SELECTED } else { Paint::GROUND })
-            .border(LINE, if on { Paint::ACCENT } else { Paint::FAINT })
+            .fill(if on { Paint::INK } else { Paint::GROUND })
+            .border(LINE, if on { Paint::INK } else { Paint::HAIRLINE })
             .on_press(msg(i))
-            .child(text(*o, LABEL - 1.0, if on { Paint::ACCENT } else { Paint::TEXT })));
+            .child(text(*o, LABEL - 1.0, if on { Paint::GROUND } else { Paint::TEXT })));
     }
     row().key(key).gap(10.0).align(AlignItems::START)
         .child(row().width(76.0).height(CONTROL_H - 4.0).align(AlignItems::CENTER).child(text(label, LABEL, Paint::DIM)))
@@ -62,8 +63,8 @@ fn segmented_in<M: Clone + 'static>(key: &str, options: &[&str], current: usize,
     for (i, o) in options.iter().enumerate() {
         let on = i == current;
         let mut seg = row().key(format!("{key}:{i}")).center().pad(10.0, 0.0).radius(RADIUS).on_press(msg(i)).focusable(false)
-            .child(text(*o, LABEL - 1.0, if on { Paint::ACCENT } else { Paint::TEXT }));
-        if on { seg = seg.fill(SELECTED); }
+            .child(text(*o, LABEL - 1.0, if on { Paint::GROUND } else { Paint::TEXT }));
+        if on { seg = seg.fill(Paint::INK); }
         r = r.child(seg);
     }
     r

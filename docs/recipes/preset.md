@@ -52,7 +52,7 @@ pub fn view(s: &App) -> El<Msg> {
         .child(text("Press the button: the new look arrives through its own transition.", 15.0, Paint::DIM))
         // A commit: the frame as it was stays, and the preset's transition reveals the new one.
         .child(row().gap(12.0)
-            .child(button_as("switch", "Switch", Variant::Accent, Msg::Switch).commit())
+            .child(button_as("switch", "Switch", Variant::Primary, Msg::Switch).commit())
             .child(button_as("crack", "Crack", Variant::Default, Msg::Crack).commit()))
 }
 

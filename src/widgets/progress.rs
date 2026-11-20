@@ -13,7 +13,7 @@ use crate::el::{El, Paint, Role, row, space};
 pub fn progress<M>(key: &str, value: Option<f32>, width: f32) -> El<M> {
     let (v, at) = match value { Some(v) => (v.clamp(0.0, 1.0), 0.0), None => (0.3, 0.35) };
     let mut r = row().key(key).width(width).height(6.0).radius(RADIUS).fill(Paint::FAINT).role(Role::ProgressBar)
-        .child(space(width * at, 6.0)).child(space(width * v, 6.0).radius(RADIUS).fill(Paint::ACCENT).key(format!("{key}/fill")));
+        .child(space(width * at, 6.0)).child(space(width * v, 6.0).radius(RADIUS).fill(Paint::INK).key(format!("{key}/fill")));
     if let Some(x) = value { r = r.value_range(x.clamp(0.0, 1.0) * 100.0, 0.0, 100.0); }
     r
 }

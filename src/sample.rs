@@ -73,7 +73,7 @@ pub fn view(s: &Sample) -> El<()> {
         .child(crate::el::space(160.0, 4.0).fill(Paint::ACCENT).key("rule").loose(s.k))
         .child(row().gap(16.0).align(taffy::AlignItems::CENTER)
             .child(text_lh("At rest the page is only type and a picture; loosened, its title comes apart.", 14.0, 20.0, Paint::TEXT).width(300.0).key("body"))
-            .child(crate::widgets::button_as("send", "Send", crate::widgets::Variant::Accent, ())))
+            .child(crate::widgets::button_as("send", "Send", crate::widgets::Variant::Primary, ())))
 }
 
 /// A sheet: its size and RGBA pixels (cells left to right, then down), and the looseness of each cell

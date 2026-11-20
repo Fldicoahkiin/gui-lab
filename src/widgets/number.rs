@@ -93,7 +93,7 @@ fn control(key: &str, label: &str, value: f32, spec: Spec, draft: Option<&str>) 
     let shown = draft.clone().unwrap_or_else(|| spec.show(value));
     let mut field = row().key(format!("{key}/value")).height(CONTROL_H).width(96.0).pad(10.0, 0.0).gap(4.0).radius(RADIUS)
         .align(AlignItems::CENTER).fill(Paint::GROUND)
-        .border(LINE, if editing { Paint::ACCENT } else { Paint::DIM })
+        .border(LINE, if editing { Paint::ACCENT } else { Paint::HAIRLINE })
         .on_key(handler)
         .on_drag_with(scrub)
         // A new value recomposes the changed digits (DESIGN.md §1.16); digits being typed appear at once.

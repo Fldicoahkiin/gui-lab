@@ -24,7 +24,7 @@ pub fn radio_group<M: Clone + 'static>(key: &str, options: &[&str], current: usi
     let mut g = col().key(key).gap(2.0).on_key(keys).focusable(true).role(Role::RadioGroup);
     for (i, o) in options.iter().enumerate() {
         let on = i == current;
-        let mark = stack([space(16.0, 16.0).radius(8.0).fill(Paint::GROUND).border(LINE, if on { Paint::ACCENT } else { Paint::DIM }), space(8.0, 8.0).radius(4.0).fill(if on { Paint::ACCENT } else { Paint::GROUND })]);
+        let mark = stack([space(16.0, 16.0).radius(8.0).fill(Paint::GROUND).border(LINE, if on { Paint::INK } else { Paint::HAIRLINE }), space(8.0, 8.0).radius(4.0).fill(if on { Paint::INK } else { Paint::GROUND })]);
         g = g.child(row().key(format!("{key}:{i}")).height(CONTROL_H).gap(10.0).align(AlignItems::CENTER).on_press(msg(i)).focusable(false).role(Role::Radio).checked(on).label(*o)
             .child(mark).child(text(*o, LABEL, Paint::TEXT)));
     }

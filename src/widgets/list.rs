@@ -39,7 +39,7 @@ pub fn list<M: Clone + 'static>(key: &str, rows: &[(&str, &str)], selected: Opti
         let on = selected == Some(i);
         let mut r = row().key(format!("{key}:{i}")).height(row_h).pad(14.0, 0.0).gap(12.0).align(AlignItems::CENTER)
             .on_press(msg(i)).focusable(false).reveal(on).role(Role::ListItem).selected(on)
-            .child(text(*label, LABEL + 1.0, if on { Paint::ACCENT } else { Paint::TEXT }).grow(1.0))
+            .child(text(*label, LABEL + 1.0, if on { Paint::INK } else { Paint::TEXT }).grow(1.0))
             .child(text(*note, LABEL - 1.0, if on { Paint::TEXT } else { Paint::DIM }).font(Font::Mono));
         if on { r = r.fill(SELECTED); }
         l = l.child(r);

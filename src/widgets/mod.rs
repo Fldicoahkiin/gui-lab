@@ -87,5 +87,5 @@ pub const LABEL: f32 = 14.0;
 pub const CONTROL_H: f32 = 30.0;
 pub const LINE: f32 = 1.0;
 pub const RADIUS: f32 = 4.0;
-/// The accent colour at low strength, for what is selected.
-pub const SELECTED: crate::el::Paint = crate::el::Paint { tone: 0.0, accent: 1.0, alpha: 0.12, hue: 0 };
+/// The plate of what is selected or under the keys in a list or a menu: the raised grey.
+pub const SELECTED: crate::el::Paint = crate::el::Paint::RAISED;

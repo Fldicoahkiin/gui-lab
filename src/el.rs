@@ -5,18 +5,20 @@ use crate::wrap::Around;
 pub use taffy::Style;
 use taffy::prelude::*;
 
-/// How an instance is inked. `tone` mixes ground→ink, `accent` mixes that toward one of the theme's
-/// accent colours: `hue` 0 is `accent`, 1 `second`, 2 `third`.
+/// How an instance is inked. `tone` runs from the ground through the theme's greys to the ink
+/// (`Theme::grey`), `accent` mixes that toward one of the theme's accent colours: `hue` 0 is `accent`,
+/// 1 `second`, 2 `third`, `Paint::EXTREME_HUE` the scheme's extreme (`Theme::extreme`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Paint {
-    /// From the ground (0) to the ink (1).
+    /// From the ground (0) to the ink (1), through the theme's greys at their tones (`Paint::RAISED`,
+    /// `HAIRLINE`, `DIM`, `TEXT`).
     pub tone: f32,
     /// From that toward the accent colour `hue` (0 none, 1 all).
     pub accent: f32,
     /// Opacity, 0–1.
     pub alpha: f32,
-    /// Which accent: 0 `accent`, 1 `second`, 2 `third`; in a drawing, 3 and up its own colours
-    /// (`Drawing::palette`: 3 is its first), and hue 0 anywhere else.
+    /// Which accent: 0 `accent`, 1 `second`, 2 `third`, `EXTREME_HUE` the extreme; in a drawing, 3 and
+    /// up its own colours (`Drawing::palette`: 3 is its first), and hue 0 anywhere else.
     pub hue: u8,
 }
 impl Paint {
@@ -26,20 +28,51 @@ impl Paint {
     pub const fn hue(hue: u8) -> Self { Self { tone: 1.0, accent: 1.0, alpha: 1.0, hue } }
     /// The same paint at opacity `alpha`.
     pub const fn alpha(self, alpha: f32) -> Self { Self { alpha, ..self } }
-    /// Its hue as a theme accent (0, 1, 2): one of a drawing's own colours is hue 0 outside a drawing.
-    pub(crate) fn theme_hue(self) -> f32 { if self.hue > 2 { 0.0 } else { self.hue as f32 } }
+    /// Its hue as the shaders take it: a theme accent (0, 1, 2), the extreme (`EXTREME_CODE`); one of a
+    /// drawing's own colours is hue 0 outside a drawing.
+    pub(crate) fn theme_hue(self) -> f32 { if self.hue == Self::EXTREME_HUE { Self::EXTREME_CODE } else if self.hue > 2 { 0.0 } else { self.hue as f32 } }
+    /// The hue that is the scheme's extreme: white where the ink is lighter than the ground, black
+    /// otherwise (`Theme::extreme`).
+    pub const EXTREME_HUE: u8 = 255;
+    /// The extreme's hue code in an instance (after the theme's three and the drawings' own colours).
+    pub(crate) const EXTREME_CODE: f32 = 3.0 + crate::draw::OWN_COLOURS as f32;
     /// Full ink: headings and what must stand out.
     pub const INK: Self = Self::tone(1.0);
-    /// Running text.
-    pub const TEXT: Self = Self::tone(0.86);
-    /// Secondary text: captions, hints, labels.
-    pub const DIM: Self = Self::tone(0.66);
-    /// Faint fills and rules.
-    pub const FAINT: Self = Self::tone(0.2);
+    /// Running text and idle control labels: the theme's `text` grey.
+    pub const TEXT: Self = Self::tone(219.0 / 255.0);
+    /// Secondary text (captions, hints, labels, numbers): the theme's `dim` grey.
+    pub const DIM: Self = Self::tone(168.0 / 255.0);
+    /// Card frames, rules, dividers and control outlines at rest: the theme's `hairline` grey.
+    pub const HAIRLINE: Self = Self::tone(51.0 / 255.0);
+    /// Faint fills and rules: the hairline grey.
+    pub const FAINT: Self = Self::HAIRLINE;
+    /// Surfaces raised off the ground (a stage, a preview box): the theme's `raised` grey.
+    pub const RAISED: Self = Self::tone(20.0 / 255.0);
     /// The page's own ground colour: invisible, but it keeps the ground units out.
     pub const GROUND: Self = Self::tone(0.0);
     /// The theme's first accent, in full.
     pub const ACCENT: Self = Self { tone: 1.0, accent: 1.0, alpha: 1.0, hue: 0 };
+    /// The scheme's extreme in full: white on a dark scheme, black on a light one, past the ink.
+    pub const EXTREME: Self = Self { tone: 1.0, accent: 1.0, alpha: 1.0, hue: Self::EXTREME_HUE };
+}
+
+/// What an element's fill turns to under the pointer and while held (`El::fill_hover`,
+/// `El::fill_held`); each falls back to the fill at rest.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct FillOn {
+    /// Under the pointer.
+    pub hover: Option<Paint>,
+    /// Pressed or dragged.
+    pub held: Option<Paint>,
+}
+impl FillOn {
+    /// The fill for a state (0 at rest, 1 under the pointer, 2 held), from `rest`.
+    pub fn at(&self, rest: Option<Paint>, state: u8) -> Option<Paint> {
+        let hover = if state >= 1 { self.hover.or(rest) } else { rest };
+        if state >= 2 { self.held.or(hover) } else { hover }
+    }
+    /// It changes nothing.
+    pub fn none(&self) -> bool { self.hover.is_none() && self.held.is_none() }
 }
 
 /// A key, as the runtime and handlers see it.
@@ -613,6 +646,8 @@ pub struct Props {
     pub content: Content,
     /// Its background.
     pub fill: Option<Paint>,
+    /// What its fill turns to under the pointer and while held (`El::fill_hover`, `El::fill_held`).
+    pub fill_on: FillOn,
     /// Its border: width (logical px) and paint.
     pub border: Option<(f32, Paint)>,
     /// Corner radius of the fill and border, logical px.
@@ -750,7 +785,7 @@ pub struct Props {
 }
 impl Props {
     #[inline(never)]
-    fn new(style: Style, content: Content) -> Self { Props { key: String::new(), style, content, fill: None, border: None, radius: 0.0, focusable: false, tab_order: 0, skip_to: None, focus_shown: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, shift: (0.0, 0.0), shed: None, flow_field: None, stirr: None, trace: None, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, clips: false, calm: false, map_life: None, multiline: false, selectable: false, cursor: None, ripple: Ripple::default(), guide: None, skeleton: false, rtl: None, decode: None, form: None, turn: 0.0, reveal_by: Reveal::Glyph, ongoing: false, pass: false, opacity: 1.0, commit_scope: false, preview: false, fit: None, clamp: 0, plate: None, cached: false, clip_radius: 0.0, own_size: None, grain: false, show_clear: None, pen: 1.0, view_scale: None, stage: false, stack: false, steps: false, local_messages: false } }
+    fn new(style: Style, content: Content) -> Self { Props { key: String::new(), style, content, fill: None, fill_on: FillOn { hover: None, held: None }, border: None, radius: 0.0, focusable: false, tab_order: 0, skip_to: None, focus_shown: false, scroll: false, horizontal: false, bar: false, reveal: false, disabled: false, commit: false, fonts: None, loose: 0.0, wipe: None, flow: None, hidden: false, shift: (0.0, 0.0), shed: None, flow_field: None, stirr: None, trace: None, annotate: None, gaze_scope: false, material: None, loosen: 0.0, anchor: None, clips: false, calm: false, map_life: None, multiline: false, selectable: false, cursor: None, ripple: Ripple::default(), guide: None, skeleton: false, rtl: None, decode: None, form: None, turn: 0.0, reveal_by: Reveal::Glyph, ongoing: false, pass: false, opacity: 1.0, commit_scope: false, preview: false, fit: None, clamp: 0, plate: None, cached: false, clip_radius: 0.0, own_size: None, grain: false, show_clear: None, pen: 1.0, view_scale: None, stage: false, stack: false, steps: false, local_messages: false } }
 }
 impl<M> std::ops::Deref for El<M> { type Target = Props; fn deref(&self) -> &Props { &self.props } }
 impl<M> std::ops::DerefMut for El<M> { fn deref_mut(&mut self) -> &mut Props { &mut self.props } }
@@ -904,6 +939,12 @@ impl<M> El<M> {
     pub fn center(self) -> Self { self.align(AlignItems::CENTER).justify(JustifyContent::CENTER) }
     /// A background.
     pub fn fill(mut self, p: Paint) -> Self { self.fill = Some(p); self }
+    /// The background while the pointer is over it, or over the control it is part of (the nearest
+    /// pressable element at or above it). Without one it keeps its fill at rest.
+    pub fn fill_hover(mut self, p: Paint) -> Self { self.fill_on.hover = Some(p); self }
+    /// The background while it, or the control it is part of, is held: pressed, or dragged. Without
+    /// one it takes its hover fill while the pointer is over it, else its fill at rest.
+    pub fn fill_held(mut self, p: Paint) -> Self { self.fill_on.held = Some(p); self }
     /// A border `w` logical px wide (it takes room in the layout, as CSS's does).
     pub fn border(mut self, w: f32, p: Paint) -> Self { self.border = Some((w, p)); self.style.border = Rect { left: length(w), right: length(w), top: length(w), bottom: length(w) }; self }
     /// Rounded corners of the fill and border, logical px.

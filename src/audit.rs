@@ -200,13 +200,17 @@ fn clipped<S, M: Clone>(ui: &mut Ui<S, M>, out: &mut Vec<Finding>) {
 
 /// How many pixels of a frame (`px`, RGBA, `w` px wide) are in no colour the theme can make: every
 /// pixel outside `skip` (pictures, drawings with their own colours; device px boxes) should be the
-/// ground (anywhere between `ground` and `ground2`) mixed toward the ink or one of the accents, as the
-/// materials mix them, within `tol` (0..255 per channel). A field or a debug layer drawn in its own
+/// ground (anywhere between `ground` and `ground2`) mixed toward the ink, the raised grey, the extreme or
+/// one of the accents, or a colour on the line of the theme's greys (`Theme::grey`), as the materials
+/// mix them, within `tol` (0..255 per channel). A field or a debug layer drawn in its own
 /// colour onto the frame is counted.
 pub fn off_palette(px: &[u8], w: u32, theme: &crate::style::Theme, skip: &[[f32; 4]], tol: f32) -> usize {
     let c = |v: [f32; 3]| v.map(|x| x * 255.0);
     let grounds: Vec<[f32; 3]> = (0..=8).map(|i| { let t = i as f32 / 8.0; std::array::from_fn(|k| c(theme.ground)[k] + (c(theme.ground2)[k] - c(theme.ground)[k]) * t) }).collect();
-    let tops = [c(theme.ink), c(theme.accent), c(theme.second), c(theme.third)];
+    let tops = [c(theme.ink), c(theme.accent), c(theme.second), c(theme.third), c(theme.extreme()), c(theme.greys.raised)];
+    // The greys' own line, ground to ink and on to the extreme, as the tones run along it.
+    let g = &theme.greys;
+    let chain = [c(g.raised), c(g.hairline), c(g.dim), c(g.text), c(theme.ink), c(theme.extreme())];
     let seg = |p: [f32; 3], a: [f32; 3], b: [f32; 3]| {
         let ab: [f32; 3] = std::array::from_fn(|k| b[k] - a[k]);
         let l2: f32 = ab.iter().map(|v| v * v).sum();
@@ -217,7 +221,7 @@ pub fn off_palette(px: &[u8], w: u32, theme: &crate::style::Theme, skip: &[[f32;
         let (x, y) = ((*i as u32 % w) as f32 + 0.5, (*i as u32 / w) as f32 + 0.5);
         if skip.iter().any(|b| x >= b[0] && y >= b[1] && x < b[0] + b[2] && y < b[1] + b[3]) { return false; }
         let p = [q[0] as f32, q[1] as f32, q[2] as f32];
-        !grounds.iter().any(|g| tops.iter().any(|t| seg(p, *g, *t) <= tol))
+        !grounds.iter().any(|g| tops.iter().any(|t| seg(p, *g, *t) <= tol)) && !chain.windows(2).any(|w| seg(p, w[0], w[1]) <= tol)
     }).count()
 }
 

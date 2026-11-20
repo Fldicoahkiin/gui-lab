@@ -14,7 +14,7 @@ use crate::el::{El, Paint, Response, Role, col, text};
 pub fn tooltip<M>(key: &str, target: El<M>, tip: &str, shown: bool) -> El<M> {
     let mut c = col().key(key).gap(6.0).child(target);
     if shown {
-        c = c.child(col().key(format!("{key}/tip")).pad(8.0, 5.0).radius(RADIUS).fill(Paint::GROUND).border(LINE, Paint::DIM).role(Role::Tooltip).label(tip)
+        c = c.child(col().key(format!("{key}/tip")).pad(8.0, 5.0).radius(RADIUS).fill(Paint::GROUND).border(LINE, Paint::HAIRLINE).role(Role::Tooltip).label(tip)
             .respond(Response::Ignore).child(text(tip, LABEL - 2.0, Paint::TEXT)).absolute(Some(0.0), None, None, Some(-30.0)));
     }
     c

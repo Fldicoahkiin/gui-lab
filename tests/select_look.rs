@@ -47,7 +47,7 @@ fn a_selection_across_two_lines_is_an_opaque_halo_in_one_colour_with_the_glyphs_
     assert_eq!(u.scene().instances.iter().filter(|i| i.paint[3] == SHAPE && i.paint[2] > 0.0).count(), 0, "a shape drawn for the selection");
     let ground: [f32; 3] = DARK.ground.map(|v| v * 255.0);
     let halo: [f32; 3] = std::array::from_fn(|k| (DARK.ground[k] * 0.66 + DARK.accent[k] * 0.34) * 255.0);
-    assert!(near(halo, [0x5f as f32, 0x2d as f32, 0x18 as f32], 1.0), "the halo colour {halo:?}");
+    assert!(near(halo, [0x64 as f32, 0x3b as f32, 0x28 as f32], 1.0), "the halo colour {halo:?}");
     // Two halos over each other at 0.34 would be this: it is nowhere.
     let band: [f32; 3] = std::array::from_fn(|k| halo[k] * 0.66 + DARK.accent[k] * 255.0 * 0.34);
     let (mut flat, mut banded, mut brightest) = (0, 0, [0.0f32; 3]);

@@ -15,7 +15,7 @@ use taffy::AlignItems;
 
 pub fn sheet<M: Clone>(key: &str, open: bool, title: &str, width: f32, close: M, body: El<M>) -> El<M> {
     if !open { return space(0.0, 0.0); }
-    let panel = col().key(format!("{key}/panel")).width(width).fill_height().pad(22.0, 18.0).gap(14.0).fill(Paint::GROUND).border(LINE, Paint::DIM)
+    let panel = col().key(format!("{key}/panel")).width(width).fill_height().pad(22.0, 18.0).gap(14.0).fill(Paint::GROUND).border(LINE, Paint::HAIRLINE)
         .role(Role::Dialog).label(title)
         .child(row().gap(12.0).align(AlignItems::CENTER).child(text(title, LABEL + 3.0, Paint::INK).font(Font::Display).grow(1.0))
             .child(button_as(format!("{key}/close"), &crate::i18n::tr("widget.dialog.close"), Variant::Quiet, close.clone())))

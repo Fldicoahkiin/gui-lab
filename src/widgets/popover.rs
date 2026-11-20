@@ -14,7 +14,7 @@ pub fn popover<M: Clone>(key: &str, trigger: &str, open: bool, toggle: M, close:
     let mut r = col().key(format!("{key}/popover")).child(button_as(key, trigger, Variant::Default, toggle).expanded(open));
     if open {
         let panel = col().key(format!("{key}/panel")).anchor(key).min_width(220.0).pad(14.0, 12.0).gap(10.0).radius(RADIUS + 2.0)
-            .fill(crate::el::Paint::GROUND).border(LINE, crate::el::Paint::DIM).role(Role::Dialog).label(trigger).child(body);
+            .fill(crate::el::Paint::GROUND).border(LINE, crate::el::Paint::HAIRLINE).role(Role::Dialog).label(trigger).child(body);
         r = r.child(col().key(format!("{key}/layer")).modal(close.clone(), 0.0).on_press(close).focusable(false).child(panel));
     }
     r

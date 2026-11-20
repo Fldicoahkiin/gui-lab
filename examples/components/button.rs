@@ -25,3 +25,8 @@ pub fn ex_2() -> El<Msg> {
 pub fn ex_3() -> El<Msg> {
     button_as("b4", "发布", Variant::Accent, Msg::Nothing).disabled(true)
 }
+
+/// 主要 · Primary
+pub fn ex_4() -> El<Msg> {
+    button_as("b5", "Save", Variant::Primary, Msg::Nothing)
+}

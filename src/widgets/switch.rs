@@ -20,10 +20,12 @@ pub fn switch<M: Clone>(key: impl Into<String>, label: &str, on: bool, states: O
 /// `track` is the track's height, logical px; it is a little under twice as wide.
 pub fn switch_sized<M: Clone>(key: impl Into<String>, label: &str, on: bool, states: Option<(&str, &str)>, track: f32, msg: M) -> El<M> {
     let knob = (track - 6.0).max(4.0);
-    let t = row().width((track * 1.9).round()).height(track).pad(3.0, 0.0).radius(track * 0.5).border(LINE, Paint::DIM).center()
-        .fill(if on { crate::widgets::SELECTED } else { Paint::GROUND })
+    // On: an ink track and a ground knob; off: a hairline track and a dim knob.
+    let track_p = if on { Paint::INK } else { Paint::HAIRLINE };
+    let t = row().width((track * 1.9).round()).height(track).pad(3.0, 0.0).radius(track * 0.5).border(LINE, track_p).center()
+        .fill(track_p)
         .justify(if on { JustifyContent::END } else { JustifyContent::START })
-        .child(space(knob, knob).radius(knob * 0.5).fill(if on { Paint::ACCENT } else { Paint::TEXT }));
+        .child(space(knob, knob).radius(knob * 0.5).fill(if on { Paint::GROUND } else { Paint::DIM }));
     let mut r = row().key(key).height(CONTROL_H.max(track + 8.0)).gap(10.0).align(taffy::AlignItems::CENTER).on_press(msg).role(Role::Switch).checked(on)
         .child(text(label, LABEL, Paint::DIM).grow(1.0));
     if let Some(s) = states { r = r.child(text(if on { s.1 } else { s.0 }, LABEL, Paint::TEXT)); }

@@ -19,7 +19,7 @@ pub fn view(s: &Form) -> El<Msg> {
         .child(number("form/copies", "Copies", s.copies, COPIES, s.draft.as_deref(), Msg::Copies).width(320.0))
         .child(switch("form/notify", "Notify me when it ships", s.notify, None, Msg::Notify).width(320.0))
         .child(row().gap(12.0)
-            .child(button_as("form/send", "Send", Variant::Accent, Msg::Send))
+            .child(button_as("form/send", "Send", Variant::Primary, Msg::Send))
             .child(text(format!("Sent: {}", s.sent), 14.0, Paint::DIM).key("form/sent")))
 }
 

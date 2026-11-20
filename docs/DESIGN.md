@@ -3319,6 +3319,34 @@ background colour); unavailable is `.disabled(true)`.
   thick line widths. There are fifteen: dark, light, pixel, and each style's own (Loose Thread has a black and a
   paper set: `THREAD`, `THREAD_PAPER`). `style::THEME_IDS` are their ASCII names, matching `THEMES` one to one. The
   root sets `.fonts(theme.roles())`, and text elements use roles (`Font::Display / Body / Mono`) or a face directly.
+- **The greys** (`Theme::greys`) are opaque colours of the theme's own between its ground and its ink: `raised`
+  (surfaces off the ground: a stage, a preview box), `hairline` (card frames, rules, dividers, control outlines at
+  rest), `dim` (labels, numbers, hints, descriptions) and `text` (prose, idle control labels). `Paint::RAISED`,
+  `HAIRLINE` (`FAINT`), `DIM` and `TEXT` stand at fixed tones (20, 51, 168 and 219 of 255, so the ink image holds
+  them exactly) and are drawn as those colours exactly; a tone between two is drawn straight between their colours
+  (`Theme::grey`, the shaders' `grey`), so a grey is never the ink at an alpha. A theme without greys of its own
+  takes `Greys::mixed` (the plain mixes of ground and ink at those tones); a theme made from another with its own
+  ground and ink sets them (`greys: Greys::mixed(ground, ink)`), or it keeps the other's.
+- **The extreme** (`Paint::EXTREME`, `Theme::extreme`) is white on a dark scheme and black on a light one: past the
+  ink, for what the pointer is over. In the ink image it is a fourth hue code (0.45; the code the glyph heights once
+  took, which nothing wrote).
+- **The default theme** (`DARK`, `LIGHT`) takes the AA.9 table: ground `#1a1b1d` / `#f1f0eb`, raised `#232528` /
+  `#e6e5df`, hairline `#383b40` / `#cbc9c1`, dim `#989da4` / `#5f6266`, text `#d6d8d4` / `#2b2c2e`, ink `#f2f2ee` /
+  `#141517`, accent `#f47a3c` / `#b23f0d`, second `#7db0f7` / `#1a5cc7`, third (the warning colour) `#f2c94c` /
+  `#7d5c00`. Its controls rest in ink on the ground: a primary button (`Variant::Primary`, one in each group of
+  actions) is an ink plate with a ground label that turns to the extreme under the pointer; a switch that is on is an
+  ink track with a ground knob (off: a hairline track, a dim knob); a slider's run and thumb are ink, the rest of the
+  run hairline; a radio's dot, a checkbox's tick and outline, a pressed toggle and the current option of a choice are
+  ink (a toggle, an option and the current page of a pagination as an ink plate with a ground label), as are a
+  current tab's rule, a progress bar's fill and the label of a selected list row or menu option; a selected or
+  keyed row's plate (`widgets::SELECTED`) is the raised grey, not a tint of the accent; the hover and focus marks
+  are ink. The accent is
+  for a control under the hand (a slider's thumb while dragged, a menu or select that is open, a number being
+  edited) and for the explicit `Variant::Accent`.
+- **Fills that answer the pointer** (`El::fill_hover`, `El::fill_held`): an element's fill while the pointer is over
+  it or the control it is part of (the nearest pressable element at or above it), and while that is pressed or
+  dragged; each falls back to the fill at rest (held to the hover fill under the pointer). The page is painted again
+  when what they answer changes; a cached subtree with one is drawn every time.
 - **A material** is how the shading stage draws.
 - **Annotation** is whether the third pass is on and what it draws.
 

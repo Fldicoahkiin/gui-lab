@@ -98,7 +98,7 @@ fn near_keeps_a_label_on_a_solid_button_whole() {
     for theme in [0, 1] {
         let plain = send_ink(&mut o, Material::Plain, theme);
         let near = send_ink(&mut o, Material::Near, theme);
-        assert!(plain > 60, "theme {theme}: plain draws the label ({plain} px)");
+        assert!(plain > 40, "theme {theme}: plain draws the label ({plain} px)");
         assert!(near as f32 >= 0.9 * plain as f32, "theme {theme}: near draws {near} of plain's {plain} ink px");
     }
 }

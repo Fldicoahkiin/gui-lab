@@ -6,7 +6,7 @@ use amenui::draw::Drawing;
 use amenui::el::{El, Paint, canvas, col, picture};
 use amenui::offscreen::Offscreen;
 use amenui::scene::SHAPE;
-use amenui::style::{DARK, Look, Material, Theme};
+use amenui::style::{DARK, Greys, Look, Material, Theme};
 use amenui::ui::Ui;
 
 fn fonts() -> Vec<amenui::text::Face> { amenui::text::load_bundled(concat!(env!("CARGO_MANIFEST_DIR"), "/assets")).expect("fonts") }
@@ -34,7 +34,7 @@ fn view(p: &Page) -> El<()> {
     let root = if p.over { root.child(picture(PIC, H as f32 / W as f32).key("sky").width(W as f32).absolute(Some(0.0), Some(0.0), None, None)) } else { root };
     root.child(canvas(d).key("rays").width(W as f32).pass(true).absolute(Some(0.0), Some(0.0), None, None))
 }
-fn theme() -> Theme { Theme { accent: ROOT, second: MID, third: TIP, ground: [0.02, 0.03, 0.06], ground2: [0.02, 0.03, 0.06], ..DARK } }
+fn theme() -> Theme { Theme { accent: ROOT, second: MID, third: TIP, ground: [0.02, 0.03, 0.06], ground2: [0.02, 0.03, 0.06], greys: Greys::mixed([0.02, 0.03, 0.06], DARK.ink), ..DARK } }
 fn open(p: Page) -> Ui<Page, ()> {
     let mut u = Ui::new(p, view, |_, _| {}, fonts(), W, H, 1.0).on_look(|_| Look { material: Material::Plain, theme: theme(), ..Look::default() });
     u.tick(3.0);

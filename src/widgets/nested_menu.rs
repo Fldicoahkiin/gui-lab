@@ -212,7 +212,7 @@ pub fn nested_menu<M: Clone + 'static>(key: &str, m: &Menu, msg: impl Fn(MenuMsg
     let mut panels: Vec<El<M>> = vec![];
     for l in 0..m.depth() {
         let (x, y, w, h) = m.panel(l);
-        let mut p = col().key(format!("{key}/m{l}")).width(w).height(h).pad(m.pad, m.pad).radius(RADIUS + 2.0).fill(Paint::GROUND).border(LINE, Paint::DIM)
+        let mut p = col().key(format!("{key}/m{l}")).width(w).height(h).pad(m.pad, m.pad).radius(RADIUS + 2.0).fill(Paint::GROUND).border(LINE, Paint::HAIRLINE)
             .role(Role::Menu).shift(x, y);
         for (r, it) in m.rows(l).iter().enumerate() {
             let hot = m.hot(l) == Some(r);

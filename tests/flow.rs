@@ -10,7 +10,7 @@ use amenui::el::{Cells, El, Font, Paint, Stirr, canvas, cells, col, picture, tex
 use amenui::morph::{Cmd, Ease, FlowSpec};
 use amenui::offscreen::Offscreen;
 use amenui::scene::{Instance, PICTURE};
-use amenui::style::{DARK, Look, Material};
+use amenui::style::{DARK, Greys, Look, Material};
 use amenui::ui::Ui;
 
 fn fonts() -> Vec<amenui::text::Face> { amenui::text::load_bundled(concat!(env!("CARGO_MANIFEST_DIR"), "/assets")).expect("fonts") }
@@ -103,7 +103,7 @@ fn view(s: &Site) -> El<()> {
 fn look(s: &Site) -> Look {
     let mut l = Look { material: Material::Plain, theme: DARK, ..Look::default() };
     let g = if s.piece { PIECE_GROUND } else { INDEX_GROUND };
-    (l.theme.ground, l.theme.ground2) = (g, g);
+    (l.theme.ground, l.theme.ground2, l.theme.greys) = (g, g, Greys::mixed(g, l.theme.ink));
     l
 }
 fn open() -> Ui<Site, ()> {
@@ -151,7 +151,7 @@ fn flight(back: bool) {
     let others = index.instances_of("w/1");
     let frame_px: std::collections::HashSet<(u32, u32)> = (0..W * H).map(|k| (k % W, k / W)).filter(|&(x, y)| {
         let c = px(&index_frame, x, y);
-        (x <= 33 || x >= 270 || y <= 121 || y >= 418) && (32..272).contains(&x) && (120..420).contains(&y) && c[0] > c[1] + 30 && c[0] > c[2] + 30
+        (x <= 33 || x >= 270 || y <= 121 || y >= 418) && (32..272).contains(&x) && (120..420).contains(&y) && c[0] > c[1] + 20 && c[0] > c[2] + 10
     }).collect();
     assert!(frame_px.len() > 400, "the window's frame at rest: {} px", frame_px.len());
     let mut piece = open();

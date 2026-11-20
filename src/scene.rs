@@ -297,6 +297,6 @@ pub struct Fx {
 }
 impl Default for Fx {
     fn default() -> Self {
-        Self { pitch: 5.0, jitter: 0.0, glitch: 0.2, wave_speed: 760.0, wave_life: 1.4, wave_width: 26.0, wave_tail: 150.0, push: 5.0, lens: 84.0, lens_hard: 0.35, enter: 0.45, square: false, marks_accent: 1.0 }
+        Self { pitch: 5.0, jitter: 0.0, glitch: 0.2, wave_speed: 760.0, wave_life: 1.4, wave_width: 26.0, wave_tail: 150.0, push: 5.0, lens: 84.0, lens_hard: 0.35, enter: 0.45, square: false, marks_accent: 0.0 }
     }
 }

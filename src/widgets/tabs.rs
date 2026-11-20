@@ -36,7 +36,7 @@ pub fn tabs<M: Clone + 'static>(key: &str, labels: &[&str], current: usize, gap:
         let line = space(0.0, mark).fill_width();
         head = head.child(col().key(format!("{key}:{i}")).gap(6.0).pad(2.0, 6.0).on_press(msg(i)).focusable(false).role(Role::Tab).selected(on)
             .child(text(*l, LABEL + 1.0, if on { Paint::INK } else { Paint::DIM }))
-            .child(if on { line.fill(Paint::ACCENT) } else { line }));
+            .child(if on { line.fill(Paint::INK) } else { line }));
     }
     // The list and its rule are the control: held at the legibility cap with the tabs' labels, so an
     // effect on the page leaves them as they rest (the panel is the page's own).
