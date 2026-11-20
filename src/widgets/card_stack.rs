@@ -146,7 +146,8 @@ impl Stack {
         }).collect();
         let camera = if thick { Camera { projection: Projection::Perspective { fov: 34.0 }, yaw: -22.0, pitch: 24.0, distance: 2.3, target: [0.0, 0.0, -0.06], ..Camera::default() } }
             else { Camera { projection: Projection::Orthographic { height: 1.25 }, yaw: 0.0, pitch: 0.0, distance: 3.0, target: [0.0, 0.0, 0.0], ..Camera::default() } };
-        let spec = if thick { Mesh3d { tones: 2.0, outline: 1.2, ..Mesh3d::default() } } else { Mesh3d { tones: 2.0, outline: self.outline, ..Mesh3d::default() } };
+        // Supersampled twice: a turned card's outline is a smooth line, not steps of whole texels.
+        let spec = Mesh3d { tones: 2.0, outline: if thick { 1.2 } else { self.outline }, resolution_scale: 2.0, ..Mesh3d::default() };
         Scene3d { items, camera, light: Light::from_angles(-30.0, 50.0, 0.55), spec, picture: None }
     }
 }

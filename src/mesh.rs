@@ -456,7 +456,8 @@ impl Light {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Mesh3d {
     /// The off-screen target's size as a fraction of the element's device size (nearest upsample for
-    /// colour; the nearness is filtered). 0.25–1.
+    /// colour; the nearness is filtered). 0.25–2: above 1 the silhouette and the drawn outline are
+    /// supersampled, an edge on a pixel's share of it (its fill stays one texel's colour).
     pub resolution_scale: f32,
     /// A depth step between neighbouring texels larger than this fraction of the depth is an edge.
     pub edge_depth: f32,

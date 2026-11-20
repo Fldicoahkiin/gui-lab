@@ -15,6 +15,12 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
   Primary.
 - `near` draws its bands inside the ink in the hairline grey (was the accent): at rest a material shows no accent.
 
+## A card stack's turned outlines are smooth
+
+- `Mesh3d::resolution_scale` goes up to 2 (was 1): above 1 the mesh pass is supersampled, so a silhouette and
+  its drawn outline fall on a pixel's share of them. The card stack draws at 2: a turned card's hairline is a
+  smooth line, its whole pixels still exactly the grey asked (was steps of two pixels, at 0.5).
+
 ## A held stage costs nothing between its draws
 
 - A slow stage holding its image no longer paints the page on every frame it holds: a frame in which it would

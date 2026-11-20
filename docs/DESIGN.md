@@ -2019,7 +2019,8 @@ nearest under it, read unfiltered); flat-shading normals and shading are interpo
 (tone, accent, hue), using theme colours like shapes do.
 
 **The mesh pass.** Each `scene3d` element has a set of off-screen images the size of its device rect ×
-`Mesh3d.resolution_scale` (0.5 by default, 0.25–1), with 24-bit depth and three RGBA8 targets drawn at once
+`Mesh3d.resolution_scale` (0.5 by default, 0.25–2; above 1 the silhouette and the outline are supersampled and
+fall on a pixel's share of them, so a turned edge is a smooth line: the card stack draws at 2), with 24-bit depth and three RGBA8 targets drawn at once
 (multiple render targets work on WebGL2 without blending): shading (ambient + Lambert, flat), tone, accent and
 hue; view-space normal xy and 16-bit linear depth; the instance index (+ 1, 16 bits) and normal z. Unchanged
 elements (same `Scene3d::fingerprint` and size) are not redrawn.

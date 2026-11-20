@@ -674,9 +674,10 @@ impl Renderer {
         }
         for (k, md) in scene.meshes.iter().enumerate() {
             let sc = &md.scene;
-            let rs = sc.spec.resolution_scale.clamp(0.25, 1.0);
+            let rs = sc.spec.resolution_scale.clamp(0.25, 2.0);
             let (rw, rh) = (md.rect[2].max(1.0), md.rect[3].max(1.0));
-            let size = (((rw * rs).ceil() as u32).max(1), ((rh * rs).ceil() as u32).max(1));
+            let most = self.device.limits().max_texture_dimension_2d;
+            let size = (((rw * rs).ceil() as u32).clamp(1, most), ((rh * rs).ceil() as u32).clamp(1, most));
             if self.mesh.targets.len() <= k || self.mesh.targets[k].size != size {
                 let t = self.mesh_target(size);
                 if self.mesh.targets.len() <= k { self.mesh.targets.push(t); } else { self.mesh.targets[k] = t; }
