@@ -236,6 +236,10 @@ pub type Opener<'a> = &'a dyn Fn(&str, Vec<crate::text::Face>, (u32, u32, f32), 
 /// `open` with the look and the language given together: (material, theme, locale). Recipes keep
 /// their own language.
 pub fn open_in(page: &str, faces: Vec<crate::text::Face>, (w, h, scale): (u32, u32, f32), (material, theme, _locale): (Option<Material>, Option<usize>, Option<crate::i18n::Locale>)) -> Result<Box<dyn Driven>, LookError> {
+    if let Some(c) = page.strip_prefix("component-") {
+        let all = || crate::recipes::components::all().iter().map(|(n, _)| format!("component-{n}")).collect::<Vec<_>>().join(", ");
+        return match crate::recipes::components::ui(c, faces, w, h, scale) { Some(u) => Ok(styled(Box::new(u), material, theme)), None => Err(LookError::UnknownPage { given: page.to_owned(), recipes: all() }) };
+    }
     let name = page.strip_prefix("recipe-").unwrap_or(page);
     match crate::recipes::open(name, faces, w, h, scale) {
         Some(inner) => Ok(styled(inner, material, theme)),

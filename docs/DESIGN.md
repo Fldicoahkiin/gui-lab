@@ -3048,6 +3048,13 @@ rest `Eroded` P1; a calm page has no findings;
 the seventeen recipes in every material, dark and light, have no P0 or P1); `render --page recipe-form --audit
 --strict` exits 0.
 
+A component's examples are a page too: `render --page component-<name>` lays out `examples/components/<name>.rs`
+one example under another (`recipes::components::ui`). In Claude Code the repository's save hook
+(`.claude/settings.json`, `tools/audit-hook.sh`) renders, after an Edit or Write, the one page a view file belongs to
+(a recipe, a component's examples, or its widget in `src/widgets/`) with `--audit --strict` and hands the P0 and P1
+findings and the view's problems back to the model; AGENTS.md is also its `amenui` skill (`tools/skill.sh`,
+`tests/skill.rs`).
+
 `Ui::line_inks(key)` reads each line of a text element as drawn: its text range, line box and ink box
 (`LineInk`), for tests and for an application that places things by the text's real ink.
 

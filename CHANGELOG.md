@@ -8,6 +8,15 @@ crate and the `amenui` npm package (`web/`) always carry the same version, becau
 match the module that `web_app!` generates. The minimum Rust is the one CI builds with (`rust-version`
 in Cargo.toml); raising it is a breaking change before 1.0 only in the second number.
 
+## A Claude Code skill and a save hook
+
+- `.claude/skills/amenui/SKILL.md` is AGENTS.md as the `amenui` skill (made by `tools/skill.sh`; `tests/skill.rs`
+  fails when they differ).
+- `.claude/settings.json` runs `tools/audit-hook.sh` after Edit and Write: a change to a recipe, a component's
+  examples or its widget renders that one page with `render --audit --strict` and hands its P0 and P1 findings and
+  the view's problems back to the model.
+- `render --page component-<name>`: a component's examples, one under another, as a page to render and audit.
+
 ## Examples in English; `near` at rest without the accent
 
 - The component examples and the widgets' `Usage:` lines show English only (Badge "New" and "Draft", Avatar

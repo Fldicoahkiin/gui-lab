@@ -242,7 +242,15 @@ hyphenate the next word (`Around::hyphenate`, on by default); a piece that would
 cargo run --release --bin render -- --page recipe-form --size 1280x800 --at 1000 --out out.png --tree out.json
 cargo run --release --bin render -- --page recipe-counter --events inc.json --at 300 --out c.png --tree c.json
 cargo run --release --bin render -- --page recipe-form --audit --strict   # what is wrong with the frame, most serious first
+cargo run --release --bin render -- --page component-button --audit --strict   # a component's examples (examples/components/), one page
 ```
+
+In Claude Code this file is also the `amenui` skill (`.claude/skills/amenui/SKILL.md`, made from it by
+`tools/skill.sh`; `cargo test` fails when they differ). The repository's `.claude/settings.json` runs
+`tools/audit-hook.sh` after every Edit or Write: a change to a recipe (`examples/<name>.rs`), a component's
+examples (`examples/components/<name>.rs`) or its widget (`src/widgets/<name>.rs`) renders that one page with
+`--audit --strict`, and its P0 and P1 findings and the view's problems come back to you as the hook's output.
+Other files are left alone.
 
 `inc.json`: `[{"at_ms": 100, "kind": "press", "target": "inc"}, {"at_ms": 130, "kind": "release", "target": "inc"}]`
 (kinds: press, release, move — `x`, `y` or `target`; key — `key` as a DOM name, `shift`, `cmd`, `alt`;

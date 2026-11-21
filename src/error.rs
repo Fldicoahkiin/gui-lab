@@ -48,7 +48,7 @@ pub enum LookError {
         /// The highest number.
         last: usize,
     },
-    #[error("unknown page `{given}`. Write a recipe ({recipes}) or a page the application adds, such as a site page hash.")]
+    #[error("unknown page `{given}`. Write a recipe or a component page ({recipes}) or a page the application adds, such as a site page hash.")]
     /// No recipe or application page has that name.
     UnknownPage {
         /// What was asked for.

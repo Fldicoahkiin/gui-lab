@@ -150,6 +150,17 @@ pub mod components {
         ("card_stack", include_str!("../examples/components/card_stack.rs")),
         ("dot_chart", include_str!("../examples/components/dot_chart.rs")),
     ] }
+    /// The component shown by a page `component-<name>` (`ui`).
+    pub struct Shown { pub name: &'static str }
+    fn shown(s: &Shown) -> crate::el::El<()> {
+        examples(s.name).into_iter().enumerate().fold(crate::el::col().key("page").pad(24.0, 24.0).gap(24.0), |c, (k, e)| c.child(crate::el::col().key(format!("ex/{k}")).child(e)))
+    }
+    /// A page of the examples of component `name`, one under another, to render and audit
+    /// (`render --page component-button`); `None` for a name that is not a component.
+    pub fn ui(name: &str, faces: Vec<crate::text::Face>, w: u32, h: u32, scale: f32) -> Option<crate::ui::Ui<Shown, ()>> {
+        let (name, _) = all().into_iter().find(|(n, _)| *n == name)?;
+        Some(crate::ui::Ui::new(Shown { name }, shown, |_, _| {}, faces, w, h, scale))
+    }
     /// The examples of `name`, as elements sending `()`.
     pub fn examples(name: &str) -> Vec<crate::el::El<()>> {
         fn f<M: 'static>(v: Vec<crate::el::El<M>>) -> Vec<crate::el::El<()>> { v.into_iter().map(|e| e.map(std::rc::Rc::new(|_| ()))).collect() }

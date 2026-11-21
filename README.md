@@ -51,7 +51,9 @@ need to read stays legible.
 - **Draws only when needed.** The runtime says when the next frame is due. A still page draws no frames,
   and when only part of the page changes, only that part is drawn.
 - **Built to be checked by models.** The `render` tool plays scripted input on a fixed clock and writes
-  a PNG and the laid-out tree as JSON. The same arguments always give the same bytes.
+  a PNG and the laid-out tree as JSON. The same arguments always give the same bytes. In Claude Code the
+  repository brings an `amenui` skill (AGENTS.md) and a save hook that audits the page a changed view
+  file belongs to (`render --audit --strict`) and hands the findings back.
 
 ## Install
 
