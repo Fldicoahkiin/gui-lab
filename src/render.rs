@@ -269,6 +269,9 @@ pub struct Renderer {
     spec: [Option<Gated>; crate::style::MATERIAL_COUNT],
     /// The frames drawn (to `specialise`).
     drawn: u32,
+    /// A pixel of the output's format and a group of blank images, to draw a new pipeline with once
+    /// (`Renderer::prime`).
+    prime: (wgpu::TextureView, wgpu::BindGroup),
     /// What the last frame drew with (its material, the frame's and the page's materials): what the
     /// passes made in idle time are for (`Renderer::prepare_next`).
     spec_for: Option<(u8, u16, u16)>,
@@ -559,10 +562,11 @@ impl Renderer {
         let holds = Self::instance_buffer(&device, 64);
         let annots = Self::instance_buffer(&device, 256);
         let (blank_view, blank_group) = (blank.clone(), material.clone());
+        let prime = (Self::target(&device, 1, 1, out_format), material.clone());
         let mut r = Self {
             device, queue, out_format, layout, ubuf, sampler, atlas, atlas_view, marks, marks_view, palette_view, chars, chars_view,
             before: blank.clone(), blank: blank.clone(), hold: blank.clone(), hold_pipe, holds, hold_cap: 64, hold_n: 0, fmap, fmap_view: fmap_view.clone(), fmap_seen: None, fmap_u: [0.0; 4], split_seen: 0, split: [0.0; 4], last_look: None, marks_ready: false, hide_glyphs: false, atlas_new: true, path: Default::default(), plates_laid: std::cell::Cell::new(0),
-            pictures: HashMap::new(), picture_views: HashMap::new(), fresh_pics: vec![], hold_group: None, instances, capacity, pipes, annots, annot_capacity: 256, up_pipe: None, trace_pipe: None, specialise: Some(SPECIALISE_AFTER), spec_force: None, spec: Default::default(), drawn: 0, spec_for: None, run_mats: (0, 0), spec_used: None, shader, pl,
+            pictures: HashMap::new(), picture_views: HashMap::new(), fresh_pics: vec![], hold_group: None, instances, capacity, pipes, annots, annot_capacity: 256, up_pipe: None, trace_pipe: None, specialise: Some(SPECIALISE_AFTER), spec_force: None, spec: Default::default(), drawn: 0, prime, spec_for: None, run_mats: (0, 0), spec_used: None, shader, pl,
             ink: blank.clone(), lo: blank.clone(), lo_key: (0, 0, 0), material_up: material.clone(), auto: Default::default(), always_lo: false, stage_u: Box::new(([[0.0; 4]; STAGES], [[0.0; 4]; STAGES], [0.0; 4])), stage_q: 1.0, soft_q: 1.0, govern: true, no_map: false,
             near: blank, material_first: material.clone(), material, size: (0, 0), tiles, mesh, sim_rows: 0,
             region: crate::dirty::Region::All, parts: None, partial: true, frame_view: blank_view.clone(), alt: [blank_view.clone(), blank_view.clone(), blank_view.clone()], cost: Cost::default(), prev: None, spare: (vec![], vec![]), zero, blit, group: None, group_pipe, had_groups: false, plates: Default::default(), plate_pipes, plate_now: 0.0, plate_fade: [[0.0; 4]; 4], had_plates: 0, plate_inked: [false; 4], plate_mats: [0; 4], gated: Default::default(), plate_drew: [0; 4], plate_fresh: [false; 4], was_ageing: false, plate_serial: 0, reduced: false, fade_s: 0.15, sbox: [0.0; 4], own: [[0.0; 4]; crate::draw::OWN_COLOURS], post: None, blit_group: blank_group, warm: None, condense: false, last_region: None, tr: [[0.0; 4]; 9], boxes: [[0.0; 4]; 16], tr_loose: 0.0, t_cont: 0.0,
@@ -1048,16 +1052,35 @@ impl Renderer {
         self.marks_ready = true;
     }
 
+    /// Draw with a pipeline just made, once, into one pixel: a driver that finishes a pipeline when it is
+    /// first drawn with (the CPU rasteriser does, and the first frame of a dark scheme waited ~0.5 s for
+    /// its finishing pass there) does it now, while the renderer warms up or the page is idle, and not
+    /// on the frame that first needs it.
+    fn prime(&self, pipe: &wgpu::RenderPipeline) {
+        let mut enc = self.device.create_command_encoder(&Default::default());
+        {
+            let mut pass = clear(&mut enc, &self.prime.0, wgpu::Color::BLACK);
+            pass.set_pipeline(pipe);
+            pass.set_bind_group(0, &self.prime.1, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        self.queue.submit([enc.finish()]);
+    }
     /// The trace pass of a scroll move (made in the warm-up, or when first needed).
     fn ensure_trace(&mut self) {
-        if self.trace_pipe.is_none() { self.trace_pipe = Some(self.material_pipe("fs_trace", None)); }
+        if self.trace_pipe.is_some() { return; }
+        let p = self.material_pipe("fs_trace", None);
+        self.prime(&p);
+        self.trace_pipe = Some(p);
     }
     /// The upsample after a reduced material pass (made when first needed: it holds the whole material
     /// again, and compiling it is slow on a CPU rasteriser).
     fn ensure_up(&mut self) {
         if self.up_pipe.is_some() { return; }
         // After a reduced material pass: rest pixels at full resolution, loose ones from the reduced pass.
-        self.up_pipe = Some(self.material_pipe("fs_material_up", None));
+        let p = self.material_pipe("fs_material_up", None);
+        self.prime(&p);
+        self.up_pipe = Some(p);
     }
     /// A full-screen material pass, `fs_material` or `fs_material_up`, for any material or for `mat` alone.
     fn material_pipe(&self, fs: &str, mat: Option<u8>) -> wgpu::RenderPipeline { self.material_pipe_only(fs, mat, false) }
@@ -1116,6 +1139,7 @@ impl Renderer {
         let Some((gated, m, k)) = self.prepare_wanted() else { return false };
         let fs = ["fs_material", "fs_material_up", "fs_trace"][k as usize];
         let p = self.material_pipe_only(fs, Some(m), gated);
+        self.prime(&p);
         let slot = if gated { &mut self.gated[m as usize] } else { &mut self.spec[m as usize] };
         match (slot.as_mut(), k) {
             (None, _) => *slot = Some((p, None, None)),
@@ -1137,6 +1161,7 @@ impl Renderer {
             fragment: Some(wgpu::FragmentState { module: &self.shader, entry_point: Some("fs_post"), compilation_options: Default::default(), targets: &[Some(wgpu::ColorTargetState { format: self.out_format, blend: None, write_mask: wgpu::ColorWrites::ALL })] }),
             multiview_mask: None, cache: None,
         }));
+        if let Some(p) = &self.post { self.prime(p); }
     }
     /// The morph tiles' pipelines.
     fn ensure_tiles(&mut self) {

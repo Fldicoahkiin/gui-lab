@@ -2398,7 +2398,10 @@ only what plain needs to draw (the main shader, the ink, nearness, material, ann
 order, at least one piece a call and more while the budget lasts: the mark atlas one set at a time
 (`marks::Atlas::begin`, `AtlasBuild::step`, `finish`), the finishing pass, then the reduced-resolution upsample,
 a scroll move's trace pass (`fs_trace`: compiled on the first fast scroll instead, it stalled that frame for
-seconds), the morph tiles' and the mesh pass's pipelines; `Progress { done, total, stage }` says how far it is
+seconds), the morph tiles' and the mesh pass's pipelines. Each material pipeline is drawn with once as it is made, into one
+pixel of a scratch target (`Renderer::prime`): a driver that finishes a pipeline on its first draw does it then,
+not on the frame that first needs it (on the CPU rasteriser the first frame of the site's dark scheme, the first
+with its bloom, took 0.9 s against 0.4 s for each later one); `Progress { done, total, stage }` says how far it is
 (`Stage::Plain`, `Pipelines`, `Ready`). Until the atlas and the finishing pass are made, frames are drawn in the
 plain look (`render::plain`: material plain, no finishing pass, no material overrides). Rule 3 of §0 says a page at
 rest is plain, so this is the same page arriving early, not a lesser one; on the frame the look is ready, the page
