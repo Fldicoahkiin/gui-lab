@@ -19,6 +19,11 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
 - The warm-up makes the trace pass (it was compiled on the first fast scroll, a stall of seconds), and after the
   warm-up, idle time makes every material pass, upsample and trace pass the page may need
   (`Renderer::preparing`; was one a drawn frame, so a page at rest made none before its first scroll).
+- Rows of another lattice (or none) in a viewport no longer draw the frame whole while the trace holds the rows:
+  the frame moves as the page's material does, and what is in the other material is shaded again.
+- A plain shape behind a whole scroll area (a page's `fill(Paint::GROUND)`) moves with the scroll as the ground
+  does: a slow scroll of the components pages shaded about 85 % of the window each frame, now the band and the
+  edges.
 
 ## A Claude Code skill and a save hook
 

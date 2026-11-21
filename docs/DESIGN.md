@@ -2143,7 +2143,12 @@ copied whole to the target each frame (the web swap chain gives a new image ever
   images, then the views swap) and the boxes are taken against the last frame moved: the band scrolled into
   view, the strips along the viewport's edges that the material reads across (its reach, beyond the band), the
   scroll bar and what changed. Instances carried with the content are compared at their moved place; what was
-  clipped at the viewport's edge keeps that edge. The field map is stirred by an element's motion within the
+  clipped at the viewport's edge keeps that edge. What is not the content's but lies over the viewport is drawn
+  again where it is and where the copy took it, but for a plain shape whose edges (radius and border with them)
+  and clip are all past the viewport by the pad, or past the window: a page's ground drawn as a shape behind its
+  scroll area (`fill(Paint::GROUND)`, the components pages) is one colour over the whole viewport, so it moves
+  as the ground does (it was shaded again over the whole viewport, about 85 % of the window each frame of a
+  slow scroll of /components/; `tests/scroll_move.rs`). The field map is stirred by an element's motion within the
   content it scrolls with, so scrolling past it is not a change. `Renderer::cost` counts what a frame shades
   (material and G-buffer pixels), the pixels moved and the bytes uploaded.
 - **With the trace showing** (§1.8.3, past `Scroll::calm_speed`) the frame is moved too, when the trace points
@@ -2159,10 +2164,12 @@ copied whole to the target each frame (the web swap chain gives a new image ever
   rounded to the pitch, so it moves by how far that rounding stepped (`Move::frame`, maybe 0) while the
   G-buffer moves with the content. In the frame the hold comes on or goes off in (the trace passing the strength
   that holds the rows), one frame shows the content held and the other at its offset, and the frame moves by the
-  difference. This needs one lattice for every material drawn in the viewport (the page's, and those of what lies
-  in it or reaches it; one only elsewhere on the page, a bar's, does not count), the scroll area alone in its
-  viewport, a step of whole device px and no held offset half way between two rows, and the boxes grow by the
-  pitch. With a reduced pass for what is loose the frame is drawn whole. With one for the stages alone (§1.35)
+  difference. The frame moves as the page's own material does (held to its lattice, or with the content when it
+  holds no rows); what lies in the viewport in another material (another lattice, or none: a row in charr or
+  plain on a dottr page) is shaded again where it is and where the frame took it, as far as its nearness
+  reaches (`scroll_move`'s third value; the components pages, with plain chrome round specimens in their own
+  materials, moved only one frame in two before). This needs the scroll area alone in its viewport, a step of
+  whole device px and no held offset half way between two rows, and the boxes grow by the largest pitch. With a reduced pass for what is loose the frame is drawn whole. With one for the stages alone (§1.35)
   the frame moves and the trace is shaded at full resolution as without it; the reduced grid stays with the
   window, so every stage in the viewport that moved is shaded again where it is (its box among the shade boxes,
   in the reduced pass and the filter up), slow scroll or fast (a list with stages at 0.75 under plain, dottr and
@@ -2186,7 +2193,7 @@ first reason the frame did not move the last one or was drawn whole (`global` br
 loose under a reduced pass, a stage rescaled, an opacity group, plates ageing or emptied, own colours; the look,
 the size, the materials or the dottr ground clock changing; soft scrolling; the trace with a reduced pass; a
 refusal of `scroll_move`, `dirty::Parts::refused`: the viewport changed, a jump past it, the trace turned, glitchr
-or a material from source, the latch switching, mixed lattices, not alone, half a row); `spec yes` with the
+or a material from source, the latch switching, not alone, half a row); `spec yes` with the
 material, or `no` with why (an override, a material from source, still counting, off); the share of the frame
 shaded at full resolution (the shade boxes); and the soft, stage and reduced scales. `tests/scroll_move.rs` checks it
 against what the renderer counted.

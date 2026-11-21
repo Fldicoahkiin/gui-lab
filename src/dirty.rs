@@ -21,7 +21,7 @@
 //! pixel the trace can reach in either frame, and keeps the moved one elsewhere. Dottr and charr hold
 //! the content's rows to their lattice while the trace shows: their frame moves by the lattice's steps,
 //! not the content's.
-use crate::scene::{Field, Instance, MESH, PICTURE};
+use crate::scene::{Field, Instance, MESH, PICTURE, SHAPE};
 use crate::style::{Look, Material};
 use crate::text::SPREAD;
 
@@ -124,6 +124,18 @@ impl Move {
         let (v, c) = (self.bx(), i.clip);
         !is_empty(c) && c[0] >= v[0] - 0.5 && c[1] >= v[1] - 0.5 && c[2] <= v[2] + 0.5 && c[3] <= v[3] + 0.5
     }
+    /// `i` is a plain shape (filled, untransformed, neither loose nor a blade) whose edges (with its
+    /// corners' radius and border) and its clip are more than `pad` outside the viewport, or past the
+    /// window's edge: inside the viewport it is one colour everywhere, and its nearness saturated, so
+    /// moving what the viewport shows over it changes nothing of it.
+    fn under_plainly(&self, i: &Instance, pad: f32, size: (u32, u32)) -> bool {
+        let screen = [0.0, 0.0, size.0 as f32, size.1 as f32];
+        let covers = |b: Bx, by: f32| { let v = meet(grow(self.bx(), by), screen); b[0] <= v[0] && b[1] <= v[1] && b[2] >= v[2] && b[3] >= v[3] };
+        let r = i.rect;
+        i.paint[3] == SHAPE && i.xf == [0.0; 4] && i.extra[1] < 0.5 && i.extra[2] == 0.0
+            && covers([r[0], r[1], r[0] + r[2], r[1] + r[3]], pad + i.uv[0].max(0.0) + i.extra[0].max(0.0))
+            && (is_empty(i.clip) || covers(i.clip, pad))
+    }
     /// `i` as the move carries it (unchanged when it is not the content's).
     fn moved(&self, i: &Instance) -> Instance {
         let mut i = *i;
@@ -159,12 +171,17 @@ impl Move {
 /// viewport, with what the frame shows stepping by whole device px: the content held to the lattice in a
 /// frame whose trace holds the rows, at its offset in one whose trace is too faint to (the hold coming on
 /// or off).
-fn scroll_move(prev: &Inputs, cur: &Inputs, mats: &[Material], s: f32) -> (Option<(usize, Move)>, &'static str) {
+/// With several lattices in the viewport (or one with materials that hold no rows), the last frame moves
+/// as the ground's material does (held to its lattice, or with the content), and what is drawn in
+/// another material is shaded again: the third value, its boxes in both frames (the last as the frame
+/// moved it), as far as its material reaches.
+fn scroll_move(prev: &Inputs, cur: &Inputs, mats: &[Material], s: f32) -> (Option<(usize, Move)>, &'static str, Vec<Bx>) {
+    let others = std::cell::RefCell::new(vec![]);
     let why = std::cell::Cell::new("");
     let no = |w: &'static str| { if why.get().is_empty() { why.set(w); } None };
     let moved = (0..8).any(|j| prev.field.scrollo[j] != cur.field.scrollo[j] || cur.field.scrollo[j][2] > 0.0);
-    if !moved { return (None, ""); }
-    if cur.look.theme.ground2 != cur.look.theme.ground { return (None, "ground gradient"); }
+    if !moved { return (None, "", vec![]); }
+    if cur.look.theme.ground2 != cur.look.theme.ground { return (None, "ground gradient", vec![]); }
     let (w, h) = (cur.size.0 as f32, cur.size.1 as f32);
     let found = (0..8).find_map(|j| {
         let (r, a, b) = (cur.field.scrolls[j], prev.field.scrollo[j], cur.field.scrollo[j]);
@@ -195,12 +212,28 @@ fn scroll_move(prev: &Inputs, cur: &Inputs, mats: &[Material], s: f32) -> (Optio
         }
         let pitches: Vec<f32> = vm.iter().filter_map(|m| latch_pitch(*m, &cur.look, s)).collect();
         if pitches.is_empty() { return plain; }
+        let alone = (0..8).all(|i| i == j || is_empty(meet(cur.field.scrolls[i], r)));
+        if !alone { return no("latch: not alone"); }
+        // The frame moves as the ground's material does; what another lattice (or none) holds is shaded
+        // again where it is and where the frame took it.
+        let ground = latch_pitch(cur.look.material, &cur.look, s);
+        let most = pitches.iter().copied().fold(0.0, f32::max);
+        let differ = |i: &Instance| i.look[0] >= 127.5 && latch_pitch(Material::from_id((i.look[0].round() as u32 % 16) as u8), &cur.look, s) != ground;
+        let vb = [v[0], v[1], v[2], v[3]];
+        let mark = |m: &Move| {
+            let mut o = others.borrow_mut();
+            for i in prev.instances.iter().filter(|i| differ(i)) { let b = meet(i.bounds(SPREAD as f32 + 2.0), vb); if !is_empty(b) { o.push(m.carry_frame(b)); } }
+            for i in cur.instances.iter().filter(|i| differ(i)) { let b = meet(i.bounds(SPREAD as f32 + 2.0), vb); if !is_empty(b) { o.push(b); } }
+        };
+        // The ground holds no rows: the frame moves with the content, and what is held is shaded again
+        // (its rows read up to the largest pitch off their place).
+        let Some(p) = ground else {
+            let m = Move { rect, d, frame: d, trace, way, latch: most };
+            mark(&m);
+            return Some((j, m));
+        };
         // The rows held to the lattice: the frame shows the content at its offset rounded to the pitch
         // (and at its offset in a frame whose trace is too faint to hold them: the hold coming on or off).
-        let p = pitches[0];
-        let alone = (0..8).all(|i| i == j || is_empty(meet(cur.field.scrolls[i], r)));
-        if pitches.len() != vm.len() || pitches.iter().any(|q| *q != p) { return no("latch: mixed lattices"); }
-        if !alone { return no("latch: not alone"); }
         let (oa, ob) = if across { (a[0], b[0]) } else { (a[1], b[1]) };
         // An offset half way between two rows is rounded by the GPU's own division: not relied on.
         let held = |o: f32, on: bool| { let x = o / p; if !on { Some(o) } else { ((x.fract().abs() - 0.5).abs() > 1e-3).then(|| x.round_ties_even() * p) } };
@@ -209,10 +242,13 @@ fn scroll_move(prev: &Inputs, cur: &Inputs, mats: &[Material], s: f32) -> (Optio
         if (step - step.round()).abs() > 1e-3 || step.abs() >= if across { v[2] - v[0] } else { v[3] - v[1] } { return no("latch: step"); }
         let step = step.round() as i32;
         let frame = if across { [step, 0] } else { [0, step] };
-        Some((j, Move { rect, d, frame, trace, way, latch: p }))
+        let m = Move { rect, d, frame, trace, way, latch: most };
+        mark(&m);
+        Some((j, m))
     });
     let why = if found.is_some() { "" } else { why.get() };
-    (found, why)
+    let others = if found.is_some() { others.into_inner() } else { vec![] };
+    (found, why, others)
 }
 /// The lattice pitch a material holds the rows to while the trace shows (device px), if it does.
 fn latch_pitch(m: Material, look: &Look, s: f32) -> Option<f32> {
@@ -376,7 +412,7 @@ pub fn parts_why(prev: &Inputs, cur: &Inputs, scale: f32) -> Result<Parts, &'sta
     let pad = SPREAD as f32 + look.fx.push * s * 1.5 + 2.0;
     let mut st1: Vec<Bx> = vec![];
     let mut st2: Vec<Bx> = vec![];
-    let (mv, refused) = scroll_move(prev, cur, &mats, s);
+    let (mv, refused, others) = scroll_move(prev, cur, &mats, s);
     // A box of the last final frame, and where the move took what was in it.
     let old = |b: Bx| [b, mv.map_or(EMPTY, |(_, m)| m.carry_frame(b))];
     // Instances whose records differ, matched in order within each part of the list (between the cuts
@@ -405,8 +441,9 @@ pub fn parts_why(prev: &Inputs, cur: &Inputs, scale: f32) -> Result<Parts, &'sta
         Some((_, m)) => {
             carried = pa_i.iter().map(|i| m.moved(i)).collect();
             // What is not the content's but lies over the viewport was moved with it: drawn again where
-            // it is and where it went.
-            for i in prev.instances.iter().filter(|i| !m.holds(i)) { let r = meet(i.bounds(pad), m.bx()); if !is_empty(r) { st1.extend([r, m.carry(r)]); } }
+            // it is and where it went; but for a plain shape whose edges are all well outside it (a page's
+            // ground behind its scroll area), which is the same at every pixel of it, as the ground is.
+            for i in prev.instances.iter().filter(|i| !m.holds(i) && !m.under_plainly(i, pad, cur.size)) { let r = meet(i.bounds(pad), m.bx()); if !is_empty(r) { st1.extend([r, m.carry(r)]); } }
             (&carried[..], cb_i)
         }
         None => (pa_i, cb_i),
@@ -508,6 +545,8 @@ pub fn parts_why(prev: &Inputs, cur: &Inputs, scale: f32) -> Result<Parts, &'sta
         // read has moved out of sight, or in.
         let r = if m.trace > 0.0 { 2.0 * rch + look.scroll.trail.max(look.scroll.misreg) * s * m.trace } else { rch };
         st2.extend(m.edges(r, cur.size));
+        // What is drawn in another lattice than the frame moved by.
+        st2.extend(others.iter().map(|b| grow(*b, rch)));
         if m.frame != m.d { st2.extend(Move { d: m.frame, ..m }.edges(r, cur.size)); }
     }
     if prev.field.wipe != cur.field.wipe || prev.field.wipe_rect != cur.field.wipe_rect || (mv.is_some() && cur.field.wipe[1] > 0.0) {

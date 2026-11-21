@@ -213,3 +213,85 @@ fn the_hold_coming_on_or_off_and_a_lattice_outside_the_viewport_still_move_the_l
         assert!(held >= 6, "{mat:?} bar {bar:?}: only {held} frames with the rows held moved the last frame");
     }
 }
+
+/// Rows of other materials in the viewport (another lattice, or none) while the trace holds the rows:
+/// the last frame still moves, as the ground's material does (held to its lattice, or with the content),
+/// and what is drawn in the others is shaded again; each frame is the frame drawn whole, byte for byte.
+#[test]
+fn rows_of_another_lattice_in_the_viewport_still_move_the_last_frame() {
+    struct M { ground: Material, rows: [Material; 2] }
+    fn mixed(s: &M) -> El<()> {
+        let rows = (0..60).fold(col().key("rows").gap(6.0).pad(12.0, 12.0), |c, i| {
+            let r = row().key(format!("row{i}")).gap(10.0).child(space(14.0, 14.0).radius(3.0).fill(if i % 3 == 0 { Paint::ACCENT } else { Paint::DIM }))
+                .child(text(format!("Row {i}: a line of text to read as it scrolls past"), 14.0, Paint::TEXT));
+            c.child(match i % 5 { 1 => r.material(s.rows[0].id()), 3 => r.material(s.rows[1].id()), _ => r })
+        });
+        col().key("page").fill_width().fill_height().child(col().key("list").fill_width().grow(1.0).scroll().child(rows))
+    }
+    let Ok(mut part) = Offscreen::try_new(W, H) else { eprintln!("no GPU adapter here: skipped"); return };
+    let Ok(mut whole) = Offscreen::try_new(W, H) else { return };
+    whole.r.partial = false;
+    for (ground, rows) in [(Material::Dottr, [Material::Charr, Material::Plain]), (Material::Plain, [Material::Dottr, Material::Charr]), (Material::Charr, [Material::Dottr, Material::Halftonr])] {
+        let mk = || { let mut u = Ui::new(M { ground, rows }, mixed, |_, _| {}, fonts(), W, H, 1.0).on_look(|s| Look { material: s.ground, ..Look::default() }); u.pointer_leave(); u.tick(5.0); u };
+        let (mut u, mut v) = (mk(), mk());
+        let look = u.look();
+        let _ = part.render(&mut u, &look);
+        let _ = whole.render(&mut v, &look);
+        let mut t = 5.0;
+        let mut held = 0;
+        for f in 0..40 {
+            t += 1.0 / 60.0;
+            let dy = if f < 14 { 6.0 + 4.0 * f as f32 } else { 0.0 };
+            for ui in [&mut u, &mut v] { if dy != 0.0 { ui.wheel(240.0, 200.0, dy); } ui.tick(t); }
+            let a = part.render(&mut u, &look);
+            let b = whole.render(&mut v, &look);
+            let diff = a.iter().zip(&b).filter(|(p, q)| p != q).count();
+            let path = u.perf().path;
+            assert_eq!(diff, 0, "{ground:?} with {rows:?}, frame {f}: {diff} bytes differ from the frame drawn whole ({})", path.line());
+            assert!(path.why != "latch: mixed lattices", "{ground:?} with {rows:?}, frame {f}: {}", path.line());
+            let k = u.field().scrollo.iter().map(|o| o[2]).fold(0.0, f32::max);
+            if k > 0.02 && path.moved && part.r.cost.moved > 0 { held += 1; }
+        }
+        assert!(held >= 6, "{ground:?} with {rows:?}: only {held} frames with the rows held moved the last frame");
+    }
+}
+
+/// A page's ground drawn as a shape behind its scroll area (`fill(Paint::GROUND)` on the page, as the
+/// components pages have it) is not the content's but lies under the whole viewport: plain, with its
+/// edges outside it, it moves as the ground does, so a slow scroll still shades only the band and the
+/// edges (it was shaded again over the whole viewport, where it is and where it went).
+#[test]
+fn a_ground_shape_behind_the_scroll_area_is_not_shaded_again() {
+    fn filled(_: &S) -> El<()> {
+        let rows = (0..60).fold(col().key("rows").gap(6.0).pad(12.0, 12.0), |c, i| c.child(text(format!("Row {i}: a line of text to read as it scrolls past"), 14.0, Paint::TEXT).key(format!("row{i}"))));
+        col().key("page").fill_width().fill_height().fill(Paint::GROUND).material(Material::Plain.id())
+            .child(text("A bar over the list that stays", 16.0, Paint::INK).key("bar"))
+            .child(col().key("list").fill_width().grow(1.0).scroll().child(rows))
+    }
+    let (Ok(mut part), Ok(mut whole)) = (Offscreen::try_new(W, H), Offscreen::try_new(W, H)) else { eprintln!("no GPU adapter here: skipped"); return };
+    whole.r.partial = false;
+    for mat in [Material::Plain, Material::Dottr] {
+        let mk = || { let mut u = Ui::new(S { mat }, filled, |_, _| {}, fonts(), W, H, 1.0).on_look(|s| Look { material: s.mat, ..Look::default() }); u.pointer_leave(); u.tick(5.0); u };
+        let (mut u, mut v) = (mk(), mk());
+        let look = u.look();
+        let _ = part.render(&mut u, &look);
+        let _ = whole.render(&mut v, &look);
+        let mut t = 5.0;
+        let mut moved = 0;
+        for f in 0..16 {
+            t += 1.0 / 60.0;
+            let dy = if f < 8 { 6.0 } else { -6.0 };
+            for ui in [&mut u, &mut v] { ui.wheel(240.0, 220.0, dy); ui.tick(t); }
+            let a = part.render(&mut u, &look);
+            let b = whole.render(&mut v, &look);
+            let diff = a.iter().zip(&b).filter(|(p, q)| p != q).count();
+            assert_eq!(diff, 0, "{mat:?} frame {f}: {diff} bytes differ from the frame drawn whole");
+            let c = part.r.cost;
+            if c.moved == 0 { continue; }
+            moved += 1;
+            let share = c.stage1 as f64 / (W * H) as f64;
+            assert!(share < 0.3, "{mat:?} frame {f}: stage 1 drew {:.0}% of the window ({})", share * 100.0, u.perf().path.line());
+        }
+        assert!(moved >= 12, "{mat:?}: only {moved} of 16 frames moved the last frame");
+    }
+}
