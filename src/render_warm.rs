@@ -2,7 +2,9 @@
 //! `Renderer::begin` makes what plain needs to draw (the main shader, the ink, nearness, material,
 //! annotation and copy pipelines); `Warmup::step` makes the rest, in a fixed order and within a time
 //! budget per call: the mark atlas a set at a time, the finishing pass, then the reduced-resolution
-//! upsample, the morph tiles' and the mesh pass's pipelines. Until the atlas and the finishing pass are
+//! upsample, a scroll move's trace pass, the morph tiles' and the mesh pass's pipelines. In idle time
+//! after it, the material passes the page may need (`Renderer::specialise`), so that what a page's first
+//! scroll or hover draws with is made before it. Until the atlas and the finishing pass are
 //! made, frames are drawn as plain (every element in plain, no finishing pass), which is the page as it
 //! is at rest (DESIGN.md §0 rule 3); the frame after that condenses into the look.
 use super::{Atlas, MONO, Renderer, marks};
@@ -11,7 +13,7 @@ use crate::text::Text;
 
 /// One piece of the warm-up.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Job { MarksBegin, MarksSet, MarksUpload, Post, Up, Tiles, Mesh }
+enum Job { MarksBegin, MarksSet, MarksUpload, Post, Up, Trace, Tiles, Mesh }
 
 /// How far a warm-up has come: what is made of how much, and what it is making now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,15 +28,15 @@ impl Progress {
 pub enum Stage { Plain, Pipelines, Ready }
 
 /// What a renderer still has to make.
-pub(super) struct Pending { jobs: Vec<Job>, done: u32, total: u32, atlas: Option<marks::AtlasBuild>, chars: Option<marks::CharTiles>, cost: [f32; 7] }
+pub(super) struct Pending { jobs: Vec<Job>, done: u32, total: u32, atlas: Option<marks::AtlasBuild>, chars: Option<marks::CharTiles>, cost: [f32; 8] }
 impl Pending {
     fn new() -> Self {
         let mut jobs = vec![Job::MarksBegin];
         jobs.extend(std::iter::repeat_n(Job::MarksSet, crate::style::set::COUNT - 1));
-        jobs.extend([Job::MarksUpload, Job::Post, Job::Up, Job::Tiles, Job::Mesh]);
+        jobs.extend([Job::MarksUpload, Job::Post, Job::Up, Job::Trace, Job::Tiles, Job::Mesh]);
         jobs.reverse();
         let total = jobs.len() as u32;
-        Self { jobs, done: 0, total, atlas: None, chars: None, cost: [f32::INFINITY; 7] }
+        Self { jobs, done: 0, total, atlas: None, chars: None, cost: [f32::INFINITY; 8] }
     }
     /// Frames are still drawn as plain.
     pub(super) fn cold(&self) -> bool { self.jobs.iter().any(|j| matches!(j, Job::MarksBegin | Job::MarksSet | Job::MarksUpload | Job::Post)) }
@@ -93,6 +95,7 @@ impl Renderer {
                 }
                 Job::Post => self.ensure_post(),
                 Job::Up => self.ensure_up(),
+                Job::Trace => self.ensure_trace(),
                 Job::Tiles => self.ensure_tiles(),
                 Job::Mesh => self.ensure_mesh(),
             }
@@ -134,13 +137,22 @@ impl Renderer {
 impl Renderer {
     /// A host's warm-up in idle time (DESIGN.md §1.9): the next pieces within `budget_ms`, with no frame
     /// drawn, so the warm-up ends on a page that asks for no frames (the web host calls it from
-    /// `requestIdleCallback`, the native one before it waits). Whether anything is left. A step draws
-    /// nothing and asks for no frame, except the one after which the look's material can be drawn
+    /// `requestIdleCallback`, the native one before it waits); once it is done, the material passes the
+    /// page may need (`Renderer::preparing`), within the same budget. Whether anything is left. A step
+    /// draws nothing and asks for no frame, except the one after which the look's material can be drawn
     /// (`Ui::set_warm`).
     pub fn warm_idle<S, M: Clone>(&mut self, ui: &mut crate::ui::Ui<S, M>, budget_ms: f32) -> bool { self.warm_idle_timed(ui, budget_ms, &mut crate::perf::now_ms) }
     /// `warm_idle` timed by `clock` (ms) instead of the wall clock (see `warm_step_timed`).
     pub fn warm_idle_timed<S, M: Clone>(&mut self, ui: &mut crate::ui::Ui<S, M>, budget_ms: f32, clock: &mut dyn FnMut() -> f64) -> bool {
-        self.warm_frame_timed(ui, budget_ms, clock).stage != Stage::Ready
+        if self.warm_frame_timed(ui, budget_ms, clock).stage != Stage::Ready { return true; }
+        let t0 = clock();
+        let mut made = false;
+        while self.preparing() {
+            // At least one a call; another only while the budget lasts.
+            if made && (clock() - t0) as f32 >= budget_ms { break; }
+            made |= self.prepare_next();
+        }
+        self.preparing()
     }
 }
 

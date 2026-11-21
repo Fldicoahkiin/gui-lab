@@ -16,6 +16,9 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
 - A scroll's trace pass probes the nearness as far apart as it reads (was every 4 px): the same frame, with
   fewer reads for each pixel it tests (it shades a little more of the viewport again, which costs less than the
   reads saved: on the Lab a fast-scroll frame took about a quarter less on the CPU rasteriser).
+- The warm-up makes the trace pass (it was compiled on the first fast scroll, a stall of seconds), and after the
+  warm-up, idle time makes every material pass, upsample and trace pass the page may need
+  (`Renderer::preparing`; was one a drawn frame, so a page at rest made none before its first scroll).
 
 ## A Claude Code skill and a save hook
 

@@ -392,7 +392,7 @@ impl<S: App, M: Clone> ApplicationHandler<accesskit_winit::Event> for Shell<S, M
         if wake.is_some_and(|w| w <= now) { s.window.request_redraw(); wake = None; }
         // The warm-up goes on while nothing is drawn (a page at rest asks for no frames): the next pieces,
         // no frame, and back here at once while pieces are left (DESIGN.md §1.9).
-        else if s.r.warm_progress().stage != crate::render::Stage::Ready {
+        else if s.r.warm_progress().stage != crate::render::Stage::Ready || s.r.preparing() {
             let more = s.r.warm_idle(&mut s.ui, crate::render::WARM_MS);
             if s.ui.needs_frame(now) { s.window.request_redraw(); }
             if more { wake = Some(now); }

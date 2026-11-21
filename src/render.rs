@@ -269,6 +269,9 @@ pub struct Renderer {
     spec: [Option<Gated>; crate::style::MATERIAL_COUNT],
     /// The frames drawn (to `specialise`).
     drawn: u32,
+    /// What the last frame drew with (its material, the frame's and the page's materials): what the
+    /// passes made in idle time are for (`Renderer::prepare_next`).
+    spec_for: Option<(u8, u16, u16)>,
     /// The materials a morph's tiles show (from both of its ends), with the run they are for: the frame
     /// draws them while the tiles fly.
     run_mats: (u32, u16),
@@ -559,7 +562,7 @@ impl Renderer {
         let mut r = Self {
             device, queue, out_format, layout, ubuf, sampler, atlas, atlas_view, marks, marks_view, palette_view, chars, chars_view,
             before: blank.clone(), blank: blank.clone(), hold: blank.clone(), hold_pipe, holds, hold_cap: 64, hold_n: 0, fmap, fmap_view: fmap_view.clone(), fmap_seen: None, fmap_u: [0.0; 4], split_seen: 0, split: [0.0; 4], last_look: None, marks_ready: false, hide_glyphs: false, atlas_new: true, path: Default::default(), plates_laid: std::cell::Cell::new(0),
-            pictures: HashMap::new(), picture_views: HashMap::new(), fresh_pics: vec![], hold_group: None, instances, capacity, pipes, annots, annot_capacity: 256, up_pipe: None, trace_pipe: None, specialise: Some(SPECIALISE_AFTER), spec_force: None, spec: Default::default(), drawn: 0, run_mats: (0, 0), spec_used: None, shader, pl,
+            pictures: HashMap::new(), picture_views: HashMap::new(), fresh_pics: vec![], hold_group: None, instances, capacity, pipes, annots, annot_capacity: 256, up_pipe: None, trace_pipe: None, specialise: Some(SPECIALISE_AFTER), spec_force: None, spec: Default::default(), drawn: 0, spec_for: None, run_mats: (0, 0), spec_used: None, shader, pl,
             ink: blank.clone(), lo: blank.clone(), lo_key: (0, 0, 0), material_up: material.clone(), auto: Default::default(), always_lo: false, stage_u: Box::new(([[0.0; 4]; STAGES], [[0.0; 4]; STAGES], [0.0; 4])), stage_q: 1.0, soft_q: 1.0, govern: true, no_map: false,
             near: blank, material_first: material.clone(), material, size: (0, 0), tiles, mesh, sim_rows: 0,
             region: crate::dirty::Region::All, parts: None, partial: true, frame_view: blank_view.clone(), alt: [blank_view.clone(), blank_view.clone(), blank_view.clone()], cost: Cost::default(), prev: None, spare: (vec![], vec![]), zero, blit, group: None, group_pipe, had_groups: false, plates: Default::default(), plate_pipes, plate_now: 0.0, plate_fade: [[0.0; 4]; 4], had_plates: 0, plate_inked: [false; 4], plate_mats: [0; 4], gated: Default::default(), plate_drew: [0; 4], plate_fresh: [false; 4], was_ageing: false, plate_serial: 0, reduced: false, fade_s: 0.15, sbox: [0.0; 4], own: [[0.0; 4]; crate::draw::OWN_COLOURS], post: None, blit_group: blank_group, warm: None, condense: false, last_region: None, tr: [[0.0; 4]; 9], boxes: [[0.0; 4]; 16], tr_loose: 0.0, t_cont: 0.0,
@@ -1045,6 +1048,10 @@ impl Renderer {
         self.marks_ready = true;
     }
 
+    /// The trace pass of a scroll move (made in the warm-up, or when first needed).
+    fn ensure_trace(&mut self) {
+        if self.trace_pipe.is_none() { self.trace_pipe = Some(self.material_pipe("fs_trace", None)); }
+    }
     /// The upsample after a reduced material pass (made when first needed: it holds the whole material
     /// again, and compiling it is slow on a CPU rasteriser).
     fn ensure_up(&mut self) {
@@ -1071,21 +1078,27 @@ impl Renderer {
     /// The material the last frame's material pass was made for alone (`specialise`), if it was.
     pub fn specialised(&self) -> Option<u8> { self.spec_used }
     /// After a frame (`specialise`): make the next material pass the page may need, one a frame, after
-    /// the frame is sent (the frame it is made in is drawn without it). First what this frame drew with
-    /// the pass for any material, then what the page's other materials (`page`) would need: for the
-    /// global material alone (`mat`; with nothing overriding it, or forced), its pass and upsample; for
-    /// each of a page of several, its pass that draws only its own pixels and upsample; trace passes
-    /// once a trace has been shaded (`traced`).
-    fn prepare_after(&mut self, mat: u8, frame: u16, page: u16, traced: bool) {
+    /// the frame is sent (the frame it is made in is drawn without it); see `prepare_next`.
+    fn prepare_after(&mut self, mat: u8, frame: u16, page: u16) {
         self.drawn = self.drawn.saturating_add(1);
+        self.spec_for = Some((mat, frame, page));
         let after = match (self.spec_force, self.specialise) { (Some(false), _) | (None, None) => return, (Some(true), _) => 0, (None, Some(a)) => a };
-        if self.drawn < after || self.warming() { return; }
+        if self.drawn < after { return; }
+        self.prepare_next();
+    }
+    /// The next material pass the page may need, if any (`specialise`): first what the last frame drew
+    /// with the pass for any material, then what the page's other materials would need: for the global
+    /// material alone (with nothing overriding it, or forced), its pass, upsample and trace pass; for
+    /// each of a page of several, its pass that draws only its own pixels, upsample and trace pass.
+    /// (gated, material, which pass: 0 the pass, 1 its upsample, 2 its trace).
+    fn prepare_wanted(&self) -> Option<(bool, u8, u8)> {
+        let (mat, frame, page) = self.spec_for?;
+        if matches!((self.spec_force, self.specialise), (Some(false), _) | (None, None)) || self.warming() { return None; }
         let n = crate::style::MATERIAL_COUNT;
         let global = if (mat as usize) < n { 1u16 << mat } else { 0 };
         let several = |m: u16| m.count_ones() >= 2 && m.count_ones() <= GATED_MAX && m >> n == 0;
-        // What to make, in order: (gated, material, which pass: 0 the pass, 1 its upsample, 2 its trace).
         let mut want: Vec<(bool, u8, u8)> = vec![];
-        let kinds: &[u8] = if traced || self.trace_pipe.is_some() { &[0, 1, 2] } else { &[0, 1] };
+        let kinds: &[u8] = &[0, 1, 2];
         let alone = |want: &mut Vec<(bool, u8, u8)>| if global != 0 { for &k in kinds { want.push((false, mat, k)); } };
         let each = |want: &mut Vec<(bool, u8, u8)>, m: u16| if several(m) { for &k in kinds { for id in 0..n as u8 { if m & (1 << id) != 0 { want.push((true, id, k)); } } } };
         if self.spec_force == Some(true) || frame == global { alone(&mut want); } else { each(&mut want, frame); }
@@ -1093,10 +1106,14 @@ impl Renderer {
             alone(&mut want);
             each(&mut want, page | global);
         }
-        let Some(&(gated, m, k)) = want.iter().find(|&&(g, m, k)| {
+        want.into_iter().find(|&(g, m, k)| {
             let have = if g { &self.gated[m as usize] } else { &self.spec[m as usize] };
             match have { None => true, Some(p) => (k == 1 && p.1.is_none()) || (k == 2 && p.2.is_none()) }
-        }) else { return };
+        })
+    }
+    /// Make the next material pass the page may need (`prepare_wanted`); whether one was made.
+    fn prepare_next(&mut self) -> bool {
+        let Some((gated, m, k)) = self.prepare_wanted() else { return false };
         let fs = ["fs_material", "fs_material_up", "fs_trace"][k as usize];
         let p = self.material_pipe_only(fs, Some(m), gated);
         let slot = if gated { &mut self.gated[m as usize] } else { &mut self.spec[m as usize] };
@@ -1105,7 +1122,10 @@ impl Renderer {
             (Some(s), 1) => s.1 = Some(p),
             (Some(s), _) => s.2 = Some(p),
         }
+        true
     }
+    /// Whether a material pass the page may need is still to be made in idle time (`Renderer::warm_idle`).
+    pub fn preparing(&self) -> bool { self.prepare_wanted().is_some() }
     /// The finishing pass.
     fn ensure_post(&mut self) {
         if self.post.is_some() { return; }
@@ -1791,7 +1811,7 @@ impl Renderer {
         // With a reduced pass for the stages alone, the trace is shaded at full resolution; the stages are
         // shaded again in their boxes after it.
         let traced = moved.filter(|m| m.trace > 0.0 && (lo.is_none() || self.stage_u.2[2] > 0.5));
-        if traced.is_some() && self.trace_pipe.is_none() { self.trace_pipe = Some(self.material_pipe("fs_trace", None)); }
+        if traced.is_some() { self.ensure_trace(); }
         let (ink, near) = (self.ink.clone(), self.near.clone());
         // The main frame is drawn into the kept frame, only within what changed, then copied out.
         let (w, h) = self.size;
@@ -1883,7 +1903,7 @@ impl Renderer {
             pass.draw(0..3, 0..1);
         }
         self.queue.submit([enc.finish()]);
-        self.prepare_after(mat, mask, scene.mats, traced.is_some());
+        self.prepare_after(mat, mask, scene.mats);
     }
 
     #[allow(clippy::too_many_arguments)]

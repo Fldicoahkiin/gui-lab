@@ -336,3 +336,42 @@ fn a_page_at_rest_warms_up_in_idle_time_and_input_later_makes_no_pieces() {
         assert!(p.stage == Stage::Ready && a.warm().is_none(), "a warm-up piece in an input frame");
     }
 }
+
+/// After the warm-up, idle time makes the passes the page may need (`Renderer::preparing`): the page's
+/// material pass, its upsample and its scroll trace pass, so a first fast scroll draws with its material's
+/// own passes from its first frame and compiles nothing.
+#[test]
+fn idle_time_after_the_warm_up_makes_the_passes_a_first_scroll_draws_with() {
+    use amenui::el::{El, Paint, col, text};
+    fn view(_: &()) -> El<()> {
+        let rows = (0..60).fold(col().key("rows").gap(6.0).pad(12.0, 12.0), |c, i| c.child(text(format!("Row {i}: a line of text to read as it scrolls past"), 14.0, Paint::TEXT).key(format!("row{i}"))));
+        col().key("page").fill_width().fill_height().child(col().key("list").fill_width().grow(1.0).scroll().child(rows))
+    }
+    let Ok(mut cold) = Offscreen::try_warming(W, H) else { eprintln!("no GPU adapter here: skipped"); return };
+    // As a host on a GPU has it (offscreen the CPU rasteriser does without the material's own passes).
+    cold.r.specialise = Some(amenui::render::SPECIALISE_AFTER);
+    let mut a = amenui::ui::Ui::new((), view, |_, _| {}, fonts(), W, H, 1.0).on_look(|_| Look { material: Material::Dottr, ..Look::default() });
+    a.pointer_leave();
+    let look = a.look();
+    let mut t = 0.5;
+    // The warm-up and the material's arrival, the frames the page asks for, then idle time until nothing is left.
+    for _ in 0..400 {
+        t += 1.0 / 60.0;
+        a.tick(t);
+        let more = cold.r.warm_idle(&mut a, f32::INFINITY);
+        if a.needs_frame(t) { cold.render(&mut a, &look); } else if !more { break; }
+    }
+    assert!(cold.r.warm_progress().stage == Stage::Ready && !cold.r.preparing(), "idle time left passes to make");
+    let mut traced = 0;
+    for f in 0..12 {
+        t += 1.0 / 60.0;
+        a.tick(t);
+        a.wheel(200.0, 200.0, 80.0);
+        a.tick(t);
+        cold.render(&mut a, &look);
+        assert_eq!(a.perf().path.specialised, Some(Material::Dottr.id()), "frame {f}: {}", a.perf().path.line());
+        assert!(!cold.r.preparing(), "frame {f}: the scroll needed a pass idle time had not made");
+        if cold.r.cost.trace > 0 { traced += 1; }
+    }
+    assert!(traced >= 4, "only {traced} frames shaded the trace");
+}

@@ -1550,18 +1550,20 @@ scene or drawn into a plate since it was cleared) draws the material pass (`fs_m
 the reduced one) with a pipeline of its own made with the WGSL override constant `MAT` set to that
 material, and `fs_material_up` and `fs_trace` too; `eff_mat` then returns `MAT`. The passes are made ahead,
 from the renderer's `render::SPECIALISE_AFTER` (2nd) frame drawn, one a frame after the frame is sent (WebGPU's
-`createRenderPipelineAsync` is not reached through wgpu): the global material's pass and upsample, then the
-passes for each material of the page (below), the page's materials being every override its elements have,
-drawn or hidden (`Scene::mats`: a word waiting for a morph in a material of its own), then the trace passes
-once a scroll's trace has been shaded. Each is kept by material, so a page that changes its global material
+`createRenderPipelineAsync` is not reached through wgpu), and in idle time once the warm-up is done
+(`Renderer::warm_idle` goes on while `Renderer::preparing`, within its budget, for what the last frame drew): the
+global material's pass, upsample and trace pass, then the passes for each material of the page (below), the
+page's materials being every override its elements have, drawn or hidden (`Scene::mats`: a word waiting for a
+morph in a material of its own). So a page at rest has made, before its first scroll or hover, every pass that
+scroll or hover draws with (`tests/warmup.rs`). Each is kept by material, so a page that changes its global material
 and back, or shows an override and hides it, makes nothing again. A frame whose pass is not made yet, and any
 with a material from source, draws with the pass for any material (the readout's `spec no (warming)`). While
 a morph's tiles fly, the frame's materials include both its ends' (the tiles show the word's material). The frames
 are the same pixel for pixel (`tests/specialise.rs`). Offscreen, on the CPU rasteriser, `specialise` is
 `None`: compiling another pass costs more there than it saves. An override in the global material is not
 one. A page of several built-in materials (up to `render::GATED_MAX`, 4: the gallery's plain chrome round
-cells in their own) gets a pass for each, made ahead as above (the material passes and their upsamples,
-then their trace passes), with `MAT` set and the
+cells in their own) gets a pass for each, made ahead as above (each material's pass, upsample and trace
+pass), with `MAT` set and the
 override constant `ONLY`: every pixel finds its material as the pass for any finds it (where a scroll holds
 the rows to a lattice, at the row it reads), and the pass for `MAT` draws only the pixels of `MAT`
 (`shade_new` discards the rest), so each box is drawn once per material and each pixel by one pass, and the
@@ -2388,7 +2390,8 @@ only what plain needs to draw (the main shader, the ink, nearness, material, ann
 `Warmup::step(budget_ms, text)` (or `Renderer::warm_step` on the renderer it hands over) makes the rest in a fixed
 order, at least one piece a call and more while the budget lasts: the mark atlas one set at a time
 (`marks::Atlas::begin`, `AtlasBuild::step`, `finish`), the finishing pass, then the reduced-resolution upsample,
-the morph tiles' and the mesh pass's pipelines; `Progress { done, total, stage }` says how far it is
+a scroll move's trace pass (`fs_trace`: compiled on the first fast scroll instead, it stalled that frame for
+seconds), the morph tiles' and the mesh pass's pipelines; `Progress { done, total, stage }` says how far it is
 (`Stage::Plain`, `Pipelines`, `Ready`). Until the atlas and the finishing pass are made, frames are drawn in the
 plain look (`render::plain`: material plain, no finishing pass, no material overrides). Rule 3 of §0 says a page at
 rest is plain, so this is the same page arriving early, not a lesser one; on the frame the look is ready, the page
