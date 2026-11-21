@@ -2123,8 +2123,9 @@ copied whole to the target each frame (the web swap chain gives a new image ever
   (gathered by `merge`: content scrolled into view at the bottom and a cell that changed what it draws at the
   top are not one box across the window between them), and a run changed in place (as many instances in both)
   a box for each instance, before and after, so marks that move all over the window (drifting motes, a turning
-  body's glyphs) are each where they are. Each box ends at its instance's clip, grown by the pad (what is
-  scrolled out of a viewport costs nothing). They are matched only
+  body's glyphs) are each where they are; one whose clip alone changed (a clipping box, such as a cached
+  element, whose edge crossed the viewport's) is the strips between the two clips' edges, grown by the pad.
+  Each box ends at its instance's clip, grown by the pad (what is scrolled out of a viewport costs nothing). They are matched only
   between the same cuts of the list (the modal layer, each plate), and when the cuts differ, in place. A
   pixel outside every box is covered by the same instances in the same order, so it is the same.
 - **Several boxes**: over 64, boxes are first gathered by where their centres fall on an 8 × 8 grid over them
@@ -3311,9 +3312,20 @@ instances every frame it is drawn. `El::cached()` draws such a subtree once and 
 - A cached element is a plate (§1.33, `fade_s` 0, with its limits and its rules: a picture, not content; it
   clips its children). When the page is painted, its subtree's instances are hashed. Equal to what the plate
   holds, and the plate not emptied this frame, they are dropped from the scene: the plate's span is empty and
-  the plate lays on what it kept, so the frame costs no instances for it. Different, the plate is emptied and
-  they are drawn onto it, once. A restage that copies the subtree from the last paint with nothing in it
-  leaves it as it was.
+  the plate lays on what it kept, so the frame costs no instances for it. Different, they replace what the
+  plate holds where the frame draws (`PlateSpan::replace`), once: a frame drawn whole empties the plate and
+  draws them onto it; a partial frame (§1.19) empties and inks the plate only within its stage-1 boxes, before
+  stage 1, so a `cached_view` of it reads it inked. A restage that copies the subtree from the last paint
+  with nothing in it leaves it as it was. (With `fade_s` above 0 the plate is emptied and drawn onto.)
+- To the dirty region a plate laid on from what it holds counts as the instances it holds (the renderer keeps
+  them as they were last inked), so a frame that inks it again is compared with what it held, as any other
+  instances are. A scroll that moves the last frame (`dirty::Move`) moves the plate's ink and near images the
+  same way when what it holds, in this frame and the last, is the content's (clipped by the viewport): the
+  plate then has only the band scrolled into view, the edges and the boxes of what changed in it inked. When
+  part of it is the content's and part lies over the viewport (a plate across a scroll area's edge), the
+  frame is drawn whole ("plate across a viewport"). A `cached_view` of a plate inked this frame is drawn
+  again where it is (`tests/plate_scroll.rs`: a cached sheet in a scroll area, scrolled down and up while a
+  line in it changes, is the frame drawn whole byte for byte, and stage 1 draws under half the window).
 - A paint in which nothing the subtree draws from changed passes it by: it is neither drawn nor hashed
   (`Counters::kept`), the plate's span is empty, and what it drew besides its instances (its identities' and
   texts' births, its texts' recomposition records and laid glyphs) is what it last drew. What it draws from is
@@ -3323,8 +3335,9 @@ instances every frame it is drawn. `El::cached()` draws such a subtree once and 
   changing, and in it a drawing, a picture, a 3D view, a stage, posed, selected or composing text, a caret, a
   see-through group, something hidden, turned, at its own size, under a view scale, that stirs, sheds,
   traces or wipes, or that is pressed, focused, recomposing or decoding (`tests/cached.rs`).
-- So it is drawn again whenever what it draws changes: it scrolls or moves, it loosens (a front passing, its
-  birth), its words change, the window changes size (which empties every plate). A stage, a 3D view or a
+- So it is drawn again whenever what it draws changes: it scrolls or moves (into the plate where the frame
+  draws: a scroll inks its band), it loosens (a front passing, its birth), its words change, the window
+  changes size (which empties every plate). A stage, a 3D view or a
   see-through group inside it is drawn with the rest, each time the rest is.
 - Text in a pixel face asked for under its native size inside a cached element (Departure Mono at 2.75 px) is
   set and drawn at the size asked, as its outline's coverage at that size (a box filter of the native raster),

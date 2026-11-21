@@ -120,7 +120,7 @@ impl Move {
         meet([b[0] + d[0] as f32, b[1] + d[1] as f32, b[2] + d[0] as f32, b[3] + d[1] as f32], v)
     }
     /// Whether `i` is the content's: clipped by the viewport.
-    fn holds(&self, i: &Instance) -> bool {
+    pub fn holds(&self, i: &Instance) -> bool {
         let (v, c) = (self.bx(), i.clip);
         !is_empty(c) && c[0] >= v[0] - 0.5 && c[1] >= v[1] - 0.5 && c[2] <= v[2] + 0.5 && c[3] <= v[3] + 0.5
     }
@@ -311,14 +311,31 @@ pub fn merge(mut v: Vec<Bx>, max: usize) -> Vec<Bx> {
 /// leaves what comes after it matched. Each unmatched run, in either list, is a box for each of its
 /// instances (`merge` gathers them); a run changed in
 /// place (as many in both) is a box for each of its instances, before and after, so marks that move all
-/// over the window (drifting motes) are each where they are. Each box is within the instance's clip (grown
-/// by `pad`).
+/// over the window (drifting motes) are each where they are; one whose clip alone changed (a clipping box's
+/// edge crossing the viewport's) is the strips between the two clips' edges. Each box is within the
+/// instance's clip (grown by `pad`).
 fn changed(a: &[Instance], b: &[Instance], pad: f32, out: &mut Vec<Bx>) {
     const K: usize = 4;
     // An instance draws nothing outside its clip (but for its nearness, within `pad`).
     let shown = |i: &Instance| { let b = i.bounds(pad); let m = if is_empty(i.clip) { b } else { meet(b, grow(i.clip, pad)) }; if is_empty(m) { EMPTY } else { m } };
     let run = |x: &[Instance], y: &[Instance], out: &mut Vec<Bx>| {
-        if x.len() == y.len() { out.extend(x.iter().zip(y).filter(|(p, q)| p != q).map(|(p, q)| union(shown(p), shown(q)))); }
+        if x.len() == y.len() {
+            for (p, q) in x.iter().zip(y).filter(|(p, q)| p != q) {
+                // Only its clip changed (a clipping box's edge crossed the viewport's): what it draws
+                // differs only between the two clips' edges.
+                let mut c = *q;
+                c.clip = p.clip;
+                if c != *p || is_empty(p.clip) || is_empty(q.clip) { out.push(union(shown(p), shown(q))); continue; }
+                let (u, b) = (union(p.clip, q.clip), p.bounds(pad));
+                for k in 0..4 {
+                    let (e0, e1) = (p.clip[k].min(q.clip[k]), p.clip[k].max(q.clip[k]));
+                    if e0 == e1 { continue; }
+                    let strip = if k % 2 == 0 { [e0, u[1], e1, u[3]] } else { [u[0], e0, u[2], e1] };
+                    let m = meet(grow(strip, pad), b);
+                    if !is_empty(m) { out.push(m); }
+                }
+            }
+        }
         // A run that came or went (content scrolled into view, a cell that changed what it draws): each
         // instance's box, which `merge` gathers, not one box round all (a run can span the window).
         else { out.extend(x.iter().chain(y).map(shown)); }
@@ -626,6 +643,19 @@ mod tests {
         let area: f32 = p.stage1.iter().map(|b| (b[2] - b[0]) * (b[3] - b[1])).sum();
         assert!(p.stage1.len() == 2 && area < 2.0 * 100.0 * 80.0, "{:?}", p.stage1);
         assert!(p.stage1.iter().all(|b| b[3] <= 550.0 + 40.0), "{:?}", p.stage1);
+    }
+
+    #[test]
+    fn an_instance_whose_clip_alone_changed_is_the_strip_between_the_edges() {
+        // A tall instance whose clip's bottom edge moved up by 30 px: only the strip between the two
+        // edges (grown by the pad) is drawn again, not its whole box.
+        let mut tall = inst(100.0);
+        tall.rect[3] = 400.0;
+        tall.clip = [0.0, 0.0, 800.0, 500.0];
+        let mut cut = tall;
+        cut.clip[3] = 470.0;
+        let p = parts_why(&inputs(vec![tall]), &inputs(vec![cut]), 1.0).expect("parts");
+        assert!(p.stage1.len() == 1 && p.stage1[0][1] >= 470.0 - 40.0 && p.stage1[0][3] <= 500.0 + 40.0, "{:?}", p.stage1);
     }
 
     #[test]

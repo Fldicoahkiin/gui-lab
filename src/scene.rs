@@ -142,20 +142,17 @@ pub struct StageBox { pub start: u32, pub end: u32, pub rect: [f32; 4] }
 /// How many plates a window keeps at most.
 pub const PLATES: usize = 4;
 /// A plate's instances this frame (`start..end`), its slot, and how long its ink lasts (s; 0: for good).
+/// `replace`: they are all the plate holds (a cached subtree whose ink lasts): drawn, they replace what
+/// it held where they are drawn, so a partial frame inks the plate only within its boxes; otherwise
+/// they add to what it holds.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct PlateSpan { pub slot: u8, pub start: u32, pub end: u32, pub fade_s: f32 }
+pub struct PlateSpan { pub slot: u8, pub start: u32, pub end: u32, pub fade_s: f32, pub replace: bool }
 
 impl Scene {
     /// Where the instance list is cut into passes, in order: the modal layer's start (`(at, 0)`) and each
     /// plate's start and end (`(at, 1 + 2 slot)`, `(at, 2 + 2 slot)`). What is drawn differs where an
     /// instance crosses one, so the dirty region matches instances only between the same cuts.
-    pub fn cuts(&self) -> Vec<(u32, u32)> {
-        let mut v: Vec<(u32, u32)> = self.layer.map(|l| (l, 0)).into_iter().collect();
-        for p in &self.plates { v.push((p.start, 1 + 2 * p.slot as u32)); v.push((p.end, 2 + 2 * p.slot as u32)); }
-        // A handful at most: put in order by hand (a sort here costs the web module more than it saves).
-        for k in 1..v.len() { let mut j = k; while j > 0 && v[j - 1] > v[j] { v.swap(j - 1, j); j -= 1; } }
-        v
-    }
+    pub fn cuts(&self) -> Vec<(u32, u32)> { cuts(self.layer, self.plates.iter().map(|p| (p.slot, p.start, p.end))) }
     pub fn clear(&mut self) { self.instances.clear(); self.batches.clear(); self.layer = None; self.annot.clear(); self.meshes.clear(); self.groups.clear(); self.holds.clear(); self.islands.clear(); self.plates.clear(); self.own.clear(); self.stages.clear(); }
     /// Everything pushed from now on is in the modal layer.
     pub fn begin_layer(&mut self) { self.layer = Some(self.instances.len() as u32); }
@@ -183,6 +180,15 @@ impl Scene {
         for p in &mut self.plates { p.end = p.end.min(n as u32); }
         if let Some(g) = self.groups.last_mut() { g.end = g.end.min(n as u32); }
     }
+}
+
+/// `Scene::cuts` of a layer's start and plates' `(slot, start, end)`.
+pub fn cuts(layer: Option<u32>, plates: impl Iterator<Item = (u8, u32, u32)>) -> Vec<(u32, u32)> {
+    let mut v: Vec<(u32, u32)> = layer.map(|l| (l, 0)).into_iter().collect();
+    for (slot, start, end) in plates { v.push((start, 1 + 2 * slot as u32)); v.push((end, 2 + 2 * slot as u32)); }
+    // A handful at most: put in order by hand (a sort here costs the web module more than it saves).
+    for k in 1..v.len() { let mut j = k; while j > 0 && v[j - 1] > v[j] { v.swap(j - 1, j); j -= 1; } }
+    v
 }
 
 /// What disturbs the page right now: fronts started by presses, and the pointer. Device px.

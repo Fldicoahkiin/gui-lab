@@ -1835,8 +1835,12 @@ impl<S, M: Clone> Ui<S, M> {
     /// The plate in `slot` drew the instances from `start` to now (the subtree of `root`).
     fn plate_span(&mut self, root: usize, slot: u8, start: u32) {
         // A cached subtree (`El::cached`) that draws what its plate holds draws nothing: the plate lays on
-        // what it kept. One that draws something else is drawn onto an emptied plate. One copied from the
-        // last paint with nothing in it (a restage) is as it was.
+        // what it kept. One that draws something else replaces what the plate holds (where the frame
+        // draws: a partial frame moves the plate with a scroll and inks its boxes); with ink that ages,
+        // it is drawn onto an emptied plate. One copied from the last paint with nothing in it (a
+        // restage) is as it was.
+        let fade = self.plate_slots[slot as usize].as_ref().map_or(0.0, |p| p.2);
+        let replace = self.nodes[root].cached && fade == 0.0;
         if self.nodes[root].cached {
             let (a, b) = (start as usize, self.scene.instances.len());
             if b > a {
@@ -1852,14 +1856,13 @@ impl<S, M: Clone> Ui<S, M> {
                     self.glyphs.log.retain(|g| g.inst < a);
                 } else {
                     self.plate_sig[k] = Some(sig);
-                    if !self.plate_clear.contains(&slot) { self.plate_clear.push(slot); }
+                    if !replace && !self.plate_clear.contains(&slot) { self.plate_clear.push(slot); }
                 }
             }
         }
         let end = self.scene.instances.len() as u32;
-        let fade = self.plate_slots[slot as usize].as_ref().map_or(0.0, |p| p.2);
         if end > start && let Some(p) = &mut self.plate_slots[slot as usize] { p.1 = self.pclock; }
-        self.scene.plates.push(crate::scene::PlateSpan { slot, start, end, fade_s: fade });
+        self.scene.plates.push(crate::scene::PlateSpan { slot, start, end, fade_s: fade, replace });
     }
     /// The renderer has not got what the cached subtrees in `slots` drew into their plates (a renderer
     /// made after they were painted, a new size): they are drawn again in the next paint, now. Whether
@@ -4050,7 +4053,7 @@ impl<S, M: Clone> Ui<S, M> {
                         latest = latest.max(keep.latest);
                         any_loose |= keep.loose;
                         let fade = self.plate_slots[k].as_ref().map_or(0.0, |p| p.2);
-                        self.scene.plates.push(crate::scene::PlateSpan { slot, start: start as u32, end: start as u32, fade_s: fade });
+                        self.scene.plates.push(crate::scene::PlateSpan { slot, start: start as u32, end: start as u32, fade_s: fade, replace: fade == 0.0 });
                         self.perf.counters.kept += 1;
                         keep_skip = Some(i);
                         continue;

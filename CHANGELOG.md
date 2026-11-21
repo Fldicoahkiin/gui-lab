@@ -10,6 +10,13 @@ in Cargo.toml); raising it is a breaking change before 1.0 only in the second nu
 
 ## Faster scrolling, no late stalls
 
+- A cached subtree (`El::cached`) in a scroll area moves with the scroll: the frame moves its plate as it moves
+  the last frame and inks only the band scrolled into view and what changed in it (every scroll frame of the
+  Lab's Loupe was drawn whole, "plate emptied"). Any change to a cached subtree now inks its plate only within
+  the frame's boxes. `PlateSpan` has a new field, `replace`.
+- An instance whose clip alone changed (a clipping box's edge crossing a viewport's) is drawn again between the two
+  edges, not in its whole box: the frame a cached sheet's edge scrolls past drew most of the window.
+
 - A frame that moves the last one redraws, for what came into view or went, each instance's box within its clip
   (was one box round each run of them, which on the Lab spanned the window's width): stage 1 shades about half
   the pixels it did on a fast scroll.

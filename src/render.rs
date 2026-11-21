@@ -359,6 +359,11 @@ pub struct Renderer {
     plate_drew: [u64; 4],
     /// This frame draws each slot's ink into it (the first frame of its paint).
     plate_fresh: [bool; 4],
+    /// What each plate whose instances replace what it holds (`PlateSpan::replace`) holds: its
+    /// instances as they were last inked (a frame that lays it on is compared with them).
+    plate_held: [Vec<Instance>; 4],
+    /// This frame moves each such plate's images with the scroll (`dirty::Move`) before inking its boxes.
+    plate_moves: [bool; 4],
     /// The last frame had ink ageing on a plate (the frame after it shows where the ageing ended).
     was_ageing: bool,
     /// The last plate clearing applied (`Scene::plate_serial`).
@@ -569,7 +574,7 @@ impl Renderer {
             pictures: HashMap::new(), picture_views: HashMap::new(), fresh_pics: vec![], hold_group: None, instances, capacity, pipes, annots, annot_capacity: 256, up_pipe: None, trace_pipe: None, specialise: Some(SPECIALISE_AFTER), spec_force: None, spec: Default::default(), drawn: 0, prime, spec_for: None, run_mats: (0, 0), spec_used: None, shader, pl,
             ink: blank.clone(), lo: blank.clone(), lo_key: (0, 0, 0), material_up: material.clone(), auto: Default::default(), always_lo: false, stage_u: Box::new(([[0.0; 4]; STAGES], [[0.0; 4]; STAGES], [0.0; 4])), stage_q: 1.0, soft_q: 1.0, govern: true, no_map: false,
             near: blank, material_first: material.clone(), material, size: (0, 0), tiles, mesh, sim_rows: 0,
-            region: crate::dirty::Region::All, parts: None, partial: true, frame_view: blank_view.clone(), alt: [blank_view.clone(), blank_view.clone(), blank_view.clone()], cost: Cost::default(), prev: None, spare: (vec![], vec![]), zero, blit, group: None, group_pipe, had_groups: false, plates: Default::default(), plate_pipes, plate_now: 0.0, plate_fade: [[0.0; 4]; 4], had_plates: 0, plate_inked: [false; 4], plate_mats: [0; 4], gated: Default::default(), plate_drew: [0; 4], plate_fresh: [false; 4], was_ageing: false, plate_serial: 0, reduced: false, fade_s: 0.15, sbox: [0.0; 4], own: [[0.0; 4]; crate::draw::OWN_COLOURS], post: None, blit_group: blank_group, warm: None, condense: false, last_region: None, tr: [[0.0; 4]; 9], boxes: [[0.0; 4]; 16], tr_loose: 0.0, t_cont: 0.0,
+            region: crate::dirty::Region::All, parts: None, partial: true, frame_view: blank_view.clone(), alt: [blank_view.clone(), blank_view.clone(), blank_view.clone()], cost: Cost::default(), prev: None, spare: (vec![], vec![]), zero, blit, group: None, group_pipe, had_groups: false, plates: Default::default(), plate_pipes, plate_now: 0.0, plate_fade: [[0.0; 4]; 4], had_plates: 0, plate_inked: [false; 4], plate_mats: [0; 4], gated: Default::default(), plate_drew: [0; 4], plate_fresh: [false; 4], plate_held: Default::default(), plate_moves: [false; 4], was_ageing: false, plate_serial: 0, reduced: false, fade_s: 0.15, sbox: [0.0; 4], own: [[0.0; 4]; crate::draw::OWN_COLOURS], post: None, blit_group: blank_group, warm: None, condense: false, last_region: None, tr: [[0.0; 4]; 9], boxes: [[0.0; 4]; 16], tr_loose: 0.0, t_cont: 0.0,
         };
         r.set_picture(u32::MAX, 1, 1, &[0, 0, 0, 255]);
         r.resize(w, h);
@@ -1402,12 +1407,12 @@ impl Renderer {
         // What changed since the last frame (DESIGN.md §1.19).
         let (mut instances, mut annot) = std::mem::take(&mut self.spare);
         instances.clear();
-        instances.extend_from_slice(&ui.scene().instances);
+        let cuts = self.held_instances(ui.scene(), &mut instances);
         annot.clear();
         annot.extend_from_slice(&ui.scene().annot);
         let inputs = crate::dirty::Inputs {
             instances, annot, meshes: ui.scene().meshes.iter().map(|m| m.scene.fingerprint() ^ (m.rect[2].to_bits() as u64) << 32 ^ m.rect[3].to_bits() as u64).collect(),
-            field: *ui.field(), look: *look, now, mclock: mt[0], gclock: mt[1], size: self.size, map: snap, cuts: ui.scene().cuts(),
+            field: *ui.field(), look: *look, now, mclock: mt[0], gclock: mt[1], size: self.size, map: snap, cuts,
             global: false,
         };
         // What draws the frame whole, the first that holds (named in the readout, `perf::FramePath`).
@@ -1465,6 +1470,10 @@ impl Renderer {
                 p.stage2 = crate::dirty::merge(p.stage2.iter().copied().chain(at).collect(), crate::dirty::MAX_SHADE_BOXES);
             }
         }
+        // The plates whose instances replace what they hold, inked this frame: in a partial frame, inked
+        // only within its boxes, moved first with a scroll that carries all they hold.
+        self.plate_moves = [false; 4];
+        if let Some(p) = parts.as_mut() && let Err(w) = self.plates_partial(ui.scene(), p) { parts = None; why = w; }
         self.region = parts.as_ref().map_or(crate::dirty::Region::All, |p| p.region());
         self.path = crate::perf::FramePath { moved: parts.as_ref().is_some_and(|p| p.moved.is_some()), why, soft: if soft { q } else { 1.0 }, stage: if staged { qs } else { 1.0 }, reduced: lo.map_or(1.0, |l| l[1]), ..Default::default() };
         self.parts = parts;
@@ -1613,7 +1622,9 @@ impl Renderer {
         for p in &scene.plates {
             let slot = p.slot as usize;
             if self.plates[slot].is_none() {
-                let (ink, near) = (Self::target(&self.device, w, h, INK), Self::target(&self.device, w, h, NEAR));
+                // Copied in place when a scroll moves them (`Renderer::plates_move`).
+                let moved = wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST;
+                let (ink, near) = (Self::target_with(&self.device, w, h, INK, moved), Self::target_with(&self.device, w, h, NEAR, moved));
                 let (age, near_age) = (Self::target(&self.device, w, h, PLATE_AGE), Self::target(&self.device, w, h, PLATE_AGE));
                 let bind = Self::bind(&self.device, &self.layout, &self.ubuf, &self.sampler, [&ink, &near, &self.marks_view, &self.palette_view, &self.chars_view, &self.blank, &near_age, &self.fmap_view, &age]);
                 // What `el::cached_view` draws with: the plate's ink where a glyph's atlas would be.
@@ -1623,6 +1634,7 @@ impl Renderer {
                 self.plate_inked[slot] = false;
                 self.plate_mats[slot] = 0;
                 self.plate_drew[slot] = 0;
+                self.plate_held[slot].clear();
             }
         }
         if scene.plate_serial != self.plate_serial {
@@ -1631,6 +1643,7 @@ impl Renderer {
                 if let Some(pt) = &self.plates[slot as usize] { for v in [&pt.ink, &pt.near, &pt.age, &pt.near_age] { let _ = clear(enc, v, wgpu::Color::TRANSPARENT); } }
                 self.plate_inked[slot as usize] = false;
                 self.plate_mats[slot as usize] = 0;
+                self.plate_held[slot as usize].clear();
             }
         }
         self.plate_fresh = [false; 4];
@@ -1639,8 +1652,111 @@ impl Renderer {
             // Each paint's ink goes in once: the same scene drawn again lays on what the plate holds.
             self.plate_fresh[slot] = self.plate_drew[slot] != scene.paint;
             self.plate_drew[slot] = scene.paint;
+            if p.replace && self.plate_fresh[slot] {
+                self.plate_held[slot].clear();
+                self.plate_held[slot].extend_from_slice(&scene.instances[p.start as usize..p.end as usize]);
+            }
             self.plate_inked[p.slot as usize] = true;
             self.plate_mats[p.slot as usize] |= scene.instances[p.start as usize..p.end as usize].iter().filter(|i| overrides(i)).fold(0, |m, i| m | override_bit(i));
+        }
+    }
+    /// This frame's instances into `out` as the dirty region compares them (DESIGN.md §1.19), and where
+    /// they are cut: a plate laid on from what it holds (`PlateSpan::replace`, nothing drawn into it)
+    /// counts as the instances it holds, so a frame that inks it again is compared with what it held.
+    fn held_instances(&self, scene: &Scene, out: &mut Vec<Instance>) -> Vec<(u32, u32)> {
+        let kept = |p: &crate::scene::PlateSpan| p.replace && p.end == p.start && self.plate_inked[p.slot as usize] && self.plates[p.slot as usize].is_some();
+        if !scene.plates.iter().any(kept) { out.extend_from_slice(&scene.instances); return scene.cuts(); }
+        // Where an index of the scene lands among the instances with the held ones put in.
+        let shift = |at: u32| scene.plates.iter().filter(|p| kept(p) && p.start < at).map(|p| self.plate_held[p.slot as usize].len() as u32).sum::<u32>();
+        let mut from = 0usize;
+        for p in scene.plates.iter().filter(|p| kept(p)) {
+            out.extend_from_slice(&scene.instances[from..p.start as usize]);
+            out.extend_from_slice(&self.plate_held[p.slot as usize]);
+            from = p.start as usize;
+        }
+        out.extend_from_slice(&scene.instances[from..]);
+        crate::scene::cuts(scene.layer.map(|l| l + shift(l)), scene.plates.iter().map(|p| {
+            let start = p.start + shift(p.start);
+            (p.slot, start, if kept(p) { start + self.plate_held[p.slot as usize].len() as u32 } else { p.end + shift(p.end) })
+        }))
+    }
+    /// A partial frame with plates whose instances replace what they hold, inked this frame: each moves
+    /// with the scroll (`dirty::Move`) when what it holds is the content's, and is inked within the
+    /// boxes, with what shows it (`el::cached_view`). It cannot be when part of what it holds (in this
+    /// frame or the last) is the content's and part lies over the viewport: the frame is drawn whole.
+    fn plates_partial(&mut self, scene: &Scene, p: &mut crate::dirty::Parts) -> Result<(), &'static str> {
+        let pad = crate::text::SPREAD as f32 + 2.0;
+        let screen = [0.0, 0.0, self.size.0 as f32, self.size.1 as f32];
+        let mut shown = vec![];
+        for s in scene.plates.iter().filter(|s| s.replace && s.end > s.start && self.plate_drew[s.slot as usize] != scene.paint) {
+            let slot = s.slot as usize;
+            if let Some(m) = p.moved {
+                let all = scene.instances[s.start as usize..s.end as usize].iter().chain(&self.plate_held[slot]);
+                let (mut held, mut over) = (false, false);
+                for i in all { if m.holds(i) { held = true } else if !crate::dirty::is_empty(crate::dirty::meet(i.bounds(pad), m.bx())) { over = true } }
+                if held && over { return Err("plate across a viewport"); }
+                self.plate_moves[slot] = held;
+            }
+            shown.extend(scene.instances.iter().filter(|i| i.cached_slot() == Some(s.slot as u32)).map(|i| crate::dirty::meet(i.bounds(pad), screen)).filter(|b| !crate::dirty::is_empty(*b)));
+        }
+        if !shown.is_empty() {
+            p.stage1 = crate::dirty::merge(p.stage1.iter().copied().chain(shown.iter().copied()).collect(), crate::dirty::MAX_BOXES);
+            p.stage2 = crate::dirty::merge(p.stage2.iter().copied().chain(shown).collect(), crate::dirty::MAX_SHADE_BOXES);
+        }
+        Ok(())
+    }
+    /// The plates whose instances replace what they hold (`PlateSpan::replace`) and are inked this frame,
+    /// moved with the scroll (`dirty::Move`): inside the viewport, what stays in it moves by `d` (the
+    /// band scrolled into view is inked in the frame's boxes); around it, in place.
+    fn plates_move(&mut self, enc: &mut wgpu::CommandEncoder, m: crate::dirty::Move) {
+        if m.d == [0, 0] { return; }
+        let [x0, y0, x1, y1] = m.rect;
+        let [dx, dy] = m.d;
+        let (sx, sy) = ((x0 as i32 - dx.min(0)) as u32, (y0 as i32 - dy.min(0)) as u32);
+        let (tx, ty) = ((sx as i32 + dx) as u32, (sy as i32 + dy) as u32);
+        let size = wgpu::Extent3d { width: x1 - x0 - dx.unsigned_abs(), height: y1 - y0 - dy.unsigned_abs(), depth_or_array_layers: 1 };
+        fn at(t: &wgpu::Texture, x: u32, y: u32) -> wgpu::TexelCopyTextureInfo<'_> { wgpu::TexelCopyTextureInfo { texture: t, mip_level: 0, origin: wgpu::Origin3d { x, y, z: 0 }, aspect: wgpu::TextureAspect::All } }
+        // Through the second ink image (what the frame's move left there is not read again): a texture
+        // is not copied onto itself.
+        let spare = self.alt[0].texture();
+        for slot in 0..crate::scene::PLATES {
+            if !self.plate_moves[slot] { continue; }
+            let Some(pt) = &self.plates[slot] else { continue };
+            for v in [&pt.ink, &pt.near] {
+                enc.copy_texture_to_texture(at(v.texture(), sx, sy), at(spare, tx, ty), size);
+                enc.copy_texture_to_texture(at(spare, tx, ty), at(v.texture(), tx, ty), size);
+            }
+            self.cost.moved += 2 * (size.width * size.height) as u64;
+        }
+    }
+    /// Each plate whose instances replace what it holds and are inked this frame: within each box (or
+    /// all of it), emptied and its instances drawn into ink and near. Before stage 1, so whatever reads
+    /// the plate this frame (`el::cached_view`) reads it inked.
+    fn plates_ink(&self, enc: &mut wgpu::CommandEncoder, scene: &Scene, boxes: Option<&[[u32; 4]]>) {
+        let layer = scene.layer.unwrap_or(u32::MAX);
+        for p in scene.plates.iter().filter(|p| p.replace && self.plate_fresh[p.slot as usize]) {
+            let Some(pt) = &self.plates[p.slot as usize] else { continue };
+            for (view, pipe, top) in [(&pt.ink, &self.pipes[0], &self.pipes[5]), (&pt.near, &self.pipes[1], &self.pipes[2])] {
+                let cuts: Vec<Option<[u32; 4]>> = match boxes { Some(b) => b.iter().copied().map(Some).collect(), None => vec![None] };
+                let mut pass = if boxes.is_some() { load(enc, view) } else { clear(enc, view, wgpu::Color::TRANSPARENT) };
+                pass.set_vertex_buffer(0, self.instances.slice(..));
+                for c in cuts {
+                    if let Some([x, y, w, h]) = c {
+                        pass.set_scissor_rect(x, y, w, h);
+                        pass.set_pipeline(&self.zero[0]);
+                        pass.set_bind_group(0, self.pictures.get(&u32::MAX).expect("blank picture"), &[]);
+                        pass.draw(0..3, 0..1);
+                    }
+                    for b in &scene.batches {
+                        let (s0, s1) = (b.start.max(p.start), b.end.min(p.end));
+                        if s0 >= s1 { continue; }
+                        let Some(group) = self.batch_group(b.picture) else { continue };
+                        pass.set_pipeline(if b.start >= layer { top } else { pipe });
+                        pass.set_bind_group(0, group, &[]);
+                        pass.draw(0..4, s0..s1);
+                    }
+                }
+            }
         }
     }
     fn stage1(&self, enc: &mut wgpu::CommandEncoder, scene: &Scene, ink: &wgpu::TextureView, near: &wgpu::TextureView, tiles: u32, scissor: Option<[u32; 4]>) {
@@ -1697,15 +1813,17 @@ impl Renderer {
                     // was drawn, into its age), then what they hold is laid on, aged, in its place.
                     let pt = self.plates[p.slot as usize].as_ref().expect("checked");
                     drop(pass);
-                    // Inked once: a scene drawn again lays on what its plate holds.
-                    if self.plate_fresh[p.slot as usize] {
+                    // Inked once: a scene drawn again lays on what its plate holds. One whose instances
+                    // replace what it holds is inked before stage 1 (`Renderer::plates_ink`).
+                    let adds = self.plate_fresh[p.slot as usize] && !p.replace;
+                    if adds {
                         let mut pp = load(enc, if k == 0 { &pt.ink } else { &pt.near });
                         if let Some([x, y, w, h]) = scissor { pp.set_scissor_rect(x, y, w, h); }
                         pp.set_vertex_buffer(0, self.instances.slice(..));
                         draw(&mut pp, p.start, p.end);
                     }
                     // When each pixel was drawn: where the ink is, and where its nearness reaches.
-                    for (target, pipe) in [(&pt.age, &self.plate_pipes[0]), (&pt.near_age, &self.plate_pipes[3])].into_iter().take(if k == 0 && self.plate_fresh[p.slot as usize] { 2 } else { 0 }) {
+                    for (target, pipe) in [(&pt.age, &self.plate_pipes[0]), (&pt.near_age, &self.plate_pipes[3])].into_iter().take(if k == 0 && adds { 2 } else { 0 }) {
                         let mut ap = load(enc, target);
                         if let Some([x, y, w, h]) = scissor { ap.set_scissor_rect(x, y, w, h); }
                         ap.set_vertex_buffer(0, self.instances.slice(..));
@@ -1854,6 +1972,8 @@ impl Renderer {
         let frame_view = self.frame_view.clone();
         let out = if with_before { &frame_view } else { target };
         self.plates_ready(&mut enc, scene);
+        if let Some(m) = moved { self.plates_move(&mut enc, m); }
+        self.plates_ink(&mut enc, scene, boxes.as_ref().map(|b| b.0.as_slice()));
         self.plates_laid.set(0);
         self.hold_pass(&mut enc);
         let px = |v: &[[u32; 4]]| v.iter().map(|b| (b[2] * b[3]) as u64).sum::<u64>();
