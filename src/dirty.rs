@@ -272,14 +272,20 @@ pub fn merge(mut v: Vec<Bx>, max: usize) -> Vec<Bx> {
 
 /// The instances that changed between `a` and `b`, as runs: those of one list matched in order to equal
 /// ones of the other are the same, so a run of changed marks (a drawing whose strokes changed in number)
-/// leaves what comes after it matched. Each unmatched run, in either list, is one box; a run changed in
+/// leaves what comes after it matched. Each unmatched run, in either list, is a box for each of its
+/// instances (`merge` gathers them); a run changed in
 /// place (as many in both) is a box for each of its instances, before and after, so marks that move all
-/// over the window (drifting motes) are each where they are.
+/// over the window (drifting motes) are each where they are. Each box is within the instance's clip (grown
+/// by `pad`).
 fn changed(a: &[Instance], b: &[Instance], pad: f32, out: &mut Vec<Bx>) {
     const K: usize = 4;
+    // An instance draws nothing outside its clip (but for its nearness, within `pad`).
+    let shown = |i: &Instance| { let b = i.bounds(pad); let m = if is_empty(i.clip) { b } else { meet(b, grow(i.clip, pad)) }; if is_empty(m) { EMPTY } else { m } };
     let run = |x: &[Instance], y: &[Instance], out: &mut Vec<Bx>| {
-        if x.len() == y.len() { out.extend(x.iter().zip(y).filter(|(p, q)| p != q).map(|(p, q)| union(p.bounds(pad), q.bounds(pad)))); }
-        else { out.push(x.iter().chain(y).fold(EMPTY, |r, i| union(r, i.bounds(pad)))); }
+        if x.len() == y.len() { out.extend(x.iter().zip(y).filter(|(p, q)| p != q).map(|(p, q)| union(shown(p), shown(q)))); }
+        // A run that came or went (content scrolled into view, a cell that changed what it draws): each
+        // instance's box, which `merge` gathers, not one box round all (a run can span the window).
+        else { out.extend(x.iter().chain(y).map(shown)); }
     };
     let (mut lo, mut hi) = (0, 0);
     while lo < a.len() && lo < b.len() && a[lo] == b[lo] { lo += 1; }
@@ -564,6 +570,23 @@ mod tests {
         let mut c = b.clone();
         c.look.material = Material::Dottr;
         assert_eq!(region(&b, &c, 1.0), Region::All);
+    }
+
+    #[test]
+    fn instances_that_come_far_apart_are_drawn_each_in_its_box() {
+        // Two marks come at once, one near the top and one near the bottom, between unchanged ones: each
+        // is a box of its own (not one round both), and none reaches past its clip.
+        let mut top = inst(100.0);
+        top.rect[1] = 20.0;
+        let mut low = inst(300.0);
+        low.rect[1] = 540.0;
+        low.clip = [0.0, 0.0, 800.0, 550.0];
+        let a = inputs(vec![inst(10.0), inst(500.0)]);
+        let b = inputs(vec![inst(10.0), top, low, inst(500.0)]);
+        let p = parts_why(&a, &b, 1.0).expect("parts");
+        let area: f32 = p.stage1.iter().map(|b| (b[2] - b[0]) * (b[3] - b[1])).sum();
+        assert!(p.stage1.len() == 2 && area < 2.0 * 100.0 * 80.0, "{:?}", p.stage1);
+        assert!(p.stage1.iter().all(|b| b[3] <= 550.0 + 40.0), "{:?}", p.stage1);
     }
 
     #[test]

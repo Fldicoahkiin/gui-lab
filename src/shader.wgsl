@@ -1784,9 +1784,12 @@ fn trace_may(pf: vec2f) -> bool {
   } else if (m == SMUDGR) { len = u.scrp.y * k; }
   else if (m == CARVR) { len = u.scrp.x * k; }
   else { len = u.scrp.x * k * 0.45; }
-  // Probes every `h` px: ink within `r` of one is where the nearness is above −r.
-  let h = 4.0;
-  let r = side + h * 0.5 + 1.5;
+  // Probes every `h` px: ink within `r` of one is where the nearness is above −r. The trace reaches ink
+  // within `side + 1.5` of its path; a probe stands for the path within `h / 2` of it, so the probes are as
+  // far apart as the nearness lets them be (it reads up to SPREAD px), and never nearer than 4 px.
+  let c = side + 1.5;
+  let h = max(4.0, 2.0 * (u.fd.z - 1.0 - c));
+  let r = c + h * 0.5;
   let n = i32(ceil(len / h));
   if (r >= u.fd.z || n > 64) { return true; }
   for (var j = 0; j <= 64; j++) {

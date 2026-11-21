@@ -2117,9 +2117,12 @@ copied whole to the target each frame (the web swap chain gives a new image ever
   new pointer), bursts, the wipe line's rect and changed instances of the annotation layer.
 - Instances are matched in order, not by place: the common start and end of the two lists, and between them
   runs of 4 equal instances found again further on, so a drawing whose strokes change in number leaves what
-  is drawn after it matched; each run that did not match, in either list, is one box, and a run changed in
-  place (as many instances in both) a box for each instance, before and after, so marks that move all over
-  the window (drifting motes, a turning body's glyphs) are each where they are. They are matched only
+  is drawn after it matched; each run that did not match, in either list, is a box for each of its instances
+  (gathered by `merge`: content scrolled into view at the bottom and a cell that changed what it draws at the
+  top are not one box across the window between them), and a run changed in place (as many instances in both)
+  a box for each instance, before and after, so marks that move all over the window (drifting motes, a turning
+  body's glyphs) are each where they are. Each box ends at its instance's clip, grown by the pad (what is
+  scrolled out of a viewport costs nothing). They are matched only
   between the same cuts of the list (the modal layer, each plate), and when the cuts differ, in place. A
   pixel outside every box is covered by the same instances in the same order, so it is the same.
 - **Several boxes**: over 64, boxes are first gathered by where their centres fall on an 8 × 8 grid over them
@@ -2146,7 +2149,8 @@ copied whole to the target each frame (the web swap chain gives a new image ever
   source. The trace changes from frame to frame only near the ink it trails: after the move, a pass over the
   viewport (`fs_trace`, `Cost::trace`) shades again every pixel the trace can reach in this frame or the last
   (`Move::trace`, the stronger of the two: from where the material reads, any ink within as far round the
-  trace's samples as they spread, along its longest reach, found by the nearness every 4 px) and keeps the moved
+  trace's samples as they spread, along its longest reach, found by the nearness at probes as far apart as it reads:
+  12 px of nearness less that reach, every 4 px at the nearest) and keeps the moved
   pixel elsewhere; the boxes are drawn after it, and the marks over the viewport with them. The strips along the
   viewport's edges grow by the trace's length (what it read there has moved out of sight, or in). Dottr and charr
   hold the rows to their lattice while the trace shows (`latch`): the frame shows the content at its offset

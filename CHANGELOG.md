@@ -8,6 +8,15 @@ crate and the `amenui` npm package (`web/`) always carry the same version, becau
 match the module that `web_app!` generates. The minimum Rust is the one CI builds with (`rust-version`
 in Cargo.toml); raising it is a breaking change before 1.0 only in the second number.
 
+## Faster scrolling, no late stalls
+
+- A frame that moves the last one redraws, for what came into view or went, each instance's box within its clip
+  (was one box round each run of them, which on the Lab spanned the window's width): stage 1 shades about half
+  the pixels it did on a fast scroll.
+- A scroll's trace pass probes the nearness as far apart as it reads (was every 4 px): the same frame, with
+  fewer reads for each pixel it tests (it shades a little more of the viewport again, which costs less than the
+  reads saved: on the Lab a fast-scroll frame took about a quarter less on the CPU rasteriser).
+
 ## A Claude Code skill and a save hook
 
 - `.claude/skills/amenui/SKILL.md` is AGENTS.md as the `amenui` skill (made by `tools/skill.sh`; `tests/skill.rs`
